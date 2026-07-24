@@ -4378,6 +4378,40 @@ _ROLE_TIMEOUT_DEFAULTS = {
 }
 
 
+# --- Extended-thinking configuration ---------------------------------------
+# GLM-5.2 via the Anthropic-compatible endpoint interprets
+# ``thinking={"type": "adaptive"}`` as *unbounded* reasoning: it emits
+# 16k-19k+ thinking tokens without ever producing visible output, exhausting
+# the 360s productive-silence ceiling and abandoning the generation.
+#
+# The reliable, well-supported knobs on this endpoint are:
+#   * ``thinking.type``  — ``enabled`` (reason, then answer) / ``disabled``
+#   * ``effort``         — ``low|medium|high|xhigh|max`` (GLM maps high+ → max)
+#
+# ``enabled`` requires ``budget_tokens`` (the SDK enforces it at CLI-build
+# time, see subprocess_cli.py). GLM treats budget as a soft target rather than
+# a hard cap, so a large budget preserves deep reasoning while still letting
+# the model converge and emit text. ``effort=max`` selects the strongest
+# reasoning depth, which is what produces the strongest bot strategy output.
+#
+# All three are environment-overridable so the main branch can revert to the
+# legacy ``adaptive`` behavior while the cloud runtime opts into deep, bounded
+# reasoning.
+def _llm_thinking_options() -> dict:
+    mode = os.environ.get("POK_LLM_THINKING_MODE", "enabled").strip().lower()
+    if mode == "disabled":
+        return {"thinking": {"type": "disabled"}}
+    if mode == "adaptive":
+        return {"thinking": {"type": "adaptive"}}
+    # default / "enabled": deep bounded reasoning
+    budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000"))
+    options: dict = {"thinking": {"type": "enabled", "budget_tokens": budget}}
+    effort = os.environ.get("POK_LLM_EFFORT", "max").strip().lower()
+    if effort:
+        options["effort"] = effort
+    return options
+
+
 def _role_timeout_policy(role_name: str) -> dict:
     """Return hard stream timeout policy for a role.
 
@@ -6958,7 +6992,7 @@ async def run_claude_query(
         strict_mcp_config=True,  # Direct sub-agents must not auto-start user/global MCP servers.
         tools=tools,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
-        thinking={"type": "adaptive"},
+        **_llm_thinking_options(),
     )
     if _sub_hooks:
         options_kwargs["hooks"] = _sub_hooks
