@@ -163,7 +163,7 @@ MAX_PRECOMMIT_RETRIES = 3   # Max run_precommit_eval attempts against the SAME b
 MAX_PRECOMMIT_REWORK_ROUNDS = int(os.environ.get("POK_MAX_PRECOMMIT_REWORK_ROUNDS", "3"))
 MAX_OFFICIAL_REWORK_ROUNDS = int(os.environ.get("POK_MAX_OFFICIAL_REWORK_ROUNDS", "2"))
 MAX_MASTER_AUDIT_RETRIES = 1  # Initial Master plan + one corrective re-plan only
-WORKER_TIMEOUT = 1800         # Seconds before a hung worker call is aborted + retried (raised for effort=max deep reasoning)
+WORKER_TIMEOUT = 1200         # Seconds before a hung worker call is aborted + retried. Tuned from gen-1 Scout measurements (4-9min typical); 1200s = 20min gives generous headroom.
 MAX_PARALLEL_WORKERS = 2      # Max simultaneous worker LLM calls — now bounded by the global semaphore (llm_concurrency.py, default 2)
 
 # Prompt size limits — Sonnet supports 200K tokens (~800K chars); leave generous headroom
@@ -209,9 +209,11 @@ def copy_bot_tree_for_candidate(source_dir: str | Path, target_dir: str | Path) 
 
 # Watchdog: if no pipeline stage change occurs within this many seconds,
 # the orchestrator watchdog will clear the session and restart from checkpoint.
-# Must exceed CYCLE_TIMEOUT (now 300 min) to avoid false positives. The watchdog
-# is a secondary safety net; CYCLE_TIMEOUT is primary.
-WATCHDOG_TIMEOUT = 36000  # 600 minutes (10 hours)
+# Must exceed CYCLE_TIMEOUT (now 120 min) to avoid false positives. The watchdog
+# is a secondary safety net; CYCLE_TIMEOUT is primary. Tuned from gen-1: stages
+# change every ~5-20min, so 14400s (4h) is generous enough for the slowest
+# stage (precommit native match ~23min) while catching truly stuck pipelines.
+WATCHDOG_TIMEOUT = 14400  # 240 minutes (4 hours)
 
 # MCP servers to block for sub-agents (keep zai-mcp-server for vision, block the rest)
 _BLOCKED_MCP_TOOLS = [

@@ -3261,7 +3261,7 @@ async def _run_one_cycle(
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
 
-        CYCLE_TIMEOUT = 18000  # 300 minutes (5h) max per LLM cycle. Raised for GLM-5.2 effort=max deep reasoning: master ensemble (3 Scouts via Semaphore(2) = 2×1800s + 2 Critics 1800s + final 1800s ≈ 14400s worst case) + workers (2 batches × 1800s = 3600s). The previous 5400s (90min) was tuned for effort=unset/budget=16000 and killed GLM mid-reasoning at 27k+ thinking tokens. WATCHDOG_TIMEOUT (36000s/10h) is the secondary backstop.
+        CYCLE_TIMEOUT = 7200  # 120 minutes max per LLM cycle. Tuned from gen-1 actual measurements: Scout ensemble (3 Scouts via Semaphore(2) = 2 rounds × ~9min = ~18min) + schema retries (~3min) + Critics (~10min) + final Master (~9min) + workers (~20min) + review (~9min) + critic (~9min) = ~77min typical. 7200s = 120min gives ~43min buffer for precommit (native match ~23min) and edge cases. Previous 18000s was 15× too generous; 5400s killed GLM mid-reasoning.
         # Sentinel returned by the timeout-extension path (stage=verified, first extension).
         # Must be DISTINCT from every other cost signal: -0.5 (infra), -1.0 (generic crash),
         # and the auth clamp -max(abs(total_cost), 1.0) which can reach any negative value
