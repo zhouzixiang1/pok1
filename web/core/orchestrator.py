@@ -41,7 +41,7 @@ from claude_agent_sdk import (
     ClaudeSDKError,
 )
 
-from bot_namespace import bot_relpath
+from bot_namespace import ARCHIVED_VERSION_HIGH_WATER, FIRST_STRICT_POLICY_VERSION, bot_relpath
 from tools import evolution_server, inject_ui
 from llm_query import TERMINAL_ABANDON_RESULT_OWNER_TOOLS
 from llm_failure import is_llm_infra_error, is_shutdown_cancel_error as _is_shutdown_cancel_error
@@ -1106,9 +1106,14 @@ def _pipeline_checkpoint_observation():
             "error": "checkpoint_projection_not_object",
         }
     identity_issues = []
-    for field in ("next_v", "source_v", "checkpoint_revision"):
+    _IDENTITY_FLOORS = {
+        "next_v": FIRST_STRICT_POLICY_VERSION,
+        "source_v": ARCHIVED_VERSION_HIGH_WATER,
+        "checkpoint_revision": 1,
+    }
+    for field, floor in _IDENTITY_FLOORS.items():
         value = checkpoint.get(field)
-        if type(value) is not int or value < 1:
+        if type(value) is not int or value < floor:
             identity_issues.append(field)
     for field in ("stage", "workflow_run_id"):
         value = checkpoint.get(field)
