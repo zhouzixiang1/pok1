@@ -228,8 +228,8 @@ def strict_artifact_layout_errors(
 
 def format_version(version: int | str) -> str:
     v = int(version)
-    if v <= 0:
-        raise ValueError("bot version must be a positive integer")
+    if v < 0:
+        raise ValueError("bot version must be non-negative")
     if VERSION_WIDTH <= 0:
         return str(v)
     return f"{v:0{VERSION_WIDTH}d}"
