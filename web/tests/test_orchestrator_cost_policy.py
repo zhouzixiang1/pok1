@@ -338,6 +338,7 @@ def test_empty_output_retry_records_every_billed_attempt_once(
                     "output_tokens": 0,
                     "cache_read_input_tokens": 3,
                 },
+                {},
             ),
             (
                 ["ok"],
@@ -348,6 +349,7 @@ def test_empty_output_retry_records_every_billed_attempt_once(
                     "cache_read_input_tokens": 7,
                     "cache_creation_input_tokens": 4,
                 },
+                {},
             ),
         ]
     )
