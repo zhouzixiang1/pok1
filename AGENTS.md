@@ -262,12 +262,14 @@ The cloud runtime drives every Master/Reviewer/Critic/Worker role through
 configured in `web/core/llm_query.py::_llm_thinking_options` and applied to
 every direct sub-agent dispatch:
 
-- `thinking = {"type": "enabled", "budget_tokens": 32000}` — GLM treats the
+- `thinking = {"type": "enabled", "budget_tokens": 16000}` — GLM treats the
   budget as a soft target, so deep reasoning is preserved while the model still
   converges and emits a detailed answer. The legacy `{"type": "adaptive"}` mode
   is **known to hang on GLM**: it emits 16k–19k+ thinking tokens without ever
   producing visible output, exhausting the productive-silence ceiling and
-  abandoning the generation at the Master proposal stage.
+  abandoning the generation at the Master proposal stage. Higher budgets
+  (32000, 64000) also cause near-infinite thinking loops on complex schema-retry
+  prompts; 16000 converges reliably (30-120s) while still producing deep output.
 - `effort` — **intentionally unset.** `effort=max` is harmful on this endpoint:
   it drives GLM into an infinite thinking loop (64k+ thinking tokens, zero text
   output) on complex Master-proposal prompts, regardless of `budget_tokens`.
@@ -276,7 +278,7 @@ every direct sub-agent dispatch:
 
 All three are environment-overridable: `POK_LLM_THINKING_MODE`
 (`enabled`/`adaptive`/`disabled`, default `enabled`),
-`POK_LLM_THINKING_BUDGET` (default `32000`), `POK_LLM_EFFORT` (default unset).
+`POK_LLM_THINKING_BUDGET` (default `16000`), `POK_LLM_EFFORT` (default unset).
 The committed defaults live in `deploy/tencent-cloud/env.runtime`.
 
 Because GLM-5.2 with `effort=max` + a large budget routinely spends 250–320s
