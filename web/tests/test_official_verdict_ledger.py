@@ -126,10 +126,11 @@ def test_latest_signed_authoritative_verdict_is_monotonic(tmp_path, monkeypatch)
     latest = latest_authoritative_verdict(candidate_hash)
 
     assert certified["sequence"] == 1
-    assert certified["signer_epoch"] == 2
+    current_epoch = official_certificate_signing.load_signer_trust_policy()["current_epoch"]
+    assert certified["signer_epoch"] == current_epoch
     assert certified["signer_key_fingerprint"].startswith("SHA256:")
     head_wrapper = json.loads(ledger_head_path().read_text(encoding="utf-8"))
-    assert head_wrapper["head"]["signer_epoch"] == 2
+    assert head_wrapper["head"]["signer_epoch"] == current_epoch
     assert failed["sequence"] == 2
     assert latest["valid"] is True
     assert latest["entry"]["outcome"] == "official-failed"

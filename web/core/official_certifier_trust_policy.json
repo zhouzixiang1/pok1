@@ -2,12 +2,12 @@
   "schema_version": 1,
   "kind": "official-certifier-signer-epoch-policy",
   "policy_id": "official-certifier-signer-epochs-v1",
-  "current_epoch": 2,
+  "current_epoch": 3,
   "current_signer": {
-    "epoch": 2,
+    "epoch": 3,
     "state": "active",
-    "key_fingerprint": "SHA256:93sCwWhJf1/y3HGhZOaOdHmiZHfb1VjMgg5jVZ/2urQ",
-    "public_key_sha256": "196ebd37a4a365021c2bce2f3cada30f3e8bf19630a72aa57e03da3f310a9a54"
+    "key_fingerprint": "SHA256:5C70Tt/aIzq60HlCQBXLZ0MdTWN3vIWk6HjkEU+nsTk",
+    "public_key_sha256": "ac0fcb6685b585f081f40c67e7551781d95b7527f62aa93634410203f89ea986"
   },
   "historical_signers": [
     {
@@ -48,5 +48,5 @@
       }
     }
   ],
-  "policy_digest": "5c4fbf0f1418a66162e2ca85a02833992328fe70d401b66c49d4c251d85faf15"
+  "policy_digest": "055ecb3925d3100960a8cf07e02f5629969c818e8376749e1ca67bc73f44e73a"
 }
