@@ -2850,14 +2850,14 @@ def record_reaped_bot(bot_name, *, reason="", data=None):
         raise RuntimeError(
             "durable reaping requires EVOLUTION_GIT_PUSH=1 in the evolution runtime"
         )
-    from national_epoch_registry import create_reaped_tombstone
+    from national_epoch_registry import REAPED_TAG_PREFIX, create_reaped_tombstone
 
     mutation = create_reaped_tombstone(
         version,
         repo_root=PROJECT_ROOT,
         legacy_ledger=REAPED_BOTS_FILE,
     )
-    tombstone_tag = f"national-reaped-v{version}"
+    tombstone_tag = f"{REAPED_TAG_PREFIX}{version}"
     pushed = False
     if push_enabled or push_required:
         pushed = git_push_refs(tombstone_tag)

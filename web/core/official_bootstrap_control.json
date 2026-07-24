@@ -4,9 +4,9 @@
   "policy_id": "official-first-strict-control-bootstrap-v1",
   "epoch": "national_tcp_policy_v1",
   "candidate": {
-    "label": "national_v143",
-    "version": 143,
-    "source_version_authority": 142
+    "label": "national_cloud_v1",
+    "version": 1,
+    "source_version_authority": 0
   },
   "control": {
     "control_id": "first_strict_control_v1",

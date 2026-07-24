@@ -18,7 +18,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version
+from bot_namespace import ACTIVE_BOT_PREFIX, FIRST_STRICT_POLICY_VERSION, bot_name, bot_tag, parse_bot_version
 from strength_order import match_score
 from system_log import log_system_event
 
@@ -863,10 +863,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     # retries, SDK session replacement, and process restart cannot split or
     # leak one generation's bill into another.
     _workflow_attempt = 1
-    if _planned_next_v == 143 and _abandoned_floor < 143:
+    if _planned_next_v == FIRST_STRICT_POLICY_VERSION and _abandoned_floor < FIRST_STRICT_POLICY_VERSION:
         from evolution_infra import abandoned_version_attempt_count
 
-        _workflow_attempt = abandoned_version_attempt_count(143) + 1
+        _workflow_attempt = abandoned_version_attempt_count(FIRST_STRICT_POLICY_VERSION) + 1
     _prepare_workflow_run_id = _bind_prepare_generation_cost_scope(
         _planned_next_v,
         ui,

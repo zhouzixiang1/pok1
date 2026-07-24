@@ -1235,12 +1235,12 @@ def _llm_selected_mcp_servers(mcp_servers):
     return frozenset(str(name) for name in (mcp_servers or ()))
 
 
-_BOT_DIR_SCOPE_RE = re.compile(r"^bots/national_v(?P<version>\d+)$")
+_BOT_DIR_SCOPE_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _EVIDENCE_SCOPE_RE = re.compile(
     r"^web/core/results/v(?P<version>\d+)/evidence_snapshot$"
 )
 _BOOTSTRAP_EVIDENCE_SCOPE_RE = re.compile(
-    r"^bots/national_v(?P<version>\d+)/\.protocol_bootstrap_no_strength_evidence$"
+    rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)/\.protocol_bootstrap_no_strength_evidence$"
 )
 _WORKER_WORKSPACE_SCOPE_RE = re.compile(
     r"^web/core/results/workflow/artifacts/workspaces/(?P<digest>[0-9a-f]{64})$"

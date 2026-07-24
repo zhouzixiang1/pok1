@@ -39,9 +39,12 @@ VERSION_WIDTH = 0
 # disturbing origin/main. Defaults to the historical "main".
 EVOLUTION_BRANCH = os.environ.get("POK_EVOLUTION_BRANCH", "main")
 
-# Versions through v142 belong to the physically archived pre-policy epoch.
-# Their tags remain immutable version-authority/audit records only.
-ARCHIVED_VERSION_HIGH_WATER = 142
+# The archived pre-policy epoch high-water. On the canonical main branch this
+# is 142 (so the first strict policy version is 143); on the tencent-cloud-runtime
+# branch it is 0 so the cloud line starts from version 1 with no inherited
+# version-authority floor. Both branches derive FIRST_STRICT_POLICY_VERSION
+# from this single constant.
+ARCHIVED_VERSION_HIGH_WATER = 0
 FIRST_STRICT_POLICY_VERSION = ARCHIVED_VERSION_HIGH_WATER + 1
 
 NATIONAL_RUNTIME_MANIFEST = "national_runtime_manifest.json"

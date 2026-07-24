@@ -356,7 +356,7 @@ def _render_reviewer_provider_prompt(inputs):
                 "Read the prepared target only; Bash and historical lineage are unavailable"
             ),
             "{review_lineage_contract}": (
-                f"Prepared `bots/national_v{next_v}/` is the sole readable code artifact. "
+                f"Prepared `bots/{bot_name(next_v)}/` is the sole readable code artifact. "
                 f"v{source_v} is numeric high-water only, not a parent or readable path."
             ),
             "{review_evaluation_step_one}": (
@@ -390,19 +390,19 @@ def _render_reviewer_provider_prompt(inputs):
                 "bounded reads and source-to-target comparisons"
             ),
             "{review_lineage_contract}": (
-                f"Exact current-epoch source: `bots/national_v{source_v}/`; "
-                f"candidate: `bots/national_v{next_v}/`."
+                f"Exact current-epoch source: `bots/{bot_name(source_v)}/`; "
+                f"candidate: `bots/{bot_name(next_v)}/`."
             ),
             "{review_evaluation_step_one}": (
                 f"Compare only explicit source/target files under "
-                f"`bots/national_v{source_v}/` and `bots/national_v{next_v}/`; "
+                f"`bots/{bot_name(source_v)}/` and `bots/{bot_name(next_v)}/`; "
                 "do not inspect Git history."
             ),
             "{review_size_baseline_contract}": (
                 "The quality gate's adaptive limit permits a child to match or "
                 "shrink, but not grow beyond, an inherited oversized source. Compare "
-                f"explicit `policy.py` line counts under `bots/national_v{source_v}/` "
-                f"and `bots/national_v{next_v}/`. Reject growth beyond an oversized source; "
+                f"explicit `policy.py` line counts under `bots/{bot_name(source_v)}/` "
+                f"and `bots/{bot_name(next_v)}/`. Reject growth beyond an oversized source; "
                 "treat shrink/maintenance as marginal and flag it in `risk_areas`. "
                 "If the source is within limits and the child exceeds them, apply "
                 "the normal reject/marginal rule."

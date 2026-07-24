@@ -42,7 +42,7 @@ RESET_COMMAND = (
 )
 FIRST_STRICT_BOOTSTRAP_COMMAND = (
     "python scripts/official_certify.py bootstrap-first-strict "
-    f"bots/national_v{FIRST_STRICT_POLICY_VERSION} "
+    f"bots/{bot_name(FIRST_STRICT_POLICY_VERSION)} "
     f"--control-id {FIRST_STRICT_CONTROL_ID} "
     "--acknowledge-one-time-first-strict-control --wait-if-busy"
 )
@@ -602,7 +602,7 @@ def validate_schema2_abandon_claim_structure(
     total_bytes = candidate.get("total_bytes")
     if (
         type(present) is not bool
-        or candidate.get("path") != f"bots/national_v{next_v}"
+        or candidate.get("path") != f"bots/{bot_name(next_v)}"
         or type(entry_count) is not int
         or not 0 <= entry_count <= _ABANDON_CLAIM_MAX_TREE_ENTRIES
         or type(total_bytes) is not int

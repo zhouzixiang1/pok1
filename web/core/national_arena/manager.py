@@ -28,6 +28,7 @@ from typing import Any, Awaitable, Callable, TextIO, TypeVar
 from bot_namespace import (
     FIRST_STRICT_POLICY_VERSION,
     ROLE_RATING_POOL,
+    bot_name,
     parse_bot_version,
     resolve_national_bot_spec,
     version_sort_key,
@@ -201,7 +202,7 @@ class NationalArenaManager:
             # than whichever eligible directory happens to be oldest today.
             root_kind = "strict_publication_epoch_root"
             root_value = (
-                f"{evaluation_epoch}:national_v{FIRST_STRICT_POLICY_VERSION}"
+                f"{evaluation_epoch}:{bot_name(FIRST_STRICT_POLICY_VERSION)}"
             )
         else:
             raise ArenaConflict("national Arena epoch authority has no durable root")

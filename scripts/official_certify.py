@@ -29,6 +29,11 @@ from official_certification import (  # noqa: E402
     select_official_opponent,
     status_payload,
 )
+from bot_namespace import (  # noqa: E402
+    ARCHIVED_VERSION_HIGH_WATER,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+)
 from official_bootstrap import (  # noqa: E402
     DEFAULT_BOOTSTRAP_CONTROL_ID,
     authorize_operator_bootstrap_selection,
@@ -212,18 +217,18 @@ def main(argv: list[str] | None = None) -> int:
         from national_runtime_authority import strict_published_bot_names
 
         published = list(strict_published_bot_names())
-        if "national_v143" in published:
+        if bot_name(FIRST_STRICT_POLICY_VERSION) in published:
             print(json.dumps({
                 "status": "already-published",
                 "committed": True,
-                "version": 143,
-                "bot": "national_v143",
+                "version": FIRST_STRICT_POLICY_VERSION,
+                "bot": bot_name(FIRST_STRICT_POLICY_VERSION),
             }, ensure_ascii=False, indent=2))
             return 0
         checkpoint = read_pipeline_checkpoint() or {}
         if (
-            checkpoint.get("next_v") != 143
-            or checkpoint.get("source_v") != 142
+            checkpoint.get("next_v") != FIRST_STRICT_POLICY_VERSION
+            or checkpoint.get("source_v") != ARCHIVED_VERSION_HIGH_WATER
             or checkpoint.get("stage") not in {
                 "official_bootstrap_required",
                 "verified",
@@ -250,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False, indent=2))
             return 2
 
-        candidate = ROOT / "bots" / "national_v143"
+        candidate = ROOT / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)
         certificate = status_payload(candidate)
         from official_certification import official_full_certified
         from official_bootstrap import (
@@ -294,8 +299,8 @@ def main(argv: list[str] | None = None) -> int:
             else "fresh_policy_bootstrap"
         )
         raw = asyncio.run(commit_bot.handler({
-            "version": 143,
-            "source_v": 142,
+            "version": FIRST_STRICT_POLICY_VERSION,
+            "source_v": ARCHIVED_VERSION_HIGH_WATER,
             "strategy": strategy,
             "review_approved": True,
         }))

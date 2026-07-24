@@ -38,7 +38,7 @@ export function epochStreamAuthorityKey(
     || Number(status.version_authority_high_water) < 0
     || !Array.isArray(status.active_bots)
     || !status.active_bots.every((name) => (
-      typeof name === "string" && /^national_v[1-9][0-9]*$/.test(name)
+      typeof name === "string" && /^national(?:_cloud)?_v[1-9][0-9]*$/.test(name)
     ))
     || new Set(status.active_bots).size !== status.active_bots.length
   ) {

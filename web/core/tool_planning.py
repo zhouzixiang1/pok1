@@ -7256,7 +7256,7 @@ def _official_repair_tasks(ckpt, feedback):
     )
     role = "Algorithmic Logic Architect"
     prompt = (
-        f"Repair official EXE full-certification blocker for bots/national_v{next_v} from source v{source_v}.\n\n"
+        f"Repair official EXE full-certification blocker for bots/{bot_name(next_v)} from source v{source_v}.\n\n"
         f"Official evidence:\n{evidence[:5000]}\n\n"
         f"Required method:\n{method}\n\n"
         "Verification expectation:\n"
@@ -8652,7 +8652,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only other files is failure.\n"
             "- Prefer deleting duplicated/dead comments, stale historical notes, or redundant helper wrappers before touching active decisions.\n"
             "- Do not remove active strategy branches just to save lines.\n"
-            f"- Verify with `wc -l bots/national_v{next_v}/{filename}` before finishing.\n"
+            f"- Verify with `wc -l bots/{bot_name(next_v)}/{filename}` before finishing.\n"
             "- End your output with the exact line count you observed."
         )
         return {
@@ -9078,10 +9078,10 @@ def _precommit_repair_task(filename, ckpt, feedback):
 
     prompt = (
         "This is one file-scoped precommit regression repair from a failed native "
-        f"national TCP final gate for bots/national_v{next_v}.\n\n"
+        f"national TCP final gate for bots/{bot_name(next_v)}.\n\n"
         f"Target file: `{filename}`\n"
         f"Source lineage identity: national_v{source_v} (not readable by this Worker)\n"
-        f"Failed candidate: bots/national_v{next_v}/\n\n"
+        f"Failed candidate: bots/{bot_name(next_v)}/\n\n"
         f"Exact precommit feedback:\n{feedback}\n\n"
         "Non-negotiable national position invariant:\n"
         "- This invariant is protocol correctness, not an EV/matchup lever. Do not change, relax, "
@@ -9103,7 +9103,7 @@ def _precommit_repair_task(filename, ckpt, feedback):
         "- Do not wholesale replace the candidate with the source parent; the final candidate must remain "
         "a real code change after repair.\n"
         "- Preserve native TCP protocol/card mapping, national action legality, and previously passed quality gates.\n"
-        f"- Run `python -m py_compile bots/national_v{next_v}/{filename}` before finishing; "
+        f"- Run `python -m py_compile bots/{bot_name(next_v)}/{filename}` before finishing; "
         "system gates own imports and dynamic execution."
         f"{line_note}"
     )
@@ -9245,7 +9245,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     if is_review_rework:
         preservation = (
             "This is a Lead Code Reviewer hard-gate repair. Preserve the current "
-            "candidate in bots/national_v{next_v}; fix the exact code-quality "
+            "candidate in bots/{bot_name(next_v)}; fix the exact code-quality "
             "blocker named by the reviewer. Do not chase secondary notes unless "
             "they are required to resolve the primary blocker."
         )
@@ -9262,7 +9262,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     elif is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
         preservation = (
             "This is a crossover quality repair. Preserve the current candidate's "
-            "crossover behavior in bots/national_v{next_v}; fix only the blocking "
+            "crossover behavior in bots/{bot_name(next_v)}; fix only the blocking "
             "quality-gate issues unless a tiny local cleanup is required."
         )
         method = (
@@ -12641,7 +12641,7 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
 
         if reset_before_rework:
             reviewer_feedback += (
-                f"\n\nNOTE: This is a retry. The code in bots/national_v{next_v}/ has been ACTUALLY RESET "
+                f"\n\nNOTE: This is a retry. The code in bots/{bot_name(next_v)}/ has been ACTUALLY RESET "
                 f"by the system to the exact national_v{source_v} preimage. The source path remains "
                 f"unreadable to this Worker. Any modifications described in the feedback above no "
                 f"longer exist in the candidate — re-implement them from the injected contract."
@@ -12649,33 +12649,33 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         elif rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt):
             reviewer_feedback += (
                 f"\n\nNOTE: This is an in-place precommit regression repair. The current code in "
-                f"bots/national_v{next_v}/ is the candidate that failed precommit; preserve it except "
+                f"bots/{bot_name(next_v)}/ is the candidate that failed precommit; preserve it except "
                 f"for targeted EV/matchup regression fixes."
             )
         elif rework_kind == "official_repair" or _is_official_rework_checkpoint(ckpt):
             reviewer_feedback += (
                 f"\n\nNOTE: This is an in-place official EXE full-certification repair. The current code in "
-                f"bots/national_v{next_v}/ passed local gates but failed the real Windows national platform. "
+                f"bots/{bot_name(next_v)}/ passed local gates but failed the real Windows national platform. "
                 "Preserve the candidate except for the exact compliance/state-machine/obvious-decision blocker "
                 "shown in the official evidence; do not use EXE win/loss as strength tuning evidence."
             )
         elif "review_repair" in rework_kind:
             reviewer_feedback += (
                 f"\n\nNOTE: This is an in-place Lead Code Reviewer repair. The current code in "
-                f"bots/national_v{next_v}/ is the candidate that failed the reviewer hard gate; "
+                f"bots/{bot_name(next_v)}/ is the candidate that failed the reviewer hard gate; "
                 "preserve it except for the exact code-quality blocker described above."
             )
         else:
             if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None:
                 reviewer_feedback += (
                     f"\n\nNOTE: This is an in-place crossover quality repair. The current code in "
-                    f"bots/national_v{next_v}/ is the generated crossover candidate and must be preserved "
+                    f"bots/{bot_name(next_v)}/ is the generated crossover candidate and must be preserved "
                     f"except for the exact quality-gate blockers above."
                 )
             else:
                 reviewer_feedback += (
                     f"\n\nNOTE: This is an in-place quality repair. The current code in "
-                    f"bots/national_v{next_v}/ is the generated candidate and must be preserved "
+                    f"bots/{bot_name(next_v)}/ is the generated candidate and must be preserved "
                     f"except for the exact quality-gate blockers above."
                 )
         changed_trims = [item for item in mechanical_trim_results if item.get("changed")]

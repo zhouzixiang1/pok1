@@ -42,10 +42,10 @@
     "precompute_sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
     "stream_decoder_version": 2
   },
-  "target_version": 143,
+  "target_version": 1,
   "version_authority": {
-    "archived_high_water": 142,
-    "first_strict_version": 143,
+    "archived_high_water": 0,
+    "first_strict_version": 1,
     "kind": "national-tcp-policy-version-floor",
     "schema_version": 1
   }

@@ -27,6 +27,7 @@ from bot_namespace import (
     EVALUATION_EPOCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
+    bot_tag,
     parse_bot_version,
     resolve_national_bot_spec,
 )
@@ -213,7 +214,7 @@ def _completion_tag_exists(version: int) -> bool:
             "show-ref",
             "--verify",
             "--quiet",
-            f"refs/tags/national-bot-v{int(version)}",
+            f"refs/tags/{bot_tag(int(version))}",
         ],
         cwd=str(ROOT),
         capture_output=True,

@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-from bot_namespace import bot_name, bot_relpath
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_relpath
 from evolution_infra import (
     run_claude_query, substitute_template,
     get_logs_dir, _trim_to_budget, PROMPTS_DIR,
@@ -236,7 +236,7 @@ def _render_master_proposal_provider_prompt(inputs):
         "paraphrase has no authority."
         if bootstrap
         else (
-            f"measurement MUST use: target=national_v{source_v}; "
+            f"measurement MUST use: target={bot_name(source_v)}; "
             "primary=complete_70_hand_wld; expected_delta=<decimal 0<delta<=1, e.g. 0.03>; "
             f"samples={_PROPOSAL_STRENGTH_SAMPLE_FLOOR}; "
             f"uncertainty={_PROPOSAL_UNCERTAINTY_PROMPT_VALUE}; "
@@ -1466,7 +1466,7 @@ def _proposal_measurement_contract_valid(value: str, evidence_mode: str) -> bool
         "frozen_strength_snapshot",
         "singleton_parent_no_strength",
     }:
-        if not re.fullmatch(r"national_v[1-9][0-9]*", parsed["target"]):
+        if not re.fullmatch(rf"{re.escape(ACTIVE_BOT_PREFIX)}[1-9][0-9]*", parsed["target"]):
             return False
         try:
             expected_delta = float(parsed["expected_delta"])
@@ -1497,7 +1497,7 @@ def _measurement_target_bound_to_snapshot(
         if not isinstance(binding, dict):
             continue
         bound_bots.update(re.findall(
-            r"national_v[1-9][0-9]*",
+            rf"{re.escape(ACTIVE_BOT_PREFIX)}[1-9][0-9]*",
             (
                 str(binding.get("reference") or "")
                 + "\n"

@@ -3477,12 +3477,13 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
 
     from bot_namespace import parse_bot_version
     from evolution_infra import load_reaped_bot_versions
+    from national_epoch_registry import REAPED_TAG_PREFIX
 
     version = parse_bot_version(name)
     if version is None or version < FIRST_STRICT_POLICY_VERSION:
         raise RuntimeError("planned_reap_target_invalid")
     completion_ref = f"refs/tags/{bot_tag(version)}"
-    tombstone_name = f"national-reaped-v{version}"
+    tombstone_name = f"{REAPED_TAG_PREFIX}{version}"
     tombstone_ref = f"refs/tags/{tombstone_name}"
     if _git("cat-file", "-t", completion_ref, check=False).strip() != "tag":
         raise RuntimeError("reap_completion_tag_missing")

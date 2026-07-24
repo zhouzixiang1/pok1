@@ -332,6 +332,8 @@ def create_precommit_plan(
     require_published_opponents: bool,
     deck_seed_base: int = DEFAULT_DECK_SEED_BASE,
 ) -> dict[str, Any]:
+    from bot_namespace import ARCHIVED_VERSION_HIGH_WATER
+
     if str(execution_mode) == "native_tcp" and int(hands_per_match) != 70:
         raise PrecommitEvalContractError(
             "native TCP precommit requires exactly 70 hands per strength sample"
@@ -400,9 +402,9 @@ def create_precommit_plan(
             raise PrecommitEvalContractError(
                 "first-strict system control cannot be mixed with published opponents"
             )
-        if int(source_version) != 142:
+        if int(source_version) != ARCHIVED_VERSION_HIGH_WATER:
             raise PrecommitEvalContractError(
-                "first-strict system control requires source version 142"
+                f"first-strict system control requires source version {ARCHIVED_VERSION_HIGH_WATER}"
             )
 
     from strength_order import (
@@ -558,6 +560,8 @@ def validate_precommit_plan(
     execution_mode: str,
     evaluation_protocol: str,
 ) -> list[str]:
+    from bot_namespace import ARCHIVED_VERSION_HIGH_WATER
+
     if not isinstance(plan, dict):
         return ["precommit_plan_missing"]
     issues: list[str] = []
@@ -646,7 +650,7 @@ def validate_precommit_plan(
     if system_control_count and (
         system_control_count != 1
         or len(opponents) != 1
-        or int(source_version) != 142
+        or int(source_version) != ARCHIVED_VERSION_HIGH_WATER
     ):
         issues.append("precommit_first_strict_control_shape_invalid")
 

@@ -20,6 +20,7 @@ roles, or certification in the strict policy epoch.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -36,12 +37,15 @@ from bot_namespace import (
 )
 
 COMPLETION_TAG_PREFIX = ACTIVE_TAG_PREFIX
-REAPED_TAG_PREFIX = "national-reaped-v"
+REAPED_TAG_PREFIX = os.environ.get(
+    "POK_REAPED_TAG_PREFIX",
+    "national-reaped-v",
+)
 HIGH_WATER_TAG_PREFIX = _NAMESPACE_HIGH_WATER_TAG_PREFIX
 MIGRATION_MARKER_TAG = "national-reaped-registry-v1"
 
 _COMPLETION_RE = re.compile(rf"^{re.escape(COMPLETION_TAG_PREFIX)}([1-9][0-9]*)$")
-_REAPED_RE = re.compile(r"^national-reaped-v([1-9][0-9]*)$")
+_REAPED_RE = re.compile(rf"^{re.escape(REAPED_TAG_PREFIX)}([1-9][0-9]*)$")
 _HIGH_WATER_RE = re.compile(rf"^{re.escape(HIGH_WATER_TAG_PREFIX)}([1-9][0-9]*)$")
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}([1-9][0-9]*)$")
 _BOT_HISTORY_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}([1-9][0-9]*)(?:/.*)?$")

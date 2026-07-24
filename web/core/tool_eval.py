@@ -2569,7 +2569,7 @@ async def run_inline_eval(args):
 
         acceptance = await run_native_acceptance_for_candidate(
             bot_dir,
-            opponent_tokens=[get_bot_dir(int(name.removeprefix("national_v"))) for name in opponents],
+            opponent_tokens=[get_bot_dir(parse_bot_version(name)) for name in opponents],
             hands=70,
             max_opponents=max(1, len(opponents)),
         )

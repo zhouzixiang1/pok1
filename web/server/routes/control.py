@@ -353,10 +353,12 @@ def _observer_authority_content_key() -> tuple:
         Path(infra.RESULTS_DIR) / "evaluation_cycle_manifest.json",
         infra.POST_PUBLICATION_HANDOFF_DIR,
     )
+    from bot_namespace import bot_name
+
     publication_paths: list[Path] = []
     project_root = Path(infra.PROJECT_ROOT)
     for version in published_versions:
-        bot_dir = Path(infra.BOTS_DIR) / f"national_v{version}"
+        bot_dir = Path(infra.BOTS_DIR) / bot_name(version)
         publication_paths.extend((
             bot_dir,
             bot_dir / ".completed",
@@ -365,7 +367,7 @@ def _observer_authority_content_key() -> tuple:
             bot_dir / "policy.py",
             bot_dir / "national_runtime_manifest.json",
             bot_dir / "policy_epoch_receipt.json",
-            project_root / "official_certificates" / f"national_v{version}.json",
+            project_root / "official_certificates" / f"{bot_name(version)}.json",
         ))
     return (
         namespace_token,

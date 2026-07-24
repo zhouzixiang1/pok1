@@ -18,7 +18,7 @@ from pathlib import Path
 
 log = logging.getLogger("pok.workers")
 
-from bot_namespace import bot_relpath
+from bot_namespace import bot_name, bot_relpath
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code,
     locked_file, get_bot_dir, get_logs_dir,

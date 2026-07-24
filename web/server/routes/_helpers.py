@@ -66,6 +66,7 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
     digest of this whitelist, so status/health pairs can reject a transition
     observed across two different journal revisions.
     """
+    from bot_namespace import FIRST_STRICT_POLICY_VERSION
 
     base = {
         "schema_version": 1,
@@ -125,7 +126,7 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
             valid = bool(
                 state in {"pending", "running"}
                 and type(version) is int
-                and version >= 143
+                and version >= FIRST_STRICT_POLICY_VERSION
                 and type(source_v) is int
                 and source_v < version
                 and isinstance(workflow_run_id, str)
@@ -653,6 +654,7 @@ def load_strict_pipeline_checkpoint(
     checkpoint_path: Path,
 ) -> dict | None:
     """Return only an epoch-bound, non-abandoned current checkpoint."""
+    from bot_namespace import bot_name
 
     receipt = _strict_reset_receipt(Path(results_dir))
     if receipt is None:
@@ -692,7 +694,7 @@ def load_strict_pipeline_checkpoint(
             return None
         # The only legal non-empty state is the short publication handoff in
         # which the fresh v143 target itself has entered the active pool.
-        target = f"national_v{checkpoint.get('next_v')}"
+        target = bot_name(int(checkpoint.get("next_v")))
         if active and active != [target]:
             return None
     elif mode == PUBLISHED_STRICT_PARENT_MODE:

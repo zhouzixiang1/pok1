@@ -1,8 +1,10 @@
 import type { CanonicalGenerationIdentity } from "../api/control.js";
 
-const BOT_NAME = /^national_v([1-9][0-9]*)$/;
-const BOT_TAG = /^national-bot-v([1-9][0-9]*)$/;
-const FIRST_STRICT_POLICY_VERSION = 143;
+// Accept both the canonical (national_v) and cloud (national_cloud_v) bot/tag
+// namespaces. The backend namespace prefix is branch-configurable.
+const BOT_NAME = /^national(?:_cloud)?_v([1-9][0-9]*)$/;
+const BOT_TAG = /^national-(?:cloud-)?bot-v([1-9][0-9]*)$/;
+const FIRST_STRICT_POLICY_VERSION = 1;
 
 /** Validate backend-owned identity without deriving an ordinal or tag. */
 export function canonicalGenerationIdentityIssues(

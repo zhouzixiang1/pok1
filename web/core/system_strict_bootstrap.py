@@ -26,6 +26,11 @@ import tempfile
 from typing import Any, Iterable
 
 from output_schema import MASTER_PROPOSAL_FALSIFIER_TESTS
+from bot_namespace import (
+    ARCHIVED_VERSION_HIGH_WATER,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -63,8 +68,8 @@ _ALLOWED_FALSIFIERS = frozenset(MASTER_PROPOSAL_FALSIFIER_TESTS)
 POLICY_VERSION_AUTHORITY = {
     "schema_version": 1,
     "kind": "national-tcp-policy-version-floor",
-    "archived_high_water": 142,
-    "first_strict_version": 143,
+    "archived_high_water": ARCHIVED_VERSION_HIGH_WATER,
+    "first_strict_version": FIRST_STRICT_POLICY_VERSION,
 }
 
 # Pinned metadata only: production never resolves, imports, executes, or reads
@@ -409,9 +414,9 @@ def validate_policy_epoch_reset_receipt(receipt: Any) -> list[str]:
         char not in "0123456789abcdef" for char in claim_digest
     ):
         errors.append("policy_epoch_reset_claim_digest_invalid")
-    if receipt.get("archived_version_high_water") != 142:
+    if receipt.get("archived_version_high_water") != ARCHIVED_VERSION_HIGH_WATER:
         errors.append("policy_epoch_reset_archive_high_water_mismatch")
-    if receipt.get("version_authority_high_water") != 142:
+    if receipt.get("version_authority_high_water") != ARCHIVED_VERSION_HIGH_WATER:
         errors.append("policy_epoch_reset_version_authority_mismatch")
     if receipt.get("first_target_version") != FIRST_STRICT_POLICY_VERSION:
         errors.append("policy_epoch_reset_first_target_mismatch")
@@ -683,7 +688,7 @@ def _runtime_core(policy_bytes: bytes) -> dict[str, bytes]:
     }
 
 
-def _materialized_payload(policy_bytes: bytes, *, version: int = 143) -> dict[str, bytes]:
+def _materialized_payload(policy_bytes: bytes, *, version: int = FIRST_STRICT_POLICY_VERSION) -> dict[str, bytes]:
     from bot_namespace import (
         NATIONAL_RUNTIME_MANIFEST,
         POLICY_EPOCH_RECEIPT,
@@ -726,7 +731,7 @@ def _payload_artifact_hash(payload: dict[str, bytes]) -> str:
 def materialize_fresh_candidate(
     candidate_dir: str | Path,
     *,
-    version: int = 143,
+    version: int = FIRST_STRICT_POLICY_VERSION,
     final_policy: bool = False,
 ) -> dict[str, Any]:
     """Atomically create a fresh five-file policy artifact."""
@@ -872,8 +877,8 @@ def is_declared_native_bootstrap(checkpoint: Any) -> bool:
     receipt = audit.get("protocol_bootstrap") or {}
     selection = audit.get("selection") or {}
     return bool(
-        checkpoint.get("source_v") == 142
-        and checkpoint.get("next_v") == 143
+        checkpoint.get("source_v") == ARCHIVED_VERSION_HIGH_WATER
+        and checkpoint.get("next_v") == FIRST_STRICT_POLICY_VERSION
         and receipt.get("mode") == "fresh_national_policy_bootstrap"
         and receipt.get("source_artifact_inherited") is False
         and selection.get("bootstrap_without_strength_evidence") is True
@@ -1111,8 +1116,8 @@ def validate_bootstrap_checkpoint(
             errors.extend(validate_prepared_artifact_contract(
                 prepared,
                 prepared_dir=candidate_dir,
-                source_v=142,
-                next_v=143,
+                source_v=ARCHIVED_VERSION_HIGH_WATER,
+                next_v=FIRST_STRICT_POLICY_VERSION,
                 verify_live_content=candidate_dir is not None,
             ))
         except Exception as exc:
@@ -1134,7 +1139,7 @@ def validate_bootstrap_checkpoint(
             runtime_manifest = json.loads((root / NATIONAL_RUNTIME_MANIFEST).read_text())
             epoch_receipt = json.loads((root / POLICY_EPOCH_RECEIPT).read_text())
             errors.extend(runtime_manifest_errors(root, runtime_manifest))
-            errors.extend(epoch_receipt_errors(root, 143, runtime_manifest, epoch_receipt))
+            errors.extend(epoch_receipt_errors(root, FIRST_STRICT_POLICY_VERSION, runtime_manifest, epoch_receipt))
         except Exception as exc:
             errors.append(f"system_bootstrap_identity_unreadable:{type(exc).__name__}")
     if architecture_policy is not None:
@@ -1408,8 +1413,8 @@ def _master_subject(
         "schema_version": 1,
         "kind": SYSTEM_MASTER_RECEIPT_KIND,
         "executor": EXECUTOR_ID,
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": ARCHIVED_VERSION_HIGH_WATER,
+        "next_v": FIRST_STRICT_POLICY_VERSION,
         **blueprint_identity(manifest),
         "bundle_id": manifest.get("bundle_id"),
         "bootstrap_receipt_digest": bootstrap.get("receipt_digest"),
@@ -1571,7 +1576,7 @@ def apply_blueprint(
     temporary = policy_path.with_name(f".{policy_path.name}.{os.getpid()}.tmp")
     temporary.write_bytes((BLUEPRINT_DIR / "policy.py").read_bytes())
     os.replace(temporary, policy_path)
-    refresh_policy_identity(workspace, version=143)
+    refresh_policy_identity(workspace, version=FIRST_STRICT_POLICY_VERSION)
 
     after_files = _file_map(workspace)
     changed = {
@@ -1610,8 +1615,8 @@ def apply_blueprint(
         "schema_version": 1,
         "kind": SYSTEM_WORKER_RECEIPT_KIND,
         "executor": EXECUTOR_ID,
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": ARCHIVED_VERSION_HIGH_WATER,
+        "next_v": FIRST_STRICT_POLICY_VERSION,
         "master_receipt_digest": (
             (checkpoint.get("audit_context") or {})
             .get("system_strict_bootstrap", {})
@@ -1875,8 +1880,8 @@ def _system_gate_subject(
         "kind": SYSTEM_GATE_RECEIPT_KIND,
         "gate": gate_name,
         "executor": EXECUTOR_ID,
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": ARCHIVED_VERSION_HIGH_WATER,
+        "next_v": FIRST_STRICT_POLICY_VERSION,
         "candidate_artifact_hash": candidate_hash,
         "master_receipt_digest": master.get("receipt_digest"),
         "master_plan_digest": master.get("plan_digest"),

@@ -175,7 +175,7 @@ export const api = {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = filenameMatch?.[1] || `national_v${version}.zip`;
+    a.download = filenameMatch?.[1] || `bot_v${version}.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

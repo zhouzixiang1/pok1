@@ -26,9 +26,10 @@ const stringArray = (value: unknown): value is string[] => (
   Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0)
 );
 const strictBotArray = (value: unknown): value is string[] => stringArray(value) && value.every((item) => {
-  if (!/^national_v[1-9][0-9]*$/.test(item)) return false;
-  const version = Number(item.slice("national_v".length));
-  return Number.isSafeInteger(version) && version >= 143;
+  const match = item.match(/^national(?:_cloud)?_v([1-9][0-9]*)$/);
+  if (!match) return false;
+  const version = Number(match[1]);
+  return Number.isSafeInteger(version) && version >= 1;
 });
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {

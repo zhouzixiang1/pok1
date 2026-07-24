@@ -34,6 +34,7 @@ from typing import Any, Iterator
 from bot_artifact import canonical_digest, hash_path
 from bot_namespace import (
     ARCHIVED_VERSION_HIGH_WATER,
+    ACTIVE_BOT_PREFIX,
     EVALUATION_EPOCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
@@ -883,7 +884,7 @@ def _contract_hash_at_head(
     }
     files = {name for name in tracked if is_contract_path(name, contract)}
     for prefix in contract.get("path_prefixes") or []:
-        if not str(prefix).startswith("bots/national_v"):
+        if not str(prefix).startswith(f"bots/{ACTIVE_BOT_PREFIX}"):
             continue
         base = root / str(prefix).rstrip("/")
         if not base.exists():
