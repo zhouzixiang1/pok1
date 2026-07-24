@@ -14,7 +14,7 @@
     "source_artifact_inherited": false,
     "strength_admitted": false
   },
-  "expected_artifact_hash": "1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2",
+  "expected_artifact_hash": "1d33245b0ff2244b4ead2b0a1e966a59f2694943f29e0865b671b3e6a57fc9d2",
   "files": {
     "policy.py": "d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4"
   },
