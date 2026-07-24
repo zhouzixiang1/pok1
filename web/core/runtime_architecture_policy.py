@@ -395,17 +395,32 @@ def _lineage_bot_identity(value: Any) -> str:
 
     Uses the active-namespace parser so cloud runtimes (national_cloud_v*)
     validate the same way the canonical line (national_v*) does.
+
+    The archived-high-water floor (e.g. national_cloud_v0 on cloud,
+    national_v142 on main) is a valid lineage-only identity: it is the
+    numeric source anchor for a fresh bootstrap, not a readable bot, so
+    parse_bot_version (which requires version >= 1) returns None for it.
+    Accept it explicitly by matching the active prefix + a non-negative
+    integer tail.
     """
 
-    from bot_namespace import parse_bot_version
+    from bot_namespace import ARCHIVED_VERSION_HIGH_WATER, ACTIVE_BOT_PREFIX, parse_bot_version
 
     text = str(value or "").strip()
     if any(char in text for char in "/\\"):
         raise ValueError("lineage_bot_identity_invalid")
     version = parse_bot_version(text)
-    if version is None or version <= 0:
-        raise ValueError("lineage_bot_identity_invalid")
-    return text
+    if version is not None and version > 0:
+        return text
+    # parse_bot_version rejects version 0 (regex [1-9]); accept the archived
+    # high-water floor label explicitly (national_cloud_v0 etc.).
+    if (
+        text.startswith(ACTIVE_BOT_PREFIX)
+        and text[len(ACTIVE_BOT_PREFIX):].isdigit()
+        and int(text[len(ACTIVE_BOT_PREFIX):]) == ARCHIVED_VERSION_HIGH_WATER
+    ):
+        return text
+    raise ValueError("lineage_bot_identity_invalid")
 
 
 def _lineage_capabilities(path: Path) -> dict[str, Any]:
