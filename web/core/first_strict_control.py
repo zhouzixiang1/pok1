@@ -483,7 +483,8 @@ def _authority_issues(
             issues.append("first_strict_control_not_declared_bootstrap")
     except Exception as exc:
         issues.append(f"first_strict_control_declaration_error:{type(exc).__name__}")
-    if int(checkpoint.get("source_v") or -1) != SOURCE_VERSION:
+    _source_v = checkpoint.get("source_v")
+    if int(_source_v if _source_v is not None else -1) != SOURCE_VERSION:
         issues.append("first_strict_control_source_version_mismatch")
     audit = checkpoint.get("audit_context") or {}
     protocol = audit.get("protocol_bootstrap") or {}
@@ -563,10 +564,11 @@ def validate_control_receipt(
         if candidate_version is not None
         else int((checkpoint or {}).get("next_v") or -1)
     )
+    _ckpt_source_v = (checkpoint or {}).get("source_v")
     expected_source = (
         int(source_version)
         if source_version is not None
-        else int((checkpoint or {}).get("source_v") or SOURCE_VERSION)
+        else int(_ckpt_source_v if _ckpt_source_v is not None else SOURCE_VERSION)
     )
     if receipt.get("candidate_version") != expected_candidate:
         issues.append("first_strict_control_receipt_candidate_mismatch")
@@ -643,10 +645,12 @@ def validate_control_receipt(
 
 
 def opponent_from_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    _rcv = receipt.get("candidate_version")
+    _rsv = receipt.get("source_version")
     issues = validate_control_receipt(
         receipt,
-        candidate_version=int(receipt.get("candidate_version") or -1),
-        source_version=int(receipt.get("source_version") or -1),
+        candidate_version=int(_rcv if _rcv is not None else -1),
+        source_version=int(_rsv if _rsv is not None else -1),
         active_bots=list(receipt.get("active_policy_bots") or []),
         force_protocol_refresh=False,
     )

@@ -652,7 +652,8 @@ def validate_commit_gate_ledger(
                 "current": checkpoint_execution_mode,
             })
         gate_results = ckpt.get("gate_results", {}) or {}
-        if source_v is not None and int(ckpt.get("source_v") or -1) != source_v:
+        _ckpt_source_v = ckpt.get("source_v")
+        if source_v is not None and int(_ckpt_source_v if _ckpt_source_v is not None else -1) != source_v:
             failed_gates.append({
                 "gate": "pipeline_checkpoint",
                 "reason": "source_v mismatch",
