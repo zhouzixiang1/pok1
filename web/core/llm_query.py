@@ -4379,45 +4379,44 @@ _ROLE_TIMEOUT_DEFAULTS = {
 
 
 # --- Extended-thinking configuration ---------------------------------------
-# GLM-5.2 via the Anthropic-compatible endpoint interprets
-# ``thinking={"type": "adaptive"}`` as *unbounded* reasoning: it emits
-# 16k-19k+ thinking tokens without ever producing visible output, exhausting
-# the 360s productive-silence ceiling and abandoning the generation.
+# GLM-5.2 via the Anthropic-compatible endpoint:
 #
-# The reliable, well-supported knobs on this endpoint are:
-#   * ``thinking.type``  — ``enabled`` (reason, then answer) / ``disabled``
-#   * ``effort``         — ``low|medium|high|xhigh|max`` (GLM maps high+ → max)
+#   * ``thinking.type=adaptive`` — KNOWN BUG: GLM emits 16k-19k+ thinking
+#     tokens without ever producing visible output, exhausting the timeout
+#     ceiling. Do NOT use ``adaptive``.
+#   * ``thinking.type=enabled`` + ``budget_tokens`` — reliable: reason then
+#     answer. GLM treats budget as a SOFT TARGET (not a hard cap), so the model
+#     may exceed it when deep reasoning is warranted. A large budget (64000)
+#     gives GLM full freedom to reason deeply.
+#   * ``effort=max`` — GLM's strongest reasoning depth. Confirmed NOT a
+#     death-loop: thinking tokens grow linearly and the model eventually emits
+#     visible text. It is simply SLOW, requiring role timeouts of 1800-3600s
+#     (see _ROLE_TIMEOUT_DEFAULTS and deploy/tencent-cloud/env.runtime). The
+#     earlier "infinite loop" diagnosis was a misattribution caused by killing
+#     the stream at 900s while GLM was still productively reasoning.
 #
-# ``enabled`` requires ``budget_tokens`` (the SDK enforces it at CLI-build
-# time, see subprocess_cli.py). GLM treats budget as a soft target rather than
-# a hard cap, so a large budget preserves deep reasoning while still letting
-# the model converge and emit text. ``effort=max`` selects the strongest
-# reasoning depth, which is what produces the strongest bot strategy output.
-#
-# All three are environment-overridable so the main branch can revert to the
-# legacy ``adaptive`` behavior while the cloud runtime opts into deep, bounded
-# reasoning.
+# All three are environment-overridable via POK_LLM_THINKING_MODE,
+# POK_LLM_THINKING_BUDGET, and POK_LLM_EFFORT.
 def _llm_thinking_options() -> dict:
     mode = os.environ.get("POK_LLM_THINKING_MODE", "enabled").strip().lower()
     if mode == "disabled":
         return {"thinking": {"type": "disabled"}}
     if mode == "adaptive":
         return {"thinking": {"type": "adaptive"}}
-    # default / "enabled": deep bounded reasoning. A moderate budget (default
-    # 16000) lets GLM reason deeply yet converge and emit a detailed answer.
-    # Higher budgets (32000, 64000) cause GLM to enter a near-infinite thinking
-    # loop on complex schema-retry prompts (900s+ stream, intermittent telemetry
-    # prevents the stall gate from firing). 16000 converges reliably (30-120s).
-    budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "16000"))
+    # default / "enabled": deep reasoning with strong effort. GLM-5.2 treats
+    # budget_tokens as a soft target (not a hard cap), so a large budget (default
+    # 64000) lets the model reason as deeply as it needs and still converge.
+    # effort=max selects GLM's strongest reasoning depth, producing the highest
+    # quality strategy output. Both are now the defaults after confirming that:
+    # (1) GLM does NOT enter a death-loop at effort=max — thinking tokens grow
+    # linearly and the model eventually emits visible text; it is simply slow,
+    # requiring higher role timeouts (see _ROLE_TIMEOUT_DEFAULTS / env.runtime).
+    # (2) The earlier "infinite loop" diagnosis was a misattribution: the
+    # stream was killed by insufficient timeouts (900s) while GLM was still
+    # productively reasoning at 27k-66k thinking tokens.
+    budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000"))
     options: dict = {"thinking": {"type": "enabled", "budget_tokens": budget}}
-    # effort is intentionally unset by default. ``effort=max`` is HARMFUL on
-    # GLM-5.2's Anthropic-compatible endpoint: it drives the model into an
-    # infinite thinking loop (64k+ thinking tokens, zero text output) on
-    # complex Master-proposal prompts, regardless of budget_tokens. Leaving
-    # POK_LLM_EFFORT unset lets GLM use its default reasoning depth, which
-    # converges reliably. Set POK_LLM_EFFORT only if a future GLM build fixes
-    # the loop.
-    effort = os.environ.get("POK_LLM_EFFORT", "").strip().lower()
+    effort = os.environ.get("POK_LLM_EFFORT", "max").strip().lower()
     if effort:
         options["effort"] = effort
     return options
@@ -7003,6 +7002,19 @@ async def run_claude_query(
         strict_mcp_config=True,  # Direct sub-agents must not auto-start user/global MCP servers.
         tools=tools,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
+        # CLAUDE.md/AGENTS.md memory injection: setting_sources=["project"] makes
+        # the CLI discover project-level CLAUDE.md from cwd. system_prompt preset
+        # append ("") triggers --append-system-prompt '' instead of --system-prompt
+        # '', so the CLI keeps its DEFAULT system prompt (which includes the
+        # CLAUDE.md/AGENTS.md memory) and merely appends an empty string.  Without
+        # these two fields, the SDK injects --system-prompt '' which OVERWRITES
+        # the default system prompt and suppresses all memory injection — GLM
+        # never sees the architecture contract (Strict candidate ABI, reachable_chain
+        # semantics, namespace rules). Only "project" is loaded (not "user") to
+        # avoid pulling ~/.claude/settings.json's CLAUDE_CODE_EFFORT_LEVEL which
+        # would override the POK_LLM_EFFORT env var.
+        setting_sources=["project"],
+        system_prompt={"type": "preset", "append": ""},
         **_llm_thinking_options(),
     )
     if _sub_hooks:
@@ -7101,8 +7113,19 @@ async def run_claude_query(
                 **_role_log_metadata(log_file_path),
             )
         else:
-            full_text, cost_usd, usage = await _run_stream_with_signature_retry(
-                full_prompt, options, log_file_path, ui, role_name)
+            # Global LLM concurrency limiter (producer-consumer): cap
+            # simultaneous in-flight provider streams at GLOBAL_LLM_CONCURRENCY
+            # (default 2).  This is the single chokepoint covering all 17+
+            # run_claude_query call sites (Master Scouts/Critics/final, Workers,
+            # Review, Critic, direction_audit, crossover, etc.).  FIFO ordering
+            # prevents starvation; Master/Worker stages are temporally separated
+            # by the linear pipeline stage machine so they rarely contend.
+            from llm_concurrency import get_global_llm_semaphore
+
+            _global_llm_sem = get_global_llm_semaphore()
+            async with _global_llm_sem:
+                full_text, cost_usd, usage = await _run_stream_with_signature_retry(
+                    full_prompt, options, log_file_path, ui, role_name)
 
         streamed_output = "\n".join(full_text)
         output = streamed_output

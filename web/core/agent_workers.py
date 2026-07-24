@@ -22,7 +22,7 @@ from bot_namespace import bot_name, bot_relpath
 from evolution_infra import (
     run_claude_query, substitute_template, verify_code,
     locked_file, get_bot_dir, get_logs_dir,
-    _target_rel, _get_worker_semaphore,
+    _target_rel,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT,
 )
 from worker_boundary import (
@@ -1520,20 +1520,22 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         parallel_allowed_files = sorted({rel for fset in task_file_sets for rel in fset})
         parallel_boundary_snapshot = snapshot_python_files(next_dir)
 
-        # Wrap each worker call with semaphore gating for concurrency control.
+        # Workers are now gated by the global LLM semaphore (Semaphore(2)) inside
+        # run_claude_query itself — no per-worker semaphore needed. The global
+        # limiter covers ALL LLM call sites uniformly (Master Scouts/Critics,
+        # Workers, Review, Critic, etc.) with FIFO ordering. See
+        # web/core/llm_concurrency.py.
         async def _gated_worker(task, i):
-            sem = _get_worker_semaphore()
-            async with sem:
-                return await _run_single_worker(
-                    task, i, worker_template, next_dir, next_v,
-                    context_files, ui, reviewer_feedback,
-                    source_v=source_v, parallel_mode=True,
-                    worker_snapshots=worker_snapshots,
-                    boundary_allowed_files=parallel_allowed_files,
-                    boundary_snapshot=parallel_boundary_snapshot,
-                    worker_output_evidence=worker_outputs,
-                    worker_effect_identity=worker_effect_identity,
-                )
+            return await _run_single_worker(
+                task, i, worker_template, next_dir, next_v,
+                context_files, ui, reviewer_feedback,
+                source_v=source_v, parallel_mode=True,
+                worker_snapshots=worker_snapshots,
+                boundary_allowed_files=parallel_allowed_files,
+                boundary_snapshot=parallel_boundary_snapshot,
+                worker_output_evidence=worker_outputs,
+                worker_effect_identity=worker_effect_identity,
+            )
 
         results = await gather_llm_fail_fast(
             *[_gated_worker(task, i) for i, task in enumerate(tasks)],

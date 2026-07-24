@@ -262,35 +262,63 @@ The cloud runtime drives every Master/Reviewer/Critic/Worker role through
 configured in `web/core/llm_query.py::_llm_thinking_options` and applied to
 every direct sub-agent dispatch:
 
-- `thinking = {"type": "enabled", "budget_tokens": 16000}` — GLM treats the
-  budget as a soft target, so deep reasoning is preserved while the model still
-  converges and emits a detailed answer. The legacy `{"type": "adaptive"}` mode
-  is **known to hang on GLM**: it emits 16k–19k+ thinking tokens without ever
-  producing visible output, exhausting the productive-silence ceiling and
-  abandoning the generation at the Master proposal stage. Higher budgets
-  (32000, 64000) also cause near-infinite thinking loops on complex schema-retry
-  prompts; 16000 converges reliably (30-120s) while still producing deep output.
-- `effort` — **intentionally unset.** `effort=max` is harmful on this endpoint:
-  it drives GLM into an infinite thinking loop (64k+ thinking tokens, zero text
-  output) on complex Master-proposal prompts, regardless of `budget_tokens`.
-  Leaving it unset lets GLM use its default reasoning depth, which converges
-  reliably. Set `POK_LLM_EFFORT` only if a future GLM build fixes the loop.
+- `thinking = {"type": "enabled", "budget_tokens": 64000}` — GLM treats the
+  budget as a **soft target** (not a hard cap), so a large budget gives the
+  model full freedom to reason as deeply as it needs and still converge. The
+  legacy `{"type": "adaptive"}` mode is **known to hang on GLM**: it emits
+  16k–19k+ thinking tokens without ever producing visible output. Do NOT use
+  `adaptive`.
+- `effort = "max"` — GLM-5.2's strongest reasoning depth. Confirmed NOT a
+  death-loop: thinking tokens grow linearly and GLM eventually emits visible
+  text. It is simply **slow**, requiring role timeouts of 1800–3600s (see
+  below). The earlier "infinite loop" diagnosis was a misattribution — the
+  stream was killed at 900s while GLM was still productively reasoning at
+  27k+ thinking tokens.
 
 All three are environment-overridable: `POK_LLM_THINKING_MODE`
 (`enabled`/`adaptive`/`disabled`, default `enabled`),
-`POK_LLM_THINKING_BUDGET` (default `16000`), `POK_LLM_EFFORT` (default unset).
+`POK_LLM_THINKING_BUDGET` (default `64000`), `POK_LLM_EFFORT` (default `max`).
 The committed defaults live in `deploy/tencent-cloud/env.runtime`.
 
-Because GLM-5.2 with `effort=max` + a large budget routinely spends 250–320s
-thinking before emitting visible text on complex Master-proposal prompts, the
-default `MASTER_PROPOSAL` role timeouts in `web/core/llm_query.py`
-(`first_activity=120s`, `stall=360s`, `idle=360s`, `total=900s`) are too tight.
-The cloud runtime raises them via role-scoped env overrides
-(`POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT=600`,
-`POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT=600`,
-`POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT=1200`). The `stall` gate (productive-
-message silence) is the one that fires first and must be raised, not just
-`idle`.
+Because GLM-5.2 with `effort=max` + a large budget spends 1200–2400s thinking
+before emitting visible text on complex Master-proposal prompts, all role
+timeouts are raised via env overrides in `deploy/tencent-cloud/env.runtime`:
+`MASTER_PROPOSAL`/`MASTER`/`MASTER_FINAL` total=3600s, stall/idle=1800s;
+`REVIEW`/`CRITIC` total=2400s; `WORKER` total=1800s. The `CYCLE_TIMEOUT` is
+18000s (5h) and `WATCHDOG_TIMEOUT` is 36000s (10h).
+
+### Global LLM concurrency (producer-consumer model)
+
+All sub-agent LLM calls are capped at **2 simultaneous in-flight streams**
+via a process-wide `asyncio.Semaphore` in
+`web/core/llm_concurrency.py` (`GLOBAL_LLM_CONCURRENCY=2`, env-overridable via
+`POK_GLOBAL_LLM_CONCURRENCY`). The semaphore is acquired inside
+`run_claude_query` (the single chokepoint for all 17+ LLM call sites:
+Master Scouts/Critics/final, Workers, Review, Critic, direction_audit,
+crossover, etc.) just before the actual provider dispatch.
+
+FIFO ordering (`asyncio.Semaphore` is deque-backed) prevents starvation: no
+role is permanently blocked. Master and Worker roles execute in different
+pipeline stages (temporally separated by the linear stage machine), so they
+rarely contend for permits simultaneously. The former per-role
+`_WORKER_SEMAPHORE` adaptive backoff has been removed — Workers now use the
+same global semaphore as all other roles.
+
+### CLAUDE.md / AGENTS.md memory injection
+
+The Claude CLI discovers and injects project-level `CLAUDE.md`/`AGENTS.md`
+into its default system prompt. For this to work, `ClaudeAgentOptions` in
+`web/core/llm_query.py` sets:
+
+- `setting_sources=["project"]` — only project-level settings are loaded
+  (not `"user"`, to avoid pulling `~/.claude/settings.json`'s
+  `CLAUDE_CODE_EFFORT_LEVEL` which would override `POK_LLM_EFFORT`).
+- `system_prompt={"type": "preset", "append": ""}` — triggers
+  `--append-system-prompt ''` (which **preserves** the default system prompt
+  including memory) instead of `--system-prompt ''` (which **overwrites** it
+  and suppresses all memory injection). Without these fields, the SDK
+  injects `--system-prompt ''` by default and GLM never sees the architecture
+  contract.
 
 ## Space-for-time assets
 
