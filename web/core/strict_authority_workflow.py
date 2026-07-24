@@ -2192,6 +2192,14 @@ def _schema_repair_hints(errors) -> str:
             "selectable root. A bare fold_to_raise without a namespace owner "
             "is ambiguous and rejected."
         )
+    if "reachable_chain_count_invalid" in error_text:
+        hints.append(
+            "FIX reachable_chain length: reachable_chain must contain 2 to 8 "
+            "symbols (not 1, not >8) in direct caller->callee order, ending "
+            "exactly at change_symbol. Example with 2 items: "
+            "[\"policy.py:get_baseline_decision\",\"policy.py:_hole_ids\"] "
+            "requires change_symbol=\"policy.py:_hole_ids\"."
+        )
     if hints:
         return "\n" + "\n".join(hints)
     return ""
