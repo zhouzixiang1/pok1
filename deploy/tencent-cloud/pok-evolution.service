@@ -1,0 +1,62 @@
+# ============================================================================
+# systemd unit for the national_tcp_policy_v1 evolution control plane
+# (Tencent Cloud runtime — isolated tencent-cloud-runtime namespace)
+# ============================================================================
+# Install:
+#   sudo cp deploy/tencent-cloud/pok-evolution.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pok-evolution
+#
+# This unit runs web/main.py in the FOREGROUND (ExecStart is the python process
+# itself, NOT pokctl.sh). web/main.py's lifespan then starts orchestrator_loop
+# which calls start_daemon() to spawn elo_daemon.py as a child in its own
+# session. KillMode=mixed therefore stops the daemon child group AND the main
+# process. Do not wrap this in pokctl.sh start — that uses nohup setsid and
+# would double-fork out of systemd's cgroup.
+# ============================================================================
+
+[Unit]
+Description=national TCP poker evolution control plane (tencent-cloud-runtime)
+Documentation=file:///home/ubuntu/pok1/deploy/tencent-cloud/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+# The autonomous runtime checkout. web/main.py detects PROJECT_ROOT.name ==
+# ".evolution_pok" and (with POK_CLOUD_RUNTIME=1) seeds the cloud namespace.
+WorkingDirectory=/home/ubuntu/pok1/.evolution_pok
+
+# Load POK_PYTHON, namespace vars, daemon sizing, etc.
+EnvironmentFile=/home/ubuntu/pok1/deploy/tencent-cloud/env.runtime
+
+# Foreground launch. --no-build skips the npm frontend rebuild on every restart
+# (build the frontend once; the static receipt is verified at startup).
+ExecStart=${POK_PYTHON} web/main.py --host ${HOST} --port ${PORT} --no-build
+
+# web/main.py spawns elo_daemon.py via start_new_session=True. mixed kills the
+# main process with SIGTERM (daemon gets it via its own session) and the control
+# group on timeout. Give the orchestrator a graceful shutdown window.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Standard output/error -> journald (view with: journalctl -u pok-evolution -f).
+# The app also writes rotating logs to web/logs/app.log and server.stdout.log
+# (the latter is rotated by scripts/pok.logrotate).
+StandardOutput=journal
+StandardError=journal
+
+# Resource sanity for a small VM: evolution forks many native-TCP match workers.
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

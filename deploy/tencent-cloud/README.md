@@ -1,0 +1,152 @@
+# Tencent Cloud Runtime — Isolated Evolution Branch
+
+This directory deploys the national TCP poker evolution control plane on the
+Tencent Cloud server as an **isolated evolution line**. Its products (bot
+artifacts, certificates, version tags) live on the `tencent-cloud-runtime`
+branch in a separate `national_cloud_v` tag namespace and **never enter
+`origin/main`**. The main branch keeps the canonical `national_v` line
+unchanged; both lines can run evolution concurrently without tag collisions.
+
+## How the isolation works
+
+`commit_bot` historically hard-coded `main` as the publication branch and the
+`national_v` / `national-bot-v` / `national-high-water-v` prefixes. This branch
+makes all four configurable through environment variables (defaults preserved
+exactly, so main's behavior is unchanged):
+
+| Variable | main (default) | this cloud runtime |
+|---|---|---|
+| `POK_EVOLUTION_BRANCH` | `main` | `tencent-cloud-runtime` |
+| `POK_BOT_PREFIX` | `national_v` | `national_cloud_v` |
+| `POK_TAG_PREFIX` | `national-bot-v` | `national-cloud-bot-v` |
+| `POK_HIGH_WATER_TAG_PREFIX` | `national-high-water-v` | `national-cloud-high-water-v` |
+
+With the cloud values, a generation produces `bots/national_cloud_v144/`,
+`official_certificates/national_cloud_v144.json`, and the paired tags
+`national-cloud-bot-v144` + `national-cloud-high-water-v144`, all committed to
+`refs/heads/tencent-cloud-runtime`. The canonical `national_v144` namespace is
+left free for main to use. Tag prefixes are not substrings of each other, so a
+`national-bot-v*` glob never matches a `national-cloud-bot-v*` tag.
+
+## Dual-checkout layout
+
+```
+/home/ubuntu/pok1                     operator checkout (this repo, tencent-cloud-runtime)
+                                      - develop/merge ideas, edit deploy/, run tests
+/home/ubuntu/pok1/.evolution_pok      autonomous runtime clone (independent git clone)
+                                      - systemd runs web/main.py here
+                                      - directory name ".evolution_pok" is REQUIRED by
+                                        the runtime identity contract and triggers the
+                                        web/main.py namespace seed block
+```
+
+The runtime clone is a full clone (not a worktree) on the same
+`tencent-cloud-runtime` branch, with `origin` pointing at GitHub. Products
+published there are pushed to `origin/tencent-cloud-runtime`.
+
+## One-time setup
+
+```bash
+# 1. From the operator checkout (on tencent-cloud-runtime):
+cd /home/ubuntu/pok1
+git checkout tencent-cloud-runtime
+git pull --ff-only origin tencent-cloud-runtime
+
+# 2. Edit env.runtime: set POK_PYTHON to the interpreter that has web/sever
+#    requirements installed (e.g. a venv). Defaults to /usr/bin/python3.
+#    Also fill ANTHROPIC_API_KEY / POK_LLM_MODEL before running a generation.
+$EDITOR deploy/tencent-cloud/env.runtime
+
+# 3. Install web/sever Python deps into that interpreter if not done already.
+# 4. Run the one-time deploy script (creates .evolution_pok, seeds the cloud
+#    namespace, installs the systemd unit):
+bash deploy/tencent-cloud/setup.sh
+
+# 5. Build the frontend ONCE inside the runtime clone (the service uses
+#    --no-build and verifies the static receipt):
+cd /home/ubuntu/pok1/.evolution_pok/web/frontend
+npm install && npm run build
+
+# 6. Start the service:
+sudo systemctl start pok-evolution
+journalctl -u pok-evolution -f
+```
+
+### Why the cloud-namespace seed step
+
+A fresh checkout inherits main's `national_v*` tags but has no
+`national-cloud-bot-v*` tags. `resolve_version_namespace_authority` then finds
+no paired version and `policy_epoch_initialization` parks in
+`version_authority_requires_recovery` (a generation cannot start). The seed
+script (`seed-cloud-namespace.sh`, called by `setup.sh`) points a paired
+`national-cloud-bot-v143` + `national-cloud-high-water-v143` at the **same
+commit** main's `national-bot-v143` points to, and mirrors
+`bots/national_v143` → `bots/national_cloud_v143`. Epoch then initializes via
+the `strict_published` path and v144+ can proceed. The script is idempotent
+(it refuses to overwrite an existing cloud tag).
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `env.runtime` | systemd EnvironmentFile: namespace vars, POK_PYTHON, daemon sizing, LLM placeholders |
+| `pok-evolution.service` | systemd unit running `web/main.py` in the foreground |
+| `setup.sh` | one-time deploy: clone runtime, seed namespace, install service |
+| `seed-cloud-namespace.sh` | one-time epoch bootstrap (paired cloud tags + mirrored bot dir) |
+| `sync-from-main.sh` | merge new ideas from origin/main into this branch |
+
+## Synchronizing ideas from main
+
+main receives new code/thinking. Pull it into the cloud branch **when no
+generation is active**:
+
+```bash
+cd /home/ubuntu/pok1/.evolution_pok
+bash /home/ubuntu/pok1/deploy/tencent-cloud/sync-from-main.sh
+```
+
+It merges `origin/main` into `tencent-cloud-runtime`. Cloud-namespace files
+(`bots/national_cloud_v*`, `official_certificates/national_cloud_v*`) are kept;
+idea files (`web/`, `sever/`, `scripts/`, `docs/`) take main's version. Push
+the merged branch afterward so GitHub and the runtime agree.
+
+## Operations
+
+```bash
+# service control
+sudo systemctl {start,stop,restart,status} pok-evolution
+journalctl -u pok-evolution -f          # live logs
+journalctl -u pok-evolution --since today
+
+# app-level logs (rotating)
+ls /home/ubuntu/pok1/.evolution_pok/web/logs/
+#   app.log              (RotatingFileHandler)
+#   server.stdout.log    (install scripts/pok.logrotate to rotate this)
+
+# epoch / version state
+cd /home/ubuntu/pok1/.evolution_pok/web
+python3 -c 'import sys; sys.path.insert(0,"core"); \
+  from epoch_authority import policy_epoch_initialization; \
+  import json; print(json.dumps(policy_epoch_initialization(), indent=2))'
+
+# run a single generation (bypass the daemon loop for one cycle)
+cd /home/ubuntu/pok1/.evolution_pok
+python3 web/core/orchestrator.py --one-gen
+```
+
+## Sizing notes (4 vCPU / 3.6 GiB VM)
+
+`env.runtime` sets `POK_DAEMON_WORKERS=2` and `POK_DAEMON_PAIRS=2`
+(conservative). Each native-TCP match forks workers; raise these if you resize
+the instance. Monitor memory: the orchestrator + daemon + match workers should
+stay under ~2.5 GiB with these defaults.
+
+## What stays out of main
+
+- `bots/national_cloud_v<N>/` — committed to `tencent-cloud-runtime` only
+- `official_certificates/national_cloud_v<N>.json` — same
+- `national-cloud-bot-v<N>` / `national-cloud-high-water-v<N>` tags — pushed to
+  `origin/tencent-cloud-runtime` only
+- Runtime data (`web/core/results/`, `web/logs/`) — gitignored everywhere
+
+Pushing this branch to GitHub backs up products off-host without polluting main.

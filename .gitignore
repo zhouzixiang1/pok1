@@ -6,6 +6,10 @@ __pycache__/
 dist/
 build/
 
+# Local virtualenv (machine-specific; never commit)
+.venv/
+venv/
+
 # One-time pre-policy-epoch runtime debris. Active code never writes this root;
 # the acknowledged epoch reset archives any existing JSON before v143 starts.
 results/*.json
