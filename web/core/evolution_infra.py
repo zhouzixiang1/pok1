@@ -3457,7 +3457,15 @@ def find_current_v():
     counters and runtime ledgers are deliberately absent from this read.
     """
 
-    authority = version_namespace_authority()
+    try:
+        authority = version_namespace_authority()
+    except RuntimeError:
+        # An empty namespace (no paired completion/high-water tags yet) is the
+        # legitimate bootstrap floor for an isolated deployment namespace such
+        # as national_cloud_v: it has no strict versions, so it sits at the
+        # archived high-water. This keeps version allocation and epoch state
+        # well-defined before the first strict bot is published there.
+        return ARCHIVED_VERSION_HIGH_WATER
     return int(authority.high_water)
 
 
