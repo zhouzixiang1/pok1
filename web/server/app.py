@@ -429,6 +429,7 @@ from server.routes.pipeline import router as pipeline_router
 from server.routes.prompts import router as prompts_router
 from server.routes.data_stream import router as data_stream_router
 from server.routes.national_arena import router as national_arena_router
+from server.routes.llm_metrics import router as llm_metrics_router
 
 app.include_router(ratings_router)
 app.include_router(matches_router)
@@ -441,6 +442,7 @@ app.include_router(pipeline_router)
 app.include_router(prompts_router)
 app.include_router(data_stream_router)
 app.include_router(national_arena_router)
+app.include_router(llm_metrics_router)
 
 def _install_static_spa_routes(target_app: FastAPI, static_dir: Path) -> None:
     """Serve the built React app without swallowing unknown API/static paths."""
