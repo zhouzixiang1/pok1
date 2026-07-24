@@ -339,7 +339,11 @@ def validate_policy_epoch_reset_receipt(receipt: Any) -> list[str]:
     errors = _receipt_errors(receipt, kind=POLICY_EPOCH_RESET_RECEIPT_KIND)
     if not isinstance(receipt, dict):
         return errors
-    from bot_namespace import EVALUATION_EPOCH, FIRST_STRICT_POLICY_VERSION
+    from bot_namespace import (
+        EVALUATION_EPOCH,
+        FIRST_STRICT_POLICY_VERSION,
+        bot_name,
+    )
 
     expected_keys = {
         "schema_version",
@@ -416,7 +420,7 @@ def validate_policy_epoch_reset_receipt(receipt: Any) -> list[str]:
     if receipt.get("seed_bot") is not None:
         errors.append("policy_epoch_reset_seed_must_be_null")
     expected_namespace = {
-        "bot": f"national_v{FIRST_STRICT_POLICY_VERSION}",
+        "bot": bot_name(FIRST_STRICT_POLICY_VERSION),
         "protocol": "official-national-raw-tcp-v1",
         "policy_abi": "national-tcp-policy-runtime-v1",
     }
