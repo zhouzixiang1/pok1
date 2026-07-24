@@ -21,12 +21,26 @@ exactly, so main's behavior is unchanged):
 | `POK_TAG_PREFIX` | `national-bot-v` | `national-cloud-bot-v` |
 | `POK_HIGH_WATER_TAG_PREFIX` | `national-high-water-v` | `national-cloud-high-water-v` |
 
-With the cloud values, a generation produces `bots/national_cloud_v144/`,
-`official_certificates/national_cloud_v144.json`, and the paired tags
-`national-cloud-bot-v144` + `national-cloud-high-water-v144`, all committed to
-`refs/heads/tencent-cloud-runtime`. The canonical `national_v144` namespace is
+With the cloud values, a generation produces `bots/national_cloud_v1/`,
+`official_certificates/national_cloud_v1.json`, and the paired tags
+`national-cloud-bot-v1` + `national-cloud-high-water-v1`, all committed to
+`refs/heads/tencent-cloud-runtime`. The canonical `national_v1` namespace is
 left free for main to use. Tag prefixes are not substrings of each other, so a
 `national-bot-v*` glob never matches a `national-cloud-bot-v*` tag.
+
+### Version-1 floor (not seeded from main)
+
+This branch restarts version numbering from **1** (not 143). The version
+floor is set in `web/core/bot_namespace.py`:
+`ARCHIVED_VERSION_HIGH_WATER = 0`, `FIRST_STRICT_POLICY_VERSION = 1`. A fresh
+cloud checkout has no paired cloud tags, so
+`resolve_version_namespace_authority` falls back to the archived high-water (0)
+and `policy_epoch_initialization` initializes via the `fresh_bootstrap_ready`
+path. **No seed tag and no mirrored v143 directory are required.** The legacy
+`seed-cloud-namespace.sh` (which seeded from main's v143) is deprecated and
+refuses to run; see its header comment. The one-time epoch reset is performed
+by `scripts/reset_national_tcp_policy_epoch.py --execute
+--acknowledge-runtime-checkout` inside `.evolution_pok`.
 
 ## Dual-checkout layout
 
@@ -72,27 +86,25 @@ sudo systemctl start pok-evolution
 journalctl -u pok-evolution -f
 ```
 
-### Why the cloud-namespace seed step
+### Why no seed step is needed (version-1 floor)
 
-A fresh checkout inherits main's `national_v*` tags but has no
-`national-cloud-bot-v*` tags. `resolve_version_namespace_authority` then finds
-no paired version and `policy_epoch_initialization` parks in
-`version_authority_requires_recovery` (a generation cannot start). The seed
-script (`seed-cloud-namespace.sh`, called by `setup.sh`) points a paired
-`national-cloud-bot-v143` + `national-cloud-high-water-v143` at the **same
-commit** main's `national-bot-v143` points to, and mirrors
-`bots/national_v143` → `bots/national_cloud_v143`. Epoch then initializes via
-the `strict_published` path and v144+ can proceed. The script is idempotent
-(it refuses to overwrite an existing cloud tag).
+Earlier versions of this deploy seeded the cloud namespace by mirroring main's
+`national-bot-v143` into `national-cloud-bot-v143`. That design is superseded.
+This branch sets `ARCHIVED_VERSION_HIGH_WATER = 0`, so a fresh checkout with no
+paired cloud tags initializes directly via `fresh_bootstrap_ready` and targets
+`national_cloud_v1`. The `seed-cloud-namespace.sh` script is deprecated and
+exits as a no-op; `setup.sh` still calls it idempotently for backward
+compatibility, but it does nothing.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `env.runtime` | systemd EnvironmentFile: namespace vars, POK_PYTHON, daemon sizing, LLM placeholders |
+| `env.runtime` | systemd EnvironmentFile: namespace vars, POK_PYTHON, daemon sizing, LLM placeholders, thinking config |
+| `env.runtime.local` | gitignored secret overlay (real GLM token); loaded after `env.runtime` |
 | `pok-evolution.service` | systemd unit running `web/main.py` in the foreground |
-| `setup.sh` | one-time deploy: clone runtime, seed namespace, install service |
-| `seed-cloud-namespace.sh` | one-time epoch bootstrap (paired cloud tags + mirrored bot dir) |
+| `setup.sh` | one-time deploy: clone runtime, install service (seed step is a deprecated no-op) |
+| `seed-cloud-namespace.sh` | **deprecated** — exits as a no-op; the version-1 floor needs no seed |
 | `sync-from-main.sh` | merge new ideas from origin/main into this branch |
 
 ## Synchronizing ideas from main

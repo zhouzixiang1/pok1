@@ -1,5 +1,10 @@
 # Strict National TCP Continuous Delivery Runbook
 
+> **Branch note (`tencent-cloud-runtime`).** Version references (v142/v143/v156,
+> `national_v*`) below describe the `main` branch. The cloud runtime restarts
+> from `national_cloud_v1` (high-water 0) and runs as the systemd service
+> `pok-evolution.service`; substitute accordingly.
+
 ## Purpose
 
 Operate `national_tcp_policy_v1` from infrastructure change through safe

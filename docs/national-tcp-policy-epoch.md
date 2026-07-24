@@ -1,5 +1,14 @@
 # National TCP Policy Epoch
 
+> **Branch note (`tencent-cloud-runtime`).** The narrative below describes the
+> `main` branch's v142→v143 strict-policy floor. The cloud runtime
+> (`tencent-cloud-runtime`) **restarts version numbering from 1** under the
+> `national_cloud_v` namespace (`ARCHIVED_VERSION_HIGH_WATER = 0`,
+> `FIRST_STRICT_POLICY_VERSION = 1`); no main-namespace version history
+> (142/143/156) is carried into the cloud epoch. Substitute `national_cloud_v1`
+> for `national_v143` and high-water `0` for `142` when reading this document
+> against the cloud branch.
+
 `national_tcp_policy_v1` is the active evolution epoch.
 
 ## Reset boundary

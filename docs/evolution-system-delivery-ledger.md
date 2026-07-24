@@ -1,5 +1,9 @@
 # National TCP Evolution Delivery Ledger
 
+> **Branch note (`tencent-cloud-runtime`).** Version references (v142/v143/v156,
+> `national_v*`) below describe the `main` branch. The cloud runtime restarts
+> from `national_cloud_v1` (high-water 0); substitute accordingly.
+
 > Operator implementation record only. This file is not strategy evidence,
 > rating evidence, a lesson store, an experience store, or a prompt input.
 > Active code must never inject this text into Master, Worker, Reviewer,

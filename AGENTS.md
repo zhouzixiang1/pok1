@@ -4,6 +4,16 @@ This is the working contract for coding agents in this repository. The sole
 active poker-bot architecture is `national_tcp_policy_v1`, built directly on
 the national competition raw TCP protocol.
 
+> **Branch note (`tencent-cloud-runtime`).** This branch is an **isolated
+> cloud evolution line** that restarts version numbering from **1** under the
+> `national_cloud_v` namespace, runs on Tencent Cloud as the systemd service
+> `pok-evolution.service`, and publishes only into
+> `origin/tencent-cloud-runtime` — its products never enter `origin/main`.
+> The text below describes this cloud line; the `main` branch keeps the
+> canonical `national_v` / 142→143 history unchanged and is intentionally not
+> disturbed. Namespace, version-floor, path, LLM, and signer details that
+> differ from main are called out inline.
+
 ## Trust boundary
 
 Active code consists of:
@@ -12,7 +22,9 @@ Active code consists of:
    web surface.
 2. `web/` — evolution control plane, native TCP evaluation, immutable evidence,
    prompts, gates, certification, and dashboard.
-3. `bots/national_v<N>/` — strict policy artifacts created by the active epoch.
+3. `bots/national_cloud_v<N>/` — strict policy artifacts created by the active
+   epoch (on this branch the namespace is `national_cloud_v`; `bots/` is empty
+   until the first cloud candidate `national_cloud_v1` is published).
 4. `scripts/` — national diagnostics, evaluation identity, and official EXE
    certification.
 
@@ -22,17 +34,23 @@ tests, prompts, runtime output, and documentation. Archived files are
 scan, copy, branch from, cross over, certify, rate, or summarize them. Never add
 an archive directory to `sys.path` or `PYTHONPATH`.
 
-The historical completion-tag high-water may be preserved when assigning the
-next version number. That is identity continuity only. It does not carry source
-bytes, ratings, H2H, experience, capabilities, or certification into this
-epoch.
+The version-authority high-water on this branch is **0**
+(`ARCHIVED_VERSION_HIGH_WATER = 0` in `web/core/bot_namespace.py`), so the first
+strict target is `national_cloud_v1` (`FIRST_STRICT_POLICY_VERSION = 1`). No
+main-namespace version history (142/143/156) is carried into this epoch — that
+is identity continuity only and it carries no source bytes, ratings, H2H,
+experience, capabilities, or certification. Legacy main-namespace bots
+(`national_v143`, `national_v156`) inherited from `main` are archived under
+`archive/legacy_main_namespace_bots/` and ignored by the cloud epoch authority
+(`active_bots = []`, `version_authority_high_water = 0`).
 
-Only annotated completion/high-water tags advance that namespace. An untracked
-directory, abandoned checkpoint, log filename, or runtime counter never does.
-During the one-time epoch reset, any untagged `national_v143+` directory is
-archived as stale unpublished debris together with its checkpoint; for example,
-an old-wrapper `national_v155` directory does not move the first strict label
-past `national_v143`.
+Only annotated completion/high-water tags in the **active namespace**
+(`national-cloud-bot-v*` / `national-cloud-high-water-v*`) advance that
+namespace. An untracked directory, abandoned checkpoint, log filename, or
+runtime counter never does. A fresh cloud checkout has no paired cloud tags,
+so `resolve_version_namespace_authority` falls back to the archived high-water
+(0) and the epoch initializes via the `fresh_bootstrap_ready` path — no seed
+tag is required for the version-1 floor.
 
 The first strict checkpoint must bind the schema-2 execute receipt from the
 stopped autonomous checkout via
@@ -66,14 +84,17 @@ RL tree, neural lab, and mixed-ABI bot epoch are not active components.
 
 ## Dual-checkout runtime
 
-- `/home/zzx/project/pok` is the operator/infrastructure checkout. Develop code,
+- `/home/ubuntu/pok1` is the operator/infrastructure checkout. Develop code,
   tests, prompts, and docs here or in a temporary ignored worktree.
-- `/home/zzx/project/pok/.evolution_pok` is the long-running autonomous runtime
+- `/home/ubuntu/pok1/.evolution_pok` is the long-running autonomous runtime
   checkout. Candidate directories, checkpoints, ratings, and live result files
-  belong there.
+  belong there. Its directory name (`.evolution_pok`) together with
+  `POK_CLOUD_RUNTIME=1` triggers the namespace seed block in `web/main.py`.
 
-Synchronize only through `origin/main`; never copy files between checkouts.
-Before work, update remote state. In a clean editable checkout use:
+Synchronize only through `origin/tencent-cloud-runtime`; never copy files
+between checkouts. The `main` branch remains canonical for the `national_v`
+line and is intentionally not disturbed. Before work, update remote state. In a
+clean editable checkout use:
 
 ```bash
 git pull --ff-only --tags
@@ -81,8 +102,8 @@ git pull --ff-only --tags
 
 If dirty, on a user branch, or not safely fast-forwardable, use
 `git fetch --tags origin` and create a temporary worktree from updated
-`origin/main`. Do not switch branches, reset, or develop infrastructure inside
-`.evolution_pok` while a generation runs.
+`origin/tencent-cloud-runtime`. Do not switch branches, reset, or develop
+infrastructure inside `.evolution_pok` while a generation runs.
 
 Restart decisions are governed by the exact active-stage contract in
 `web/core/evaluation_contract.py`, not broad directory names. See
@@ -214,14 +235,15 @@ evidence. Adaptation is confidence-weighted and capped; sparse samples stay
 near the baseline.
 
 Every LLM role has a resolved-path read capability supplied by the system.
-Fresh v143 roles may read only the prepared v143 artifact; normal planning and
-review roles may read only the exact current source, target, and frozen
-generation snapshot assigned to them; Workers may read only their lease
-candidate. `.git`, any archive path, unlisted bots, other live results,
-operator delivery documents, symlinks, parent aliases, globs, shell/Python
-wrappers, and indirect configuration-file reads are denied. Dynamic candidate
-execution belongs to system quality gates; Workers get bounded inspection and
-exact-file `py_compile` only.
+Fresh first-strict roles (binding `national_cloud_v1`) may read only the
+prepared `national_cloud_v1` artifact; normal planning and review roles may
+read only the exact current source, target, and frozen generation snapshot
+assigned to them; Workers may read only their lease candidate. `.git`, any
+archive path, unlisted bots, other live results, operator delivery documents,
+symlinks, parent aliases, globs, shell/Python wrappers, and indirect
+configuration-file reads are denied. Dynamic candidate execution belongs to
+system quality gates; Workers get bounded inspection and exact-file
+`py_compile` only.
 
 Each Agent SDK attempt owns its exact subprocess transport. A timeout or
 cancel-resistant stream must close that transport and prove both the original
@@ -229,6 +251,30 @@ process and pending stream tasks exited before schema, signature, overload, or
 cycle retry. An unresolved owned attempt is an infrastructure failure and
 blocks further provider dispatch; the runtime never kills a process whose
 ownership it cannot prove.
+
+### LLM provider and extended thinking (cloud runtime)
+
+The cloud runtime drives every Master/Reviewer/Critic/Worker role through
+`claude_agent_sdk` (latest stable `claude-agent-sdk`, currently 0.2.126) against
+**GLM-5.2** via the Anthropic-compatible endpoint
+(`ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic`, model id
+`glm-5.2`; all of Haiku/Sonnet/Opus route to `glm-5.2`). Extended thinking is
+configured in `web/core/llm_query.py::_llm_thinking_options` and applied to
+every direct sub-agent dispatch:
+
+- `thinking = {"type": "enabled", "budget_tokens": 64000}` — GLM treats the
+  budget as a soft target, so deep reasoning is preserved while the model still
+  converges and emits a detailed answer. The legacy `{"type": "adaptive"}` mode
+  is **known to hang on GLM**: it emits 16k–19k+ thinking tokens without ever
+  producing visible output, exhausting the 360s productive-silence ceiling and
+  abandoning every generation at the Master proposal stage.
+- `effort = "max"` — GLM-5.2's strongest reasoning depth (GLM maps
+  `high`/`xhigh`/`max` all to its internal maximum).
+
+All three are environment-overridable: `POK_LLM_THINKING_MODE`
+(`enabled`/`adaptive`/`disabled`, default `enabled`),
+`POK_LLM_THINKING_BUDGET` (default `64000`), `POK_LLM_EFFORT` (default `max`).
+The committed defaults live in `deploy/tencent-cloud/env.runtime`.
 
 ## Space-for-time assets
 
@@ -342,7 +388,8 @@ mismatch, or later byte drift is a control-plane failure.
 First-strict Reviewer and Critic prompts render only from their durable call
 descriptors, which bind the exact semantic inputs plus checked-in
 producer/template identities. The Critic descriptor also owns its evidence read
-scope. Because the v143 pool is empty, that scope is empty and its prompt carries
+scope. Because the `national_cloud_v` pool is empty at the first-strict reset
+(high-water 0, no published bots), that scope is empty and its prompt carries
 an explicit no-strength contract; it must not open rating, H2H, replay, Arena,
 official, retired-bot, or historical-experience material. Any strict journal,
 prompt, context, or invocation-evidence violation canonically abandons the
@@ -574,7 +621,21 @@ derivation digest through a frozen producer-to-consumer contract.
 ## Commands
 
 ```bash
-# Web application
+# Cloud runtime (this branch) — managed by systemd as pok-evolution.service.
+# WorkingDirectory=/home/ubuntu/pok1/.evolution_pok; env from
+# deploy/tencent-cloud/env.runtime (+ gitignored env.runtime.local for secrets).
+sudo systemctl start pok-evolution      # start (foreground via systemd)
+sudo systemctl restart pok-evolution    # restart after code/env changes
+sudo systemctl status pok-evolution     # health + recent journal
+journalctl -u pok-evolution -f          # live logs
+
+# Manual launch (foreground, same env) — only for debugging, not for production:
+cd /home/ubuntu/pok1/.evolution_pok && \
+  set -a && . deploy/tencent-cloud/env.runtime && \
+  . deploy/tencent-cloud/env.runtime.local && set +a && \
+  /home/ubuntu/pok1/.venv/bin/python web/main.py --host 127.0.0.1 --port 8000 --no-build
+
+# Web application (generic forms; the cloud runtime uses the systemd launch above)
 python web/main.py
 python web/main.py --view-only
 python web/main.py --no-daemon
@@ -601,12 +662,12 @@ python scripts/national_arena.py serve --view-only
 
 # Official acceptance and required certification
 python scripts/official_platform_acceptance.py \
-  --candidate bots/national_v<N> --opponent bots/national_v<M> \
+  --candidate bots/national_cloud_v<N> --opponent bots/national_cloud_v<M> \
   --self-play-rounds 1 --opponent-rounds 1 --target-hands 70
-python scripts/official_certify.py full bots/national_v<N> --wait-if-busy
+python scripts/official_certify.py full bots/national_cloud_v<N> --wait-if-busy
 
 # One-time empty-pool bootstrap for the first strict bot only
-python scripts/official_certify.py bootstrap-first-strict bots/national_v143 \
+python scripts/official_certify.py bootstrap-first-strict bots/national_cloud_v1 \
   --control-id first_strict_control_v1 \
   --acknowledge-one-time-first-strict-control --wait-if-busy
 
@@ -616,16 +677,30 @@ python scripts/official_certify.py finalize-first-strict \
 ```
 
 Normal certification is five 70-hand self-play rounds plus three 70-hand rounds
-against an eligible strict-policy opponent. The v143-only system-control
-bootstrap and finalize steps are operator-only, zero-strength, and never an
-automatic fallback. The LLM/HTTP control plane can perform neither step.
-The checked-in `first_strict_control_v1` artifact hash is
+against an eligible strict-policy opponent. The first-strict-only
+(`national_cloud_v1`) system-control bootstrap and finalize steps are
+operator-only, zero-strength, and never an automatic fallback. The LLM/HTTP
+control plane can perform neither step. The checked-in
+`first_strict_control_v1` artifact hash is
 `b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`.
 Its valid, unused `0/1` consumption state and a green official doctor prove the
 5+3 dependency exists; they do not unlock the command. Bootstrap becomes
-available only after the exact v143 checkpoint parks at
+available only after the exact `national_cloud_v1` checkpoint parks at
 `official_bootstrap_required`.
 The archived v141 signed-ledger chain is validation history and is not executable.
+
+### Official certifier signer (cloud runtime)
+
+Official EXE certificates are signed with the **server-owned Ed25519 signer at
+epoch 3** (fingerprint
+`SHA256:5C70Tt/aIzq60HlCQBXLZ0MdTWN3vIWk6HjkEU+nsTk`). The trust policy
+(`web/core/official_certifier_trust_policy.json`) records `current_epoch: 3`
+as active, with epoch 1 retained as historical-validation-only (tied to the
+retired `national_v141` signed-ledger chain). The allowed-signers file
+(`web/core/official_certifier_allowed_signers`) lists all three epoch keys
+under namespace `pok-official-cert-v4`. The companion
+`docs/official-signer-rotation.md` documents this epoch-3 server-owned key
+and retains the older operator-host epoch-2 narrative as historical context.
 
 ## Working rules
 
@@ -642,6 +717,14 @@ The archived v141 signed-ledger chain is validation history and is not executabl
   operator test commands in the same change. Never preserve a green result by
   skipping, weakening, or reclassifying the affected test without an explicit
   fail-closed replacement and documented reason.
+- **Synchronize documentation with every functional change.** A feature added,
+  removed, or modified must update the relevant docs in the same change:
+  `AGENTS.md` and `CLAUDE.md` for cross-cutting contracts, `docs/` for
+  architecture/policy/oracle detail, `deploy/` for operational deployment.
+  Version numbers, namespace identifiers, paths, LLM/signer configuration,
+  command examples, file lists, and ABI/protocol/gate/lifecycle descriptions
+  must stay consistent with the code they describe. Do not leave a working
+  feature or a deployed change with stale documentation.
 - `web/main.py` is a web launcher, not a TUI or mode-switching CLI.
 - Generated frontend output is ignored; do not treat it as source.
 - The highest numbered bot directory is not completion proof. Require current

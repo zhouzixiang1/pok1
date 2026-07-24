@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""One-time reset from archived native-strategy data to strict TCP policy bots.
+"""One-time reset to a fresh strict TCP policy epoch (version-1 floor).
 
+On the tencent-cloud-runtime branch the version floor is
+ARCHIVED_VERSION_HIGH_WATER=0 / FIRST_STRICT_POLICY_VERSION=1, so this reset
+initializes an empty strict epoch whose first target is national_cloud_v1.
 No bot source is copied into the new epoch.  The immutable tag/high-water
-namespace supplies version authority (v142 -> v143), while old runtime outputs
-are moved to an explicitly untrusted archive and fresh result directories are
-created empty.
+namespace supplies version authority (archived high-water -> first strict),
+while old runtime outputs are moved to an explicitly untrusted archive and
+fresh result directories are created empty.
 """
 
 from __future__ import annotations
@@ -244,11 +247,13 @@ def build_plan(stamp: str) -> dict:
         if not path.is_dir():
             continue
         # The immutable Git tag/high-water namespace is the sole version
-        # authority.  While high-water is still v142, a directory named v143+
-        # cannot be a published strict bot; it is an unfinished old-epoch
-        # candidate such as the stale national_v155 observed in the runtime
-        # checkout.  Archive it together with its checkpoint instead of letting
-        # an untracked directory block or advance the fresh v143 bootstrap.
+        # authority. On the cloud branch the archived high-water is 0, so a
+        # directory named v1+ cannot be a published strict bot unless its
+        # paired completion/high-water tags exist; an untracked directory such
+        # as a stale main-namespace national_v143/v156 inherited from main is
+        # an unfinished old-epoch candidate. Archive it together with its
+        # checkpoint instead of letting an untracked directory block or advance
+        # the fresh national_cloud_v1 bootstrap.
         archived_bot_dirs.append(
             {
                 "source": path,
@@ -283,7 +288,10 @@ def run(*, execute: bool, acknowledge_runtime_checkout: bool = False) -> dict:
         )
     high_water = _version_authority_high_water()
     if high_water < ARCHIVED_VERSION_HIGH_WATER:
-        raise RuntimeError("immutable version authority does not cover archived v142")
+        raise RuntimeError(
+            f"immutable version authority does not cover archived high-water "
+            f"{ARCHIVED_VERSION_HIGH_WATER}"
+        )
     if high_water > ARCHIVED_VERSION_HIGH_WATER:
         raise RuntimeError(
             "strict policy versions already exist; this one-time reset cannot rerun"
@@ -412,9 +420,10 @@ def main() -> int:
         description=(
             "One-time national_tcp_policy_v1 runtime reset: archive old "
             "outputs and stale bot directories as legacy-untrusted, preserve "
-            "v142 only as the numeric/tag high-water, and initialize an empty "
-            "strict epoch whose first target is national_v143. No bot, rating, "
-            "H2H, experience, or other evidence is migrated."
+            "the archived version-authority high-water (0 on this branch), and "
+            "initialize an empty strict epoch whose first target is "
+            "national_cloud_v1. No bot, rating, H2H, experience, or other "
+            "evidence is migrated."
         ),
     )
     parser.add_argument(

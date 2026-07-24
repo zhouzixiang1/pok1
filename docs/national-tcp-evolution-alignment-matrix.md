@@ -1,5 +1,10 @@
 # National TCP Evolution Cross-Layer Alignment Matrix
 
+> **Branch note (`tencent-cloud-runtime`).** The version references below
+> (v142/v143/v156, `national_v*`) describe the `main` branch. The cloud runtime
+> restarts from `national_cloud_v1` (high-water 0); substitute accordingly when
+> reading this against the cloud branch.
+
 This matrix is an implementation and verification index. A green test is
 evidence only for the behavior it actually exercises. A row is complete only
 when its authority, producer, consumer, dynamic gate, rendered prompt,

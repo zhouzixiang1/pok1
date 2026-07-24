@@ -1,5 +1,10 @@
 # Official EXE Certification Policy
 
+> **Branch note (`tencent-cloud-runtime`).** Version references (v143/v156,
+> `national_v*`) below describe the `main` branch. The cloud runtime certifies
+> `national_cloud_v1`+ (high-water 0), signed with the server-owned epoch-3
+> Ed25519 key; substitute accordingly.
+
 > The National Web Arena (`/arena`) is a local diagnostic and presentation
 > tool. Its events, THP files, and results have `diagnostic_only` authority and
 > can never create, replace, or satisfy an official Windows EXE certificate.

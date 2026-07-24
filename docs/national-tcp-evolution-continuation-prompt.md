@@ -1,5 +1,9 @@
 # National TCP Evolution Continuation Prompt
 
+> **Branch note (`tencent-cloud-runtime`).** Version references (v142/v143/v156,
+> `national_v*`) below describe the `main` branch. The cloud runtime restarts
+> from `national_cloud_v1` (high-water 0); substitute accordingly.
+
 > Operator handoff prompt only. This document has zero strategy, strength,
 > rating, certification, lesson, or experience authority. It must never be
 > injected into Master, Worker, Reviewer, Critic, candidate policy context, or

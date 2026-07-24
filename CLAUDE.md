@@ -15,9 +15,10 @@ prompt-evidence authority. Never add it to an import path or use its ratings,
 experience, replays, tests, bots, adapter, engine, RL output, or analyses to
 drive an active generation.
 
-Use the outer checkout for development and `.evolution_pok` for the running
-service; synchronize through Git only. Before edits, follow
-`docs/evolution-dual-checkout-sync-policy.md`.
+Use the outer checkout (`/home/ubuntu/pok1` on the cloud runtime) for
+development and `.evolution_pok` for the running service; synchronize through
+Git only (on this branch, through `origin/tencent-cloud-runtime`). Before
+edits, follow `docs/evolution-dual-checkout-sync-policy.md`.
 
 Strict Master/Reviewer/Critic calls never share a flat role log. Each accepted
 call binds exactly one generation-scoped `strict_invocations/<invocation_id>`
@@ -69,7 +70,19 @@ python scripts/official_certify.py doctor
 
 Do not treat the Arena or official EXE chip result as strength evidence. Local
 Glicko/H2H strength uses complete 70-hand raw native TCP matches only.
-For v143, a green doctor and valid unused `first_strict_control_v1` at artifact
-hash `b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`
-prove the official 5+3 dependency is present. Only the checkpoint stage
+For the first strict candidate (`national_cloud_v1` on this branch), a green
+doctor and valid unused `first_strict_control_v1` at artifact hash
+`b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2` prove the
+official 5+3 dependency is present. Only the checkpoint stage
 `official_bootstrap_required` unlocks the operator action.
+
+## Documentation synchronization rule
+
+Any functional change — a feature added, removed, or modified — must update the
+relevant documentation **in the same change**: `AGENTS.md` and `CLAUDE.md` for
+cross-cutting contracts, `docs/` for architecture/policy/oracle detail, and
+`deploy/` for operational deployment. Version numbers, namespace identifiers,
+paths, LLM/signer configuration, command examples, file lists, and
+ABI/protocol/gate/lifecycle descriptions must all stay consistent with the code
+they describe. Do not leave a green result, a working feature, or a deployed
+change with stale documentation. When in doubt, update.

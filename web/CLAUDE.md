@@ -70,8 +70,8 @@ active `national_tcp_policy_v1` architecture.
 - Native precommit owns a monotonic per-attempt cancellation token and a frozen
   first-strict execution scope. Late complete matches are not admitted and no
   next sample starts after cancellation; retries reuse the same control journal.
-- The v143 first-strict 5+3 dependency is present only when doctor is green and
-  `first_strict_control_v1` hash
+- The first-strict (`national_cloud_v1` on this branch) 5+3 dependency is present
+  only when doctor is green and `first_strict_control_v1` hash
   `b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`
   is valid, unused, and `0/1`. Even then, only
   `official_bootstrap_required` unlocks the operator action.
