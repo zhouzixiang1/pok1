@@ -10,6 +10,9 @@ build/
 .venv/
 venv/
 
+# Local secret overrides for the cloud runtime EnvironmentFile (LLM tokens etc.)
+deploy/tencent-cloud/env.runtime.local
+
 # One-time pre-policy-epoch runtime debris. Active code never writes this root;
 # the acknowledged epoch reset archives any existing JSON before v143 starts.
 results/*.json

@@ -30,12 +30,22 @@ Group=ubuntu
 # ".evolution_pok" and (with POK_CLOUD_RUNTIME=1) seeds the cloud namespace.
 WorkingDirectory=/home/ubuntu/pok1/.evolution_pok
 
-# Load POK_PYTHON, namespace vars, daemon sizing, etc.
+# Load POK_PYTHON, namespace vars, daemon sizing, etc. The .local file is
+# gitignored and carries secret overrides (LLM token); it loads AFTER env.runtime
+# so real values replace the PLACEHOLDER_* entries. It is optional (absent =>
+# the committed placeholders stand, useful for a view-only diagnostic deploy).
 EnvironmentFile=/home/ubuntu/pok1/deploy/tencent-cloud/env.runtime
+EnvironmentFile=/home/ubuntu/pok1/deploy/tencent-cloud/env.runtime.local
+
+# ExecStart-relevant vars must be Environment= (EnvironmentFile values are
+# passed to the process env but cannot be expanded in ExecStart with ${}).
+Environment=POK_PYTHON=/home/ubuntu/pok1/.venv/bin/python
+Environment=HOST=127.0.0.1
+Environment=PORT=8000
 
 # Foreground launch. --no-build skips the npm frontend rebuild on every restart
 # (build the frontend once; the static receipt is verified at startup).
-ExecStart=${POK_PYTHON} web/main.py --host ${HOST} --port ${PORT} --no-build
+ExecStart=/home/ubuntu/pok1/.venv/bin/python web/main.py --host 127.0.0.1 --port 8000 --no-build
 
 # web/main.py spawns elo_daemon.py via start_new_session=True. mixed kills the
 # main process with SIGTERM (daemon gets it via its own session) and the control

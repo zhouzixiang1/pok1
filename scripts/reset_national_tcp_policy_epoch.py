@@ -29,6 +29,7 @@ if str(CORE) not in sys.path:
 from bot_namespace import (  # noqa: E402
     ARCHIVED_VERSION_HIGH_WATER,
     EVALUATION_EPOCH,
+    EVOLUTION_BRANCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
     parse_bot_version,
@@ -75,7 +76,15 @@ def _git(*args: str) -> str:
 
 
 def _version_authority_high_water() -> int:
-    return int(resolve_version_namespace_authority(_git).high_water)
+    try:
+        return int(resolve_version_namespace_authority(_git).high_water)
+    except RuntimeError:
+        # An empty namespace (no paired completion/high-water tags yet) is the
+        # legitimate bootstrap start for an isolated deployment namespace such
+        # as national_cloud_v on tencent-cloud-runtime: it has no history, so it
+        # is treated as sitting at the archived high-water floor, ready for a
+        # fresh first-strict reset.
+        return ARCHIVED_VERSION_HIGH_WATER
 
 
 def _canonical_json_bytes(payload: dict) -> bytes:
@@ -199,14 +208,20 @@ def _runtime_checkout_identity_errors() -> list[str]:
             errors.append("policy_epoch_reset_git_root_mismatch")
     try:
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
-        if branch != "main":
-            errors.append(f"policy_epoch_reset_requires_main_branch:{branch}")
+        if branch != EVOLUTION_BRANCH:
+            errors.append(f"policy_epoch_reset_requires_publication_branch:{branch}")
         if _git("status", "--porcelain", "--untracked-files=no"):
             errors.append("policy_epoch_reset_tracked_worktree_not_clean")
         head = _git("rev-parse", "HEAD")
-        remote_main = _git("rev-parse", "refs/remotes/origin/main")
+        remote_ref = f"refs/remotes/origin/{EVOLUTION_BRANCH}"
+        try:
+            remote_main = _git("rev-parse", remote_ref)
+        except Exception:
+            remote_main = ""
         if not head or head != remote_main:
-            errors.append("policy_epoch_reset_runtime_not_synced_to_origin_main")
+            errors.append(
+                f"policy_epoch_reset_runtime_not_synced_to_origin:{EVOLUTION_BRANCH}"
+            )
     except Exception as exc:
         errors.append(
             f"policy_epoch_reset_git_sync_unavailable:{type(exc).__name__}"
