@@ -3442,11 +3442,28 @@ _ORIGINAL_OFFICIAL_PARENT_ELIGIBLE = _official_parent_eligible
 
 
 def version_namespace_authority():
-    """Return the canonical paired/unpaired annotated publication-ref snapshot."""
+    """Return the canonical paired/unpaired annotated publication-ref snapshot.
 
-    return resolve_version_namespace_authority(
-        lambda *args: _git(*args, check=False)
-    )
+    A deployment namespace with no paired tags yet (e.g. a fresh national_cloud_v
+    namespace before its first strict publication) resolves to an empty authority
+    sitting at the archived high-water floor, rather than raising. Default/main
+    behavior (paired tags present) is unchanged.
+    """
+
+    from bot_namespace import VersionNamespaceAuthority
+
+    try:
+        return resolve_version_namespace_authority(
+            lambda *args: _git(*args, check=False)
+        )
+    except RuntimeError:
+        return VersionNamespaceAuthority(
+            high_water=ARCHIVED_VERSION_HIGH_WATER,
+            paired_versions=(),
+            paired_commits=(),
+            unpaired_completion_versions=(),
+            unpaired_high_water_versions=(),
+        )
 
 
 def find_current_v():
