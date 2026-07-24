@@ -23,6 +23,7 @@ import EvidenceGates from "./pages/EvidenceGates";
 import BotInventory from "./pages/BotInventory";
 import FailuresRecovery from "./pages/FailuresRecovery";
 import BackgroundStrength from "./pages/BackgroundStrength";
+import LlmMetrics from "./pages/LlmMetrics";
 
 export default function App() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/bots-inventory" element={<BotInventory />} />
             <Route path="/failures" element={<FailuresRecovery />} />
             <Route path="/strength" element={<BackgroundStrength />} />
+            <Route path="/llm-metrics" element={<LlmMetrics />} />
             {/* Legacy / compatibility routes (guarded by contract tests) */}
             <Route path="/evolution" element={<EvolutionMonitor />} />
             <Route path="/matches" element={<MatchReplay />} />

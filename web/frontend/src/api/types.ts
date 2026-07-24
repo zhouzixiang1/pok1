@@ -970,3 +970,80 @@ export interface StrengthJobsUnavailable {
 }
 
 export type StrengthJobsResponse = StrengthJobsProjection | StrengthJobsUnavailable;
+
+// ── LLM call metrics (/api/llm/metrics) ──────────────────────────────────────
+//
+// Per-call instrumentation emitted by the LLM client. Every nullable numeric
+// field is null when the underlying client did not record a value; the UI must
+// treat null as "no data" rather than 0.  The backend owns every value; the
+// dashboard must never recompute, infer, or backfill a field.
+
+export interface LlmCallMetric {
+  schema_version: number;
+  /** ISO 8601 timestamp; authoritative. */
+  ts: string;
+  epoch_ts: number;
+  call_id: string;
+  attempt: number;
+  max_attempts: number | null;
+  role: string;
+  model: string;
+  total_elapsed_sec: number;
+  first_token_latency_sec: number | null;
+  first_text_latency_sec: number | null;
+  semaphore_wait_sec: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  cache_hit_rate: number | null;
+  thinking_tokens_estimated: number | null;
+  thinking_tokens_delta_total: number | null;
+  total_tokens: number | null;
+  output_tokens_per_sec: number | null;
+  total_tokens_per_sec: number | null;
+  cost_usd: number | null;
+  success: boolean;
+  error_type: string | null;
+  error_message: string | null;
+  api_error_status: number | null;
+  stop_reason: string | null;
+  num_turns: number | null;
+  terminal_reason: string | null;
+  effort: string | null;
+  thinking_budget: number | null;
+  thinking_mode: string | null;
+  global_concurrency: number | null;
+  prompt_chars: number | null;
+  output_chars: number | null;
+  invocation_id: string | null;
+  generation_id: string | null;
+  log_file: string | null;
+}
+
+/** Aggregated statistics for a single role, returned by /api/llm/metrics/summary. */
+export interface LlmRoleSummary {
+  role: string;
+  count: number;
+  success_count: number;
+  success_rate: number;
+  avg_total_elapsed_sec: number;
+  max_total_elapsed_sec: number;
+  avg_total_tokens: number | null;
+  total_cost_usd: number | null;
+  avg_first_token_latency_sec: number | null;
+}
+
+/** Response shape for GET /api/llm/metrics/summary (aggregated by role). */
+export interface LlmMetricsSummary {
+  /** Per-role aggregation, in arbitrary order from the backend. */
+  by_role: LlmRoleSummary[];
+  /** Optional backend-computed totals; absent fields mean "not provided". */
+  total_count?: number;
+  total_success_count?: number;
+  overall_success_rate?: number;
+  total_cost_usd?: number | null;
+  total_tokens?: number | null;
+  avg_total_elapsed_sec?: number | null;
+  avg_first_token_latency_sec?: number | null;
+}

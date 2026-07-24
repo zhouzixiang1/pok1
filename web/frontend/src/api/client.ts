@@ -5,6 +5,7 @@ import type {
   H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse, OfficialCertification,
   ArenaCreatePayload, ArenaEventHistoryResponse, ArenaSession, ArenaSessionUnavailable,
   ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
+  LlmCallMetric, LlmMetricsSummary,
 } from "./types";
 import { expectPipelineCheckpoint } from "./pipeline";
 import { expectAgentActivity } from "./agentActivity";
@@ -225,5 +226,9 @@ export const api = {
 
   // Orchestrator session
   orchestratorSession: () => fetchJSON<OrchestratorSession>(`${BASE}/control/orchestrator/session`),
+
+  // LLM call metrics
+  llmMetrics: (limit = 200) => fetchJSON<LlmCallMetric[]>(`${BASE}/llm/metrics?limit=${limit}`),
+  llmMetricsSummary: () => fetchJSON<LlmMetricsSummary>(`${BASE}/llm/metrics/summary`),
 
 };

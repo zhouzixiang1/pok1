@@ -30,6 +30,7 @@ const navItems: NavItem[] = [
   { icon: <TableIcon />, name: "对局矩阵", path: "/match-matrix", group: "对局" },
   // Management (read-only contracts; names guarded by contract tests).
   { icon: <PageIcon />, name: "迭代日志", path: "/logs", group: "管理" },
+  { icon: <PieChartIcon />, name: "LLM 调用日志", path: "/llm-metrics", group: "管理" },
   { icon: <PlugInIcon />, name: "控制面板", path: "/control", group: "管理" },
   { icon: <BoxIcon />, name: "严格发布 Bot", path: "/bots", group: "管理" },
   { icon: <FileIcon />, name: "提示词契约", path: "/prompts", group: "管理" },
