@@ -23,9 +23,13 @@ import stat
 from typing import Any, Literal, TypeAlias
 
 from bot_namespace import (
+    ACTIVE_BOT_PREFIX,
     ARCHIVED_VERSION_HIGH_WATER,
     EVALUATION_EPOCH,
     FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+    high_water_tag,
     parse_bot_version,
     strict_generation_identity,
 )
@@ -128,7 +132,7 @@ def epoch_stream_authority_digest(projection: dict[str, Any]) -> str | None:
         if not isinstance(name, str):
             return None
         version = parse_bot_version(name)
-        if version is None or name != f"national_v{version}":
+        if version is None or name != bot_name(version):
             return None
         canonical_bots.append(name)
     if len(set(canonical_bots)) != len(canonical_bots):
@@ -627,8 +631,8 @@ def validate_schema2_abandon_claim_structure(
     if not isinstance(git_state, dict) or set(git_state) != _ABANDON_GIT_STATE_KEYS:
         raise RuntimeError("recorded_abandon_git_state_invalid")
     expected_refs = {
-        f"national-bot-v{next_v}": False,
-        f"national-high-water-v{next_v}": False,
+        bot_tag(next_v): False,
+        high_water_tag(next_v): False,
     }
     if (
         not _is_hex_digest(git_state.get("head"), lengths=(40, 64))
@@ -696,7 +700,7 @@ def validate_schema3_abandon_claim_structure(
         scope.get("workflow_run_id") != checkpoint.get("workflow_run_id")
         or scope.get("candidate_version") != checkpoint.get("next_v")
         or scope.get("candidate_label")
-        != f"national_v{checkpoint.get('next_v')}"
+        != f"{ACTIVE_BOT_PREFIX}{checkpoint.get('next_v')}"
         or int(scope.get("checkpoint_revision") or 0)
         > int(checkpoint.get("checkpoint_revision") or 0)
     ):
@@ -1111,10 +1115,10 @@ def _validate_schema2_active_claim_state(
         ) == "",
         "candidate_tracked": bool(infra.git_dir_is_committed(version)),
         "publication_refs": {
-            f"national-bot-v{version}": bool(
+            bot_tag(version): bool(
                 infra.git_has_publication_ref(version)
             ),
-            f"national-high-water-v{version}": bool(
+            high_water_tag(version): bool(
                 infra.git_has_publication_ref(version)
             ),
         },
@@ -1130,7 +1134,7 @@ def _validate_schema2_active_claim_state(
         )
     ):
         raise RuntimeError("recorded_abandon_bots_root_unsafe")
-    candidate = bots_dir / f"national_v{version}"
+    candidate = bots_dir / bot_name(version)
     transaction_dir = (
         results_dir
         / "policy_epoch_abandon_transactions"

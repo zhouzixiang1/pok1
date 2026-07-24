@@ -13,7 +13,7 @@ import subprocess
 import time
 from typing import TypedDict
 
-from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, parse_bot_version
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, bot_tag, high_water_tag, parse_bot_version
 from tool_runtime_guard import tool
 
 from evolution_core import (
@@ -439,8 +439,8 @@ def _current_abandon_git_state(version: int) -> dict:
         "tracked_worktree_clean": tracked_status == "",
         "candidate_tracked": bool(git_dir_is_committed(target)),
         "publication_refs": {
-            f"national-bot-v{target}": bool(git_has_publication_ref(target)),
-            f"national-high-water-v{target}": bool(
+            bot_tag(target): bool(git_has_publication_ref(target)),
+            high_water_tag(target): bool(
                 git_has_publication_ref(target)
             ),
         },

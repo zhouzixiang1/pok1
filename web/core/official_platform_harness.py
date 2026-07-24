@@ -30,6 +30,7 @@ from typing import Any, Callable
 from bot_artifact import canonical_digest, hash_path
 from bot_namespace import (
     ROLE_CANDIDATE,
+    bot_name,
     parse_bot_version,
     policy_identity_document_errors,
     resolve_national_bot_spec,
@@ -355,7 +356,7 @@ def build_formal_quality_admission(
         next_v = int(checkpoint.get("next_v") or 0)
     except (TypeError, ValueError):
         next_v = 0
-    expected_candidate = (root / "bots" / f"national_v{next_v}").resolve()
+    expected_candidate = (root / "bots" / bot_name(next_v)).resolve()
     if version is None or next_v < 1 or version != next_v:
         issues.append("official_formal_quality_checkpoint_candidate_version_mismatch")
     if requested != expected_candidate:

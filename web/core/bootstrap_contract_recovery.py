@@ -37,6 +37,8 @@ from bot_namespace import (
     EVALUATION_EPOCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
+    bot_tag,
+    high_water_tag,
 )
 
 
@@ -929,7 +931,7 @@ def _safe_candidate(root: Path, version: int, expected_hash: str) -> dict[str, A
     relative = f"bots/{bot_name(version)}"
     if not _git_absence(root, "ls-files", "--error-unmatch", relative):
         issues.append("bootstrap_contract_candidate_tracked")
-    for tag in (f"national-bot-v{version}", f"national-high-water-v{version}"):
+    for tag in (bot_tag(version), high_water_tag(version)):
         if not _git_absence(root, "show-ref", "--verify", "--quiet", f"refs/tags/{tag}"):
             issues.append(f"bootstrap_contract_candidate_tag_present:{tag}")
     if os.path.lexists(candidate / ".completed"):
@@ -2510,8 +2512,8 @@ def _called_allin_authority_absence(
             / f"{bot_name(FIRST_STRICT_POLICY_VERSION)}.json"
         )
         tags = (
-            f"national-bot-v{FIRST_STRICT_POLICY_VERSION}",
-            f"national-high-water-v{FIRST_STRICT_POLICY_VERSION}",
+            bot_tag(FIRST_STRICT_POLICY_VERSION),
+            high_water_tag(FIRST_STRICT_POLICY_VERSION),
         )
         from evolution_core import get_active_bots
         from national_runtime_authority import strict_published_bot_names

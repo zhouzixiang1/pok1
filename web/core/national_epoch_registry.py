@@ -28,16 +28,22 @@ from pathlib import Path
 from typing import Callable, Iterable, Protocol, Sequence
 
 
-COMPLETION_TAG_PREFIX = "national-bot-v"
+from bot_namespace import (
+    ACTIVE_BOT_PREFIX,
+    ACTIVE_TAG_PREFIX,
+    HIGH_WATER_TAG_PREFIX as _NAMESPACE_HIGH_WATER_TAG_PREFIX,
+)
+
+COMPLETION_TAG_PREFIX = ACTIVE_TAG_PREFIX
 REAPED_TAG_PREFIX = "national-reaped-v"
-HIGH_WATER_TAG_PREFIX = "national-high-water-v"
+HIGH_WATER_TAG_PREFIX = _NAMESPACE_HIGH_WATER_TAG_PREFIX
 MIGRATION_MARKER_TAG = "national-reaped-registry-v1"
 
-_COMPLETION_RE = re.compile(r"^national-bot-v([1-9][0-9]*)$")
+_COMPLETION_RE = re.compile(rf"^{re.escape(COMPLETION_TAG_PREFIX)}([1-9][0-9]*)$")
 _REAPED_RE = re.compile(r"^national-reaped-v([1-9][0-9]*)$")
-_HIGH_WATER_RE = re.compile(r"^national-high-water-v([1-9][0-9]*)$")
-_BOT_NAME_RE = re.compile(r"^national_v([1-9][0-9]*)$")
-_BOT_HISTORY_RE = re.compile(r"^bots/national_v([1-9][0-9]*)(?:/.*)?$")
+_HIGH_WATER_RE = re.compile(rf"^{re.escape(HIGH_WATER_TAG_PREFIX)}([1-9][0-9]*)$")
+_BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}([1-9][0-9]*)$")
+_BOT_HISTORY_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}([1-9][0-9]*)(?:/.*)?$")
 _OID_RE = re.compile(r"^[0-9a-fA-F]{40,64}$")
 
 DEFAULT_LEGACY_LEDGER = Path(__file__).resolve().parent / "results" / "reaped_bots.jsonl"

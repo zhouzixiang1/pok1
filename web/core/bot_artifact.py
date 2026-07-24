@@ -10,7 +10,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from bot_namespace import bot_tag, parse_bot_version, strict_artifact_layout_errors
+from bot_namespace import bot_tag, parse_bot_version, strict_artifact_layout_errors, EVOLUTION_BRANCH
+
+# Configurable publication-branch ref (default refs/heads/main). Publication
+# identity checks verify reachability against this branch so a deployment can
+# publish into an isolated branch without touching origin/main.
+_LOCAL_PUB_REF = f"refs/heads/{EVOLUTION_BRANCH}"
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -623,7 +628,7 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
         main_commit_result = _git(
             "rev-parse",
             "--verify",
-            "refs/heads/main^{commit}",
+            f"{_LOCAL_PUB_REF}^{{commit}}",
         )
         main_commit_oid = (
             main_commit_result.stdout.strip()
@@ -798,7 +803,7 @@ def validate_completion_tag(
     commit_oid = str(identity.get("commit_oid") or "")
     if not commit_oid:
         issues.append("completion_tag_commit_missing")
-    elif _git("merge-base", "--is-ancestor", commit_oid, "main").returncode != 0:
+    elif _git("merge-base", "--is-ancestor", commit_oid, EVOLUTION_BRANCH).returncode != 0:
         issues.append("completion_tag_commit_not_on_main")
     if certificate_path:
         listed = _git(

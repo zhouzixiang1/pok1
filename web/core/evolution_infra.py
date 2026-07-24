@@ -37,7 +37,9 @@ from bot_namespace import (
     ACTIVE_TAG_PREFIX,
     ARCHIVED_VERSION_HIGH_WATER,
     EVALUATION_EPOCH,
+    EVOLUTION_BRANCH,
     FIRST_STRICT_POLICY_VERSION,
+    HIGH_WATER_TAG_PREFIX,
     NATIONAL_ENTRYPOINT,
     ROLE_CANDIDATE,
     ROLE_PARENT_SOURCE,
@@ -47,6 +49,8 @@ from bot_namespace import (
     bot_tag,
     bot_tag_glob,
     format_version,
+    high_water_tag,
+    high_water_tag_glob,
     parse_bot_version,
     parse_tag_version,
     resolve_version_namespace_authority,
@@ -176,7 +180,11 @@ from pipeline_state import (
     invalidates_official_job_transition,
 )
 
-EVOLUTION_BRANCH = "main"
+# EVOLUTION_BRANCH is imported from bot_namespace so the whole runtime shares one
+# configurable publication-branch identity (default "main", overridable for an
+# isolated deployment branch such as tencent-cloud-runtime via POK_EVOLUTION_BRANCH).
+_LOCAL_PUB_REF = f"refs/heads/{EVOLUTION_BRANCH}"
+_REMOTE_PUB_REF = f"refs/remotes/origin/{EVOLUTION_BRANCH}"
 
 
 def is_candidate_copy_ignored_name(name: str) -> bool:
@@ -1291,7 +1299,7 @@ def partial_publication_checkpoint_recovery_allowed(
             intent.get("version") != target
             or intent.get("workflow_run_id") != checkpoint.get("workflow_run_id")
             or intent.get("completion_tag") != bot_tag(target)
-            or intent.get("high_water_tag") != f"national-high-water-v{target}"
+            or intent.get("high_water_tag") != high_water_tag(target)
         ):
             return False
         present_tag = (
@@ -2920,7 +2928,7 @@ def _remote_published_completion_versions(tag_versions) -> set[int]:
     local_rows = []
     for version in versions:
         completion = bot_tag(version)
-        high_water = f"national-high-water-v{version}"
+        high_water = high_water_tag(version)
         local_rows.append((
             version,
             _git("rev-parse", f"refs/tags/{completion}", check=False).strip(),
@@ -2969,32 +2977,32 @@ def _remote_published_completion_versions(tag_versions) -> set[int]:
         raw = _git(
             "ls-remote",
             "origin",
-            "refs/heads/main",
+            f"refs/heads/{EVOLUTION_BRANCH}",
             f"refs/tags/{ACTIVE_TAG_PREFIX}*",
-            "refs/tags/national-high-water-v*",
+            f"refs/tags/{HIGH_WATER_TAG_PREFIX}*",
         )
         remote: dict[str, str] = {}
         for line in raw.splitlines():
             oid, separator, ref = line.partition("\t")
             if separator and oid and ref:
                 remote[ref] = oid
-        remote_main = remote.get("refs/heads/main", "")
+        remote_main = remote.get(f"refs/heads/{EVOLUTION_BRANCH}", "")
         if len(remote_main) != 40:
             raise RuntimeError("remote main ref is missing")
         current_remote_tracking = _git(
-            "rev-parse", "refs/remotes/origin/main", check=False
+            "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
         ).strip()
         if current_remote_tracking != remote_main:
             _git(
                 "fetch",
                 "--no-tags",
                 "origin",
-                "refs/heads/main:refs/remotes/origin/main",
+                f"refs/heads/{EVOLUTION_BRANCH}:refs/remotes/origin/{EVOLUTION_BRANCH}",
             )
         verified: set[int] = set()
         for version, tag_object, commit_oid, water_object, water_commit in local_rows:
             completion = bot_tag(version)
-            high_water = f"national-high-water-v{version}"
+            high_water = high_water_tag(version)
             if not all((tag_object, commit_oid, water_object, water_commit)):
                 continue
             if _git(
@@ -3756,7 +3764,7 @@ def git_publish_status() -> dict:
     head = _git("rev-parse", "--short=12", "HEAD", check=False).strip()
     upstream = _git(
         "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False
-    ).strip() or "origin/main"
+    ).strip() or f"origin/{EVOLUTION_BRANCH}"
     upstream_head = _git("rev-parse", "--short=12", upstream, check=False).strip()
     if not upstream_head:
         return {
@@ -3956,7 +3964,7 @@ def git_has_publication_ref(version):
     """
 
     target = int(version)
-    names = (bot_tag(target), f"national-high-water-v{target}")
+    names = (bot_tag(target), high_water_tag(target))
     return any(
         _git_explicit_presence(
             "show-ref",
@@ -4970,7 +4978,7 @@ def git_commit_bot(
 
     push_ok = False
     if evolution_git_push_enabled() or evolution_git_push_required():
-        push_ok = git_push_refs("main", tag, *high_water_refs)
+        push_ok = git_push_refs(EVOLUTION_BRANCH, tag, *high_water_refs)
         publish_runtime_expected_head("bot_commit_push", version=version)
     return push_ok
 
@@ -5052,7 +5060,7 @@ def _validate_existing_publication_commit(intent: dict, commit_oid: str) -> None
     ):
         raise RuntimeError("publication commit is not descended from intent baseline")
     if not _git_command_succeeds(
-        "merge-base", "--is-ancestor", commit_oid, "refs/heads/main"
+        "merge-base", "--is-ancestor", commit_oid, _LOCAL_PUB_REF
     ):
         raise RuntimeError("publication commit is not reachable from local main")
     changed = [
@@ -5127,7 +5135,7 @@ def _resolve_existing_publication_commit(intent: dict) -> str:
         for item in _git(
             "rev-list",
             "--reverse",
-            f"{baseline}..refs/heads/main",
+            f"{baseline}..{_LOCAL_PUB_REF}",
             "--",
             bot_path,
             certificate_path,
@@ -5317,7 +5325,7 @@ def _create_publication_commit(intent: dict) -> str:
                 + ", ".join(unexpected[:10])
             )
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        parent_oid = _git("rev-parse", "refs/heads/main").strip()
+        parent_oid = _git("rev-parse", _LOCAL_PUB_REF).strip()
         _git_with_index(index_path, "read-tree", parent_oid)
         _git_with_index(
             index_path,
@@ -5344,7 +5352,7 @@ def _create_publication_commit(intent: dict) -> str:
         # branch mutation and refuses a concurrently moved main ref.
         _git(
             "update-ref",
-            "refs/heads/main",
+            _LOCAL_PUB_REF,
             commit_oid,
             parent_oid,
         )
@@ -5403,14 +5411,14 @@ def _validate_local_publication_refs(intent: dict, commit_oid: str) -> dict:
 def remote_completion_ref_snapshot() -> dict[str, str]:
     """Return the exact remote active-epoch completion-tag namespace."""
 
-    raw = _git("ls-remote", "origin", "refs/tags/national-bot-v*")
+    raw = _git("ls-remote", "origin", f"refs/tags/{bot_tag_glob()}")
     refs: dict[str, str] = {}
     for line in raw.splitlines():
         oid, separator, ref = line.partition("\t")
         if (
             separator
             and len(oid) == 40
-            and ref.startswith("refs/tags/national-bot-v")
+            and ref.startswith(f"refs/tags/{ACTIVE_TAG_PREFIX}")
         ):
             refs[ref] = oid
     return dict(sorted(refs.items()))
@@ -5451,7 +5459,7 @@ def _push_first_strict_publication(
     baseline = str(intent.get("baseline_remote_main") or "")
     completion = str(intent.get("completion_tag") or "")
     high_water = str(intent.get("high_water_tag") or "")
-    local_main = _git("rev-parse", "refs/heads/main", check=False).strip()
+    local_main = _git("rev-parse", _LOCAL_PUB_REF, check=False).strip()
     if not (
         len(baseline) == 40
         and len(local_main) == 40
@@ -5467,8 +5475,8 @@ def _push_first_strict_publication(
     # the later main lease closes the fetch/check/push race.
     _git("fetch", "origin", "--prune", "--tags")
     wanted = (
-        "refs/heads/main",
-        "refs/tags/national-bot-v*",
+        _LOCAL_PUB_REF,
+        f"refs/tags/{bot_tag_glob()}",
         f"refs/tags/{high_water}",
     )
     raw = _git("ls-remote", "origin", *wanted)
@@ -5477,14 +5485,14 @@ def _push_first_strict_publication(
         oid, separator, ref = line.partition("\t")
         if separator and oid and ref:
             remote_refs[ref] = oid
-    if remote_refs.get("refs/heads/main") != baseline:
+    if remote_refs.get(_LOCAL_PUB_REF) != baseline:
         raise RuntimeError(
             "first-strict publication blocked: origin/main changed after intent baseline"
         )
     remote_completion_refs = dict(sorted(
         (ref, oid)
         for ref, oid in remote_refs.items()
-        if ref.startswith("refs/tags/national-bot-v")
+        if ref.startswith(f"refs/tags/{ACTIVE_TAG_PREFIX}")
     ))
     if remote_completion_refs != dict(
         intent.get("baseline_remote_completion_refs") or {}
@@ -5514,7 +5522,7 @@ def _push_first_strict_publication(
 
         # A callback must not be able to move any frozen local source ref.
         # Remote races are handled by the leases below.
-        if _git("rev-parse", "refs/heads/main", check=False).strip() != local_main:
+        if _git("rev-parse", _LOCAL_PUB_REF, check=False).strip() != local_main:
             raise RuntimeError("first-strict publication local main changed during authority check")
         for name in (completion, high_water):
             expected = str((local_refs.get(name) or {}).get("object_oid") or "")
@@ -5525,7 +5533,7 @@ def _push_first_strict_publication(
                 )
 
         refspecs = (
-            "refs/heads/main:refs/heads/main",
+            f"{_LOCAL_PUB_REF}:{_LOCAL_PUB_REF}",
             f"refs/tags/{completion}:refs/tags/{completion}",
             f"refs/tags/{high_water}:refs/tags/{high_water}",
         )
@@ -5533,7 +5541,7 @@ def _push_first_strict_publication(
             _git(
                 "push",
                 "--atomic",
-                f"--force-with-lease=refs/heads/main:{baseline}",
+                f"--force-with-lease={_LOCAL_PUB_REF}:{baseline}",
                 "origin",
                 *refspecs,
             )
@@ -5663,7 +5671,7 @@ def ensure_bot_git_publication(
                 with _publication_checkpoint_linearization_lock():
                     pre_push_authority()
                     push_ok = git_push_refs(
-                        "main",
+                        EVOLUTION_BRANCH,
                         tag,
                         str(intent["high_water_tag"]),
                     )
@@ -5706,7 +5714,7 @@ def verify_remote_bot_publication(
         str(intent.get("completion_tag") or ""),
         str(intent.get("high_water_tag") or ""),
     ]
-    wanted = ["refs/heads/main"]
+    wanted = [_LOCAL_PUB_REF]
     for name in tag_names:
         wanted.extend((f"refs/tags/{name}", f"refs/tags/{name}^{{}}"))
     try:
@@ -5723,7 +5731,7 @@ def verify_remote_bot_publication(
         if separator and oid and ref:
             remote_refs[ref] = oid
     issues: list[str] = []
-    remote_main = remote_refs.get("refs/heads/main", "")
+    remote_main = remote_refs.get(_LOCAL_PUB_REF, "")
     if len(remote_main) != 40:
         issues.append("remote_main_missing")
     local_refs = (local_state or {}).get("local_refs") or {}
@@ -5750,12 +5758,12 @@ def verify_remote_bot_publication(
                 "fetch",
                 "--no-tags",
                 "origin",
-                "refs/heads/main:refs/remotes/origin/main",
+                f"{_LOCAL_PUB_REF}:{_REMOTE_PUB_REF}",
             )
         except Exception as exc:
             issues.append(f"remote_main_fetch_failed:{type(exc).__name__}")
         else:
-            fetched = _git("rev-parse", "refs/remotes/origin/main", check=False).strip()
+            fetched = _git("rev-parse", _REMOTE_PUB_REF, check=False).strip()
             if fetched != remote_main:
                 issues.append("remote_main_fetch_identity_mismatch")
             elif not _git_command_succeeds(

@@ -34,6 +34,7 @@ from bot_namespace import (
     ROLE_PARENT_SOURCE,
     bot_name,
     bot_tag,
+    high_water_tag,
     resolve_national_bot_spec,
 )
 
@@ -208,9 +209,9 @@ def resolve_published_parent_tag_authority(
             ["checkpoint_parent_publication_identity_incomplete"]
         )
     completion_tag = bot_tag(version)
-    high_water_tag = f"national-high-water-v{version}"
+    high_water = high_water_tag(version)
     completion_ref = f"refs/tags/{completion_tag}"
-    high_water_ref = f"refs/tags/{high_water_tag}"
+    high_water_ref = f"refs/tags/{high_water}"
     completion_type = _git_read(repo_root, "cat-file", "-t", completion_ref)
     high_water_type = _git_read(repo_root, "cat-file", "-t", high_water_ref)
     completion_object = _git_read(repo_root, "rev-parse", completion_ref).lower()
@@ -579,7 +580,7 @@ def _published_parent_identity_errors(
     if identity.get("completion_tag") != bot_tag(expected_version):
         errors.append("checkpoint_published_parent_identity_completion_tag_mismatch")
     if identity.get("high_water_tag") != (
-        f"national-high-water-v{expected_version}"
+        high_water_tag(expected_version)
     ):
         errors.append("checkpoint_published_parent_identity_high_water_tag_mismatch")
     for field in (

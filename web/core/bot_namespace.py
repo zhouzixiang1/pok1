@@ -21,9 +21,23 @@ from typing import Any, Callable
 
 
 EVALUATION_EPOCH = "national_tcp_policy_v1"
-ACTIVE_BOT_PREFIX = "national_v"
-ACTIVE_TAG_PREFIX = "national-bot-v"
+
+# The namespace prefixes are configurable through environment variables so a
+# deployment can run a fully isolated evolution line (e.g. a cloud runtime
+# branch) that never collides with the canonical national_v tag namespace.
+# Defaults preserve the historical identity exactly so existing behavior on
+# the main branch is unchanged when the variables are not set.
+ACTIVE_BOT_PREFIX = os.environ.get("POK_BOT_PREFIX", "national_v")
+ACTIVE_TAG_PREFIX = os.environ.get("POK_TAG_PREFIX", "national-bot-v")
+HIGH_WATER_TAG_PREFIX = os.environ.get(
+    "POK_HIGH_WATER_TAG_PREFIX", "national-high-water-v"
+)
 VERSION_WIDTH = 0
+
+# The canonical evolution publication branch. Configurable so a deployment can
+# publish into an isolated branch (e.g. tencent-cloud-runtime) without ever
+# disturbing origin/main. Defaults to the historical "main".
+EVOLUTION_BRANCH = os.environ.get("POK_EVOLUTION_BRANCH", "main")
 
 # Versions through v142 belong to the physically archived pre-policy epoch.
 # Their tags remain immutable version-authority/audit records only.
@@ -76,9 +90,21 @@ ACTIVE_PUBLISHED_ROLES = frozenset(
 )
 NATIONAL_BOT_ROLES = frozenset({ROLE_CANDIDATE, *ACTIVE_PUBLISHED_ROLES})
 
-_ACTIVE_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}([1-9][0-9]*)$")
-_ACTIVE_TAG_RE = re.compile(rf"^{re.escape(ACTIVE_TAG_PREFIX)}([1-9][0-9]*)$")
-_HIGH_WATER_TAG_RE = re.compile(r"^national-high-water-v([1-9][0-9]*)$")
+# The active-prefix regular expressions are compiled lazily (rather than frozen
+# at import time) so they always reflect the currently configured namespace
+# prefixes. The prefixes are read from environment variables at module load, so
+# a frozen import-time compile would already match the deployment value; the
+# lazy form is kept for robustness and to mirror the dynamic glob helpers.
+def _active_name_re() -> re.Pattern:
+    return re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}([1-9][0-9]*)$")
+
+
+def _active_tag_re() -> re.Pattern:
+    return re.compile(rf"^{re.escape(ACTIVE_TAG_PREFIX)}([1-9][0-9]*)$")
+
+
+def _high_water_tag_re() -> re.Pattern:
+    return re.compile(rf"^{re.escape(HIGH_WATER_TAG_PREFIX)}([1-9][0-9]*)$")
 _GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_MANIFEST_KEYS = frozenset(
@@ -259,6 +285,19 @@ def bot_tag_glob() -> str:
     return f"{ACTIVE_TAG_PREFIX}*"
 
 
+def high_water_tag(version: int | str) -> str:
+    """Return the canonical high-water tag label for a version.
+
+    Mirrors ``bot_tag`` for the high-water namespace so callers never hardcode
+    the ``national-high-water-v`` prefix literal.
+    """
+    return f"{HIGH_WATER_TAG_PREFIX}{format_version(version)}"
+
+
+def high_water_tag_glob() -> str:
+    return f"{HIGH_WATER_TAG_PREFIX}*"
+
+
 def parse_bot_version(name: str | None) -> int | None:
     """Parse only a canonical active-namespace bot label.
 
@@ -268,14 +307,14 @@ def parse_bot_version(name: str | None) -> int | None:
 
     if not isinstance(name, str):
         return None
-    match = _ACTIVE_NAME_RE.fullmatch(Path(name.replace("\\", "/")).name)
+    match = _active_name_re().fullmatch(Path(name.replace("\\", "/")).name)
     return int(match.group(1)) if match else None
 
 
 def parse_tag_version(tag: str | None) -> int | None:
     if not isinstance(tag, str):
         return None
-    match = _ACTIVE_TAG_RE.fullmatch(tag)
+    match = _active_tag_re().fullmatch(tag)
     return int(match.group(1)) if match else None
 
 
@@ -311,11 +350,13 @@ def resolve_version_namespace_authority(
     rows = str(git(
         "for-each-ref",
         "--format=%(objecttype)%09%(*objecttype)%09%(refname:short)",
-        "refs/tags/national-bot-v*",
-        "refs/tags/national-high-water-v*",
+        f"refs/tags/{bot_tag_glob()}",
+        f"refs/tags/{high_water_tag_glob()}",
     ) or "")
     completion: dict[int, str] = {}
     high_water: dict[int, str] = {}
+    active_tag_pattern = _active_tag_re()
+    high_water_pattern = _high_water_tag_re()
     for row in rows.splitlines():
         parts = row.split("\t")
         if len(parts) != 3:
@@ -324,11 +365,11 @@ def resolve_version_namespace_authority(
         if object_type != "tag" or peeled_type != "commit":
             continue
         tag = raw_tag.strip()
-        completion_match = _ACTIVE_TAG_RE.fullmatch(tag)
+        completion_match = active_tag_pattern.fullmatch(tag)
         if completion_match is not None:
             completion[int(completion_match.group(1))] = tag
             continue
-        high_water_match = _HIGH_WATER_TAG_RE.fullmatch(tag)
+        high_water_match = high_water_pattern.fullmatch(tag)
         if high_water_match is not None:
             high_water[int(high_water_match.group(1))] = tag
 

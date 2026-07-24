@@ -170,6 +170,17 @@ def main():
         os.environ.setdefault("POK_EVOLUTION_RUNTIME", "1")
         os.environ.setdefault("POK_REQUIRE_EVOLUTION_PUSH", "1")
         os.environ.setdefault("EVOLUTION_GIT_PUSH", "1")
+        # When a deployment opts into the isolated cloud-namespace evolution
+        # line (POK_CLOUD_RUNTIME=1), seed the configurable namespace/branch
+        # variables before any web.core module imports bot_namespace, so the
+        # whole runtime publishes into the tencent-cloud-runtime branch with a
+        # national_cloud_v tag namespace that never collides with origin/main.
+        # These are setdefault only: an explicit EnvironmentFile value wins.
+        if os.environ.get("POK_CLOUD_RUNTIME", "").lower() in {"1", "true", "yes", "on"}:
+            os.environ.setdefault("POK_EVOLUTION_BRANCH", "tencent-cloud-runtime")
+            os.environ.setdefault("POK_BOT_PREFIX", "national_cloud_v")
+            os.environ.setdefault("POK_TAG_PREFIX", "national-cloud-bot-v")
+            os.environ.setdefault("POK_HIGH_WATER_TAG_PREFIX", "national-cloud-high-water-v")
 
     if args.view_only:
         os.environ["POK_WEB_VIEW_ONLY"] = "1"

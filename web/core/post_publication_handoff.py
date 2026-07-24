@@ -24,9 +24,11 @@ from bot_artifact import canonical_digest
 from bot_namespace import (
     ARCHIVED_VERSION_HIGH_WATER,
     EVALUATION_EPOCH,
+    EVOLUTION_BRANCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
     bot_tag,
+    high_water_tag,
 )
 from generation_evidence import build_generation_evidence_identity
 
@@ -401,7 +403,7 @@ def _publication_identity(
         raise PostPublicationHandoffError("publication_identity_invalid")
     local_refs = publication_result.get("local_refs") or {}
     paired: dict[str, Any] = {}
-    for name in (bot_tag(version), f"national-high-water-v{version}"):
+    for name in (bot_tag(version), high_water_tag(version)):
         row = local_refs.get(name)
         if not isinstance(row, dict):
             raise PostPublicationHandoffError(f"local_publication_ref_missing:{name}")
@@ -1619,7 +1621,7 @@ def validate_handoff_record(
         if not _is_hex(identity.get(field), length):
             errors.append(f"handoff_{field}_invalid")
     expected_names = (
-        {bot_tag(version), f"national-high-water-v{version}"}
+        {bot_tag(version), high_water_tag(version)}
         if version >= FIRST_STRICT_POLICY_VERSION
         else set()
     )
@@ -1929,7 +1931,7 @@ def _remote_handoff_identity_errors(record: dict[str, Any]) -> list[str]:
     try:
         from evolution_infra import _git, _git_command_succeeds
 
-        wanted = ["refs/heads/main"]
+        wanted = [f"refs/heads/{EVOLUTION_BRANCH}"]
         for name in identity["local_paired_refs"]:
             wanted.extend((f"refs/tags/{name}", f"refs/tags/{name}^{{}}"))
         raw = _git("ls-remote", "origin", *wanted)
@@ -1938,17 +1940,17 @@ def _remote_handoff_identity_errors(record: dict[str, Any]) -> list[str]:
             oid, separator, ref = line.partition("\t")
             if separator and oid and ref:
                 refs[ref] = oid
-        remote_main = refs.get("refs/heads/main", "")
+        remote_main = refs.get(f"refs/heads/{EVOLUTION_BRANCH}", "")
         if not _is_hex(remote_main, 40):
             errors.append("handoff_live_remote_main_missing")
         else:
             tracking = _git(
-                "rev-parse", "refs/remotes/origin/main", check=False
+                "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
             ).strip()
             if tracking != remote_main:
                 _git(
                     "fetch", "--no-tags", "origin",
-                    "refs/heads/main:refs/remotes/origin/main",
+                    f"refs/heads/{EVOLUTION_BRANCH}:refs/remotes/origin/{EVOLUTION_BRANCH}",
                 )
             if not _git_command_succeeds(
                 "merge-base", "--is-ancestor", commit_oid, remote_main

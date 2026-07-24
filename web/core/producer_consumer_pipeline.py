@@ -35,6 +35,7 @@ from mechanical_repair import (
     MechanicalRepairRejected,
     validate_mechanical_repair_receipt_against_artifact_bytes,
 )
+from bot_namespace import bot_name, bot_tag, high_water_tag
 
 
 SCHEMA_VERSION = 1
@@ -329,8 +330,8 @@ def validate_target_identity(value: Any) -> dict[str, Any]:
         or isinstance(version, bool)
         or not isinstance(version, int)
         or version < 1
-        or target["canonical_bot_name"] != f"national_v{version}"
-        or target["canonical_tag"] != f"national-bot-v{version}"
+        or target["canonical_bot_name"] != bot_name(version)
+        or target["canonical_tag"] != bot_tag(version)
     ):
         raise PipelineContractError("target_identity is inconsistent")
     return _json_copy(target)
@@ -897,7 +898,7 @@ def _validate_remote_publication_proof(
     if proof.get("bot_tag") != target["canonical_tag"]:
         raise PipelineContractError("remote bot tag name mismatch")
     if proof.get("high_water_tag") != (
-        f"national-high-water-v{target['canonical_version']}"
+        high_water_tag(target['canonical_version'])
     ):
         raise PipelineContractError("remote high-water tag name mismatch")
     formats = {
@@ -952,7 +953,7 @@ def build_remote_publication_proof(
             "remote bot tag object",
         ),
         "bot_tag_peeled_commit": commit_object,
-        "high_water_tag": f"national-high-water-v{target['canonical_version']}",
+        "high_water_tag": high_water_tag(target['canonical_version']),
         "high_water_tag_object": _require_git_object(
             dict(high_water_tag_object),
             "remote high-water tag object",

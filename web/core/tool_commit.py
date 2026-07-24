@@ -14,8 +14,10 @@ _log = get_logger("commit")
 
 from bot_namespace import (
     FIRST_STRICT_POLICY_VERSION,
+    EVOLUTION_BRANCH,
     bot_name,
     bot_tag,
+    high_water_tag,
     parse_bot_version,
 )
 from tool_runtime_guard import tool
@@ -101,8 +103,8 @@ def _existing_local_bot_tag_matches_certificate(version, certificate):
 
 
 def _push_existing_bot_refs(version):
-    refs = ["main", bot_tag(version)]
-    high_water = f"national-high-water-v{int(version)}"
+    refs = [EVOLUTION_BRANCH, bot_tag(version)]
+    high_water = high_water_tag(int(version))
     if _git("tag", "-l", high_water, check=False).strip():
         refs.append(high_water)
     ok = git_push_refs(*refs)
@@ -2216,9 +2218,9 @@ async def commit_bot(args):
             final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
             strategy_tag=strategy,
             rating_info=rating_info,
-            baseline_head=_git("rev-parse", "refs/heads/main").strip(),
+            baseline_head=_git("rev-parse", f"refs/heads/{EVOLUTION_BRANCH}").strip(),
             baseline_remote_main=_git(
-                "rev-parse", "refs/remotes/origin/main", check=False
+                "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
             ).strip(),
             baseline_remote_completion_refs=(
                 remote_completion_ref_snapshot()
@@ -3504,7 +3506,7 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
     remote_proof = {"required": remote.get("required") is True}
     if remote.get("required") is True:
         wanted = (
-            "refs/heads/main",
+            f"refs/heads/{EVOLUTION_BRANCH}",
             tombstone_ref,
             f"{tombstone_ref}^{{}}",
         )
@@ -3520,8 +3522,8 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
             refs.get(tombstone_ref) != tombstone_object
             or refs.get(f"{tombstone_ref}^{{}}") != completion_commit
         ):
-            raise RuntimeError("reap_tombstone_remote_proof_mismatch")
-        remote_main = str(refs.get("refs/heads/main") or "")
+            raise RuntimeError("reap_remote_proof_mismatch")
+        remote_main = str(refs.get(f"refs/heads/{EVOLUTION_BRANCH}") or "")
         if len(remote_main) != 40 or any(
             char not in "0123456789abcdef" for char in remote_main
         ):
@@ -3529,14 +3531,14 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
         from evolution_infra import _git_command_succeeds
 
         tracking = _git(
-            "rev-parse", "refs/remotes/origin/main", check=False
+            "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
         ).strip()
         if tracking != remote_main:
             _git(
                 "fetch",
                 "--no-tags",
                 "origin",
-                "refs/heads/main:refs/remotes/origin/main",
+                f"refs/heads/{EVOLUTION_BRANCH}:refs/remotes/origin/{EVOLUTION_BRANCH}",
             )
         if not _git_command_succeeds(
             "merge-base",

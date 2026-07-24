@@ -1,6 +1,7 @@
 """Git publish reconciliation for evolution commits.
 
-The evolution pipeline may race with unrelated work landing on origin/main.
+The evolution pipeline may race with unrelated work landing on the configured
+publication branch (origin/main by default, overridable via POK_EVOLUTION_BRANCH).
 This module owns the policy for retrying a push safely: remote changes are
 merged automatically only when they do not affect the evaluation contract.
 """
@@ -10,10 +11,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from bot_namespace import EVOLUTION_BRANCH
 from evaluation_contract import evaluate_head_drift
 
 GitFunc = Callable[..., str]
 LogFunc = Callable[[str, str, str, dict[str, Any]], None]
+
+# The configurable publication branch and its remote-tracking ref. Defaults keep
+# the historical "main" identity so behavior is unchanged unless a deployment
+# overrides POK_EVOLUTION_BRANCH.
+_REMOTE_BRANCH = f"origin/{EVOLUTION_BRANCH}"
 
 
 def _push_once(git: GitFunc, refs: tuple[str, ...]) -> tuple[bool, list[dict[str, str]]]:
@@ -27,7 +34,7 @@ def _push_once(git: GitFunc, refs: tuple[str, ...]) -> tuple[bool, list[dict[str
 
 
 def _rev_count(git: GitFunc) -> tuple[int, int]:
-    raw = git("rev-list", "--left-right", "--count", "HEAD...origin/main", check=False)
+    raw = git("rev-list", "--left-right", "--count", f"HEAD...{_REMOTE_BRANCH}", check=False)
     parts = (raw or "").split()
     if len(parts) != 2:
         return 0, 0
@@ -42,7 +49,7 @@ def _short_rev(git: GitFunc, ref: str) -> str:
 
 
 def _merge_base(git: GitFunc) -> str:
-    return git("merge-base", "HEAD", "origin/main", check=False).strip()
+    return git("merge-base", "HEAD", _REMOTE_BRANCH, check=False).strip()
 
 
 def reconcile_push_refs(
@@ -66,7 +73,7 @@ def reconcile_push_refs(
         "reconciled": False,
         "errors": errors,
     }
-    if "main" not in refs:
+    if EVOLUTION_BRANCH not in refs:
         return result
 
     try:
@@ -79,12 +86,12 @@ def reconcile_push_refs(
             return result
 
         base = _merge_base(git)
-        remote_head = _short_rev(git, "origin/main")
+        remote_head = _short_rev(git, _REMOTE_BRANCH)
         local_head = _short_rev(git, "HEAD")
         allowed, payload = evaluate_head_drift(
             root,
             base,
-            "origin/main",
+            _REMOTE_BRANCH,
             candidate_v=candidate_v,
             source_v=source_v,
             checkpoint=checkpoint,
@@ -101,15 +108,15 @@ def reconcile_push_refs(
                 log_event(
                     "repo.git_push_reconcile_blocked",
                     "error",
-                    "Git push reconcile blocked because remote main changed evaluation contract paths",
+                    "Git push reconcile blocked because remote publication branch changed evaluation contract paths",
                     result,
                 )
             return result
 
         if ahead > 0:
-            git("merge", "--no-ff", "origin/main", "-m", "Merge remote main before publishing evolution refs")
+            git("merge", "--no-ff", _REMOTE_BRANCH, "-m", "Merge remote publication branch before publishing evolution refs")
         else:
-            git("merge", "--ff-only", "origin/main")
+            git("merge", "--ff-only", _REMOTE_BRANCH)
 
         retry_ok, retry_errors = _push_once(git, refs)
         result.update({

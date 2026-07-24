@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from bot_namespace import EVALUATION_EPOCH, FIRST_STRICT_POLICY_VERSION, bot_tag
+from bot_namespace import EVALUATION_EPOCH, EVOLUTION_BRANCH, FIRST_STRICT_POLICY_VERSION, bot_tag, high_water_tag
 from evaluation_contract import build_evaluation_contract
 from evolution_infra import (
     PROJECT_ROOT,
@@ -466,7 +466,7 @@ def _state_errors(state: Any) -> list[str]:
                 row.get("commit_oid") or ""
             ):
                 errors.append(f"{prefix}_remote_main_not_publication_commit")
-            for name in (bot_tag(version), f"national-high-water-v{version}"):
+            for name in (bot_tag(version), high_water_tag(version)):
                 ref = (remote.get("refs") or {}).get(name)
                 if not isinstance(ref, dict):
                     errors.append(f"{prefix}_remote_ref_missing:{name}")
@@ -715,10 +715,10 @@ def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
     rows = list(state.get("observations") or [])
     if not rows:
         return []
-    wanted = ["refs/heads/main"]
+    wanted = [f"refs/heads/{EVOLUTION_BRANCH}"]
     for row in rows:
         version = int(row["version"])
-        for name in (bot_tag(version), f"national-high-water-v{version}"):
+        for name in (bot_tag(version), high_water_tag(version)):
             wanted.extend((f"refs/tags/{name}", f"refs/tags/{name}^{{}}"))
     try:
         raw = _git("ls-remote", "origin", *wanted)
@@ -729,7 +729,7 @@ def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
         oid, separator, ref = line.partition("\t")
         if separator and _is_hex(oid, 40) and ref:
             refs[ref] = oid
-    remote_main = refs.get("refs/heads/main", "")
+    remote_main = refs.get(f"refs/heads/{EVOLUTION_BRANCH}", "")
     errors: list[str] = []
     if not _is_hex(remote_main, 40):
         errors.append("remote_main_missing")
@@ -739,7 +739,7 @@ def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
         version = int(row["version"])
         stored = (row.get("remote_publication") or {}).get("refs") or {}
         commit_oid = str(row.get("commit_oid") or "")
-        for name in (bot_tag(version), f"national-high-water-v{version}"):
+        for name in (bot_tag(version), high_water_tag(version)):
             expected = stored.get(name) or {}
             if refs.get(f"refs/tags/{name}") != expected.get("object_oid"):
                 errors.append(f"v{version}:remote_tag_object_mismatch:{name}")
@@ -1443,7 +1443,7 @@ def record_published_generation(
         "refs": {},
     }
     commit_oid = str(publication_result.get("commit_oid") or "")
-    for name in (bot_tag(version), f"national-high-water-v{version}"):
+    for name in (bot_tag(version), high_water_tag(version)):
         object_oid = str(remote_refs.get(f"refs/tags/{name}") or "")
         peeled_oid = str(remote_refs.get(f"refs/tags/{name}^{{}}") or "")
         if not _is_hex(object_oid, 40) or peeled_oid != commit_oid:

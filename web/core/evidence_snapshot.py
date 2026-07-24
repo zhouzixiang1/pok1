@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from strength_order import match_score
+from bot_namespace import ACTIVE_BOT_PREFIX, bot_name
 
 
 SNAPSHOT_DIRNAME = "evidence_snapshot"
@@ -569,7 +570,7 @@ def load_generation_h2h_snapshot(next_v: int | str) -> dict[str, Any]:
 
 
 def _row_versions(key: str) -> tuple[str | None, str | None]:
-    match = _H2H_KEY_RE.search(str(key or ""))
+    match = _h2h_key_re().search(str(key or ""))
     if not match:
         return None, None
     return match.group(1), match.group(2)
@@ -732,9 +733,12 @@ def h2h_citation_repair_guidance(
             if key in h2h and key not in seen:
                 wanted.append(key)
                 seen.add(key)
-        for alias_match in _H2H_KEY_RE.finditer(str(err)):
+        for alias_match in _h2h_key_re().finditer(str(err)):
             a_v, b_v = alias_match.group(1), alias_match.group(2)
-            for key in (f"national_v{a_v} vs national_v{b_v}", f"national_v{b_v} vs national_v{a_v}"):
+            for key in (
+                f"{bot_name(int(a_v))} vs {bot_name(int(b_v))}",
+                f"{bot_name(int(b_v))} vs {bot_name(int(a_v))}",
+            ):
                 if key in h2h and key not in seen:
                     wanted.append(key)
                     seen.add(key)
@@ -836,20 +840,24 @@ def _extract_int(pattern: str, text: str) -> int | None:
         return None
 
 
-_H2H_KEY_RE = re.compile(r"\bnational_v(\d+)\s+vs\s+national_v(\d+)\b", re.IGNORECASE)
+def _h2h_key_re() -> re.Pattern:
+    return re.compile(
+        rf"\b{re.escape(ACTIVE_BOT_PREFIX)}(\d+)\s+vs\s+{re.escape(ACTIVE_BOT_PREFIX)}(\d+)\b",
+        re.IGNORECASE,
+    )
 _WL_RE = re.compile(r"(?<![\w.])(\d+)\s*W\s*(?:[/:\-]|,)?\s*(\d+)\s*L\b", re.IGNORECASE)
 
 
 def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
     """Return textual aliases and perspective for a snapshot H2H key."""
-    match = _H2H_KEY_RE.search(str(key or ""))
+    match = _h2h_key_re().search(str(key or ""))
     if not match:
         return [(str(key or ""), "", "")]
     a_v, b_v = match.group(1), match.group(2)
     aliases = [
-        (f"national_v{a_v} vs national_v{b_v}", a_v, b_v),
+        (f"{bot_name(int(a_v))} vs {bot_name(int(b_v))}", a_v, b_v),
         (f"v{a_v} vs v{b_v}", a_v, b_v),
-        (f"national_v{b_v} vs national_v{a_v}", b_v, a_v),
+        (f"{bot_name(int(b_v))} vs {bot_name(int(a_v))}", b_v, a_v),
         (f"v{b_v} vs v{a_v}", b_v, a_v),
     ]
     seen: set[str] = set()
@@ -898,7 +906,7 @@ def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str)
                     wins = int(wl_match.group(1))
                     losses = int(wl_match.group(2))
                     cited["games"] = cited["games"] if cited["games"] is not None else wins + losses
-                    key_match = _H2H_KEY_RE.search(str(key))
+                    key_match = _h2h_key_re().search(str(key))
                     key_a = key_match.group(1) if key_match else first_v
                     if first_v == key_a:
                         cited["a_wins"] = cited["a_wins"] if cited["a_wins"] is not None else wins

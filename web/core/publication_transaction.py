@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from bot_namespace import bot_name, bot_tag, format_version
+from bot_namespace import ACTIVE_TAG_PREFIX, bot_name, bot_tag, format_version, high_water_tag
 
 
 PUBLICATION_INTENT_SCHEMA_VERSION = 2
@@ -192,7 +192,7 @@ def build_publication_intent(
             tag_message.encode("utf-8")
         ).hexdigest(),
         "completion_tag": bot_tag(version),
-        "high_water_tag": f"national-high-water-v{version}",
+        "high_water_tag": high_water_tag(version),
         "prepublication_strict_bots": sorted(
             {str(item) for item in prepublication_strict_bots}
         ),
@@ -238,7 +238,7 @@ def publication_intent_structure_errors(intent: Any) -> list[str]:
         errors.append("publication_intent_bot_mismatch")
     if intent.get("completion_tag") != bot_tag(version):
         errors.append("publication_intent_completion_tag_mismatch")
-    if intent.get("high_water_tag") != f"national-high-water-v{version}":
+    if intent.get("high_water_tag") != high_water_tag(version):
         errors.append("publication_intent_high_water_tag_mismatch")
     for field in (
         "candidate_artifact_hash",
@@ -274,11 +274,13 @@ def publication_intent_structure_errors(intent: Any) -> list[str]:
             ordered_remote_refs = sorted(remote_completion_refs)
         if list(remote_completion_refs) != ordered_remote_refs:
             errors.append("publication_intent_remote_completion_refs_not_canonical")
+        completion_prefix = f"refs/tags/{ACTIVE_TAG_PREFIX}"
         for ref, oid in remote_completion_refs.items():
             base_ref = str(ref).removesuffix("^{}")
+            version_tail = base_ref.removeprefix(completion_prefix)
             if (
-                not str(ref).startswith("refs/tags/national-bot-v")
-                or not base_ref[len("refs/tags/national-bot-v"):].isdigit()
+                not str(ref).startswith(completion_prefix)
+                or not version_tail.isdigit()
                 or not _HEX40.fullmatch(str(oid or ""))
             ):
                 errors.append("publication_intent_remote_completion_ref_invalid")
