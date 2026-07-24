@@ -2158,7 +2158,43 @@ def schema_retry_prompt(call: dict[str, Any]) -> str:
         "different proposal. Return only one complete object accepted by "
         f"parse_contract={parse_contract}."
         + (f" Prior deterministic errors: {errors}." if errors else "")
+        + _schema_repair_hints(prior.get("projection_errors") or ())
     )
+
+
+def _schema_repair_hints(errors) -> str:
+    """Render concrete, error-specific repair guidance for common schema failures.
+
+    These are clarifying examples of the exact format the validator accepts,
+    not a relaxation of the schema. They help the LLM produce a compliant
+    object on the first retry instead of repeating the same structural error.
+    """
+
+    error_text = " ".join(str(e) for e in errors)
+    hints = []
+    if "change_symbol_not_chain_terminal" in error_text:
+        hints.append(
+            "FIX change_symbol/chain: reachable_chain must be a direct "
+            "caller->callee path that ENDS exactly at change_symbol. Example: "
+            "change_symbol=\"policy.py:get_baseline_decision\" requires "
+            "reachable_chain=[\"policy.py:get_baseline_decision\"] (length-1 "
+            "chain ending at the same symbol). A longer chain like "
+            "[\"policy.py:get_baseline_decision\",\"policy.py:_hole_ids\"] "
+            "requires change_symbol=\"policy.py:_hole_ids\" (the LAST item)."
+        )
+    if "shared_leaf_requires_full_namespace" in error_text:
+        hints.append(
+            "FIX shared-leaf namespace: every shared leaf (e.g. fold_to_raise) "
+            "must be owner-qualified in structural_change, expected_diff, and "
+            "falsifier.intervention. Either write the full path "
+            "(opponent.rates.fold_to_raise) OR use the root-scoped shorthand "
+            "opponent.rates (aggression, fold_to_raise) immediately after the "
+            "selectable root. A bare fold_to_raise without a namespace owner "
+            "is ambiguous and rejected."
+        )
+    if hints:
+        return "\n" + "\n".join(hints)
+    return ""
 
 
 def _authority_phase(slot: str) -> tuple[str, tuple[str, ...]]:
