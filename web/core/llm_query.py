@@ -4403,10 +4403,18 @@ def _llm_thinking_options() -> dict:
         return {"thinking": {"type": "disabled"}}
     if mode == "adaptive":
         return {"thinking": {"type": "adaptive"}}
-    # default / "enabled": deep bounded reasoning
-    budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000"))
+    # default / "enabled": deep bounded reasoning. A moderate budget (default
+    # 32000) lets GLM reason deeply yet converge and emit a detailed answer.
+    budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "32000"))
     options: dict = {"thinking": {"type": "enabled", "budget_tokens": budget}}
-    effort = os.environ.get("POK_LLM_EFFORT", "max").strip().lower()
+    # effort is intentionally unset by default. ``effort=max`` is HARMFUL on
+    # GLM-5.2's Anthropic-compatible endpoint: it drives the model into an
+    # infinite thinking loop (64k+ thinking tokens, zero text output) on
+    # complex Master-proposal prompts, regardless of budget_tokens. Leaving
+    # POK_LLM_EFFORT unset lets GLM use its default reasoning depth, which
+    # converges reliably. Set POK_LLM_EFFORT only if a future GLM build fixes
+    # the loop.
+    effort = os.environ.get("POK_LLM_EFFORT", "").strip().lower()
     if effort:
         options["effort"] = effort
     return options

@@ -155,11 +155,11 @@ stay under ~2.5 GiB with these defaults.
 
 ## LLM timing (GLM-5.2 deep reasoning)
 
-GLM-5.2 with `effort=max` + `budget_tokens=64000` routinely spends 250–320s
-thinking before emitting visible text on complex Master-proposal prompts. The
-default `MASTER_PROPOSAL` role timeouts in `web/core/llm_query.py`
-(`stall=360s`, `idle=360s`, `total=900s`) are too tight and killed Scouts
-mid-thought. `env.runtime` raises them via role-scoped env overrides:
+GLM-5.2 with enabled thinking spends 100–320s thinking before emitting visible
+text on complex Master-proposal prompts. The default `MASTER_PROPOSAL` role
+timeouts in `web/core/llm_query.py` (`stall=360s`, `idle=360s`, `total=900s`)
+are too tight and killed Scouts mid-thought. `env.runtime` raises them via
+role-scoped env overrides:
 
 - `POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT=600` (productive-message silence)
 - `POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT=600` (total stream silence)
@@ -168,6 +168,15 @@ mid-thought. `env.runtime` raises them via role-scoped env overrides:
 The `stall` gate fires first and is the one that must be raised. Other roles
 (Review, Critic, Worker) keep their defaults; raise them similarly if a role
 repeatedly times out on GLM.
+
+### Why `effort=max` is unset
+
+`effort=max` (which GLM maps `high`/`xhigh`/`max` all to) is harmful on this
+endpoint: it drives GLM into an infinite thinking loop (64k+ thinking tokens,
+zero text output) on complex prompts, regardless of `budget_tokens`. The
+runtime therefore leaves `POK_LLM_EFFORT` unset and uses `budget_tokens=32000`,
+which converges reliably while still producing deep reasoning and detailed
+text output.
 
 ## What stays out of main
 
