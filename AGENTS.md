@@ -276,6 +276,17 @@ All three are environment-overridable: `POK_LLM_THINKING_MODE`
 `POK_LLM_THINKING_BUDGET` (default `64000`), `POK_LLM_EFFORT` (default `max`).
 The committed defaults live in `deploy/tencent-cloud/env.runtime`.
 
+Because GLM-5.2 with `effort=max` + a large budget routinely spends 250–320s
+thinking before emitting visible text on complex Master-proposal prompts, the
+default `MASTER_PROPOSAL` role timeouts in `web/core/llm_query.py`
+(`first_activity=120s`, `stall=360s`, `idle=360s`, `total=900s`) are too tight.
+The cloud runtime raises them via role-scoped env overrides
+(`POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT=600`,
+`POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT=600`,
+`POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT=1200`). The `stall` gate (productive-
+message silence) is the one that fires first and must be raised, not just
+`idle`.
+
 ## Space-for-time assets
 
 Compact system-owned import-time facts are allowed and measured: 1,326 hole
