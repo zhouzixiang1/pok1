@@ -32,6 +32,7 @@ from bot_namespace import (
     ACTIVE_BOT_PREFIX,
     ACTIVE_TAG_PREFIX,
     HIGH_WATER_TAG_PREFIX as _NAMESPACE_HIGH_WATER_TAG_PREFIX,
+    bot_name,
 )
 
 COMPLETION_TAG_PREFIX = ACTIVE_TAG_PREFIX
@@ -468,7 +469,7 @@ def _history_commit_for_version(git: GitRepository, version: int) -> str | None:
         "1",
         "--format=%H",
         "--",
-        f"bots/national_v{version}",
+        f"bots/{bot_name(version)}",
         check=False,
     )
     oid = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""

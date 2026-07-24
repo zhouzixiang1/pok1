@@ -391,12 +391,19 @@ def lineage_only_capabilities() -> dict[str, Any]:
 
 
 def _lineage_bot_identity(value: Any) -> str:
-    """Validate a bot label without interpreting it as a filesystem path."""
+    """Validate a bot label without interpreting it as a filesystem path.
+
+    Uses the active-namespace parser so cloud runtimes (national_cloud_v*)
+    validate the same way the canonical line (national_v*) does.
+    """
+
+    from bot_namespace import parse_bot_version
 
     text = str(value or "").strip()
-    prefix = "national_v"
-    suffix = text[len(prefix):] if text.startswith(prefix) else ""
-    if not suffix.isdigit() or int(suffix) <= 0 or any(char in text for char in "/\\"):
+    if any(char in text for char in "/\\"):
+        raise ValueError("lineage_bot_identity_invalid")
+    version = parse_bot_version(text)
+    if version is None or version <= 0:
         raise ValueError("lineage_bot_identity_invalid")
     return text
 

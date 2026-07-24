@@ -882,6 +882,8 @@ def is_declared_native_bootstrap(checkpoint: Any) -> bool:
 
 
 def system_recovery_eligible(checkpoint: Any, next_tool: str) -> bool:
+    from bot_namespace import bot_name
+
     expected_stage = {
         "run_direction_audit": "prepared",
         "run_master": "direction_audited",
@@ -893,7 +895,7 @@ def system_recovery_eligible(checkpoint: Any, next_tool: str) -> bool:
     try:
         return not validate_bootstrap_checkpoint(
             checkpoint,
-            candidate_dir=PROJECT_ROOT / "bots" / f"national_v{checkpoint.get('next_v')}",
+            candidate_dir=PROJECT_ROOT / "bots" / bot_name(int(checkpoint.get("next_v"))),
             require_direction_audit=next_tool == "run_master",
         )
     except Exception:
@@ -1001,7 +1003,7 @@ async def abandon_rejected_blueprint(
                 live,
                 gate_name=gate_name,
                 gate_payload=gate_payload,
-                candidate_dir=PROJECT_ROOT / "bots" / f"national_v{live['next_v']}",
+                candidate_dir=PROJECT_ROOT / "bots" / bot_name(int(live["next_v"])),
                 reason_code=reason_code,
                 failure_class=failure_class,
             )
@@ -1039,7 +1041,7 @@ async def abandon_rejected_blueprint(
         terminal_errors = validate_terminal_gate_outcome(
             live,
             outcome,
-            candidate_dir=PROJECT_ROOT / "bots" / f"national_v{live['next_v']}",
+            candidate_dir=PROJECT_ROOT / "bots" / bot_name(int(live["next_v"])),
         )
         if terminal_errors:
             raise RuntimeError(
@@ -1915,6 +1917,8 @@ def validate_system_gate_receipt(
     gate_name: str,
     candidate_dir: str | Path | None = None,
 ) -> list[str]:
+    from bot_namespace import bot_name
+
     gate = ((checkpoint.get("gate_results") or {}).get(gate_name) or {})
     errors = validate_embedded_system_gate(gate, gate_name=gate_name)
     receipt = gate.get("system_verifier_receipt") if isinstance(gate, dict) else None
@@ -1922,7 +1926,7 @@ def validate_system_gate_receipt(
     if errors:
         return list(dict.fromkeys(errors))
     candidate = Path(candidate_dir) if candidate_dir is not None else (
-        PROJECT_ROOT / "bots" / f"national_v{int(checkpoint.get('next_v'))}"
+        PROJECT_ROOT / "bots" / bot_name(int(checkpoint.get("next_v")))
     )
     try:
         expected = build_system_gate_receipt(
