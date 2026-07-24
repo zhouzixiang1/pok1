@@ -38,7 +38,7 @@ def test_retries_on_signature_error(monkeypatch):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise ClaudeSDKError("Missing required field in assistant message: signature")
-        return (["ok"], 0.01, {})
+        return (["ok"], 0.01, {}, {})
 
     def fake_claude_query(*_args, **_kwargs):
         return _make_fake_generator()

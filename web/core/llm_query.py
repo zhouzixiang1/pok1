@@ -4643,6 +4643,15 @@ def _role_log_metadata(log_file_path):
     return meta
 
 
+def _role_log_basename(log_file_path):
+    """Return a short relative path for metrics logging (e.g. v1/.../master_io.txt)."""
+    path = str(log_file_path or "")
+    match = re.search(r"/(v\d+/logs/.+)$", path)
+    if match:
+        return match.group(1)
+    return path.rsplit("/", 1)[-1] if path else None
+
+
 def _tools_metadata(tools):
     if tools is None:
         return {"tools": []}
@@ -5330,6 +5339,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     usage = None
     availability_trace = LLMAvailabilityTrace()
     stream_started_at = time.time()
+    # Metrics: track first-token and first-text latencies for call analytics.
+    first_productive_at = None  # first AssistantMessage/ToolUse/etc
+    first_text_at = None        # first TextBlock with non-empty text
+    # Metrics: capture ResultMessage diagnostic fields for llm_call_metrics.jsonl.
+    result_diag = {}            # subtype, is_error, num_turns, stop_reason, etc.
+    assistant_message_count = 0
     first_activity_logged = False
     # B2 (2026-07-09): a SystemMessage (e.g. subtype=init, thinking_tokens) is
     # emitted by the SDK/proxy purely to acknowledge the request or carry
@@ -5623,10 +5638,15 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             productive_message = False
             if isinstance(message, AssistantMessage):
                 productive_message = True
+                if first_productive_at is None:
+                    first_productive_at = time.time()
+                assistant_message_count += 1
                 _mark_first_activity("assistant")
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text = block.text
+                        if text and first_text_at is None:
+                            first_text_at = time.time()
                         availability_trace.observe_text(text)
                         text_chars += len(text or "")
                         texts.append(text)
@@ -5727,6 +5747,36 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 availability_trace.observe_result(message)
                 cost_usd = message.total_cost_usd
                 usage = message.usage
+                # Capture ALL ResultMessage diagnostic fields for metrics logging.
+                # Previously only extracted on error path; now always captured
+                # so stop_reason/num_turns/duration are available for success too.
+                result_diag = {
+                    "subtype": getattr(message, "subtype", None),
+                    "is_error": bool(getattr(message, "is_error", False)),
+                    "num_turns": getattr(message, "num_turns", None),
+                    "stop_reason": getattr(message, "stop_reason", None),
+                    "terminal_reason": getattr(message, "terminal_reason", None),
+                    "duration_ms": getattr(message, "duration_ms", None),
+                    "duration_api_ms": getattr(message, "duration_api_ms", None),
+                    "session_id": getattr(message, "session_id", None),
+                    "uuid": getattr(message, "uuid", None),
+                    "result_text": getattr(message, "result", None),
+                    "api_error_status": getattr(message, "api_error_status", None),
+                    "errors": getattr(message, "errors", None),
+                    "model_usage": None,
+                }
+                # model_usage may be a dict of ModelUsage dataclasses; convert.
+                _mu = getattr(message, "model_usage", None)
+                if isinstance(_mu, dict):
+                    try:
+                        result_diag["model_usage"] = {
+                            k: (v if isinstance(v, dict) else
+                                (v.model_dump() if hasattr(v, "model_dump") else
+                                 dict(v) if hasattr(v, "__iter__") and not isinstance(v, str) else str(v)))
+                            for k, v in _mu.items()
+                        }
+                    except Exception:
+                        result_diag["model_usage"] = None
                 billing_results = _LLM_BILLING_RESULTS.get()
                 if isinstance(billing_results, list):
                     billing_results.append(message)
@@ -5939,7 +5989,29 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     availability_block = availability_trace.blocked(role=role_name)
     if availability_block is not None:
         raise availability_block
-    return texts, cost_usd, usage
+    # Build timing metrics for call analytics (llm_call_metrics.jsonl).
+    stream_end_at = time.time()
+    stream_metrics = {
+        "stream_elapsed_sec": round(stream_end_at - stream_started_at, 2),
+        "first_token_latency_sec": (
+            round(first_productive_at - stream_started_at, 2)
+            if first_productive_at is not None else None
+        ),
+        "first_text_latency_sec": (
+            round(first_text_at - stream_started_at, 2)
+            if first_text_at is not None else None
+        ),
+        "thinking_tokens_estimated": thinking_tokens_estimate,
+        "thinking_tokens_delta_total": thinking_tokens_delta_total,
+        "text_block_count": len(texts),
+        "thinking_chars": thinking_chars,
+        "tool_use_count": tool_use_count,
+        "tool_result_count": tool_result_count,
+        "message_count": message_count,
+        "assistant_message_count": assistant_message_count,
+        "result_diag": result_diag,
+    }
+    return texts, cost_usd, usage, stream_metrics
 
 
 # claude_agent_sdk 0.2.91 intermittently raises ClaudeSDKError "Missing required
@@ -6530,8 +6602,11 @@ async def _run_stream_with_signature_retry_attempts(
             raise
         billing_results = []
         billing_token = _LLM_BILLING_RESULTS.set(billing_results)
+        _attempt_start = time.time()
         try:
-            texts, cost_usd, usage = await _process_stream(query_gen, log_file_path, ui, role_name)
+            texts, cost_usd, usage, stream_metrics = await _process_stream(
+                query_gen, log_file_path, ui, role_name
+            )
             attempt_cost, attempt_usage = _record_completed_billing_attempt(
                 role_name=role_name,
                 ui=ui,
@@ -6541,6 +6616,52 @@ async def _run_stream_with_signature_retry_attempts(
                 attempt=sdk_attempt,
                 billing_call_id=billing_call_id,
             )
+            # Record per-attempt call metrics for offline timing/token analysis.
+            try:
+                from llm_call_metrics import record_llm_call_metrics
+                _um = _usage_metadata(usage) if usage else {}
+                _rd = stream_metrics.get("result_diag") or {}
+                record_llm_call_metrics(
+                    call_id=billing_call_id,
+                    attempt=sdk_attempt,
+                    max_attempts=_SIGNATURE_MAX_ATTEMPTS,
+                    role=role_name,
+                    model=getattr(options, "model", None),
+                    total_elapsed_sec=time.time() - _attempt_start,
+                    first_token_latency_sec=stream_metrics.get("first_token_latency_sec"),
+                    first_text_latency_sec=stream_metrics.get("first_text_latency_sec"),
+                    stream_active_sec=stream_metrics.get("stream_elapsed_sec"),
+                    input_tokens=_um.get("input_tokens"),
+                    output_tokens=_um.get("output_tokens"),
+                    cache_creation_input_tokens=_um.get("cache_creation_input_tokens"),
+                    cache_read_input_tokens=_um.get("cache_read_input_tokens"),
+                    thinking_tokens_estimated=stream_metrics.get("thinking_tokens_estimated"),
+                    thinking_tokens_delta_total=stream_metrics.get("thinking_tokens_delta_total"),
+                    cost_usd=attempt_cost,
+                    success=True,
+                    sdk_subtype=_rd.get("subtype"),
+                    stop_reason=_rd.get("stop_reason"),
+                    num_turns=_rd.get("num_turns"),
+                    terminal_reason=_rd.get("terminal_reason"),
+                    sdk_duration_ms=_rd.get("duration_ms"),
+                    sdk_duration_api_ms=_rd.get("duration_api_ms"),
+                    sdk_session_id=_rd.get("session_id"),
+                    sdk_uuid=_rd.get("uuid"),
+                    sdk_result_text=_rd.get("result_text"),
+                    model_usage=_rd.get("model_usage"),
+                    raw_usage=(usage if isinstance(usage, dict) else
+                               (usage.model_dump() if usage and hasattr(usage, "model_dump") else None)),
+                    api_error_status=_rd.get("api_error_status"),
+                    text_block_count=stream_metrics.get("text_block_count"),
+                    thinking_chars=stream_metrics.get("thinking_chars"),
+                    tool_use_count=stream_metrics.get("tool_use_count"),
+                    tool_result_count=stream_metrics.get("tool_result_count"),
+                    message_count=stream_metrics.get("message_count"),
+                    assistant_message_count=stream_metrics.get("assistant_message_count"),
+                    log_file=_role_log_basename(log_file_path),
+                )
+            except Exception:
+                pass
             total_cost += attempt_cost
             total_usage = _merge_billing_usage(total_usage, attempt_usage)
             if sdk_attempt > 0 and ui:
@@ -7043,6 +7164,13 @@ async def run_claude_query(
         **_tools_metadata(tools),
         **_role_timeout_policy(role_name),
         **_role_log_metadata(log_file_path),
+        # Thinking config for metrics (filled before dispatch; semaphore_wait
+        # is populated after acquire).
+        "thinking_mode": os.environ.get("POK_LLM_THINKING_MODE", "enabled"),
+        "thinking_budget": int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000")),
+        "effort": os.environ.get("POK_LLM_EFFORT", "max"),
+        "global_concurrency": int(os.environ.get("POK_GLOBAL_LLM_CONCURRENCY", "2")),
+        "semaphore_wait_sec": None,  # populated after acquire
     }
 
     # The strict bootstrap creates a one-attempt fenced effect only after the
@@ -7123,7 +7251,9 @@ async def run_claude_query(
             from llm_concurrency import get_global_llm_semaphore
 
             _global_llm_sem = get_global_llm_semaphore()
+            _sem_wait_start = time.time()
             async with _global_llm_sem:
+                lifecycle_fields["semaphore_wait_sec"] = round(time.time() - _sem_wait_start, 3)
                 full_text, cost_usd, usage = await _run_stream_with_signature_retry(
                     full_prompt, options, log_file_path, ui, role_name)
 
