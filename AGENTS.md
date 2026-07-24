@@ -280,15 +280,14 @@ All three are environment-overridable: `POK_LLM_THINKING_MODE`
 `POK_LLM_THINKING_BUDGET` (default `64000`), `POK_LLM_EFFORT` (default `max`).
 The committed defaults live in `deploy/tencent-cloud/env.runtime`.
 
-Because GLM-5.2 with `effort=max` + a large budget spends 4–9 min (240–540s)
-per Scout before emitting visible text (measured in gen-1 with CLAUDE.md memory
-injection active), role timeouts are tuned from actual measurements via env
-overrides in `deploy/tencent-cloud/env.runtime`:
-`MASTER_PROPOSAL`/`MASTER`/`MASTER_FINAL`/`REVIEW`/`CRITIC` total=1800s,
-stall=600s, idle=900s; `WORKER` total=1800s. The `CYCLE_TIMEOUT` is 7200s
-(2h) and `WATCHDOG_TIMEOUT` is 14400s (4h). Timeouts are set at ~2–3× the
-observed maximum to catch stuck/crashed streams quickly without killing GLM
-mid-reasoning.
+Because GLM-5.2 with `effort=max` + a large budget has variable output speed
+(4–9 min typical, up to 15–20 min during peak provider load), role timeouts
+are kept generous via env overrides in `deploy/tencent-cloud/env.runtime`:
+all LLM roles total=3600s, stall=1200s, idle=1800s. The `CYCLE_TIMEOUT` is
+14400s (4h) and `WATCHDOG_TIMEOUT` is 28800s (8h). The stall gate
+(productive-message silence) is the primary stuck-stream detector; these
+generous values avoid killing GLM mid-reasoning while still catching truly
+hung streams.
 
 ### Global LLM concurrency (producer-consumer model)
 

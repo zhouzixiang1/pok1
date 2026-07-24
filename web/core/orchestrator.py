@@ -3261,7 +3261,7 @@ async def _run_one_cycle(
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
 
-        CYCLE_TIMEOUT = 7200  # 120 minutes max per LLM cycle. Tuned from gen-1 actual measurements: Scout ensemble (3 Scouts via Semaphore(2) = 2 rounds × ~9min = ~18min) + schema retries (~3min) + Critics (~10min) + final Master (~9min) + workers (~20min) + review (~9min) + critic (~9min) = ~77min typical. 7200s = 120min gives ~43min buffer for precommit (native match ~23min) and edge cases. Previous 18000s was 15× too generous; 5400s killed GLM mid-reasoning.
+        CYCLE_TIMEOUT = 14400  # 240 minutes (4h) max per LLM cycle. Generous for GLM-5.2 variable output speed: during peak provider load a single Scout can take 15-20min. Full pipeline (Scout ensemble + Critics + final + workers + review + critic + precommit) can reach 2-3h under load. 14400s gives ample room without being unbounded.
         # Sentinel returned by the timeout-extension path (stage=verified, first extension).
         # Must be DISTINCT from every other cost signal: -0.5 (infra), -1.0 (generic crash),
         # and the auth clamp -max(abs(total_cost), 1.0) which can reach any negative value
