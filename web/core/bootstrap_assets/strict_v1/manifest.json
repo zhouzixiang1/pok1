@@ -22,8 +22,8 @@
     "docs/official-allin-runout-wire-oracle-2026-07-19.md": "e6a0ef58656bd80ffdc2828a12920911e264a29de85ab61fb180332026dbb7e7"
   },
   "official_policy_id": "official-full-v5",
-  "output_artifact_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
-  "prepared_artifact_hash": "ff388a3d88b67b2bc93e2968114aa1669aef7596ffeef78c1b75f42cfc873278",
+  "output_artifact_hash": "526e6f1847147f68fc7d015237310a4a26946efbe58b20245e6b6bd12ee73103",
+  "prepared_artifact_hash": "34e691ca3945e1171e806ab78b23985674c9ec273d115e655998d36850e84c3b",
   "provenance": {
     "history_injected": false,
     "kind": "clean-room-lll-informed-strict-v143-bootstrap",
