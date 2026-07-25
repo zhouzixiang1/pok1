@@ -342,6 +342,18 @@ forbidden.
 
 Active implementation is under `web/core/`. Major responsibilities include:
 
+- `llm_query.py` — LLM dispatch entry point (`run_claude_query`, streaming,
+  cost/billing, signature retry, provider-attempt lifecycle). Companion
+  modules extracted for maintainability: `llm_query_guards.py` (sub-agent
+  shell parsing + read/write/cost guard hooks), `llm_call_metrics.py`
+  (per-call timing/token/cost analytics), and `llm_concurrency.py` (global
+  LLM Semaphore for the producer-consumer concurrency model);
+- `agent_master.py` — Master proposal ensemble and final analysis. Companion
+  `agent_master_validation.py` holds the schema validators, source symbol
+  graph, and prompt renderers (all re-exported by `agent_master.py`);
+- `tool_planning.py` — MCP tool definitions and planning support. Companion
+  `tool_planning_worker.py` holds the worker durable execution and
+  quality/repair contract engine (re-exported by `tool_planning.py`);
 - `epoch_authority.py`, `checkpoint_schema.py` — canonical version/reset state
   and fail-closed durable checkpoint identity; UI, scheduler, and recovery must
   not recompute these from directory names or retired runtime files;
