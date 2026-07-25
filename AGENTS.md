@@ -410,8 +410,16 @@ Active implementation is under `web/core/`. Major responsibilities include:
   `agent_master_validation.py` holds the schema validators, source symbol
   graph, and prompt renderers (all re-exported by `agent_master.py`);
 - `tool_planning.py` — MCP tool definitions and planning support. Companion
-  `tool_planning_worker.py` holds the worker durable execution and
-  quality/repair contract engine (re-exported by `tool_planning.py`);
+  `tool_planning_worker.py` holds the worker durable execution and the F-group
+  (durable worker projection/effect) entry points; a second companion
+  `tool_planning_quality_contracts.py` holds the E-group quality/repair contract
+  engine (failure-source analysis, contract builders, mechanical trimming,
+  rework synthesis). Both companions are re-exported by `tool_planning.py`
+  (and `tool_planning_worker.py` re-exports the E-group), so every
+  `from tool_planning import <name>` and `tool_planning.<name>` site keeps
+  resolving; tests monkeypatch `tool_planning`, so the moved E-group symbols
+  forward the monkeypatched parent-module names live via `_TPCallableProxy`
+  (mirroring `tool_planning_worker`'s own pattern);
 - `epoch_authority.py`, `checkpoint_schema.py` — canonical version/reset state
   and fail-closed durable checkpoint identity; UI, scheduler, and recovery must
   not recompute these from directory names or retired runtime files;
@@ -438,7 +446,15 @@ Active implementation is under `web/core/`. Major responsibilities include:
   forever burning LLM budget;
 - `national_native.py`, `national_game_runtime.py`, and
   `sever/server/transport.py` — strict raw TCP runtime with one shared stream
-  parser;
+  parser. `national_native.py` has two re-export companions extracted for
+  maintainability: `national_native_templates.py` (the immutable
+  `NATIVE_BOT_TEMPLATE`/`NATIVE_PRECOMPUTE_TEMPLATE`/`_NATIVE_STREAM_PROBE_SCRIPT`
+  source-template strings + `NATIONAL_DECISION_RUNTIME_VERSION`) and
+  `national_native_timing.py` (the match-timing plan subsystem: dataclasses,
+  builders, validators, progress projection). Every existing
+  `from national_native import <symbol>` site keeps resolving via re-export;
+  the templates are byte-pinned (their sha256 is asserted in
+  `test_national_runtime_probe.py`);
 - `national_capability_contract.py`, `national_runtime_probe.py` — static and
   dynamic policy-ABI enforcement;
 - `elo_daemon.py` — internal native-match scheduling and immutable evaluation-cycle publication;
