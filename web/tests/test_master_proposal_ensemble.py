@@ -3416,6 +3416,99 @@ def test_root_scoped_shared_leaf_list_rejects_unknown_children(
 
 
 @pytest.mark.parametrize(
+    "connector",
+    ("root", "profile", "values", "snapshot", "node", "subtree"),
+)
+def test_root_scoped_shared_leaf_list_accepts_short_connector_word(
+    tmp_path,
+    connector,
+):
+    """A short natural-language connector between the root literal and the
+    parenthesized child list does not change ownership and must not flip the
+    root-scoped list into a bare-shared-leaf rejection.  GLM Scouts regularly
+    emit prose such as ``opponent.rates root (aggression, fold_to_raise)``.
+    """
+    import agent_master
+
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    target = "opponent.rates"
+    scoped = f"{target} {connector} (aggression, fold_to_raise)"
+    payload.update({
+        "mechanism_target": target,
+        "structural_change": f"Route only {scoped} through the bounded consumer.",
+        "expected_diff": f"The paired intent changes only through {scoped}.",
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": target,
+        "control": "Hold opponent.rates at its bounded paired-state prior.",
+        "intervention": f"Change only {scoped} in the paired decision context.",
+        "expected_observation": (
+            "The typed intent changes only under the action-profile intervention."
+        ),
+    }
+
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    assert errors == (), (
+        f"connector {connector!r} should not produce errors, got {errors}"
+    )
+
+
+def test_root_scoped_shared_leaf_list_rejects_qualified_child_as_header(
+    tmp_path,
+):
+    """A dotted qualified child (e.g. opponent.rates.aggression) immediately
+    before the paren must NOT be treated as a root-scoped list header: that
+    would let a different axis smuggle leaves under the expected root.
+    """
+    import agent_master
+
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    target = "opponent.rates"
+    # A dotted identifier in the connector position must fail to match the
+    # root-scoped list regex, so the bare leaf inside the parens is rejected.
+    scoped = f"{target}.aggression (fold_to_raise)"
+    payload.update({
+        "mechanism_target": target,
+        "structural_change": f"Route only {scoped} through the bounded consumer.",
+        "expected_diff": f"The paired intent changes only through {scoped}.",
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": target,
+        "control": "Hold opponent.rates at its bounded paired-state prior.",
+        "intervention": f"Change only {scoped} in the paired decision context.",
+        "expected_observation": (
+            "The typed intent changes only under the action-profile intervention."
+        ),
+    }
+
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    # The bare fold_to_raise inside the parens is unmasked because the dotted
+    # connector prevented the root-scoped list from matching.
+    assert any(
+        "proposal_mechanism_shared_leaf_requires_full_namespace" in e
+        for e in errors
+    ), f"expected shared-leaf rejection for dotted header, got {errors}"
+
+
+@pytest.mark.parametrize(
     "poker_phrase",
     (
         "fold_to_raise sample statistic",

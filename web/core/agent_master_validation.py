@@ -1058,18 +1058,30 @@ def _proposal_mechanism_target_errors(
         deliberately narrow ``opponent.rates (aggression, fold_to_raise)``
         notation: the exact selectable root is immediately followed by a flat
         list of identifier leaves.  Treat that syntax as qualified rather than
-        rejecting it as a bare shared leaf.  Do not accept prose, nested paths,
+        rejecting it as a bare shared leaf.  A short natural-language connector
+        such as ``opponent.rates root (aggression, fold_to_raise)`` or
+        ``opponent.rates profile (aggression, fold_to_raise)`` is also accepted:
+        the connector words do not change ownership and the parenthesized list
+        is still the explicit child set.  Do not accept prose, nested paths,
         values, or a different root inside the parentheses; those remain
         fail-closed and are still scanned for foreign targets below.
         """
 
+        # Allow up to three short alphabetic connector words (e.g. "root",
+        # "profile", "values") between the root literal and the opening paren.
+        # Dots, digits, underscores, or longer identifiers in the connector
+        # position are rejected so a different qualified target cannot pose as
+        # a root-scoped list header.
         root_pattern = re.compile(
-            r"(?<![a-z0-9_])" + re.escape(expected) + r"\s*\(([^()]*)\)",
+            r"(?<![a-z0-9_])"
+            + re.escape(expected)
+            + r"((?:\s+[a-z]{1,20}){0,3})\s*\(([^()]*)\)",
             flags=re.IGNORECASE,
         )
 
         def replace(match: re.Match[str]) -> str:
-            body = match.group(1)
+            connector = match.group(1) or ""
+            body = match.group(2)
             fields = re.split(r"\s*(?:,|\band\b)\s*", body)
             normalized_fields = [
                 field.strip().strip("`'\"").lower()
@@ -1102,7 +1114,14 @@ def _proposal_mechanism_target_errors(
                         masked_body,
                         flags=re.IGNORECASE,
                     )
-            return match.group(0).replace(body, masked_body, 1)
+            # Replace the body in-place; also blank the connector words so the
+            # downstream unowned-text scan cannot re-introduce a stray token
+            # (defensive: connector words are not leaves, but keep the masked
+            # text clean).
+            masked_match = match.group(0).replace(body, masked_body, 1)
+            if connector:
+                masked_match = masked_match.replace(connector, " ", 1)
+            return masked_match
 
         return root_pattern.sub(replace, text)
 
