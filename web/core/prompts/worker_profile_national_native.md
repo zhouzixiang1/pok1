@@ -115,6 +115,14 @@ socket reducer. Consume its declared sections and names directly:
 - `betting.pot`, both stacks and street bets, `effective_stack`, `to_call`,
   `spr`, `pot_odds`, and `call_closes_allin_runout`;
 - bounded semantic `history.actions` and `history.truncated_count`;
+- **`opponent`** — the bounded opponent snapshot, including
+  `opponent.rates.aggression` and `opponent.rates.fold_to_raise`. The quality
+  gate REQUIRES that `get_baseline_decision` reads `decision_context.opponent`
+  (e.g. `opp = context.get("opponent") or {}`). Without this read, the
+  `incremental_opponent_model` architecture contract check fails and the
+  generation is abandoned. Every proposal that selects
+  `mechanism_target=opponent.rates` MUST produce code that reads
+  `context.get("opponent")` inside `get_baseline_decision`.
 - `line.preflop_aggressor`, `preflop_spot`, `street_open`,
   `responding_to_check`, `can_donk`, `can_delayed_probe`, and current/previous
   street summaries;
