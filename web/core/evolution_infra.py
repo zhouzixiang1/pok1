@@ -2823,6 +2823,35 @@ def _tagged_bot_versions():
     return tag_versions
 
 
+def _registry_may_be_virgin() -> bool:
+    """True when the durable reaped registry is legitimately empty.
+
+    A fresh cloud checkout (no ``national-cloud-bot-v*`` completion tags and no
+    ``national-reaped-registry-v1`` migration marker) has never reaped any bot,
+    so ``parse_legacy_ledger`` correctly reports ``legacy_ledger_missing`` and
+    ``load_reaped_bot_versions`` raises ``RegistryUnavailableError``. That is the
+    *expected* empty state, not a registry failure: returning an empty reaped set
+    here keeps the fail-closed registry contract (corrupt tags, missing marker
+    after migration, etc. still raise) while suppressing the operator-noise
+    ERROR that ``elo_daemon``'s 3s active-bot poll would otherwise log forever.
+
+    Once any strict bot publishes, ``_tagged_bot_versions()`` is non-empty and
+    this helper returns False, restoring the strict fail-closed log path.
+    """
+    if _tagged_bot_versions():
+        return False
+    try:
+        marker = _git(
+            "tag",
+            "-l",
+            "national-reaped-registry-v1",
+            check=False,
+        ).strip()
+    except Exception:
+        marker = ""
+    return not marker
+
+
 def _bot_version_from_name(bot_name):
     return parse_bot_version(bot_name)
 
@@ -3068,8 +3097,15 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
         try:
             reaped_versions = load_reaped_bot_versions()
         except Exception as exc:
-            log.error("National reaped registry unavailable; refusing sentinel restore: %s", exc)
-            return []
+            if _registry_may_be_virgin():
+                # Fresh cloud bootstrap (no completion tags, no migration marker):
+                # nothing has ever been reaped. Empty set is correct; restore can
+                # still proceed because the early-return below handles empty
+                # tag_versions. Suppress the operator-noise ERROR.
+                reaped_versions = set()
+            else:
+                log.error("National reaped registry unavailable; refusing sentinel restore: %s", exc)
+                return []
     if not tag_versions or not BOTS_DIR.exists():
         return []
 
@@ -3329,19 +3365,25 @@ def _discover_active_bots(
     try:
         reaped_versions = load_reaped_bot_versions()
     except Exception as exc:
-        log.error("National reaped registry unavailable; active pool fails closed: %s", exc)
-        try:
-            from system_log import log_system_event
+        if _registry_may_be_virgin():
+            # Fresh cloud bootstrap: no completion tags + no migration marker =>
+            # nothing has ever been reaped. The empty set is the correct value;
+            # do not log an ERROR for the expected empty state.
+            reaped_versions = set()
+        else:
+            log.error("National reaped registry unavailable; active pool fails closed: %s", exc)
+            try:
+                from system_log import log_system_event
 
-            log_system_event(
-                "pipeline.national_epoch_registry_unavailable",
-                "error",
-                "National epoch lifecycle registry unavailable; active pool disabled",
-                {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
-            )
-        except Exception:
-            pass
-        return []
+                log_system_event(
+                    "pipeline.national_epoch_registry_unavailable",
+                    "error",
+                    "National epoch lifecycle registry unavailable; active pool disabled",
+                    {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+                )
+            except Exception:
+                pass
+            return []
     if repair_completed_sentinels:
         _ensure_completed_sentinels_for_tagged_bots(tag_versions, reaped_versions)
 
