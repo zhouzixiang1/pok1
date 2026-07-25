@@ -373,7 +373,7 @@ def test_successful_model_text_discussing_quota_is_not_a_stream_failure(
         )
 
     monkeypatch.setattr(llm_query, "_emit_llm_event", lambda *_args, **_kwargs: None)
-    texts, cost, usage = asyncio.run(
+    texts, cost, usage, _stream_metrics = asyncio.run(
         llm_query._process_stream(
             stream(),
             str(tmp_path / "normal.log"),

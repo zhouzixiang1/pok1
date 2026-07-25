@@ -5,17 +5,19 @@ from copy import deepcopy
 import pytest
 
 import producer_consumer_pipeline as pipeline
+from bot_namespace import bot_name, bot_tag
+from conftest import STRICT_TARGET_V
 from mechanical_repair import build_mechanical_repair_output
 
 
 TARGET = {
     "evaluation_epoch": "national_tcp_policy_v1:epoch-1",
-    "workflow_run_id": "generation:143:workflow-v64",
+    "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v64",
     "target_lease_digest": "7" * 64,
     "generation_ordinal": 1,
-    "canonical_version": 143,
-    "canonical_bot_name": "national_v143",
-    "canonical_tag": "national-bot-v143",
+    "canonical_version": STRICT_TARGET_V,
+    "canonical_bot_name": bot_name(STRICT_TARGET_V),
+    "canonical_tag": bot_tag(STRICT_TARGET_V),
 }
 ARTIFACT_A = "a" * 64
 ARTIFACT_B = "b" * 64
@@ -282,7 +284,7 @@ def test_initial_projection_is_unpublished_content_bound_and_deterministic():
     assert first["target_published"] is False
     assert first["promoted_candidate_id"] is None
     assert first["published_identity"] is None
-    assert first["target_identity"]["canonical_tag"] == "national-bot-v143"
+    assert first["target_identity"]["canonical_tag"] == bot_tag(STRICT_TARGET_V)
     assert first["projection_digest"] == pipeline.content_digest({
         key: value for key, value in first.items() if key != "projection_digest"
     })

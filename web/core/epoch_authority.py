@@ -986,6 +986,16 @@ def _read_bounded_regular_json(path: Path, *, limit: int = 1024 * 1024) -> dict:
             )
         ):
             raise RuntimeError("claim_json_unsafe")
+        # Stat-based checks cannot detect an in-place truncate-and-rewrite of
+        # identical length through the same inode (same nanosecond mtime/ctime,
+        # same size/inode). Re-read the descriptor from offset 0 and compare
+        # bytes; a diverging second read proves the file was mutated between the
+        # first read and the re-read (a same-size TOCTOU rewrite). Mirrors the
+        # same hardening in tool_bot_management._read_json_regular.
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        reread = os.read(descriptor, limit + 1)
+        if reread != raw:
+            raise RuntimeError("claim_json_unsafe")
     finally:
         os.close(descriptor)
     value = json.loads(raw.decode("utf-8"))

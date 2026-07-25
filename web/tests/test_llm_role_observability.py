@@ -14,6 +14,7 @@ from claude_agent_sdk.types import (
 
 import llm_query
 import evolution_infra
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name
 
 
 def _rendered(role, text):
@@ -308,7 +309,7 @@ def test_strict_query_parses_and_persists_terminal_result_not_stream_aggregate(
             "MASTER PROPOSAL mechanism",
             str(tmp_path / "strict_terminal_io.txt"),
             tools=["Read"],
-            allowed_read_dirs=[evolution_infra.PROJECT_ROOT / "bots/national_v143"],
+            allowed_read_dirs=[evolution_infra.PROJECT_ROOT / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)],
             strict_authority=strict_call,
         )
     )
@@ -592,7 +593,7 @@ def test_process_stream_emits_periodic_progress(monkeypatch, tmp_path):
     log_file = tmp_path / "v243" / "logs" / "master_io.txt"
     log_file.parent.mkdir(parents=True)
 
-    texts, cost, usage = asyncio.run(
+    texts, cost, usage, _stream_metrics = asyncio.run(
         llm_query._process_stream(fake_stream(), str(log_file), _DummyUI(), "master")
     )
 
@@ -659,7 +660,7 @@ def test_process_stream_logs_user_message_tool_results(monkeypatch, tmp_path):
     log_file = tmp_path / "v243" / "logs" / "worker_1_io.txt"
     log_file.parent.mkdir(parents=True)
 
-    texts, cost, usage = asyncio.run(
+    texts, cost, usage, _stream_metrics = asyncio.run(
         llm_query._process_stream(fake_stream(), str(log_file), _DummyUI(), "worker")
     )
 
@@ -712,7 +713,7 @@ def test_process_stream_emits_silence_watchdog(monkeypatch, tmp_path):
     log_file = tmp_path / "v243" / "logs" / "master_io.txt"
     log_file.parent.mkdir(parents=True)
 
-    texts, cost, usage = asyncio.run(
+    texts, cost, usage, _stream_metrics = asyncio.run(
         llm_query._process_stream(fake_stream(), str(log_file), _DummyUI(), "master")
     )
 
@@ -893,7 +894,7 @@ def test_process_stream_system_thinking_messages_are_observed_but_not_substantiv
     log_file = tmp_path / "v269" / "logs" / "master_io.txt"
     log_file.parent.mkdir(parents=True)
 
-    texts, cost, usage = asyncio.run(
+    texts, cost, usage, _stream_metrics = asyncio.run(
         llm_query._process_stream(
             fake_stream(), str(log_file), _DummyUI(), "MASTER (Try 1)"
         )
@@ -957,7 +958,7 @@ def test_final_master_system_bookkeeping_can_cross_old_first_activity_window(
     monkeypatch.setenv("POK_LLM_MASTER_FINAL_TOTAL_TIMEOUT", "1")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
 
-    texts, cost, usage = asyncio.run(
+    texts, cost, usage, _stream_metrics = asyncio.run(
         llm_query._process_stream(
             fake_stream(),
             str(tmp_path / "bounded-final-master-io.txt"),
@@ -1167,7 +1168,7 @@ def test_master_proposal_can_finish_after_old_derived_stall_boundary(
     monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT", "1")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
 
-    texts, cost, usage = asyncio.run(
+    texts, cost, usage, _stream_metrics = asyncio.run(
         llm_query._process_stream(
             fake_stream(),
             str(tmp_path / "master_proposal_slow_success.txt"),

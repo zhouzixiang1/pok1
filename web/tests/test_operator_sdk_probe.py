@@ -122,7 +122,7 @@ def test_process_stream_captures_typed_tool_use_and_result(tmp_path):
         )
 
     with llm_query.capture_llm_tool_trace() as trace:
-        texts, _cost, _usage = asyncio.run(
+        texts, _cost, _usage, _metrics = asyncio.run(
             llm_query._process_stream(
                 stream(),
                 str(tmp_path / "probe.log"),

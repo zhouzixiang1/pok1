@@ -1347,7 +1347,8 @@ def _validate_role_scope(
             or any(_BOT_DIR_SCOPE_RE.fullmatch(path) is None for path in read_dirs)
         ):
             raise LLMRoleContractError(
-                f"{contract.role_id}: only one/two canonical national_v<N> read dirs are allowed"
+                f"{contract.role_id}: only one/two canonical "
+                f"{ACTIVE_BOT_PREFIX}<N> read dirs are allowed"
             )
         if evidence is not None and not (
             _EVIDENCE_SCOPE_RE.fullmatch(evidence)
