@@ -39,10 +39,12 @@ def test_E1_combined_analysis_rejects_live_history_fallback():
     """Missing frozen inputs must never reopen a legacy rating-history file."""
     import asyncio
     import combined_analyst
+    from conftest import STRICT_TARGET_V
+    from bot_namespace import bot_name
 
     result = asyncio.run(combined_analyst._run_combined_analysis(
-        source_v=143,
-        active_bots=["national_v143"],
+        source_v=STRICT_TARGET_V,
+        active_bots=[bot_name(STRICT_TARGET_V)],
         ratings={},
         ui=None,
         h2h_data={},
@@ -56,6 +58,11 @@ def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
     """The generation-scoped H2H path must execute before any analyst LLM call."""
     import asyncio
     import combined_analyst
+    from conftest import STRICT_TARGET_V
+    from bot_namespace import bot_name
+
+    parent = bot_name(STRICT_TARGET_V)
+    child = bot_name(STRICT_TARGET_V + 1)
     monkeypatch.setattr(
         combined_analyst,
         "_statistical_stagnation_check",
@@ -63,7 +70,7 @@ def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
     )
 
     frozen_h2h = {
-        "national_v143 vs national_v144": {
+        f"{parent} vs {child}": {
             "games": 20,
             "a_wins": 9,
             "b_wins": 11,
@@ -72,14 +79,14 @@ def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
         }
     }
     result = asyncio.run(combined_analyst._run_combined_analysis(
-        source_v=144,
-        active_bots=["national_v143", "national_v144"],
+        source_v=STRICT_TARGET_V + 1,
+        active_bots=[parent, child],
         ratings={},
         ui=None,
         h2h_data=frozen_h2h,
-        bot_stats_data={"national_v144": {"games": 20, "win_rate": 0.55}},
+        bot_stats_data={child: {"games": 20, "win_rate": 0.55}},
         selection_rows_data=[{
-            "name": "national_v144",
+            "name": child,
             "selection_score": 0.5,
             "leaderboard_score": 0.5,
             "h2h_avg_wr": 0.55,
@@ -98,18 +105,26 @@ def test_combined_analysis_frozen_rows_preserve_real_low_coverage(monkeypatch):
     """Canonical h2h_* fields must not degrade to the old 0/0=100% default."""
     import asyncio
     import combined_analyst
+    from conftest import STRICT_TARGET_V
+    from bot_namespace import bot_name
     from glicko2 import Glicko2Player
 
     async def must_not_call_llm(*_args, **_kwargs):
         raise AssertionError("low-coverage frozen evidence must stop before the LLM")
 
     monkeypatch.setattr(combined_analyst, "run_claude_query", must_not_call_llm)
-    active = ["national_v143", "national_v144", "national_v145"]
+    v_parent = STRICT_TARGET_V
+    v_mid = STRICT_TARGET_V + 1
+    v_source = STRICT_TARGET_V + 2
+    parent = bot_name(v_parent)
+    mid = bot_name(v_mid)
+    source = bot_name(v_source)
+    active = [parent, mid, source]
     ratings = {
         name: Glicko2Player(r=1500.0, rd=90.0, sigma=0.06) for name in active
     }
     frozen_h2h = {
-        "national_v143 vs national_v145": {
+        f"{parent} vs {source}": {
             "games": 15,
             "a_wins": 7,
             "b_wins": 8,
@@ -117,19 +132,19 @@ def test_combined_analysis_frozen_rows_preserve_real_low_coverage(monkeypatch):
         }
     }
     frozen_stats = {
-        "national_v145": {"games": 15, "win_rate": 8 / 15},
+        source: {"games": 15, "win_rate": 8 / 15},
     }
 
     result = asyncio.run(
         combined_analyst._run_combined_analysis(
-            source_v=145,
+            source_v=v_source,
             active_bots=active,
             ratings=ratings,
             ui=None,
             h2h_data=frozen_h2h,
             bot_stats_data=frozen_stats,
             selection_rows_data=[{
-                "name": "national_v145",
+                "name": source,
                 "selection_score": 0.5,
                 "leaderboard_score": 0.5,
                 "h2h_avg_wr": 8 / 15,
@@ -156,14 +171,15 @@ class _FakeRating:
 def test_E2_oscillation_suppressed_when_leader_in_set(monkeypatch):
     """If the Glicko leader is within the oscillating set, do NOT force crossover."""
     import generation_scheduler as gs
+    from bot_namespace import bot_name
 
     # Pretend last 8 sources all came from {30, 31, 32} (<=3 unique -> would oscillate)
     monkeypatch.setattr(gs, "_read_source_v_history",
                         lambda: [30, 31, 32, 30, 31, 32, 30, 31])
     ratings = {
-        "national_v30": _FakeRating(1500.0),   # leader (highest cons)
-        "national_v31": _FakeRating(1400.0),
-        "national_v32": _FakeRating(1350.0),
+        bot_name(30): _FakeRating(1500.0),   # leader (highest cons)
+        bot_name(31): _FakeRating(1400.0),
+        bot_name(32): _FakeRating(1350.0),
     }
     combined = {"is_stagnant": False, "confidence": "low",
                 "recommended_source": "", "branch_from": None}
@@ -175,6 +191,7 @@ def test_E2_oscillation_suppressed_when_leader_in_set(monkeypatch):
 def test_E2_oscillation_forces_crossover_when_leader_outside_set(monkeypatch):
     """If the leader is NOT in the oscillating set, crossover still fires."""
     import generation_scheduler as gs
+    from bot_namespace import bot_name
 
     monkeypatch.setattr(gs, "_read_source_v_history",
                         lambda: [30, 31, 32, 30, 31, 32, 30, 31])
@@ -182,10 +199,10 @@ def test_E2_oscillation_forces_crossover_when_leader_outside_set(monkeypatch):
     monkeypatch.setattr(gs, "_get_unified_leader_v", lambda *_args: 40)
     monkeypatch.setattr(gs, "_pick_oscillation_breakout_source", lambda *_args: None)
     ratings = {
-        "national_v30": _FakeRating(1300.0),
-        "national_v31": _FakeRating(1400.0),
-        "national_v32": _FakeRating(1350.0),
-        "national_v40": _FakeRating(1600.0),   # leader, NOT in oscillating set
+        bot_name(30): _FakeRating(1300.0),
+        bot_name(31): _FakeRating(1400.0),
+        bot_name(32): _FakeRating(1350.0),
+        bot_name(40): _FakeRating(1600.0),   # leader, NOT in oscillating set
     }
     combined = {"is_stagnant": False, "confidence": "low",
                 "recommended_source": "", "branch_from": None}

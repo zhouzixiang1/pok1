@@ -2,10 +2,10 @@
 
 import pytest
 
-from core import agent_workers as workers
-from core.output_schema import MasterPlan, WorkerTask
-from core.tool_helpers import normalize_worker_role
-from core.tool_planning import _validate_master_plan
+import agent_workers as workers
+from output_schema import MasterPlan, WorkerTask
+from tool_helpers import normalize_worker_role
+from tool_planning import _validate_master_plan
 
 
 def _setup_dirs(tmp_path):

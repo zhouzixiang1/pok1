@@ -6,16 +6,24 @@ import asyncio
 import json
 
 import tool_bot_management as management
+from bot_namespace import bot_name
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 
 
 def _decode(result: dict) -> dict:
     return json.loads(result["content"][0]["text"])
 
 
-def _checkpoint(*, next_v=143, workflow="generation:143:current", revision=7):
+def _checkpoint(
+    *,
+    next_v=STRICT_TARGET_V,
+    source_v=STRICT_SOURCE_V,
+    workflow=f"generation:{STRICT_TARGET_V}:current",
+    revision=7,
+):
     return {
         "next_v": next_v,
-        "source_v": 142,
+        "source_v": source_v,
         "stage": "master_planned",
         "workflow_run_id": workflow,
         "checkpoint_revision": revision,
@@ -30,6 +38,11 @@ def _initialized(_operation):
     }
 
 
+# A debris version strictly greater than the current target so it can never be
+# the active workflow candidate.  Branch-portable: STRICT_TARGET_V + N.
+_DEBRIS_V = STRICT_TARGET_V + 12
+
+
 def test_cleanup_is_not_exposed_in_mcp_or_compatibility_catalog():
     import tools
 
@@ -40,7 +53,7 @@ def test_cleanup_is_not_exposed_in_mcp_or_compatibility_catalog():
 def test_cleanup_refuses_before_strict_epoch_initialization(tmp_path, monkeypatch):
     import epoch_authority
 
-    candidate = tmp_path / "national_v155"
+    candidate = tmp_path / bot_name(_DEBRIS_V)
     candidate.mkdir()
 
     class NotInitialized(RuntimeError):
@@ -54,12 +67,12 @@ def test_cleanup_refuses_before_strict_epoch_initialization(tmp_path, monkeypatc
     monkeypatch.setattr(
         management,
         "read_pipeline_checkpoint",
-        lambda: _checkpoint(next_v=155),
+        lambda: _checkpoint(next_v=_DEBRIS_V),
     )
 
     payload = _decode(asyncio.run(management.cleanup_incomplete({
-        "workflow_run_id": "generation:155:stale",
-        "next_v": 155,
+        "workflow_run_id": f"generation:{_DEBRIS_V}:stale",
+        "next_v": _DEBRIS_V,
         "checkpoint_revision": 7,
     })))
 
@@ -75,8 +88,8 @@ def test_cleanup_stale_request_cannot_delete_current_or_v155_debris(
 
     bot_root = tmp_path / "bots"
     bot_root.mkdir()
-    current = bot_root / "national_v143"
-    debris = bot_root / "national_v155"
+    current = bot_root / bot_name(STRICT_TARGET_V)
+    debris = bot_root / bot_name(_DEBRIS_V)
     current.mkdir()
     debris.mkdir()
     checkpoint = _checkpoint()
@@ -89,7 +102,7 @@ def test_cleanup_stale_request_cannot_delete_current_or_v155_debris(
         checkpoint_schema,
         "strict_checkpoint_event_identity",
         lambda *_args, **_kwargs: {
-            "gen": 143,
+            "gen": STRICT_TARGET_V,
             "workflow_run_id": checkpoint["workflow_run_id"],
         },
     )
@@ -97,7 +110,7 @@ def test_cleanup_stale_request_cannot_delete_current_or_v155_debris(
     monkeypatch.setattr(
         management,
         "get_bot_dir",
-        lambda version: bot_root / f"national_v{version}",
+        lambda version: bot_root / bot_name(version),
     )
     called = []
 
@@ -108,8 +121,8 @@ def test_cleanup_stale_request_cannot_delete_current_or_v155_debris(
     monkeypatch.setattr(management, "_do_abandon_generation", forbidden_abandon)
 
     payload = _decode(asyncio.run(management.cleanup_incomplete({
-        "workflow_run_id": "generation:155:retired",
-        "next_v": 155,
+        "workflow_run_id": f"generation:{_DEBRIS_V}:retired",
+        "next_v": _DEBRIS_V,
         "checkpoint_revision": 1,
     })))
 
@@ -125,11 +138,11 @@ def test_raw_stale_checkpoint_cannot_authorize_cleanup(tmp_path, monkeypatch):
 
     bot_root = tmp_path / "bots"
     bot_root.mkdir()
-    debris = bot_root / "national_v155"
+    debris = bot_root / bot_name(_DEBRIS_V)
     debris.mkdir()
     checkpoint = _checkpoint(
-        next_v=155,
-        workflow="generation:155:legacy-wrapper",
+        next_v=_DEBRIS_V,
+        workflow=f"generation:{_DEBRIS_V}:legacy-wrapper",
         revision=1,
     )
     monkeypatch.setattr(
@@ -150,7 +163,7 @@ def test_raw_stale_checkpoint_cannot_authorize_cleanup(tmp_path, monkeypatch):
 
     payload = _decode(asyncio.run(management.cleanup_incomplete({
         "workflow_run_id": checkpoint["workflow_run_id"],
-        "next_v": 155,
+        "next_v": _DEBRIS_V,
         "checkpoint_revision": 1,
     })))
 
@@ -166,7 +179,7 @@ def test_exact_current_workflow_delegates_to_fenced_abandon_only(
 
     bot_root = tmp_path / "bots"
     bot_root.mkdir()
-    candidate = bot_root / "national_v143"
+    candidate = bot_root / bot_name(STRICT_TARGET_V)
     candidate.mkdir()
     checkpoint = _checkpoint()
 
@@ -178,7 +191,7 @@ def test_exact_current_workflow_delegates_to_fenced_abandon_only(
         checkpoint_schema,
         "strict_checkpoint_event_identity",
         lambda *_args, **_kwargs: {
-            "gen": 143,
+            "gen": STRICT_TARGET_V,
             "workflow_run_id": checkpoint["workflow_run_id"],
         },
     )
@@ -192,7 +205,7 @@ def test_exact_current_workflow_delegates_to_fenced_abandon_only(
         calls.append(kwargs)
         return {
             "abandoned": True,
-            "removed_directory": "national_v143",
+            "removed_directory": bot_name(STRICT_TARGET_V),
             "workflow_run_id": checkpoint["workflow_run_id"],
         }
 
@@ -200,7 +213,7 @@ def test_exact_current_workflow_delegates_to_fenced_abandon_only(
 
     payload = _decode(asyncio.run(management.cleanup_incomplete({
         "workflow_run_id": checkpoint["workflow_run_id"],
-        "next_v": 143,
+        "next_v": STRICT_TARGET_V,
         "checkpoint_revision": 7,
     })))
 
@@ -209,8 +222,8 @@ def test_exact_current_workflow_delegates_to_fenced_abandon_only(
     assert calls[0] == {
         "reason": "cleanup_incomplete_exact_workflow",
         "expected_workflow_run_id": checkpoint["workflow_run_id"],
-        "expected_next_v": 143,
-            "expected_source_v": 142,
-            "expected_checkpoint_revision": 7,
-            "expected_checkpoint_stage": "master_planned",
-        }
+        "expected_next_v": STRICT_TARGET_V,
+        "expected_source_v": STRICT_SOURCE_V,
+        "expected_checkpoint_revision": 7,
+        "expected_checkpoint_stage": "master_planned",
+    }

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.pipeline_state import (
+from pipeline_state import (
     TIMEOUT_ABANDONABLE_STAGES,
     generic_abandon_block as _generic_abandon_block,
     head_drift_allowed_tools,
@@ -16,17 +16,17 @@ from core.pipeline_state import (
     session_recoverable_stages,
     validate_stage_transition,
 )
-from core.tool_helpers import (
+from tool_helpers import (
     _critic_gate_ok,
     _prepare_official_profile_refresh as _prepare_official_profile_refresh_impl,
 )
-from core.pipeline_infrastructure import (
+from pipeline_infrastructure import (
     build_infrastructure_failure,
     infrastructure_attempt_key,
 )
-from core.national_runtime_probe import runtime_probe_native_template_evidence
+from national_runtime_probe import runtime_probe_native_template_evidence
 from web.tests.runtime_probe_fixtures import passing_runtime_probe
-from core.tool_planning import (
+from tool_planning import (
     _critic_advisory_rework_refusal,
     _has_legacy_critic_repair_contract,
     _synthesize_rework_tasks_from_checkpoint,
@@ -238,7 +238,7 @@ def test_completed_gate_stage_exposes_only_its_canonical_next_tool(
 def test_quality_passed_first_reviewer_negative_routes_only_second_review(
     monkeypatch,
 ):
-    import core.pipeline_state as pipeline_state
+    import pipeline_state
 
     monkeypatch.setattr(
         pipeline_state,
@@ -282,7 +282,7 @@ def test_quality_passed_first_reviewer_negative_routes_only_second_review(
 def test_completed_reviewer_attempts_without_projection_block_third_call(
     monkeypatch,
 ):
-    import core.pipeline_state as pipeline_state
+    import pipeline_state
 
     monkeypatch.setattr(
         pipeline_state,
@@ -323,7 +323,7 @@ def test_completed_reviewer_attempts_without_projection_block_third_call(
 
 
 def test_reworked_quality_cycle_ignores_prior_cycle_budget(monkeypatch):
-    import core.pipeline_state as pipeline_state
+    import pipeline_state
 
     monkeypatch.setattr(
         pipeline_state,
@@ -747,7 +747,7 @@ def test_route_policy_does_not_expose_unrequired_literature_probe():
 
 
 def test_route_policy_requires_literature_probe_receipt_when_stagnant():
-    from core.master_context_contract import build_master_context
+    from master_context_contract import build_master_context
 
     checkpoint = {
         "stage": "direction_audited",
@@ -796,7 +796,7 @@ def test_crossover_infrastructure_overlay_routes_same_tool_without_replanning():
 
 @pytest.mark.parametrize("reason", ["governed_skip", "literature_probe_timeout", "literature_probe_failed"])
 def test_route_policy_accepts_identity_bound_literature_attempt_receipts(reason):
-    from core.master_context_contract import build_master_context
+    from master_context_contract import build_master_context
 
     checkpoint = {
         "stage": "direction_audited",
@@ -827,7 +827,7 @@ def test_route_policy_accepts_identity_bound_literature_attempt_receipts(reason)
 
 
 def test_route_policy_rejects_old_literature_receipt_after_context_change():
-    from core.master_context_contract import build_master_context
+    from master_context_contract import build_master_context
 
     checkpoint = {
         "stage": "direction_audited",

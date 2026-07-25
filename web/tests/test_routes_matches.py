@@ -67,7 +67,12 @@ class TestMatchReplay:
 
     def test_existing(self, client, tmp_path, monkeypatch):
         from server.routes import matches
-        from web.tests.test_logic_replay_analysis import IDENTITY, make_strict_replay
+        from web.tests.test_logic_replay_analysis import (
+            BOT_A,
+            BOT_B,
+            IDENTITY,
+            make_strict_replay,
+        )
 
         replay_dir = tmp_path / "match_replay"
         replay_dir.mkdir()
@@ -80,11 +85,11 @@ class TestMatchReplay:
             "_snapshot",
             lambda: {
                 "evaluation_identity_digest": IDENTITY,
-                "active_bots": ["national_v143", "national_v144"],
+                "active_bots": [BOT_A, BOT_B],
                 "match_history": [{
                     "id": match_id,
-                    "bot0": "national_v143",
-                    "bot1": "national_v144",
+                    "bot0": BOT_A,
+                    "bot1": BOT_B,
                 }],
             },
         )

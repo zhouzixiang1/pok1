@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import checkpoint_schema
 import pytest
-from core import tool_planning
+import tool_planning
 
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 

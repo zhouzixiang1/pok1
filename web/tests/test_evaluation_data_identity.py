@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 import evaluation_data_identity as identity
-from bot_namespace import STRICT_ARTIFACT_FILES, strict_artifact_layout_errors
+from bot_namespace import STRICT_ARTIFACT_FILES, bot_name, strict_artifact_layout_errors
+from conftest import STRICT_TARGET_V
 
 
 def test_empty_results_initialize_content_bound_manifest(tmp_path):
@@ -276,12 +277,12 @@ def test_inline_native_eval_is_diagnostic_only(tmp_path, monkeypatch):
     monkeypatch.setattr(
         tool_eval,
         "get_bot_dir",
-        lambda version: candidate if int(version) == 144 else opponent,
+        lambda version: candidate if int(version) == STRICT_TARGET_V + 1 else opponent,
     )
     monkeypatch.setattr(
         tool_eval,
         "get_active_bots",
-        lambda: ["national_v143", "national_v144"],
+        lambda: [bot_name(STRICT_TARGET_V), bot_name(STRICT_TARGET_V + 1)],
     )
     monkeypatch.setattr(daemon_management, "daemon_proc", None)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path / "results")

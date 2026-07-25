@@ -35,7 +35,7 @@ class TestDebugAgentCalledOnCompileFailure:
 
     def test_debug_agent_trigger_condition_compile_error(self):
         """_last_failure_type == 'compile_error' should trigger debug agent."""
-        from core.agent_workers import _run_debug_agent
+        from agent_workers import _run_debug_agent
         # Verify the function signature accepts the expected parameters
         import inspect
         sig = inspect.signature(_run_debug_agent)
@@ -65,12 +65,12 @@ class TestDebugAgentFailureDoesNotBlockRetry:
     @pytest.mark.asyncio
     async def test_exception_swallowed(self):
         """_run_debug_agent should return {} on any exception."""
-        from core.agent_workers import _run_debug_agent
+        from agent_workers import _run_debug_agent
 
         mock_ui = MagicMock()
         # Pass a bad target_file that will trigger an exception in file reading
         # The function should catch and return {}
-        with patch("core.agent_workers.run_claude_query", side_effect=RuntimeError("boom")):
+        with patch("agent_workers.run_claude_query", side_effect=RuntimeError("boom")):
             result = await _run_debug_agent(
                 error_output="SyntaxError",
                 changed_diff="some diff",
@@ -83,7 +83,7 @@ class TestDebugAgentFailureDoesNotBlockRetry:
     @pytest.mark.asyncio
     async def test_empty_output_returns_empty_dict(self):
         """Empty LLM output should return {}."""
-        from core.agent_workers import _run_debug_agent
+        from agent_workers import _run_debug_agent
 
         mock_ui = MagicMock()
         mock_logs_dir = MagicMock()
@@ -91,9 +91,9 @@ class TestDebugAgentFailureDoesNotBlockRetry:
         mock_logs_dir.__truediv__ = MagicMock(return_value=mock_log_file)
 
         with (
-            patch("core.agent_workers.run_claude_query", new_callable=AsyncMock, return_value=("", None, None)),
-            patch("core.agent_workers.get_logs_dir", return_value=mock_logs_dir),
-            patch("core.agent_workers.Path") as mock_path_cls,
+            patch("agent_workers.run_claude_query", new_callable=AsyncMock, return_value=("", None, None)),
+            patch("agent_workers.get_logs_dir", return_value=mock_logs_dir),
+            patch("agent_workers.Path") as mock_path_cls,
         ):
             # Make the prompt file path resolve
             mock_path_instance = MagicMock()
@@ -113,7 +113,7 @@ class TestDebugAgentFailureDoesNotBlockRetry:
     @pytest.mark.asyncio
     async def test_prompt_pins_current_generation_target_path(self, tmp_path):
         """Debug agent must read the current candidate file, not guess an old bot version."""
-        from core.agent_workers import _run_debug_agent
+        from agent_workers import _run_debug_agent
 
         mock_ui = MagicMock()
         bot_dir = tmp_path / "repo" / "bots" / "national_v282"
@@ -129,9 +129,9 @@ class TestDebugAgentFailureDoesNotBlockRetry:
             return f"```json\n{json.dumps(payload)}\n```", None, None
 
         with (
-            patch("core.agent_workers.run_claude_query", side_effect=fake_run_claude_query),
-            patch("core.agent_workers.get_bot_dir", return_value=bot_dir),
-            patch("core.agent_workers.get_logs_dir", return_value=logs_dir),
+            patch("agent_workers.run_claude_query", side_effect=fake_run_claude_query),
+            patch("agent_workers.get_bot_dir", return_value=bot_dir),
+            patch("agent_workers.get_logs_dir", return_value=logs_dir),
         ):
             result = await _run_debug_agent(
                 error_output="worker timed out while editing policy.py",
@@ -228,7 +228,7 @@ class TestDebugAgentParseJson:
     @pytest.mark.asyncio
     async def test_valid_json_output(self):
         """Valid JSON with all fields should be returned."""
-        from core.agent_workers import _run_debug_agent
+        from agent_workers import _run_debug_agent
 
         mock_ui = MagicMock()
         mock_logs_dir = MagicMock()
@@ -243,9 +243,9 @@ class TestDebugAgentParseJson:
         wrapped_output = f"```json\n{json_output}\n```"
 
         with (
-            patch("core.agent_workers.run_claude_query", new_callable=AsyncMock, return_value=(wrapped_output, None, None)),
-            patch("core.agent_workers.get_logs_dir", return_value=mock_logs_dir),
-            patch("core.agent_workers.Path") as mock_path_cls,
+            patch("agent_workers.run_claude_query", new_callable=AsyncMock, return_value=(wrapped_output, None, None)),
+            patch("agent_workers.get_logs_dir", return_value=mock_logs_dir),
+            patch("agent_workers.Path") as mock_path_cls,
         ):
             mock_path_instance = MagicMock()
             mock_path_instance.exists.return_value = True
@@ -267,7 +267,7 @@ class TestDebugAgentParseJson:
     @pytest.mark.asyncio
     async def test_invalid_confidence_normalized_to_low(self):
         """Invalid confidence values should be normalized to 'low'."""
-        from core.agent_workers import _run_debug_agent
+        from agent_workers import _run_debug_agent
 
         mock_ui = MagicMock()
         mock_logs_dir = MagicMock()
@@ -281,9 +281,9 @@ class TestDebugAgentParseJson:
         wrapped_output = f"```json\n{json_output}\n```"
 
         with (
-            patch("core.agent_workers.run_claude_query", new_callable=AsyncMock, return_value=(wrapped_output, None, None)),
-            patch("core.agent_workers.get_logs_dir", return_value=mock_logs_dir),
-            patch("core.agent_workers.Path") as mock_path_cls,
+            patch("agent_workers.run_claude_query", new_callable=AsyncMock, return_value=(wrapped_output, None, None)),
+            patch("agent_workers.get_logs_dir", return_value=mock_logs_dir),
+            patch("agent_workers.Path") as mock_path_cls,
         ):
             mock_path_instance = MagicMock()
             mock_path_instance.exists.return_value = True

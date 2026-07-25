@@ -22,7 +22,7 @@ import sys
 
 import pytest
 
-from core import daemon_management
+import daemon_management
 
 
 class _FakeProc:

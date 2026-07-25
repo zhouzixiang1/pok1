@@ -11,8 +11,8 @@ from claude_agent_sdk.types import (
     UserMessage,
 )
 
-from core import operator_sdk_probe as probe
-from core.llm_availability import LLMAvailabilityBlocked, LLMAvailabilityIssue
+import operator_sdk_probe as probe
+from llm_availability import LLMAvailabilityBlocked, LLMAvailabilityIssue
 import llm_query
 
 

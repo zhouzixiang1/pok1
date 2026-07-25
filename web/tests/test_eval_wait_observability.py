@@ -2,16 +2,14 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import evolution_infra as evolution_infra_abs
-from core import evolution_infra
-from core import generation_scheduler
+import evolution_infra
+import generation_scheduler
 
 
 def test_prepare_priority_eval_signal_written(monkeypatch, tmp_path):
     results_dir = tmp_path / "results"
     results_dir.mkdir()
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
-    monkeypatch.setattr(evolution_infra_abs, "RESULTS_DIR", results_dir)
 
     events = []
     monkeypatch.setattr(
@@ -182,8 +180,8 @@ def _evaluation_snapshot_bundle(active, *, games=15, rd=108.12):
 
 def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
     active = ["national_v143", "national_v144"]
-    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: list(active))
-    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 144)
+    monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: list(active))
+    monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 144)
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -211,8 +209,8 @@ def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
 
 def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatch):
     active = ["national_v143"]
-    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: ["national_v143"])
-    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: ["national_v143"])
+    monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 143)
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -238,8 +236,8 @@ def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatc
 def test_post_wait_evidence_rejects_active_pool_change_while_loading(monkeypatch):
     active = ["national_v143"]
     pools = iter([active, ["national_v143", "national_v144"]])
-    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: list(next(pools)))
-    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: list(next(pools)))
+    monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 143)
     monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_args: None)
 
     evidence = generation_scheduler._load_post_wait_evaluation_evidence(

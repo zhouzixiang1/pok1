@@ -92,12 +92,25 @@ def test_master_plan_audit_history_uses_only_annotated_strict_completions(
     import audit_agents
     import evolution_infra
     import national_runtime_authority
+    from bot_namespace import bot_name, bot_tag
+    from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+
+    # Two current-epoch strict publications plus one archived/below-floor name
+    # that must never appear in the completion history.
+    v_first = STRICT_TARGET_V
+    v_later = STRICT_TARGET_V + 2
+    first_name = bot_name(v_first)
+    later_name = bot_name(v_later)
+    archived_name = bot_name(STRICT_SOURCE_V) if STRICT_SOURCE_V > 0 else "archived_legacy_v0"
 
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v141", "national_v143", "national_v145"),
+        lambda: (archived_name, first_name, later_name),
     )
+
+    first_commit = "a" * 40
+    later_commit = "b" * 40
 
     def fake_git(*args, **_kwargs):
         assert args[0] != "log", "ordinary Git commit windows are forbidden"
@@ -105,12 +118,12 @@ def test_master_plan_audit_history_uses_only_annotated_strict_completions(
             return "tag"
         if args[0] == "rev-parse":
             tag = args[1].split("^{", 1)[0]
-            return ("a" if tag.endswith("143") else "b") * 40
+            return first_commit if tag == bot_tag(v_first) else later_commit
         if args[:3] == ("show", "-s", "--format=%B"):
             return (
-                "strict v143 typed policy foundation"
-                if args[3] == "a" * 40
-                else "strict v145 opponent evidence consumer"
+                "strict first typed policy foundation"
+                if args[3] == first_commit
+                else "strict later opponent evidence consumer"
             )
         raise AssertionError(f"unexpected Git query: {args}")
 
@@ -118,9 +131,10 @@ def test_master_plan_audit_history_uses_only_annotated_strict_completions(
 
     history = audit_agents._strict_completion_commit_history(limit=5)
 
-    assert "v143 [national-bot-v143]" in history
-    assert "v145 [national-bot-v145]" in history
-    assert "v141" not in history
+    assert f"v{v_first} [{bot_tag(v_first)}]" in history
+    assert f"v{v_later} [{bot_tag(v_later)}]" in history
+    assert f"v{STRICT_SOURCE_V} " not in history if STRICT_SOURCE_V > 0 else True
+    assert "archived_legacy_v0" not in history
     assert "infrastructure" not in history
 
 

@@ -6,7 +6,7 @@ a real business/auth failure (longer backoff). We do NOT integration-test the
 heavy `_run_one_cycle`; the helper is sufficient for this fix.
 """
 
-from core.orchestrator import (
+from orchestrator import (
     _is_cycle_infra_error,
     _is_shutdown_cancel_error,
     _is_crossover_incompatible_result,
@@ -14,7 +14,7 @@ from core.orchestrator import (
 )
 from claude_agent_sdk import ProcessError, CLINotFoundError, ClaudeSDKError
 import inspect
-import core.orchestrator as orchestrator
+import orchestrator
 
 
 def test_processerror_exit143_is_infra():

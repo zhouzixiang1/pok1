@@ -6,7 +6,7 @@ import json
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
-from core import llm_query
+import llm_query
 from llm_availability import (
     BILLING_CYCLE_LIMIT,
     INVALID_AUTH,

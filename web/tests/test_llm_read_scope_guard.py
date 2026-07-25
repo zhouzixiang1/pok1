@@ -26,15 +26,32 @@ def _invoke(handler, tool_name, tool_input):
 @pytest.fixture
 def read_scope_tree(tmp_path, monkeypatch):
     import llm_query
+    from conftest import STRICT_TARGET_V
+    from bot_namespace import bot_name
 
     root = tmp_path / "pok"
-    target = root / "bots" / "national_v143"
-    source = root / "bots" / "national_v144"
-    snapshot = root / "web" / "core" / "results" / "v145" / "evidence_snapshot"
+    # Branch-portable bot versions: target is the strict target version, source
+    # is the next generation, high_water/other are distinct recognized bots kept
+    # OUT of every granted scope so the role-scope guard can deny them.
+    v_target = STRICT_TARGET_V
+    v_source = STRICT_TARGET_V + 1
+    v_high_water = STRICT_TARGET_V + 2
+    v_other = STRICT_TARGET_V + 3
+    v_snapshot = STRICT_TARGET_V + 4
+    target = root / "bots" / bot_name(v_target)
+    source = root / "bots" / bot_name(v_source)
+    high_water = root / "bots" / bot_name(v_high_water)
+    other_bot = root / "bots" / bot_name(v_other)
+    snapshot = root / "web" / "core" / "results" / f"v{v_snapshot}" / "evidence_snapshot"
     live_results = root / "web" / "core" / "results"
-    for directory in (target, source, snapshot):
+    for directory in (target, source, high_water, other_bot, snapshot):
         directory.mkdir(parents=True, exist_ok=True)
-    for directory, value in ((target, 143), (source, 144)):
+    for directory, value in (
+        (target, v_target),
+        (source, v_source),
+        (high_water, v_high_water),
+        (other_bot, v_other),
+    ):
         (directory / "policy.py").write_text(
             f"def decide():\n    return {value}\n",
             encoding="utf-8",
@@ -51,6 +68,8 @@ def read_scope_tree(tmp_path, monkeypatch):
         "root": root,
         "target": target,
         "source": source,
+        "high_water": high_water,
+        "other_bot": other_bot,
         "snapshot": snapshot,
         "live_results": live_results,
         "outside": outside,
@@ -76,8 +95,8 @@ def test_actual_read_hook_accepts_only_exact_role_roots(read_scope_tree):
         assert _decision(_invoke(handler, "Read", {key: str(path)})) is None
 
     denied = {
-        "historical_bot": tree["root"] / "bots" / "national_v142" / "policy.py",
-        "other_bot": tree["root"] / "bots" / "national_v146" / "policy.py",
+        "historical_bot": tree["high_water"] / "policy.py",
+        "other_bot": tree["other_bot"] / "policy.py",
         "git_log": tree["root"] / ".git" / "logs" / "HEAD",
         "archived_tree": tree["root"] / "archive" / "bots" / "policy.py",
         "live_results": tree["live_results"] / "head_to_head.json",
@@ -107,11 +126,7 @@ def test_bootstrap_scope_cannot_read_numeric_high_water(read_scope_tree):
     high_water = _invoke(
         handler,
         "Read",
-        {
-            "file_path": str(
-                tree["root"] / "bots" / "national_v142" / "policy.py"
-            )
-        },
+        {"file_path": str(tree["high_water"] / "policy.py")},
     )
 
     assert _decision(allowed) is None
@@ -127,13 +142,13 @@ def test_master_evidence_guard_resolves_relative_paths_from_project_root(
     llm_query = tree["module"]
     monkeypatch.setattr(llm_query, "_LLM_PROJECT_ROOT", tree["root"])
 
+    snapshot_rel = tree["snapshot"].relative_to(tree["root"].resolve())
     allowed = llm_query._master_live_evidence_read_violation(
         "Read",
         {
-            "file_path": (
-                "web/core/results/v145/evidence_snapshot/"
-                "selection_snapshot.json"
-            )
+            "file_path": str(
+                snapshot_rel / "selection_snapshot.json"
+            ).replace("\\", "/")
         },
         allowed_evidence_snapshot_dir=tree["snapshot"],
     )
@@ -160,7 +175,7 @@ def test_read_hook_rejects_parent_alias_and_symlink_escape(read_scope_tree):
     )
     handler = hooks["PreToolUse"][0].hooks[0]
 
-    parent_alias = tree["target"] / ".." / "national_v144" / "policy.py"
+    parent_alias = tree["target"] / ".." / tree["source"].name / "policy.py"
     alias_result = _invoke(
         handler,
         "Read",
@@ -181,24 +196,24 @@ def test_read_hook_rejects_parent_alias_and_symlink_escape(read_scope_tree):
 @pytest.mark.parametrize(
     "command",
     (
-        "cat {root}/bots/national_v142/policy.py",
-        "rg decide {root}/bots/national_v146",
-        "diff -u {target}/policy.py {root}/bots/national_v142/policy.py",
+        "cat {denied_bot}/policy.py",
+        "rg decide {other_bot}",
+        "diff -u {target}/policy.py {denied_bot}/policy.py",
         "git log --max-count=1 HEAD",
-        "git show HEAD:bots/national_v143/policy.py",
+        "git show HEAD:bots/{denied_bot_name}/policy.py",
         "find {target} -type f",
-        "python -c 'print(open(\"{root}/bots/national_v142/policy.py\").read())'",
+        "python -c 'print(open(\"{denied_bot}/policy.py\").read())'",
         "python - <<'PY'\nprint(open('{target}/policy.py').read())\nPY",
-        "bash -lc 'cat {root}/bots/national_v142/policy.py'",
+        "bash -lc 'cat {denied_bot}/policy.py'",
         "sh -c 'cat {target}/policy.py'",
         "cat $TARGET/policy.py",
         "cat $(printf {target}/policy.py)",
         "cat {target}/*.py",
-        "cat < {root}/bots/national_v142/policy.py",
-        "PYTHONPATH={root}/bots/national_v142 python -m py_compile {target}/policy.py",
-        "rg --ignore-file={root}/bots/national_v142/policy.py decide {target}",
-        "grep --exclude-from {root}/bots/national_v142/policy.py decide {target}/policy.py",
-        "wc --files0-from={root}/bots/national_v142/policy.py",
+        "cat < {denied_bot}/policy.py",
+        "PYTHONPATH={denied_bot} python -m py_compile {target}/policy.py",
+        "rg --ignore-file={denied_bot}/policy.py decide {target}",
+        "grep --exclude-from {denied_bot}/policy.py decide {target}/policy.py",
+        "wc --files0-from={denied_bot}/policy.py",
         "git -C {target} diff --no-index -- {target}/policy.py {target}/policy.py",
         "git diff --no-index --output={target}/probe.diff -- {target}/policy.py {target}/policy.py",
         "sed --in-place 's/decide/other/' {target}/policy.py",
@@ -220,6 +235,9 @@ def test_actual_bash_hook_blocks_indirect_and_out_of_scope_reads(
     rendered = command.format(
         root=tree["root"],
         target=tree["target"],
+        denied_bot=tree["high_water"],
+        denied_bot_name=tree["high_water"].name,
+        other_bot=tree["other_bot"],
     )
 
     result = _invoke(handler, "Bash", {"command": rendered})

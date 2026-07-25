@@ -1,6 +1,6 @@
 """Tests for _classify_target_change zero-changes classification (rc2b)."""
 
-from core.agent_workers import (
+from agent_workers import (
     _classify_target_change,
     _classify_target_change_for_worker,
     _compose_worker_task_prompt,

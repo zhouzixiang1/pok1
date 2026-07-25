@@ -1,4 +1,4 @@
-from core import observe_policy
+import observe_policy
 
 
 def test_parent_timeout_cancel_is_expected_not_alert_or_fatal():

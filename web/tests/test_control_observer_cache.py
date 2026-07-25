@@ -261,7 +261,18 @@ def test_observer_cache_hands_drift_to_one_latest_background_refresh():
 
 def test_remote_publication_proof_is_singleflight_under_slow_origin(monkeypatch):
     import evolution_infra
+    from bot_namespace import (
+        ACTIVE_TAG_PREFIX,
+        EVOLUTION_BRANCH,
+        HIGH_WATER_TAG_PREFIX,
+        bot_tag,
+        high_water_tag,
+    )
+    from conftest import STRICT_TARGET_V
 
+    version = STRICT_TARGET_V
+    completion_tag = bot_tag(version)
+    high_water = high_water_tag(version)
     tag_object = "a" * 40
     commit = "b" * 40
     water_object = "c" * 40
@@ -272,26 +283,26 @@ def test_remote_publication_proof_is_singleflight_under_slow_origin(monkeypatch)
 
     def fake_git(*args, check=True):
         nonlocal calls
-        if args[:2] == ("rev-parse", "refs/tags/national-bot-v143"):
+        if args[:2] == ("rev-parse", f"refs/tags/{completion_tag}"):
             return tag_object
-        if args[:2] == ("rev-parse", "refs/tags/national-bot-v143^{commit}"):
+        if args[:2] == ("rev-parse", f"refs/tags/{completion_tag}^{{commit}}"):
             return commit
-        if args[:2] == ("rev-parse", "refs/tags/national-high-water-v143"):
+        if args[:2] == ("rev-parse", f"refs/tags/{high_water}"):
             return water_object
-        if args[:2] == ("rev-parse", "refs/tags/national-high-water-v143^{commit}"):
+        if args[:2] == ("rev-parse", f"refs/tags/{high_water}^{{commit}}"):
             return commit
-        if args[:2] == ("rev-parse", "refs/remotes/origin/main"):
+        if args[:2] == ("rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}"):
             return remote_main
         if args and args[0] == "ls-remote":
             with calls_lock:
                 calls += 1
             assert release.wait(timeout=2)
             return "\n".join((
-                f"{remote_main}\trefs/heads/main",
-                f"{tag_object}\trefs/tags/national-bot-v143",
-                f"{commit}\trefs/tags/national-bot-v143^{{}}",
-                f"{water_object}\trefs/tags/national-high-water-v143",
-                f"{commit}\trefs/tags/national-high-water-v143^{{}}",
+                f"{remote_main}\trefs/heads/{EVOLUTION_BRANCH}",
+                f"{tag_object}\trefs/tags/{completion_tag}",
+                f"{commit}\trefs/tags/{completion_tag}^{{}}",
+                f"{water_object}\trefs/tags/{high_water}",
+                f"{commit}\trefs/tags/{high_water}^{{}}",
             ))
         if args and args[0] == "cat-file":
             return "tag"
@@ -308,7 +319,7 @@ def test_remote_publication_proof_is_singleflight_under_slow_origin(monkeypatch)
 
     def read():
         start.wait()
-        return evolution_infra._remote_published_completion_versions({143})
+        return evolution_infra._remote_published_completion_versions({version})
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         futures = [pool.submit(read) for _index in range(4)]
@@ -318,7 +329,7 @@ def test_remote_publication_proof_is_singleflight_under_slow_origin(monkeypatch)
         assert calls == 1
         release.set()
         assert [future.result(timeout=2) for future in futures] == [
-            {143}, {143}, {143}, {143}
+            {version}, {version}, {version}, {version}
         ]
     assert calls == 1
     evolution_infra._clear_remote_publication_cache()

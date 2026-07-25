@@ -32,8 +32,14 @@ def _valid_proposal_packet(
         sort_keys=True,
         separators=(",", ":"),
     )
+    from bot_namespace import bot_name
+    from conftest import STRICT_TARGET_V
+
     snapshot_binding = {
-        "reference": "snapshot:head_to_head.json#/national_v143 vs national_v144",
+        "reference": (
+            f"snapshot:head_to_head.json#/{bot_name(STRICT_TARGET_V)} vs "
+            f"{bot_name(STRICT_TARGET_V + 1)}"
+        ),
         "node_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
         "resolved_projection": snapshot_projection,
         "projection_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
@@ -506,10 +512,15 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
     monkeypatch,
 ):
     import agent_master
+    from bot_namespace import bot_name
+    from conftest import STRICT_TARGET_V
 
-    parent_a = tmp_path / "national_v143"
-    parent_b = tmp_path / "national_v144"
-    child = tmp_path / "national_v145"
+    source_v = STRICT_TARGET_V
+    parent2_v = STRICT_TARGET_V + 1
+    next_v = STRICT_TARGET_V + 2
+    parent_a = tmp_path / bot_name(source_v)
+    parent_b = tmp_path / bot_name(parent2_v)
+    child = tmp_path / bot_name(next_v)
     for root in (parent_a, parent_b, child):
         root.mkdir()
     (parent_a / "policy.py").write_text("A = True\n", encoding="utf-8")
@@ -534,9 +545,9 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
         parent_a,
         parent_b,
         child,
-        source_v=143,
-        parent2_v=144,
-        next_v=145,
+        source_v=source_v,
+        parent2_v=parent2_v,
+        next_v=next_v,
         capability_snapshot=snapshot,
         preplan_transition=_accepted_preplan_transition(),
     )
@@ -548,7 +559,7 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
         "structural_change": "Replace one reachable prepared-child branch with a deadline-bounded mechanism.",
         "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
         "measurement": (
-            "target=national_v144; primary=complete_70_hand_wld; "
+            f"target={bot_name(parent2_v)}; primary=complete_70_hand_wld; "
             "expected_delta=0.03; samples=>=30_complete_matches; "
             "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
         ),
@@ -597,7 +608,7 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
         return "```json\n" + json.dumps(plan) + "\n```", 0.0, {}
 
     def bot_dir(version):
-        return {143: parent_a, 144: parent_b, 145: child}[int(version)]
+        return {source_v: parent_a, parent2_v: parent_b, next_v: child}[int(version)]
 
     monkeypatch.setattr(agent_master, "get_bot_dir", bot_dir)
     monkeypatch.setattr(agent_master, "get_logs_dir", lambda _v: tmp_path)
@@ -639,8 +650,8 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
     )
 
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=145,
+        source_v=source_v,
+        next_v=next_v,
         stagnation_info="stagnant",
         ui=type("UI", (), {
             "clear_io": lambda self: None,
@@ -652,6 +663,9 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
     assert result is not None
     prompt = captured[0]
     assert contract["contract_digest"] in prompt
-    assert "prepared_crossover_child=national_v145" in prompt
+    assert f"prepared_crossover_child={bot_name(next_v)}" in prompt
     assert "policy.py: 5/2500 lines" in prompt
-    assert "Planning baseline: bots/national_v145/ (prepared_crossover_child)" in prompt
+    assert (
+        f"Planning baseline: bots/{bot_name(next_v)}/ (prepared_crossover_child)"
+        in prompt
+    )

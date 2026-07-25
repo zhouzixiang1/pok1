@@ -25,9 +25,13 @@ def test_normal_critic_envelope_is_exact_current_epoch_policy_diff(
 ):
     import agent_review
     import national_runtime_authority
+    from bot_namespace import bot_name
+    from conftest import STRICT_TARGET_V
 
-    source = tmp_path / "national_v143"
-    target = tmp_path / "national_v144"
+    source_v = STRICT_TARGET_V
+    target_v = STRICT_TARGET_V + 1
+    source = tmp_path / bot_name(source_v)
+    target = tmp_path / bot_name(target_v)
     source.mkdir()
     target.mkdir()
     source_policy = "def get_baseline_decision(context):\n    return {'kind': 'pass'}\n"
@@ -37,17 +41,17 @@ def test_normal_critic_envelope_is_exact_current_epoch_policy_diff(
     monkeypatch.setattr(
         agent_review,
         "get_bot_dir",
-        lambda version: source if int(version) == 143 else target,
+        lambda version: source if int(version) == source_v else target,
     )
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v143",),
+        lambda: (bot_name(source_v),),
     )
 
     evidence = agent_review._critic_code_evidence(
-        144,
-        143,
+        target_v,
+        source_v,
         protocol_bootstrap_prepared_only=False,
     )
 

@@ -8,7 +8,7 @@ paths inherit the same handling as the initial query.
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKError
 
-from core import llm_query
+import llm_query
 
 
 async def _noop_sleep(*_args, **_kwargs):

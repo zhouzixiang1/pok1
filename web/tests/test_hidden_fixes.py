@@ -730,7 +730,7 @@ def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
     import event_bus
     import evolution_infra
-    import core.orchestrator_context as oc
+    import orchestrator_context as oc
 
     evolution_infra.write_pipeline_checkpoint(232, 224, "direction_audited")
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]

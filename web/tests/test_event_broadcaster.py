@@ -129,14 +129,17 @@ class TestEventBroadcaster:
             eb.add_client(AUTHORITY_B)
 
     def test_publication_under_same_reset_receipt_replaces_replay_identity(self):
+        from bot_namespace import bot_name
+        from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+
         before = _stream_authority(
-            high_water=142,
+            high_water=STRICT_SOURCE_V,
             active_bots=[],
             state="fresh_bootstrap_ready",
         )
         after = _stream_authority(
-            high_water=143,
-            active_bots=["national_v143"],
+            high_water=STRICT_TARGET_V,
+            active_bots=[bot_name(STRICT_TARGET_V)],
         )
         assert before is not None
         assert after is not None
@@ -144,14 +147,14 @@ class TestEventBroadcaster:
 
         eb = EventBroadcaster()
         eb.bind_authority(before)
-        eb.broadcast("history", {"generation": 142})
+        eb.broadcast("history", {"generation": STRICT_SOURCE_V})
         eb.bind_authority(after)
-        eb.broadcast("history", {"generation": 143})
+        eb.broadcast("history", {"generation": STRICT_TARGET_V})
         _, queue = eb.add_client(after)
 
         import json
         replay = json.loads(queue.get_nowait()["data"])
-        assert replay["generation"] == 143
+        assert replay["generation"] == STRICT_TARGET_V
         assert queue.empty()
 
     def test_delayed_old_request_cannot_roll_back_new_authority(self):
