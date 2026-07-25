@@ -526,7 +526,8 @@ def validate_spec(spec: CertificationSpec) -> None:
             raise ValueError("unknown first-strict bootstrap control id")
         if parse_bot_version(Path(spec.candidate).name) != FIRST_STRICT_POLICY_VERSION:
             raise ValueError(
-                "first-strict bootstrap control is valid only for national_v143"
+                "first-strict bootstrap control is valid only for "
+                f"{bot_name(FIRST_STRICT_POLICY_VERSION)}"
             )
     if spec.mode == "full":
         defaults = MODE_CONFIG["full"]

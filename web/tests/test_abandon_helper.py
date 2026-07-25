@@ -2784,8 +2784,13 @@ def test_rework_authority_failure_paths_abandon_in_tool_source():
     """
     import inspect
     import tool_planning
+    import tool_planning_worker
 
-    source = inspect.getsource(tool_planning)
+    # After the Group-E quality-contract extraction (commit af4187a5), the
+    # worker-execution body that emits these reasons lives in tool_planning_worker
+    # (re-exported by tool_planning). Inspect both modules so the regression guard
+    # tracks the reasons wherever the extraction placed them.
+    source = inspect.getsource(tool_planning) + inspect.getsource(tool_planning_worker)
     for reason in [
         "worker_terminal_abandon_rework_task_authority_invalid",
         "worker_terminal_abandon_repair_baseline_drift",

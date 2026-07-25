@@ -336,6 +336,17 @@ def _read_json_regular(path: Path) -> dict:
             )
         ):
             raise RuntimeError("abandon_transaction_json_unsafe")
+        # Stat-based checks cannot detect an in-place truncate-and-rewrite of
+        # identical length through the same inode: the mtime/ctime may resolve
+        # to the same nanosecond as the pre-rewrite value, and the size and
+        # inode are unchanged. Re-read the descriptor from offset 0 and compare
+        # bytes; a diverging second read proves the file was mutated between the
+        # first read and the re-read (a same-size TOCTOU rewrite). This is the
+        # only reliable detection for that attack class.
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        reread = os.read(descriptor, 1024 * 1024 + 1)
+        if reread != raw:
+            raise RuntimeError("abandon_transaction_json_unsafe")
     finally:
         os.close(descriptor)
     value = json.loads(raw.decode("utf-8"))

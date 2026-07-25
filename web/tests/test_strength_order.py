@@ -5,14 +5,25 @@ from pathlib import Path
 import pytest
 
 from bot_namespace import (
+    FIRST_STRICT_POLICY_VERSION,
     STRICT_ARTIFACT_FILES,
+    bot_name,
     parse_bot_version,
     refresh_policy_identity_documents,
     strict_artifact_layout_errors,
 )
+from conftest import STRICT_TARGET_V, strict_bot_name
 
 
 IDENTITY = "a" * 64
+
+# Branch-portable strict-policy bot labels for the two-bot match fixtures.
+# BOT_A is the first strict candidate (the fresh-bootstrap floor); BOT_B is its
+# strict child. These resolve to national_v143/national_v144 on main and
+# national_cloud_v1/national_cloud_v2 on the tencent-cloud-runtime branch, so
+# the same tests pass in either namespace.
+BOT_A = strict_bot_name()
+BOT_B = bot_name(STRICT_TARGET_V + 1)
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +133,7 @@ def _write_strict_bot(root):
     refresh_policy_identity_documents(
         root,
         version,
-        parent_versions=() if version == 143 else (version - 1,),
+        parent_versions=() if version == FIRST_STRICT_POLICY_VERSION else (version - 1,),
     )
     assert strict_artifact_layout_errors(root) == []
 
@@ -163,8 +174,8 @@ def _artifact_execution(*bots):
 def _admitted_history_row(**overrides):
     timing_plan = _rating_timing_plan()
     row = {
-        "bot0": "national_v143",
-        "bot1": "national_v144",
+        "bot0": BOT_A,
+        "bot1": BOT_B,
         "bot0_wins": 1,
         "bot1_wins": 1,
         "draws": 0,
@@ -210,15 +221,15 @@ def test_equal_primary_strength_is_broken_by_70_hand_chip_amount(tmp_path):
     from rating_snapshot import build_strength_rows
 
     ratings = {
-        "national_v143": {"r": 1500, "rd": 80, "sigma": 0.06},
-        "national_v144": {"r": 1500, "rd": 80, "sigma": 0.06},
+        BOT_A: {"r": 1500, "rd": 80, "sigma": 0.06},
+        BOT_B: {"r": 1500, "rd": 80, "sigma": 0.06},
     }
     stats = {
-        "national_v143": {"games": 2, "win_rate": 0.5},
-        "national_v144": {"games": 2, "win_rate": 0.5},
+        BOT_A: {"games": 2, "win_rate": 0.5},
+        BOT_B: {"games": 2, "win_rate": 0.5},
     }
     h2h = {
-        "national_v143 vs national_v144": {
+        f"{BOT_A} vs {BOT_B}": {
             "games": 2,
             "a_wins": 1,
             "b_wins": 1,
@@ -237,7 +248,7 @@ def test_equal_primary_strength_is_broken_by_70_hand_chip_amount(tmp_path):
         expected_evaluation_identity_digest=IDENTITY,
     )
 
-    assert rows[0]["name"] == "national_v143"
+    assert rows[0]["name"] == BOT_A
     assert rows[0]["selection_score"] == rows[1]["selection_score"]
     assert rows[0]["secondary_net_chips_mean"] == 200.0
     assert rows[1]["secondary_net_chips_mean"] == -200.0
@@ -259,7 +270,7 @@ def test_corrupt_chip_samples_do_not_enter_secondary_strength(tmp_path):
     )])
 
     assert national_chip_metrics_from_match_history(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         history,
         expected_evaluation_identity_digest=IDENTITY,
     ) == {}
@@ -273,11 +284,11 @@ def test_match_replay_persists_primary_and_secondary_contract(tmp_path, monkeypa
     results_dir = tmp_path / "results"
     bots_dir = tmp_path / "bots"
     history = results_dir / "match_history.jsonl"
-    _write_strict_bot(bots_dir / "national_v143")
-    _write_strict_bot(bots_dir / "national_v144")
+    _write_strict_bot(bots_dir / BOT_A)
+    _write_strict_bot(bots_dir / BOT_B)
     artifact_execution = _artifact_execution(
-        bots_dir / "national_v143",
-        bots_dir / "national_v144",
+        bots_dir / BOT_A,
+        bots_dir / BOT_B,
     )
     monkeypatch.setattr(elo_daemon, "REPLAY_DIR", replay_dir)
     monkeypatch.setattr(elo_daemon, "RESULTS_DIR", results_dir)
@@ -291,22 +302,22 @@ def test_match_replay_persists_primary_and_secondary_contract(tmp_path, monkeypa
     timing_plan = _rating_timing_plan()
 
     name = elo_daemon.save_match_replay(
-        "national_v143",
-        "national_v144",
+        BOT_A,
+        BOT_B,
         1,
         1,
         0,
         [
             _complete_native_game(
-                bot_a="national_v143",
-                bot_b="national_v144",
+                bot_a=BOT_A,
+                bot_b=BOT_B,
                 artifact_execution=artifact_execution,
                 timing_plan=timing_plan,
                 net_chips_a=500,
             ),
             _complete_native_game(
-                bot_a="national_v143",
-                bot_b="national_v144",
+                bot_a=BOT_A,
+                bot_b=BOT_B,
                 artifact_execution=artifact_execution,
                 timing_plan=timing_plan,
                 net_chips_a=-100,
@@ -346,8 +357,8 @@ def test_rating_admission_rejects_typed_native_terminal_abort(tmp_path, monkeypa
     }
     with pytest.raises(ValueError, match="timing evidence invalid"):
         elo_daemon.save_match_replay(
-            "national_v143",
-            "national_v144",
+            BOT_A,
+            BOT_B,
             1,
             0,
             0,
@@ -374,8 +385,8 @@ def test_rating_replay_producer_rejects_nonstrength_receipt_before_staging(
 
     with pytest.raises(ValueError, match="requires an exact 70_hand_match"):
         elo_daemon.save_match_replay(
-            "national_v143",
-            "national_v144",
+            BOT_A,
+            BOT_B,
             1,
             0,
             0,
@@ -408,8 +419,8 @@ def test_rating_replay_producer_rejects_symlinked_replay_root(
 
     with pytest.raises(RuntimeError, match="replay directory is unsafe"):
         elo_daemon.save_match_replay(
-            "national_v143",
-            "national_v144",
+            BOT_A,
+            BOT_B,
             1,
             0,
             0,
@@ -429,16 +440,16 @@ def test_stage_rejects_incomplete_raw_70_hand_envelope(tmp_path, monkeypatch):
     replay_dir = tmp_path / "replays"
     results_dir = tmp_path / "results"
     bots_dir = tmp_path / "bots"
-    _write_strict_bot(bots_dir / "national_v143")
-    _write_strict_bot(bots_dir / "national_v144")
+    _write_strict_bot(bots_dir / BOT_A)
+    _write_strict_bot(bots_dir / BOT_B)
     artifact_execution = _artifact_execution(
-        bots_dir / "national_v143",
-        bots_dir / "national_v144",
+        bots_dir / BOT_A,
+        bots_dir / BOT_B,
     )
     timing_plan = _rating_timing_plan()
     broken = _complete_native_game(
-        bot_a="national_v143",
-        bot_b="national_v144",
+        bot_a=BOT_A,
+        bot_b=BOT_B,
         artifact_execution=artifact_execution,
         timing_plan=timing_plan,
         net_chips_a=1,
@@ -455,8 +466,8 @@ def test_stage_rejects_incomplete_raw_70_hand_envelope(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="strict validation failed:game_1:hand_records_incomplete"):
         elo_daemon.save_match_replay(
-            "national_v143",
-            "national_v144",
+            BOT_A,
+            BOT_B,
             1,
             0,
             0,
@@ -481,11 +492,11 @@ def _stage_current_identity_match(tmp_path, monkeypatch):
     identity = evaluation_data_identity.ensure_evaluation_data_identity(
         results_dir
     )["manifest_digest"]
-    _write_strict_bot(bots_dir / "national_v143")
-    _write_strict_bot(bots_dir / "national_v144")
+    _write_strict_bot(bots_dir / BOT_A)
+    _write_strict_bot(bots_dir / BOT_B)
     artifact_execution = _artifact_execution(
-        bots_dir / "national_v143",
-        bots_dir / "national_v144",
+        bots_dir / BOT_A,
+        bots_dir / BOT_B,
     )
     monkeypatch.setattr(elo_daemon, "REPLAY_DIR", replay_dir)
     monkeypatch.setattr(elo_daemon, "RESULTS_DIR", results_dir)
@@ -502,14 +513,14 @@ def _stage_current_identity_match(tmp_path, monkeypatch):
         identity,
     )
     admission = elo_daemon.save_match_replay(
-        "national_v143",
-        "national_v144",
+        BOT_A,
+        BOT_B,
         1,
         0,
         0,
         [_complete_native_game(
-            bot_a="national_v143",
-            bot_b="national_v144",
+            bot_a=BOT_A,
+            bot_b=BOT_B,
             artifact_execution=artifact_execution,
             timing_plan=timing_plan,
             net_chips_a=500,
@@ -521,8 +532,8 @@ def _stage_current_identity_match(tmp_path, monkeypatch):
         stage_only=True,
     )
     result = (
-        "national_v143",
-        "national_v144",
+        BOT_A,
+        BOT_B,
         1,
         0,
         0,
@@ -545,7 +556,7 @@ def test_staged_native_match_commits_exact_epoch_mode_and_identity(
     )
     ratings = {
         name: Glicko2Player(r=1500, rd=350, sigma=0.06)
-        for name in ("national_v143", "national_v144")
+        for name in (BOT_A, BOT_B)
     }
     h2h = {}
     bot_stats = {}
@@ -565,7 +576,7 @@ def test_staged_native_match_commits_exact_epoch_mode_and_identity(
     assert summary["execution_mode"] == "native_tcp"
     assert summary["evaluation_identity_digest"] == identity
     assert (replay_dir / summary["id"]).is_file()
-    assert h2h["national_v143 vs national_v144"]["a_wins"] == 1
+    assert h2h[f"{BOT_A} vs {BOT_B}"]["a_wins"] == 1
 
 
 @pytest.mark.parametrize(
@@ -599,7 +610,7 @@ def test_staged_match_rejects_resigned_foreign_epoch_or_mode(
     admission["summary"][field] = value
     ratings = {
         name: Glicko2Player(r=1500, rd=350, sigma=0.06)
-        for name in ("national_v143", "national_v144")
+        for name in (BOT_A, BOT_B)
     }
 
     with pytest.raises(RuntimeError, match=error):
@@ -644,7 +655,7 @@ def test_staged_nonstrength_receipt_cannot_enter_rating_or_history(
     admission["summary"]["replay_sha256"] = admission["replay_sha256"]
     ratings = {
         name: Glicko2Player(r=1500, rd=350, sigma=0.06)
-        for name in ("national_v143", "national_v144")
+        for name in (BOT_A, BOT_B)
     }
 
     with pytest.raises(RuntimeError, match="not an admitted 70-hand"):
@@ -665,9 +676,7 @@ def test_admission_rechecks_current_artifact_bytes_after_staging(tmp_path, monke
     admission = result[8]
     pending = Path(admission["pending_path"])
     payload = json.loads(pending.read_text(encoding="utf-8"))
-    forged = payload["games"][0]["artifact_execution"]["by_player"][
-        "national_v143"
-    ]
+    forged = payload["games"][0]["artifact_execution"]["by_player"][BOT_A]
     forged["artifact_hash"] = "f" * 64
     forged["identity_digest"] = canonical_digest(
         {key: value for key, value in forged.items() if key != "identity_digest"}
@@ -681,7 +690,7 @@ def test_admission_rechecks_current_artifact_bytes_after_staging(tmp_path, monke
     admission["summary"]["replay_sha256"] = admission["replay_sha256"]
     ratings = {
         name: Glicko2Player(r=1500, rd=350, sigma=0.06)
-        for name in ("national_v143", "national_v144")
+        for name in (BOT_A, BOT_B)
     }
 
     with pytest.raises(RuntimeError, match="artifact identity does not match current bot bytes"):
@@ -777,11 +786,11 @@ def test_history_reconstruction_rejects_unproven_incomplete_or_failed_rows(tmp_p
     ])
 
     rebuilt = reconstruct_h2h_from_match_history(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         history,
         expected_evaluation_identity_digest=IDENTITY,
     )
-    assert rebuilt["national_v143 vs national_v144"] == {
+    assert rebuilt[f"{BOT_A} vs {BOT_B}"] == {
         "games": 2,
         "a_wins": 1,
         "b_wins": 1,

@@ -4,9 +4,19 @@ Creates a FastAPI test app with all routers but no lifespan (no orchestrator/dae
 Importing server.app ensures broadcaster/web_ui exist for endpoints that reference them.
 """
 
+import os
 import sys
 from pathlib import Path
 import subprocess
+
+# Opt into the cloud evolution line BEFORE any web.core import so the whole test
+# suite resolves the national_cloud_v namespace / tencent-cloud-runtime branch /
+# ARCHIVED_VERSION_HIGH_WATER=0 floor (the authoritative contract on this branch).
+# This mirrors what web/main.py does at launch; setting it here ensures tests,
+# direct imports, and scripts all see the same namespace without depending on the
+# web launcher's import-time side effect. An explicit env value already set by the
+# operator always wins (setdefault).
+os.environ.setdefault("POK_CLOUD_RUNTIME", "1")
 
 import pytest
 from fastapi import FastAPI
@@ -25,15 +35,51 @@ sys.path.insert(0, str(PROJECT_ROOT / "web" / "server"))
 import server.app  # noqa: F401
 from bot_namespace import (
     ACTIVE_BOT_PREFIX,
+    ARCHIVED_VERSION_HIGH_WATER,
     FIRST_STRICT_POLICY_VERSION,
     NATIONAL_ENTRYPOINT,
     NATIONAL_RUNTIME_MANIFEST,
     POLICY_ENTRYPOINT,
     POLICY_EPOCH_RECEIPT,
     PRECOMPUTE_ENTRYPOINT,
+    bot_name,
+    bot_tag,
+    high_water_tag,
     parse_bot_version,
     resolve_national_bot_spec,
 )
+
+# ---------------------------------------------------------------------------
+# Branch-portable strict-policy version helpers for tests.
+#
+# The poker evolution control plane runs on two branches with different strict-
+# policy version floors: ``main`` (ARCHIVED_VERSION_HIGH_WATER=142,
+# FIRST_STRICT_POLICY_VERSION=143, bot namespace ``national_v``) and
+# ``tencent-cloud-runtime`` (ARCHIVED_VERSION_HIGH_WATER=0,
+# FIRST_STRICT_POLICY_VERSION=1, bot namespace ``national_cloud_v``). Tests
+# written for main that hardcode literal ``143``/``142``/``national_v143`` fail
+# on the cloud branch. These helpers let tests reference the authoritative
+# versions and bot names without hardcoding, so the same test passes on both.
+#
+# Usage in tests:
+#   from conftest import STRICT_TARGET_V, STRICT_SOURCE_V, strict_bot_name, strict_bot_tag
+#   bot = _write_policy_bot(tmp_path, STRICT_TARGET_V)            # was 143
+#   assert lineage["version_authority_high_water"] == STRICT_SOURCE_V  # was 142
+#   child = _write_policy_bot(tmp_path, STRICT_TARGET_V + 1, parents=(STRICT_TARGET_V,))
+# ---------------------------------------------------------------------------
+
+STRICT_TARGET_V = FIRST_STRICT_POLICY_VERSION
+STRICT_SOURCE_V = ARCHIVED_VERSION_HIGH_WATER
+
+
+def strict_bot_name(version: int | None = None) -> str:
+    """Bot directory/tag-stem name for a strict version (branch-portable)."""
+    return bot_name(version if version is not None else STRICT_TARGET_V)
+
+
+def strict_bot_tag(version: int | None = None) -> str:
+    """Completion tag for a strict version (branch-portable)."""
+    return bot_tag(version if version is not None else STRICT_TARGET_V)
 
 from server.routes.ratings import router as ratings_router
 from server.routes.matches import router as matches_router
@@ -215,7 +261,7 @@ def synthetic_checkpoint_authority(monkeypatch):
     monkeypatch.setattr(evolution_infra, "checkpoint_allocation_authority", resolve)
 
     def parent(name, **_kwargs):
-        version = int(str(name).rsplit("national_v", 1)[1])
+        version = parse_bot_version(name)
         return SimpleNamespace(
             eligible=True,
             version=version,
@@ -230,7 +276,7 @@ def synthetic_checkpoint_authority(monkeypatch):
             },
             publication_identity={
                 "published": True,
-                "tag": f"national-bot-v{version}",
+                "tag": bot_tag(version),
                 "version": version,
             },
             certificate_digest="b" * 64,
@@ -238,9 +284,9 @@ def synthetic_checkpoint_authority(monkeypatch):
 
     def tags(*, version, **_kwargs):
         return {
-            "completion_tag": f"national-bot-v{version}",
+            "completion_tag": bot_tag(version),
             "completion_tag_object_oid": "c" * 40,
-            "high_water_tag": f"national-high-water-v{version}",
+            "high_water_tag": high_water_tag(version),
             "high_water_tag_object_oid": "d" * 40,
             "publication_commit_oid": "e" * 40,
             "completion_tree_oid": "f" * 40,

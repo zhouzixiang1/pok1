@@ -27,6 +27,20 @@ EVALUATION_EPOCH = "national_tcp_policy_v1"
 # branch) that never collides with the canonical national_v tag namespace.
 # Defaults preserve the historical identity exactly so existing behavior on
 # the main branch is unchanged when the variables are not set.
+#
+# POK_CLOUD_RUNTIME is the authoritative opt-in signal for the cloud evolution
+# line (tencent-cloud-runtime branch, national_cloud_v namespace). When it is
+# set, the namespace/branch/tag prefixes default to the cloud values unless an
+# explicit POK_BOT_PREFIX/POK_TAG_PREFIX/etc. override is also present. This
+# resolution runs at import time so every importer — web/main.py, the
+# orchestrator/daemon CLIs, scripts, and the test suite — sees the same
+# namespace from the same env, instead of relying on a web/main.py side effect
+# that only fires for the web launcher entry point.
+if os.environ.get("POK_CLOUD_RUNTIME", "").lower() in {"1", "true", "yes", "on"}:
+    os.environ.setdefault("POK_EVOLUTION_BRANCH", "tencent-cloud-runtime")
+    os.environ.setdefault("POK_BOT_PREFIX", "national_cloud_v")
+    os.environ.setdefault("POK_TAG_PREFIX", "national-cloud-bot-v")
+    os.environ.setdefault("POK_HIGH_WATER_TAG_PREFIX", "national-cloud-high-water-v")
 ACTIVE_BOT_PREFIX = os.environ.get("POK_BOT_PREFIX", "national_v")
 ACTIVE_TAG_PREFIX = os.environ.get("POK_TAG_PREFIX", "national-bot-v")
 HIGH_WATER_TAG_PREFIX = os.environ.get(

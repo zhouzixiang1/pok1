@@ -843,12 +843,24 @@ and retains the older operator-host epoch-2 narrative as historical context.
   otherwise.
 - Test in proportion to risk: compile touched Python, run focused tests, then
   the relevant native protocol/evolution shards.
-- When a change affects behavior, an ABI/protocol, gate, prompt contract, data
-  schema, lifecycle, test harness, or expected failure mode, update the
-  necessary focused/full test process, fixtures, regression anchors, and
-  operator test commands in the same change. Never preserve a green result by
-  skipping, weakening, or reclassifying the affected test without an explicit
-  fail-closed replacement and documented reason.
+- **Every code-logic change requires actively considering whether tests must
+  change with it.** Do not treat tests as someone else's concern. Before
+  finishing any change to behavior, an ABI/protocol, gate, prompt contract,
+  data schema, lifecycle, error message, return-shape, branch contract, version
+  floor, namespace, or expected failure mode, explicitly ask: "which existing
+  tests assert on the bytes/strings/values/paths/versions I just changed, and
+  do they still assert the truth?" Update the necessary focused/full test
+  process, fixtures, regression anchors, and operator test commands **in the
+  same change**. Code that evolves while its tests stay frozen produces the
+  exact silent-stale-test debt this repository has had to dig out from under
+  (e.g. main-branch `national_v143`/`142` literals left behind after the cloud
+  epoch moved the floor to `FIRST_STRICT_POLICY_VERSION=1`, and companion-file
+  extractions that moved symbols tests grep for by source path). Prefer
+  branch-portable helpers (`STRICT_TARGET_V`, `STRICT_SOURCE_V`,
+  `strict_bot_name()`, `strict_bot_tag()`, `bot_name(v)`, `bot_tag(v)` in
+  `web/tests/conftest.py`) over hardcoded versions. Never preserve a green
+  result by skipping, weakening, or reclassifying the affected test without an
+  explicit fail-closed replacement and documented reason.
 - **Synchronize documentation with every functional change.** A feature added,
   removed, or modified must update the relevant docs in the same change:
   `AGENTS.md` and `CLAUDE.md` for cross-cutting contracts, `docs/` for

@@ -3,12 +3,26 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
 import pytest
 
 from bot_artifact import canonical_digest, hash_path
+from bot_namespace import (
+    ACTIVE_BOT_PREFIX,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+    parse_bot_version,
+)
+from conftest import (
+    STRICT_SOURCE_V,
+    STRICT_TARGET_V,
+    strict_bot_name,
+    strict_bot_tag,
+)
 from official_platform_harness import OfficialPlatformConfig
 from official_certification import (
     _log_target_reached,
@@ -196,8 +210,8 @@ def _structural_quality_admission(candidate: Path) -> dict:
         "checkpoint": {
             "evaluation_epoch": "national_tcp_policy_v1",
             "workflow_run_id": "pytest-certification-workflow",
-            "next_v": int(candidate.name.removeprefix("national_v") or 0),
-            "source_v": 142,
+            "next_v": int(candidate.name.removeprefix(ACTIVE_BOT_PREFIX) or 0),
+            "source_v": STRICT_SOURCE_V,
         },
         "quality_gate_digest": "1" * 64,
         "capability_digest": "2" * 64,
@@ -233,8 +247,8 @@ def test_test_runner_envelope_preserves_normal_full_quality_admission(
 
     import official_certification as certification
 
-    candidate = _bot(tmp_path / "national_v143")
-    opponent = _bot(tmp_path / "national_v142")
+    candidate = _bot(tmp_path / strict_bot_name())
+    opponent = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
     admission = _structural_quality_admission(candidate)
     spec = build_spec(
         "full",
@@ -948,10 +962,14 @@ def test_full_profile_cannot_be_downgraded_or_run_without_opponent(tmp_path):
 
 
 def test_first_strict_control_spec_is_limited_to_v143(tmp_path):
-    candidate = _bot(tmp_path / "national_v144")
+    candidate = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
     opponent = _bot(tmp_path / "first_strict_control_v1")
 
-    with pytest.raises(ValueError, match="only for national_v143"):
+    with pytest.raises(
+        ValueError,
+        match=r"first-strict bootstrap control is valid only for "
+        + re.escape(bot_name(FIRST_STRICT_POLICY_VERSION)),
+    ):
         build_spec(
             "full",
             candidate,
@@ -963,7 +981,7 @@ def test_first_strict_control_spec_is_limited_to_v143(tmp_path):
 def test_retired_bootstrap_root_spec_cannot_resume_as_normal_full_job(tmp_path):
     import official_certification as certification
 
-    candidate = _bot(tmp_path / "national_v143")
+    candidate = _bot(tmp_path / strict_bot_name())
     opponent = _bot(tmp_path / "first_strict_control_v1")
     record = certification.spec_record(
         build_spec(
@@ -1746,9 +1764,9 @@ def test_test_only_certificate_cannot_publish_attestation(tmp_path, monkeypatch)
 
 def test_certificate_cannot_be_reused_for_same_artifact_under_new_version(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v143")
-    clone = tmp_path / "national_v144"
-    opponent = _bot(tmp_path / "national_v142")
+    candidate = _bot(tmp_path / strict_bot_name())
+    clone = tmp_path / strict_bot_name(STRICT_TARGET_V + 1)
+    opponent = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 2))
     cfg = _config(tmp_path)
     spec = build_spec(
         "full",
@@ -1775,8 +1793,8 @@ def test_certificate_cannot_be_reused_for_same_artifact_under_new_version(tmp_pa
 
 def test_malformed_nested_certificate_fails_closed_instead_of_raising(tmp_path, monkeypatch):
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v143")
-    opponent = _bot(tmp_path / "national_v142")
+    candidate = _bot(tmp_path / strict_bot_name())
+    opponent = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
     cfg = _config(tmp_path)
     result = _run_certification_with_runner_for_test(
         build_spec(
@@ -1806,8 +1824,8 @@ def test_malformed_nested_certificate_fails_closed_instead_of_raising(tmp_path, 
 def test_bound_deterministic_failure_survives_rejected_test_only_pass(tmp_path, monkeypatch):
     cert_root = tmp_path / "cert"
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(cert_root))
-    candidate = _bot(tmp_path / "national_v143")
-    opponent = _bot(tmp_path / "national_v142")
+    candidate = _bot(tmp_path / strict_bot_name())
+    opponent = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
     cfg = _config(tmp_path)
     full_spec = build_spec(
         "full",
@@ -1826,7 +1844,7 @@ def test_bound_deterministic_failure_survives_rejected_test_only_pass(tmp_path, 
     )
     with pytest.raises(RuntimeError, match="test-only"):
         publish_certificate_attestation(certified, candidate, config=cfg)
-    (cert_root / "status" / "national_v143.json").unlink()
+    (cert_root / "status" / f"{strict_bot_name()}.json").unlink()
     failed = _run_certification_with_runner_for_test(
         build_spec("smoke", candidate, opponent=opponent),
         config=cfg,
@@ -1912,10 +1930,10 @@ def test_published_status_projects_the_bound_verdict_ledger_identity(
     import official_certification as certification
     import official_verdict_ledger
 
-    candidate = tmp_path / "national_v143"
+    candidate = tmp_path / strict_bot_name()
     candidate.mkdir()
     published = {
-        "bot": "national_v143",
+        "bot": strict_bot_name(),
         "status": STATUS_CERTIFIED,
         "mode": "full",
         "policy_id": "official-full-v5",
@@ -1968,7 +1986,7 @@ def test_formal_profile_projection_is_derived_from_validated_certificate_spec(
 ):
     import official_certification as certification
 
-    candidate = tmp_path / "national_v143"
+    candidate = tmp_path / strict_bot_name()
     candidate.mkdir()
     spec = {
         "mode": "full",
@@ -2037,7 +2055,7 @@ def test_formal_profile_projection_fails_closed_without_valid_certificate(
 ):
     import official_certification as certification
 
-    candidate = tmp_path / "national_v144"
+    candidate = tmp_path / strict_bot_name(STRICT_TARGET_V + 1)
     candidate.mkdir()
     monkeypatch.setattr(
         certification,
@@ -2080,7 +2098,7 @@ def test_published_first_strict_selection_allows_checkout_relocation_only(
     from bot_namespace import EVALUATION_EPOCH
     from first_strict_control import CONTROL_AUTHORITY, CONTROL_ID
 
-    current_candidate = tmp_path / "current" / "bots" / "national_v143"
+    current_candidate = tmp_path / "current" / "bots" / strict_bot_name()
     current_control_path = tmp_path / "current" / "control" / ("c" * 64)
     current_policy_path = (
         tmp_path / "current" / "web" / "core" / "official_bootstrap_control.json"
@@ -2090,8 +2108,8 @@ def test_published_first_strict_selection_allows_checkout_relocation_only(
         "kind": "official-first-strict-candidate-binding",
         "epoch": EVALUATION_EPOCH,
         "candidate": str(current_candidate),
-        "candidate_label": "national_v143",
-        "candidate_version": 143,
+        "candidate_label": strict_bot_name(),
+        "candidate_version": STRICT_TARGET_V,
         "candidate_hash": "a" * 64,
         "source_artifact_inherited": False,
     }
@@ -2146,7 +2164,7 @@ def test_published_first_strict_selection_allows_checkout_relocation_only(
     relocated = deepcopy(selection)
     old_root = Path("/srv/evolution/.evolution_pok")
     old_binding = deepcopy(binding)
-    old_binding["candidate"] = str(old_root / "bots" / "national_v143")
+    old_binding["candidate"] = str(old_root / "bots" / strict_bot_name())
     old_binding["candidate_binding_digest"] = canonical_digest({
         key: value
         for key, value in old_binding.items()
@@ -2247,8 +2265,8 @@ def test_bootstrap_certificate_validation_uses_current_checkout_candidate(
     import official_certification as certification
     from first_strict_control import CONTROL_ID
 
-    signed_candidate = Path("/srv/evolution/.evolution_pok/bots/national_v143")
-    current_candidate = tmp_path / "bots" / "national_v143"
+    signed_candidate = Path("/srv/evolution/.evolution_pok/bots") / strict_bot_name()
+    current_candidate = tmp_path / "bots" / strict_bot_name()
     opponent = tmp_path / "control"
     spec = build_spec(
         "full",
@@ -2701,8 +2719,8 @@ def test_official_opponent_eligibility_requires_full_certificate_and_blocks_fail
             "issues": ["signed_full_official_certificate_required"],
         },
     )
-    historical = _bot(tmp_path / "national_v143")
-    opponent = _bot(tmp_path / "national_v144")
+    historical = _bot(tmp_path / strict_bot_name())
+    opponent = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
 
     bootstrap = official_opponent_eligibility(
         historical,
@@ -2727,7 +2745,7 @@ def test_official_opponent_eligibility_requires_full_certificate_and_blocks_fail
 def test_official_opponent_eligibility_uses_strict_role_resolver(tmp_path, monkeypatch):
     import official_certification as certification
 
-    historical = _bot(tmp_path / "national_v143")
+    historical = _bot(tmp_path / strict_bot_name())
     calls = []
     monkeypatch.setattr(
         certification,
@@ -2748,7 +2766,7 @@ def test_official_opponent_eligibility_uses_strict_role_resolver(tmp_path, monke
     result = official_opponent_eligibility(
         historical,
         allow_bootstrap_grandfather=True,
-        target_version=143,
+        target_version=STRICT_TARGET_V,
     )
 
     assert result["eligible"] is False
@@ -2766,8 +2784,8 @@ def test_select_official_opponent_rejects_grandfather_result_even_when_requested
     import national_native
     import national_runtime_authority
 
-    candidate = _bot(tmp_path / "national_v143")
-    historical = _bot(tmp_path / "national_v70")
+    candidate = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
+    historical = _bot(tmp_path / strict_bot_name())
     (historical / ".completed").touch()
     monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(national_native, "check_native_contract", lambda _path, **_kwargs: [])
@@ -2817,9 +2835,10 @@ def test_select_official_opponent_uses_certified_candidate_only(tmp_path, monkey
     import official_certification
 
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v134")
-    bootstrap = _bot(tmp_path / "national_v70")
-    certified = _bot(tmp_path / "national_v120")
+    candidate = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 2))
+    bootstrap = _bot(tmp_path / strict_bot_name())
+    certified = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
+    certified_name = certified.name
     (bootstrap / ".completed").touch()
     (certified / ".completed").touch()
     monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
@@ -2844,9 +2863,9 @@ def test_select_official_opponent_uses_certified_candidate_only(tmp_path, monkey
         official_certification,
         "official_opponent_eligibility",
         lambda path, **_kwargs: {
-            "eligible": Path(path).name == "national_v120",
-            "reason": "official_certified" if Path(path).name == "national_v120" else "official_full_certificate_required",
-            "priority": 0 if Path(path).name == "national_v120" else 1,
+            "eligible": Path(path).name == certified_name,
+            "reason": "official_certified" if Path(path).name == certified_name else "official_full_certificate_required",
+            "priority": 0 if Path(path).name == certified_name else 1,
         },
     )
 
@@ -2857,15 +2876,15 @@ def test_select_official_opponent_uses_certified_candidate_only(tmp_path, monkey
     )
 
     assert result["selected"] is True
-    assert result["opponent"]["bot"] == "national_v120"
+    assert result["opponent"]["bot"] == certified_name
     assert result["opponent"]["reason"] == "official_certified"
 
 
 def test_full_certificate_rejects_grandfathered_opponent_receipt(tmp_path):
     import official_certification as certification
 
-    candidate = _bot(tmp_path / "national_v143")
-    opponent = _bot(tmp_path / "national_v142")
+    candidate = _bot(tmp_path / strict_bot_name())
+    opponent = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
     spec = build_spec(
         "full",
         candidate,
@@ -2893,10 +2912,10 @@ def test_readiness_counts_unique_certified_artifacts_not_version_copies(tmp_path
     import national_runtime_authority
     import official_certification as certification
 
-    candidate = _bot(tmp_path / "national_v145")
+    candidate = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 2))
     (candidate / "candidate_only.py").write_text("VALUE = 145\n", encoding="utf-8")
-    first = _bot(tmp_path / "national_v143")
-    second = tmp_path / "national_v144"
+    first = _bot(tmp_path / strict_bot_name())
+    second = tmp_path / strict_bot_name(STRICT_TARGET_V + 1)
     shutil.copytree(first, second)
     for path in (first, second):
         (path / ".completed").touch()
@@ -2920,7 +2939,7 @@ def test_readiness_counts_unique_certified_artifacts_not_version_copies(tmp_path
     monkeypatch.setattr(certification, "published_bot_identity", lambda path: {
         "published": True,
         "artifact_hash": shared_hash,
-        "tag": f"national-bot-v{Path(path).name.removeprefix('national_v')}",
+        "tag": bot_tag(parse_bot_version(Path(path).name)),
         "tag_object": "tag-object",
     })
     observed_readiness = []
@@ -2943,8 +2962,8 @@ def test_official_opponent_rejects_different_version_with_same_artifact(tmp_path
     import national_native
     import official_certification as certification
 
-    candidate = _bot(tmp_path / "national_v145")
-    clone = tmp_path / "national_v142"
+    candidate = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
+    clone = tmp_path / strict_bot_name()
     shutil.copytree(candidate, clone)
     (clone / ".completed").touch()
     shared_hash = hash_path(candidate)
@@ -2955,7 +2974,7 @@ def test_official_opponent_rejects_different_version_with_same_artifact(tmp_path
     monkeypatch.setattr(certification, "published_bot_identity", lambda path: {
         "published": True,
         "artifact_hash": shared_hash,
-        "tag": "national-bot-v142",
+        "tag": strict_bot_tag(),
         "tag_object": "a" * 40,
         "issues": [],
     })

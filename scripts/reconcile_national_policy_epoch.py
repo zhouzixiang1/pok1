@@ -38,6 +38,8 @@ from bot_namespace import (  # noqa: E402
     EVALUATION_EPOCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
+    bot_tag,
+    high_water_tag,
     resolve_version_namespace_authority,
 )
 from checkpoint_schema import (  # noqa: E402
@@ -645,8 +647,8 @@ def _candidate_publication_errors(
     if _git_explicit_presence("ls-files", "--error-unmatch", relative):
         errors.append("reconciliation_candidate_is_git_tracked")
     for tag in (
-        f"national-bot-v{version}",
-        f"national-high-water-v{version}",
+        bot_tag(version),
+        high_water_tag(version),
     ):
         if _git_explicit_presence(
             "show-ref",
@@ -667,8 +669,8 @@ def _destructive_git_snapshot(version: int) -> dict:
     target = int(version)
     relative = f"bots/{bot_name(target)}"
     tags = (
-        f"national-bot-v{target}",
-        f"national-high-water-v{target}",
+        bot_tag(target),
+        high_water_tag(target),
     )
     return {
         "head": _git("rev-parse", "HEAD"),
