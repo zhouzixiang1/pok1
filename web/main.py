@@ -19,6 +19,16 @@ from pathlib import Path
 
 log = logging.getLogger("pok.main")
 
+# Ensure all pok.* loggers propagate to a stderr handler so diagnostic
+# output from strict_authority, master, planning_worker, etc. reaches
+# the systemd journal. Without this, loggers created in sub-modules have
+# no handler and their output is silently dropped.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    stream=sys.stderr,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = WEB_DIR / "frontend"
