@@ -5,6 +5,8 @@ from contextlib import contextmanager
 import json
 import time
 
+from bot_namespace import bot_name
+
 
 def _write_preflight_cycle(root, *, match_history: bytes = b"", extra_file_bytes: int = 0):
     """Create only the filesystem shape consumed by the observer preflight."""
@@ -64,13 +66,13 @@ class TestPipelineStrengthJobs:
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
             "epoch_reset_receipt_digest": "c" * 64,
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "match_history": [
                 {
                     "id": "match_001",
                     "timestamp": "2026-07-19T00:00:00Z",
-                    "bot0": "national_v143",
-                    "bot1": "national_v144",
+                    "bot0": bot_name(143),
+                    "bot1": bot_name(144),
                     "bot0_wins": 40,
                     "bot1_wins": 30,
                     "draws": 0,
@@ -101,7 +103,7 @@ class TestPipelineStrengthJobs:
         data = resp.json()
         assert data["available"] is True
         assert data["evaluation_identity_digest"] == "a" * 64
-        assert data["active_bots"] == ["national_v143", "national_v144"]
+        assert data["active_bots"] == [bot_name(143), bot_name(144)]
         assert data["capabilities"] == {
             "durable_job_lifecycle": False,
             "queued_running_leases": False,
@@ -109,7 +111,7 @@ class TestPipelineStrengthJobs:
         }
         assert data["authority_binding"] == {
             "evaluation_epoch": "national_tcp_policy_v1",
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "epoch_reset_receipt_digest": "c" * 64,
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
@@ -138,15 +140,15 @@ class TestPipelineStrengthJobs:
             "available": True,
             "evaluation_identity_digest": identity,
             "evaluation_manifest_digest": "b" * 64,
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "match_history": [
                 {
                     "id": "good",
                     "execution_mode": "native_tcp",
                     "evaluation_epoch": "national_tcp_policy_v1",
                     "evaluation_identity_digest": identity,
-                    "bot0": "national_v143",
-                    "bot1": "national_v144",
+                    "bot0": bot_name(143),
+                    "bot1": bot_name(144),
                     "strength_sample_unit": "70_hand_match",
                     "hands_per_strength_sample": 70,
                     "strength_admitted": True,
@@ -164,8 +166,8 @@ class TestPipelineStrengthJobs:
             "execution_mode": "native_tcp",
             "evaluation_epoch": "national_tcp_policy_v1",
             "evaluation_identity_digest": identity,
-            "bot0": "national_v143",
-            "bot1": "national_v144",
+            "bot0": bot_name(143),
+            "bot1": bot_name(144),
             "strength_sample_unit": "70_hand_match",
             "hands_per_strength_sample": 69,  # rejected: not 70
             "strength_admitted": True,
@@ -241,7 +243,7 @@ class TestPipelineStrengthJobs:
         import replay_analysis
 
         identity = "a" * 64
-        active = ["national_v143", "national_v144"]
+        active = [bot_name(143), bot_name(144)]
         snapshot = {
             "available": True,
             "evaluation_identity_digest": identity,
@@ -275,7 +277,7 @@ class TestPipelineStrengthJobs:
 
         good = payload("good.json")
         old = payload("old.json", evaluation_identity_digest="9" * 64)
-        offpool = payload("offpool.json", bot1="national_v999")
+        offpool = payload("offpool.json", bot1=bot_name(999))
         short = payload("short.json", hands_per_strength_sample=69)
         false_claim = payload("false.json", strength_complete=False)
         for name, value in (("good.json", good), ("old.json", old), ("offpool.json", offpool), ("short.json", short), ("false.json", false_claim)):
@@ -341,13 +343,13 @@ class TestPipelineStrengthJobs:
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
             "epoch_reset_receipt_digest": "c" * 64,
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "match_history": [
                 {
                     "id": f"match-{index}",
                     "timestamp": None,
-                    "bot0": "national_v143",
-                    "bot1": "national_v144",
+                    "bot0": bot_name(143),
+                    "bot1": bot_name(144),
                     "bot0_wins": 1,
                     "bot1_wins": 0,
                     "draws": 0,
@@ -395,7 +397,7 @@ class TestPipelineStrengthJobs:
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
             "epoch_reset_receipt_digest": "c" * 64,
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "match_history": [],
             "daemon_stats": {},
         }
@@ -430,7 +432,7 @@ class TestPipelineStrengthJobs:
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
             "epoch_reset_receipt_digest": "c" * 64,
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "match_history": [],
             "daemon_stats": {},
         }
@@ -466,7 +468,7 @@ class TestPipelineStrengthJobs:
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
             "epoch_reset_receipt_digest": "c" * 64,
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "match_history": [],
             "daemon_stats": {},
         }
@@ -530,7 +532,7 @@ class TestPipelineStrengthJobs:
             "load_current_strict_evaluation_bundle",
             lambda *_a, **_k: {
                 "available": True,
-                "active_bots": ["national_v143"],
+                "active_bots": [bot_name(143)],
                 "epoch_reset_receipt": {"receipt_digest": reset_digest},
                 "manifest_digest": "b" * 64,
                 "manifest": {"evaluation_identity_digest": "a" * 64},
@@ -544,7 +546,7 @@ class TestPipelineStrengthJobs:
             lambda *_a, **_k: {
                 "available": False,
                 "reason": "active_pool_singleton",
-                "active_bots": ["national_v143"],
+                "active_bots": [bot_name(143)],
             },
         )
         pipeline._STRENGTH_OBSERVER_CACHE.clear()
@@ -552,11 +554,11 @@ class TestPipelineStrengthJobs:
         data = client.get("/api/pipeline/strength-jobs").json()
 
         assert data["available"] is False
-        assert data["active_bots"] == ["national_v143"]
+        assert data["active_bots"] == [bot_name(143)]
         assert data["epoch_reset_receipt_digest"] == reset_digest
         assert data["authority_binding"] == {
             "evaluation_epoch": "national_tcp_policy_v1",
-            "active_bots": ["national_v143"],
+            "active_bots": [bot_name(143)],
             "epoch_reset_receipt_digest": reset_digest,
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
@@ -570,13 +572,13 @@ class TestPipelineStrengthJobs:
 
         binding = pipeline._strength_authority_binding(
             {
-                "active_bots": ["national_v143", "national_v144"],
+                "active_bots": [bot_name(143), bot_name(144)],
                 "epoch_reset_receipt_digest": "a" * 64,
                 "evaluation_identity_digest": "b" * 64,
                 "evaluation_manifest_digest": "c" * 64,
             },
             {
-                "active_bots": ["national_v143", "national_v145"],
+                "active_bots": [bot_name(143), bot_name(145)],
                 "epoch_reset_receipt": {"receipt_digest": "d" * 64},
                 "manifest": {"evaluation_identity_digest": "e" * 64},
                 "manifest_digest": "f" * 64,
@@ -683,7 +685,7 @@ class TestPipelineStrengthJobs:
             return {
                 "available": False,
                 "reason": "active_pool_singleton",
-                "active_bots": ["national_v143"],
+                "active_bots": [bot_name(143)],
                 "epoch_reset_receipt_digest": "a" * 64,
             }
 
@@ -746,12 +748,12 @@ class TestPipelineStrengthJobs:
             "evaluation_identity_digest": "a" * 64,
             "evaluation_manifest_digest": "b" * 64,
             "epoch_reset_receipt_digest": "c" * 64,
-            "active_bots": ["national_v143", "national_v144"],
+            "active_bots": [bot_name(143), bot_name(144)],
             "match_history": [
                 {
                     "id": f"match-{index}",
-                    "bot0": "national_v143",
-                    "bot1": "national_v144",
+                    "bot0": bot_name(143),
+                    "bot1": bot_name(144),
                     "strength_sample_count": 70,
                     "hands_per_strength_sample": 70,
                 }

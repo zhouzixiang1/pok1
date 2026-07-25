@@ -4,6 +4,8 @@ import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+from bot_namespace import bot_name
+
 
 class _UI:
     def __init__(self):
@@ -45,7 +47,7 @@ def _valid_proposal_packet(
         separators=(",", ":"),
     )
     snapshot_binding = {
-        "reference": "snapshot:head_to_head.json#/national_v1 vs national_v2",
+        "reference": f"snapshot:head_to_head.json#/{bot_name(1)} vs {bot_name(2)}",
         "node_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
         "resolved_projection": snapshot_projection,
         "projection_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
@@ -193,6 +195,7 @@ def _patch_h2h_paths(
     import evaluation_data_identity
     import evolution_infra
     import rating_snapshot
+    from bot_namespace import ACTIVE_BOT_PREFIX
     from evaluation_bundle import publish_evaluation_cycle_manifest
 
     # This helper builds synthetic H2H/evaluation files for snapshot behavior
@@ -223,7 +226,7 @@ def _patch_h2h_paths(
         name
         for key in payload
         for name in key.split(" vs ")
-        if name.startswith("national_v")
+        if name.startswith(ACTIVE_BOT_PREFIX)
     })
     h2h_games = {
         name: sum(
@@ -382,8 +385,9 @@ def _patch_h2h_paths(
 def test_generation_h2h_snapshot_freezes_live_file(monkeypatch, tmp_path):
     import evidence_snapshot
 
+    key = f"{bot_name(17)} vs {bot_name(20)}"
     first = {
-        "national_v17 vs national_v20": {
+        key: {
             "games": 45,
             "a_wins": 29,
             "b_wins": 16,
@@ -396,7 +400,7 @@ def test_generation_h2h_snapshot_freezes_live_file(monkeypatch, tmp_path):
     snapshot = evidence_snapshot.ensure_generation_h2h_snapshot(24)
     live.write_text(
         json.dumps({
-            "national_v17 vs national_v20": {
+            key: {
                 "games": 50,
                 "a_wins": 31,
                 "b_wins": 19,
@@ -411,9 +415,9 @@ def test_generation_h2h_snapshot_freezes_live_file(monkeypatch, tmp_path):
     assert reused["reused"] is True
     assert reused["h2h_relpath"] == "web/core/results/v24/evidence_snapshot/head_to_head.json"
     frozen = json.loads(Path(snapshot["h2h_path"]).read_text(encoding="utf-8"))
-    assert frozen["national_v17 vs national_v20"]["games"] == 45
-    assert frozen["national_v17 vs national_v20"]["a_wins"] == 29
-    assert frozen["national_v17 vs national_v20"]["b_wins"] == 16
+    assert frozen[key]["games"] == 45
+    assert frozen[key]["a_wins"] == 29
+    assert frozen[key]["b_wins"] == 16
 
 
 def test_snapshot_freezes_replay_spotlight_and_anchor_map(monkeypatch, tmp_path):
@@ -422,7 +426,7 @@ def test_snapshot_freezes_replay_spotlight_and_anchor_map(monkeypatch, tmp_path)
     import tool_planning
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v143 vs national_v144": {
+        f"{bot_name(143)} vs {bot_name(144)}": {
             "games": 20,
             "a_wins": 10,
             "b_wins": 10,
@@ -437,8 +441,8 @@ def test_snapshot_freezes_replay_spotlight_and_anchor_map(monkeypatch, tmp_path)
         "epoch": "national_tcp_policy_v1",
         "execution_mode": "native_tcp",
         "evaluation_identity_digest": identity,
-        "bot": "national_v144",
-        "text": "Strict native critical hands for national_v144:\nG1H2#1234abcd",
+        "bot": bot_name(144),
+        "text": f"Strict native critical hands for {bot_name(144)}:\nG1H2#1234abcd",
         "citations": [{"id": "G1H2", "anchor": "1234abcd"}],
         "source_replays": {"match.json": {"sha256": "b" * 64}},
     }
@@ -449,7 +453,7 @@ def test_snapshot_freezes_replay_spotlight_and_anchor_map(monkeypatch, tmp_path)
     )
 
     created = evidence_snapshot.ensure_generation_h2h_snapshot(
-        145, spotlight_bot="national_v144"
+        145, spotlight_bot=bot_name(144)
     )
     loaded = evidence_snapshot.load_generation_evaluation_snapshot(145)
 
@@ -476,7 +480,7 @@ def test_generation_snapshot_accepts_only_bounded_same_identity_action_stats_lag
     from evaluation_bundle import publish_evaluation_cycle_manifest
 
     live = _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v1 vs national_v2": {
+        f"{bot_name(1)} vs {bot_name(2)}": {
             "games": 10,
             "a_wins": 5,
             "b_wins": 5,
@@ -528,7 +532,7 @@ def test_generation_h2h_snapshot_rejects_payload_tampering(monkeypatch, tmp_path
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v1 vs national_v2": {
+        f"{bot_name(1)} vs {bot_name(2)}": {
             "games": 10,
             "a_wins": 6,
             "b_wins": 4,
@@ -552,7 +556,7 @@ def test_generation_snapshot_rejects_rating_or_stats_tampering(monkeypatch, tmp_
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v1 vs national_v2": {
+        f"{bot_name(1)} vs {bot_name(2)}": {
             "games": 10,
             "a_wins": 5,
             "b_wins": 5,
@@ -591,7 +595,7 @@ def test_generation_h2h_snapshot_concurrent_creation_is_single_identity(
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v1 vs national_v2": {
+        f"{bot_name(1)} vs {bot_name(2)}": {
             "games": 2,
             "a_wins": 1,
             "b_wins": 1,
@@ -612,8 +616,9 @@ def test_generation_h2h_snapshot_concurrent_creation_is_single_identity(
 def test_h2h_citation_validation_uses_snapshot_not_live(monkeypatch, tmp_path):
     import evidence_snapshot
 
+    key = f"{bot_name(17)} vs {bot_name(20)}"
     live = _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v17 vs national_v20": {
+        key: {
             "games": 45,
             "a_wins": 29,
             "b_wins": 16,
@@ -624,7 +629,7 @@ def test_h2h_citation_validation_uses_snapshot_not_live(monkeypatch, tmp_path):
     evidence_snapshot.ensure_generation_h2h_snapshot(24)
     live.write_text(
         json.dumps({
-            "national_v17 vs national_v20": {
+            key: {
                 "games": 50,
                 "a_wins": 31,
                 "b_wins": 19,
@@ -636,10 +641,10 @@ def test_h2h_citation_validation_uses_snapshot_not_live(monkeypatch, tmp_path):
     )
 
     good_plan = {
-        "analysis": "national_v17 vs national_v20 = 45g, a_wins=29, b_wins=16",
+        "analysis": f"{key} = 45g, a_wins=29, b_wins=16",
     }
     bad_plan = {
-        "analysis": "national_v17 vs national_v20 = 50g, a_wins=31, b_wins=19",
+        "analysis": f"{key} = 50g, a_wins=31, b_wins=19",
     }
 
     assert evidence_snapshot.validate_h2h_citations_against_snapshot(good_plan, 24) == []
@@ -653,7 +658,7 @@ def test_h2h_citation_validation_rejects_abbreviated_wl_sample(monkeypatch, tmp_
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v59 vs national_v73": {
+        f"{bot_name(59)} vs {bot_name(73)}": {
             "games": 25,
             "a_wins": 11,
             "b_wins": 14,
@@ -674,7 +679,7 @@ def test_h2h_citation_validation_rejects_abbreviated_wl_sample(monkeypatch, tmp_
 
     joined = "; ".join(errors)
     assert "v59 vs v73 cited games=5" in joined
-    assert "snapshot has games=25 (key national_v59 vs national_v73)" in joined
+    assert f"snapshot has games=25 (key {bot_name(59)} vs {bot_name(73)})" in joined
     assert "v59 vs v73 cited a_wins=1" in joined
     assert "v59 vs v73 cited b_wins=4" in joined
 
@@ -683,7 +688,7 @@ def test_h2h_citation_validation_accepts_reversed_abbreviated_wl(monkeypatch, tm
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v59 vs national_v73": {
+        f"{bot_name(59)} vs {bot_name(73)}": {
             "games": 25,
             "a_wins": 11,
             "b_wins": 14,
@@ -704,14 +709,14 @@ def test_h2h_prompt_summary_uses_stable_source_perspective(monkeypatch, tmp_path
     import evidence_snapshot
 
     live = _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v120 vs national_v98": {
+        f"{bot_name(120)} vs {bot_name(98)}": {
             "games": 30,
             "a_wins": 9,
             "b_wins": 21,
             "draws": 0,
             "win_rate": 0.30,
         },
-        "national_v31 vs national_v120": {
+        f"{bot_name(31)} vs {bot_name(120)}": {
             "games": 5,
             "a_wins": 4,
             "b_wins": 1,
@@ -721,7 +726,7 @@ def test_h2h_prompt_summary_uses_stable_source_perspective(monkeypatch, tmp_path
     })
     evidence_snapshot.ensure_generation_h2h_snapshot(121)
     live.write_text(json.dumps({
-        "national_v120 vs national_v98": {
+        f"{bot_name(120)} vs {bot_name(98)}": {
             "games": 100,
             "a_wins": 90,
             "b_wins": 10,
@@ -732,12 +737,12 @@ def test_h2h_prompt_summary_uses_stable_source_perspective(monkeypatch, tmp_path
 
     summary = evidence_snapshot.build_h2h_prompt_summary(121, source_v=120)
 
-    assert "national_v120 vs national_v98: games=30, a_wins=9, b_wins=21" in summary
+    assert f"{bot_name(120)} vs {bot_name(98)}: games=30, a_wins=9, b_wins=21" in summary
     assert "class=confirmed_weakness" in summary
     assert "source_wr=0.3000" in summary
-    assert "national_v31 vs national_v120: games=5" in summary
+    assert f"{bot_name(31)} vs {bot_name(120)}: games=5" in summary
     assert "class=sparse" in summary
-    assert "canonical_citation=\"national_v31 vs national_v120: games=5, a_wins=4, b_wins=1" in summary
+    assert f"canonical_citation=\"{bot_name(31)} vs {bot_name(120)}: games=5, a_wins=4, b_wins=1" in summary
     assert "games=100" not in summary
 
 
@@ -752,10 +757,11 @@ def test_one_complete_70_hand_match_remains_valid_sparse_h2h_evidence(
         requested_timeout_sec=None,
     )
 
+    key = f"{bot_name(123)} vs {bot_name(74)}"
     history_row = {
         "id": "replay-low-sample",
-        "bot0": "national_v123",
-        "bot1": "national_v74",
+        "bot0": bot_name(123),
+        "bot1": bot_name(74),
         "strength_sample_unit": "70_hand_match",
         "hands_per_strength_sample": 70,
         "strength_sample_count": 1,
@@ -775,7 +781,7 @@ def test_one_complete_70_hand_match_remains_valid_sparse_h2h_evidence(
         monkeypatch,
         tmp_path,
         {
-            "national_v123 vs national_v74": {
+            key: {
                 "games": 1,
                 "a_wins": 1,
                 "b_wins": 0,
@@ -792,11 +798,11 @@ def test_one_complete_70_hand_match_remains_valid_sparse_h2h_evidence(
 
     assert created["available"] is True
     assert frozen["available"] is True
-    assert frozen["h2h"]["national_v123 vs national_v74"]["games"] == 1
+    assert frozen["h2h"][key]["games"] == 1
     assert [row["id"] for row in frozen["match_history_index"]["entries"]] == [
         "replay-low-sample"
     ]
-    assert "national_v123 vs national_v74: games=1, a_wins=1, b_wins=0" in summary
+    assert f"{key}: games=1, a_wins=1, b_wins=0" in summary
     assert "class=sparse" in summary
 
 
@@ -809,7 +815,7 @@ def test_cleanup_retains_replay_referenced_only_by_verified_evidence_snapshot(
     import evidence_snapshot
 
     live = _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v143 vs national_v144": {
+        f"{bot_name(143)} vs {bot_name(144)}": {
             "games": 1,
             "a_wins": 1,
             "b_wins": 0,
@@ -850,7 +856,7 @@ def test_cleanup_does_not_trust_tampered_evidence_snapshot_references(
     import evidence_snapshot
 
     live = _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v143 vs national_v144": {
+        f"{bot_name(143)} vs {bot_name(144)}": {
             "games": 1,
             "a_wins": 1,
             "b_wins": 0,
@@ -888,14 +894,14 @@ def test_h2h_prompt_summary_keeps_all_source_rows_before_other_rows(monkeypatch,
 
     payload = {}
     for opp in range(1, 35):
-        payload[f"national_v123 vs national_v{opp}"] = {
+        payload[f"{bot_name(123)} vs {bot_name(opp)}"] = {
             "games": 30,
             "a_wins": 15,
             "b_wins": 15,
             "draws": 0,
             "win_rate": 0.5,
         }
-    payload["national_v123 vs national_v74"] = {
+    payload[f"{bot_name(123)} vs {bot_name(74)}"] = {
         "games": 5,
         "a_wins": 3,
         "b_wins": 2,
@@ -903,7 +909,7 @@ def test_h2h_prompt_summary_keeps_all_source_rows_before_other_rows(monkeypatch,
         "win_rate": 0.6,
     }
     for idx in range(200, 260):
-        payload[f"national_v{idx} vs national_v{idx + 1}"] = {
+        payload[f"{bot_name(idx)} vs {bot_name(idx + 1)}"] = {
             "games": 200,
             "a_wins": 100,
             "b_wins": 100,
@@ -916,17 +922,17 @@ def test_h2h_prompt_summary_keeps_all_source_rows_before_other_rows(monkeypatch,
 
     summary = evidence_snapshot.build_h2h_prompt_summary(124, source_v=123, max_rows=35)
 
-    assert "national_v123 vs national_v74: games=5, a_wins=3, b_wins=2" in summary
-    assert "canonical_citation=\"national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, draws=0, win_rate=0.6000\"" in summary
+    assert f"{bot_name(123)} vs {bot_name(74)}: games=5, a_wins=3, b_wins=2" in summary
+    assert f"canonical_citation=\"{bot_name(123)} vs {bot_name(74)}: games=5, a_wins=3, b_wins=2, draws=0, win_rate=0.6000\"" in summary
     assert "source_record=3W/2L" in summary
-    assert "national_v200 vs national_v201" not in summary
+    assert f"{bot_name(200)} vs {bot_name(201)}" not in summary
 
 
 def test_h2h_citation_repair_guidance_returns_canonical_snapshot_rows(monkeypatch, tmp_path):
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v123 vs national_v74": {
+        f"{bot_name(123)} vs {bot_name(74)}": {
             "games": 5,
             "a_wins": 3,
             "b_wins": 2,
@@ -935,14 +941,16 @@ def test_h2h_citation_repair_guidance_returns_canonical_snapshot_rows(monkeypatc
         }
     })
     evidence_snapshot.ensure_generation_h2h_snapshot(124)
+    key = f"{bot_name(123)} vs {bot_name(74)}"
+    rev_key = f"{bot_name(74)} vs {bot_name(123)}"
     errors = [
-        "national_v74 vs national_v123 cited games=10, snapshot has games=5 (key national_v123 vs national_v74)",
-        "national_v74 vs national_v123 cited a_wins=2, snapshot has a_wins=3 (key national_v123 vs national_v74)",
+        f"{rev_key} cited games=10, snapshot has games=5 (key {key})",
+        f"{rev_key} cited a_wins=2, snapshot has a_wins=3 (key {key})",
     ]
 
     guidance = evidence_snapshot.h2h_citation_repair_guidance(124, errors, source_v=123)
 
-    assert "canonical_citation: national_v123 vs national_v74: games=5, a_wins=3, b_wins=2, draws=0, win_rate=0.6000" in guidance
+    assert f"canonical_citation: {bot_name(123)} vs {bot_name(74)}: games=5, a_wins=3, b_wins=2, draws=0, win_rate=0.6000" in guidance
     assert "v123 perspective: 3W/2L, wr=0.6000" in guidance
     assert "Do not replace them with live H2H" in guidance
 
@@ -980,10 +988,10 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v1 vs national_v2": {"games": 2, "a_wins": 1, "b_wins": 1, "draws": 0}
+        f"{bot_name(1)} vs {bot_name(2)}": {"games": 2, "a_wins": 1, "b_wins": 1, "draws": 0}
     })
-    baseline = tmp_path / "national_v20"
-    target = tmp_path / "national_v24"
+    baseline = tmp_path / bot_name(20)
+    target = tmp_path / bot_name(24)
     for root in (baseline, target):
         root.mkdir()
         (root / "policy.py").write_text(
@@ -1007,7 +1015,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         "structural_change": "Replace one reachable frozen-evidence branch with a deadline-bounded mechanism.",
         "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
         "measurement": (
-            "target=national_v2; primary=complete_70_hand_wld; "
+            f"target={bot_name(2)}; primary=complete_70_hand_wld; "
             "expected_delta=0.03; samples=>=30_complete_matches; "
             "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
         ),
@@ -1092,7 +1100,7 @@ def test_master_plan_audit_prompt_includes_snapshot_json(monkeypatch, tmp_path):
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v11 vs national_v20": {
+        f"{bot_name(11)} vs {bot_name(20)}": {
             "games": 55,
             "a_wins": 32,
             "b_wins": 23,
@@ -1126,7 +1134,7 @@ def test_master_plan_audit_prompt_includes_snapshot_json(monkeypatch, tmp_path):
 
     assert result["overall_pass"] is True
     assert "Stable H2H Snapshot Contract" in captured["prompt"]
-    assert "national_v11 vs national_v20" in captured["prompt"]
+    assert f"{bot_name(11)} vs {bot_name(20)}" in captured["prompt"]
     assert "live-file drift after snapshot creation is not" in captured["prompt"]
 
 
@@ -1135,7 +1143,7 @@ def test_hard_critic_uses_generation_snapshot_not_live_h2h(monkeypatch, tmp_path
     import evidence_snapshot
 
     _patch_h2h_paths(monkeypatch, tmp_path, {
-        "national_v11 vs national_v20": {
+        f"{bot_name(11)} vs {bot_name(20)}": {
             "games": 55,
             "a_wins": 32,
             "b_wins": 23,
@@ -1171,7 +1179,7 @@ def test_hard_critic_uses_generation_snapshot_not_live_h2h(monkeypatch, tmp_path
 
     assert result["approved"] is True
     assert "Stable H2H Snapshot Contract" in captured["prompt"]
-    assert "national_v11 vs national_v20" in captured["prompt"]
+    assert f"{bot_name(11)} vs {bot_name(20)}" in captured["prompt"]
     assert "Never read live `web/core/results/`" in captured["prompt"]
     assert "another checkout's results" in captured["prompt"]
     assert "there is no live fallback" in captured["prompt"]

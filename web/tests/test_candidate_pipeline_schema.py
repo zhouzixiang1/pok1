@@ -1,6 +1,7 @@
 import json
 import sqlite3
 
+from bot_namespace import bot_name
 from candidate_store import (
     append_candidate_event,
     candidate_observability_identity,
@@ -10,8 +11,14 @@ from candidate_store import (
     read_candidate_entities,
     read_candidate_events,
 )
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 from pipeline_contracts import next_stage_name, stage_order
 from pipeline_schema import ArtifactRef, GateResult, ScoreCard, StageRunRecord
+
+
+def _candidate_id(version: int, source_v: int) -> str:
+    """Branch-portable canonical candidate primary key."""
+    return f"{bot_name(version)}_from_{bot_name(source_v)}"
 
 
 def test_scorecard_failed_gates_ignore_nonblocking():
@@ -40,7 +47,7 @@ def test_candidate_store_appends_locked_jsonl(tmp_path, monkeypatch):
         metrics={"all_passed": True},
     )
 
-    assert entry["candidate_id"] == "national_v245_from_national_v244"
+    assert entry["candidate_id"] == _candidate_id(245, 244)
     rows = read_candidate_events(path=ledger)
     assert len(rows) == 1
     assert rows[0]["event_type"] == "quality_finished"
@@ -49,7 +56,7 @@ def test_candidate_store_appends_locked_jsonl(tmp_path, monkeypatch):
 
     entities = read_candidate_entities(path=ledger, event_source=None)
     assert len(entities) == 1
-    assert entities[0]["candidate_id"] == "national_v245_from_national_v244"
+    assert entities[0]["candidate_id"] == _candidate_id(245, 244)
     assert entities[0]["latest_event_type"] == "quality_finished"
     assert entities[0]["latest_metrics"]["all_passed"] is True
 
@@ -57,22 +64,22 @@ def test_candidate_store_appends_locked_jsonl(tmp_path, monkeypatch):
 def test_first_strict_candidate_ledger_has_numeric_high_water_not_parent(
     tmp_path,
 ):
-    identity = candidate_observability_identity(143, 142)
+    identity = candidate_observability_identity(STRICT_TARGET_V, STRICT_SOURCE_V)
     assert identity == {
-        "candidate_id": "national_v143_numeric_high_water_v142",
+        "candidate_id": f"{bot_name(STRICT_TARGET_V)}_numeric_high_water_v{STRICT_SOURCE_V}",
         "parent_ids": [],
         "lineage_kind": "numeric_high_water_only",
-        "numeric_high_water_version": 142,
+        "numeric_high_water_version": STRICT_SOURCE_V,
         "source_artifact_inherited": False,
     }
 
     ledger = tmp_path / "candidates.jsonl"
     entry = append_candidate_event(
         "quality_started",
-        version=143,
-        source_v=142,
-        candidate_id="national_v143_from_national_v142",
-        parent_ids=["national_v142"],
+        version=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
+        candidate_id=_candidate_id(STRICT_TARGET_V, STRICT_SOURCE_V),
+        parent_ids=[bot_name(STRICT_SOURCE_V)],
         metrics={
             "probe": "kept",
             "lineage_kind": "forged_parent",
@@ -81,11 +88,11 @@ def test_first_strict_candidate_ledger_has_numeric_high_water_not_parent(
         path=ledger,
     )
 
-    assert entry["candidate_id"] == "national_v143_numeric_high_water_v142"
+    assert entry["candidate_id"] == f"{bot_name(STRICT_TARGET_V)}_numeric_high_water_v{STRICT_SOURCE_V}"
     assert entry["parent_ids"] == []
     assert entry["metrics"] == {
         "lineage_kind": "numeric_high_water_only",
-        "numeric_high_water_version": 142,
+        "numeric_high_water_version": STRICT_SOURCE_V,
         "probe": "kept",
         "source_artifact_inherited": False,
     }
@@ -101,18 +108,18 @@ def test_candidate_store_records_artifacts_and_children(tmp_path, monkeypatch):
         "quality_finished",
         version=250,
         source_v=249,
-        parent_ids=["national_v249"],
+        parent_ids=[bot_name(249)],
         skill_layers=["spr"],
         changed_files=["policy.py"],
         artifact_refs=[ArtifactRef(kind="report", path="reports/v250.json", label="quality")],
     )
 
-    summary = get_candidate_summary("national_v250_from_national_v249", path=ledger)
+    summary = get_candidate_summary(_candidate_id(250, 249), path=ledger)
     assert summary is not None
     assert summary["skill_layers"] == ["spr"]
     assert summary["changed_files"] == ["policy.py"]
-    assert count_candidate_children("national_v249", path=ledger) == 1
-    artifacts = read_candidate_artifacts("national_v250_from_national_v249", path=ledger)
+    assert count_candidate_children(bot_name(249), path=ledger) == 1
+    artifacts = read_candidate_artifacts(_candidate_id(250, 249), path=ledger)
     assert artifacts[0]["kind"] == "report"
 
 
@@ -153,7 +160,7 @@ def test_candidate_entities_are_isolated_by_event_source(tmp_path, monkeypatch):
     assert test_rows[0]["latest_status"] == "failed"
     assert len(all_rows) == 2
 
-    summary = get_candidate_summary("national_v252_from_national_v251", path=ledger)
+    summary = get_candidate_summary(_candidate_id(252, 251), path=ledger)
     assert summary["event_source"] == "runtime"
     assert summary["latest_status"] == "passed"
 
@@ -197,7 +204,8 @@ def test_candidate_store_migrates_v1_candidate_primary_key(tmp_path):
         )
         conn.execute(
             "INSERT INTO candidates(candidate_id, version, source_v, event_source, created_at, updated_at) "
-            "VALUES ('national_v253_from_national_v252', 253, 252, 'runtime', 1.0, 1.0)"
+            "VALUES (?, 253, 252, 'runtime', 1.0, 1.0)",
+            (_candidate_id(253, 252),),
         )
         conn.commit()
 
@@ -209,7 +217,7 @@ def test_candidate_store_migrates_v1_candidate_primary_key(tmp_path):
         path=ledger,
     )
 
-    rows = read_candidate_entities(candidate_id="national_v253_from_national_v252", event_source=None, path=ledger)
+    rows = read_candidate_entities(candidate_id=_candidate_id(253, 252), event_source=None, path=ledger)
     assert {row["event_source"] for row in rows} == {"runtime", "test"}
 
 
@@ -232,11 +240,11 @@ def test_candidate_store_follows_dynamic_results_dir(tmp_path, monkeypatch):
     assert ledger.exists()
     assert (results_dir / "candidates.sqlite3").exists()
     rows = read_candidate_events(path=ledger)
-    assert rows[0]["candidate_id"] == "national_v251_from_national_v250"
+    assert rows[0]["candidate_id"] == _candidate_id(251, 250)
 
 
 def test_stage_contract_order_and_stage_record():
     assert stage_order()[0] == "prepare"
     assert next_stage_name("quality") == "review"
-    record = StageRunRecord(candidate_id="national_v250_from_national_v249", stage="quality", status="passed")
-    assert record.candidate_id == "national_v250_from_national_v249"
+    record = StageRunRecord(candidate_id=_candidate_id(250, 249), stage="quality", status="passed")
+    assert record.candidate_id == _candidate_id(250, 249)

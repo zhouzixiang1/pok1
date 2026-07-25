@@ -8,14 +8,15 @@ import pytest
 
 def _parent_checkpoint(parent_a, parent_b, *, stage="selected"):
     from bot_artifact import hash_path
+    from bot_namespace import bot_name, parse_bot_version
 
-    parent_a_v = int(parent_a.name.rsplit("national_v", 1)[1])
-    parent_b_v = int(parent_b.name.rsplit("national_v", 1)[1])
+    parent_a_v = parse_bot_version(parent_a.name)
+    parent_b_v = parse_bot_version(parent_b.name)
     target_v = max(parent_a_v, parent_b_v) + 10
     identities = [
         {
             "version": version,
-            "bot": f"national_v{version}",
+            "bot": bot_name(version),
             "tag_artifact_hash": hash_path(path),
             "certificate_digest": character * 64,
         }
@@ -42,8 +43,10 @@ def _parent_checkpoint(parent_a, parent_b, *, stage="selected"):
 
 
 def _parents(tmp_path):
-    parent_a = tmp_path / "bots" / "national_v149"
-    parent_b = tmp_path / "bots" / "national_v143"
+    from bot_namespace import bot_name
+
+    parent_a = tmp_path / "bots" / bot_name(149)
+    parent_b = tmp_path / "bots" / bot_name(143)
     for path, marker in ((parent_a, "PARENT_A"), (parent_b, "PARENT_B")):
         path.mkdir(parents=True)
         (path / "policy.py").write_text(f"# {marker}\n", encoding="utf-8")

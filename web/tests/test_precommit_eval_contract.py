@@ -8,6 +8,7 @@ import precommit_eval_contract as contract
 import tool_eval
 import national_native
 import national_runtime_probe
+from bot_namespace import bot_name, bot_tag, parse_bot_version
 from web.tests.runtime_probe_fixtures import passing_runtime_probe
 
 
@@ -19,7 +20,7 @@ def _published(path: Path, *, artifact_hash: str = "a" * 64) -> dict:
     return {
         "published": True,
         "artifact_hash": artifact_hash,
-        "tag": f"national-bot-v{path.name.removeprefix('national_v')}",
+        "tag": bot_tag(parse_bot_version(str(path.name))),
         "tag_type": "tag",
         "tag_object": "b" * 40,
         "commit_oid": "c" * 40,
@@ -29,11 +30,16 @@ def _published(path: Path, *, artifact_hash: str = "a" * 64) -> dict:
     }
 
 
+def _bn(version: int) -> str:
+    """Branch-portable bot directory name for a version."""
+    return bot_name(version)
+
+
 def _make_plan(tmp_path, monkeypatch, *, matches=3):
     opponents = []
     identities = {}
     for version in (8, 5):
-        path = tmp_path / f"national_v{version}"
+        path = tmp_path / _bn(version)
         path.mkdir()
         (path / "national_bot.py").write_text("# native\n", encoding="utf-8")
         opponents.append({"name": path.name, "reason": "parent" if version == 8 else "top"})
@@ -117,10 +123,10 @@ def _infra_timeout_checkpoint(
 def test_plan_freezes_order_identity_and_all_sample_seeds(tmp_path, monkeypatch):
     plan, _ = _make_plan(tmp_path, monkeypatch, matches=3)
 
-    assert [row["name"] for row in plan["opponents"]] == ["national_v8", "national_v5"]
+    assert [row["name"] for row in plan["opponents"]] == [_bn(8), _bn(5)]
     assert len(plan["sample_plan"]) == 6
     assert plan["sample_plan"][0] == {
-        "opponent": "national_v8",
+        "opponent": _bn(8),
         "opponent_index": 0,
         "repeat": 1,
         "deck_seed_base": 91_000,
@@ -215,7 +221,7 @@ def test_first_strict_batch_advances_one_new_sample_per_provider_invocation():
 
 
 def test_native_plan_rejects_shortened_strength_matches(tmp_path, monkeypatch):
-    opponent = tmp_path / "national_v8"
+    opponent = tmp_path / _bn(8)
     opponent.mkdir()
     (opponent / "national_bot.py").write_text("# native\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -234,7 +240,7 @@ def test_native_plan_rejects_shortened_strength_matches(tmp_path, monkeypatch):
             profile_id="national_native",
             execution_mode="native_tcp",
             evaluation_protocol="national",
-            opponents=[{"name": "national_v8", "reason": "parent"}],
+            opponents=[{"name": _bn(8), "reason": "parent"}],
             hands_per_match=3,
             matches_per_opponent=8,
             path_resolver=lambda _item: opponent,
@@ -244,7 +250,7 @@ def test_native_plan_rejects_shortened_strength_matches(tmp_path, monkeypatch):
 
 def test_plan_fails_closed_when_published_opponent_identity_drifts(tmp_path, monkeypatch):
     plan, identities = _make_plan(tmp_path, monkeypatch)
-    identities[str(tmp_path / "national_v8")]["artifact_hash"] = "f" * 64
+    identities[str(tmp_path / _bn(8))]["artifact_hash"] = "f" * 64
 
     issues = contract.validate_precommit_plan(
         plan,
@@ -255,7 +261,7 @@ def test_plan_fails_closed_when_published_opponent_identity_drifts(tmp_path, mon
         evaluation_protocol="national",
     )
 
-    assert "precommit_opponent_national_v8_identity_drift" in issues
+    assert "precommit_opponent_" + _bn(8) + "_identity_drift" in issues
 
 
 def test_evaluation_contract_binds_candidate_code_and_frozen_plan(tmp_path, monkeypatch):
@@ -281,7 +287,7 @@ async def test_infra_timeout_precommit_retry_requires_exact_cas_restore(
     tmp_path,
     monkeypatch,
 ):
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
     checkpoint = _infra_timeout_checkpoint(candidate)
@@ -328,7 +334,7 @@ async def test_infra_timeout_precommit_retry_reproves_restored_stage(
     tmp_path,
     monkeypatch,
 ):
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
     checkpoint = _infra_timeout_checkpoint(candidate)
@@ -363,7 +369,7 @@ async def test_infra_timeout_retry_missing_candidate_preserves_overlay(
     tmp_path,
     monkeypatch,
 ):
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     checkpoint = _infra_timeout_checkpoint(candidate, fingerprint="a" * 64)
     profile = SimpleNamespace(
         profile_id="national_native",
@@ -405,7 +411,7 @@ async def test_infra_timeout_retry_candidate_drift_preserves_overlay(
     tmp_path,
     monkeypatch,
 ):
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     entry = candidate / "national_bot.py"
     entry.write_text("# reviewed native bytes\n", encoding="utf-8")
@@ -470,7 +476,7 @@ async def test_infra_timeout_retry_rejects_invalid_gate_reproof(
     invalid_proof,
     expected_error,
 ):
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
     checkpoint = _infra_timeout_checkpoint(candidate)
@@ -519,7 +525,7 @@ async def test_infra_timeout_matching_candidate_allows_exact_cas_restore(
     tmp_path,
     monkeypatch,
 ):
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
     checkpoint = _infra_timeout_checkpoint(candidate)
@@ -599,7 +605,7 @@ async def test_control_attempt_freezes_or_reuses_journal_identity(
     import system_strict_bootstrap
     from tool_gates import _bot_code_fingerprint
 
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     control_path = tmp_path / "first_strict_control_v1"
     candidate.mkdir()
     control_path.mkdir()
@@ -773,8 +779,8 @@ async def test_national_precommit_backend_passes_exact_attempt_cancel_token(
 
     import national_native
 
-    candidate = tmp_path / "national_v9"
-    opponent = tmp_path / "national_v8"
+    candidate = tmp_path / _bn(9)
+    opponent = tmp_path / _bn(8)
     candidate.mkdir()
     opponent.mkdir()
     candidate_entry = candidate / "national_bot.py"
@@ -903,7 +909,7 @@ def test_precommit_candidate_fingerprint_covers_non_python_decision_assets(
 ):
     from tool_gates import _bot_code_fingerprint
 
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
     asset = candidate / asset_name
@@ -928,7 +934,7 @@ def test_precommit_candidate_fingerprint_covers_non_python_decision_assets(
 def test_precommit_candidate_fingerprint_ignores_runtime_markers_and_caches(tmp_path):
     from tool_gates import _bot_code_fingerprint
 
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
     before = _bot_code_fingerprint(candidate)
@@ -972,7 +978,7 @@ async def test_verified_precommit_cache_rejects_missing_runtime_repeatability_re
     ``ALREADY PASSED`` response.
     """
 
-    candidate = tmp_path / "national_v9"
+    candidate = tmp_path / _bn(9)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
     broken_probe = passing_runtime_probe()
@@ -1079,7 +1085,7 @@ async def test_verified_precommit_cache_rejects_missing_runtime_repeatability_re
 async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path, monkeypatch):
     bots = tmp_path / "bots"
     for version in (9, 8, 5, 4):
-        bot_dir = bots / f"national_v{version}"
+        bot_dir = bots / _bn(version)
         bot_dir.mkdir(parents=True)
         (bot_dir / "national_bot.py").write_text("# native\n", encoding="utf-8")
 
@@ -1122,13 +1128,13 @@ async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path
         national_precommit_matches=2,
     )
     selected = [
-        {"name": "national_v8", "reason": "parent"},
-        {"name": "national_v5", "reason": "top_strength"},
+        {"name": _bn(8), "reason": "parent"},
+        {"name": _bn(5), "reason": "top_strength"},
     ]
     backend_calls = []
 
     monkeypatch.setattr(tool_eval, "get_workflow_profile", lambda: profile)
-    monkeypatch.setattr(tool_eval, "get_bot_dir", lambda version: bots / f"national_v{version}")
+    monkeypatch.setattr(tool_eval, "get_bot_dir", lambda version: bots / _bn(version))
     monkeypatch.setattr(tool_eval, "_matching_checkpoint", lambda *_: checkpoint)
     monkeypatch.setattr(tool_eval, "_prepare_official_profile_refresh", lambda *_: {"ok": True})
     monkeypatch.setattr("tool_helpers._active_workflow_profile_info", lambda: ("national_native", "native_tcp"))
@@ -1162,8 +1168,8 @@ async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path
 
     await tool_eval.run_precommit_eval.handler({"version": 9, "source_v": 8, "n_games": 2})
     assert [row["name"] for row in backend_calls[0]["opponents"]] == [
-        "national_v8",
-        "national_v5",
+        _bn(8),
+        _bn(5),
     ]
     frozen_plan = backend_calls[0]["precommit_plan"]
     assert frozen_plan["require_published_opponents"] is True
@@ -1177,12 +1183,12 @@ async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path
         for row in frozen_plan["opponents"]
     )
 
-    selected[:] = [{"name": "national_v4", "reason": "new_live_leader"}]
+    selected[:] = [{"name": _bn(4), "reason": "new_live_leader"}]
     await tool_eval.run_precommit_eval.handler({"version": 9, "source_v": 8, "n_games": 16})
 
     assert [row["name"] for row in backend_calls[1]["opponents"]] == [
-        "national_v8",
-        "national_v5",
+        _bn(8),
+        _bn(5),
     ]
     assert backend_calls[1]["precommit_plan"] == backend_calls[0]["precommit_plan"]
     assert backend_calls[1]["effective_n_games"] == 4

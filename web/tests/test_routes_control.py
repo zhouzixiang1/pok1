@@ -9,6 +9,8 @@ import time
 
 import pytest
 
+from bot_namespace import bot_name, bot_tag
+
 
 class TestEvolutionTaskOwnership:
     @pytest.mark.parametrize("outcome", ["return", "raise", "cancel"])
@@ -676,8 +678,8 @@ class TestStatus:
                 "active_generation": {
                     "generation_ordinal": 2,
                     "canonical_version": 144,
-                    "canonical_bot_name": "national_v144",
-                    "canonical_tag": "national-bot-v144",
+                    "canonical_bot_name": bot_name(144),
+                    "canonical_tag": bot_tag(144),
                     "next_v": 144,
                     "source_v": 143,
                     "stage": "prepared",
@@ -693,10 +695,10 @@ class TestStatus:
                 "strict_published_bot_identities": [{
                     "generation_ordinal": 1,
                     "canonical_version": 143,
-                    "canonical_bot_name": "national_v143",
-                    "canonical_tag": "national-bot-v143",
+                    "canonical_bot_name": bot_name(143),
+                    "canonical_tag": bot_tag(143),
                 }],
-                "active_bots": ["national_v143"],
+                "active_bots": [bot_name(143)],
                 "reset_receipt_valid": True,
                 "reset_receipt_digest": "a" * 64,
                 "reset_receipt_issues": [],
@@ -722,8 +724,8 @@ class TestStatus:
         assert data["active_generation"]["stage"] == "prepared"
         assert data["active_generation"]["generation_ordinal"] == 2
         assert data["active_generation"]["canonical_version"] == 144
-        assert data["active_generation"]["canonical_bot_name"] == "national_v144"
-        assert data["active_generation"]["canonical_tag"] == "national-bot-v144"
+        assert data["active_generation"]["canonical_bot_name"] == bot_name(144)
+        assert data["active_generation"]["canonical_tag"] == bot_tag(144)
         assert data["strict_published_bot_identities"][0]["generation_ordinal"] == 1
         assert data["evaluation_epoch"] == "national_tcp_policy_v1"
         assert data["reset_receipt_digest"] == "a" * 64
@@ -1912,8 +1914,12 @@ class TestRetiredEvolutionReset:
     def test_destructive_reset_endpoint_is_not_registered(self):
         from server.app import app
 
+        # Newer FastAPI/Starlette wraps included routers in _IncludedRouter
+        # objects that do not expose ``.path`` at the app route list level, so
+        # verify absence both via the (None-safe) path attribute and via an
+        # actual HTTP probe that must 404 if the route is genuinely missing.
         assert not any(
-            route.path == "/api/control/reset"
+            getattr(route, "path", None) == "/api/control/reset"
             for route in app.routes
         )
 

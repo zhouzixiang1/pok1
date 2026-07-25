@@ -2,6 +2,7 @@
 
 import math
 
+from bot_namespace import bot_name
 from glicko2 import (
     Glicko2Player, _g, _E,
     update_rating_period, update_single_game, decay_rd,
@@ -271,25 +272,26 @@ class TestDaemonRatingIntegration:
     def test_process_result_updates_glicko_for_decisive_batch(self):
         from elo_daemon import process_result
 
+        a, b = bot_name(143), bot_name(144)
         ratings = {
-            "national_v143": Glicko2Player(),
-            "national_v144": Glicko2Player(),
+            a: Glicko2Player(),
+            b: Glicko2Player(),
         }
         h2h = {}
         bot_stats = {}
 
         total = process_result(
-            ("national_v143", "national_v144", 5, 0, 0, 5, None, [100] * 5),
+            (a, b, 5, 0, 0, 5, None, [100] * 5),
             ratings,
             h2h,
             bot_stats,
         )
 
         assert total == 5
-        assert ratings["national_v143"].r > 1700
-        assert ratings["national_v144"].r < 1300
-        assert ratings["national_v143"].rd < DEFAULT_RD
-        assert ratings["national_v144"].rd < DEFAULT_RD
+        assert ratings[a].r > 1700
+        assert ratings[b].r < 1300
+        assert ratings[a].rd < DEFAULT_RD
+        assert ratings[b].rd < DEFAULT_RD
 
 
 def _frozen_selection_view(monkeypatch, gs, active, strength, ratings):
@@ -332,9 +334,9 @@ class TestCrossoverParents:
     def test_sorts_by_strength_score(self, monkeypatch, tmp_path):
         from glicko2 import Glicko2Player
 
-        active = ["national_v143", "national_v144", "national_v145", "national_v146"]
+        active = [bot_name(v) for v in (143, 144, 145, 146)]
         # v145 has highest strength, v143 has second highest
-        strength = {"national_v143": 0.52, "national_v144": 0.48, "national_v145": 0.55, "national_v146": 0.45}
+        strength = {bot_name(143): 0.52, bot_name(144): 0.48, bot_name(145): 0.55, bot_name(146): 0.45}
         ratings = {b: Glicko2Player(1500 + i * 10, 50) for i, b in enumerate(active)}
 
         import generation_scheduler as gs
@@ -345,16 +347,16 @@ class TestCrossoverParents:
         )
         assert result is not None
         pa, pb = result
-        # Parent A should be national_v145 (highest strength).
+        # Parent A should be v145 (highest strength).
         assert pa == 145
 
     def test_selects_diverse_parents(self, monkeypatch, tmp_path):
         from glicko2 import Glicko2Player
 
-        active = ["national_v143", "national_v144", "national_v145", "national_v146", "national_v147"]
+        active = [bot_name(v) for v in (143, 144, 145, 146, 147)]
         # v147 highest; v144 is the strongest candidate with a >=3 version gap.
-        strength = {"national_v147": 0.55, "national_v146": 0.54, "national_v145": 0.53,
-                    "national_v144": 0.52, "national_v143": 0.50}
+        strength = {bot_name(147): 0.55, bot_name(146): 0.54, bot_name(145): 0.53,
+                    bot_name(144): 0.52, bot_name(143): 0.50}
         ratings = {b: Glicko2Player() for b in active}
 
         import generation_scheduler as gs
@@ -365,7 +367,7 @@ class TestCrossoverParents:
         )
         assert result is not None
         pa, pb = result
-        # Parent A is national_v147 (highest strength).
+        # Parent A is v147 (highest strength).
         assert pa == 147
         assert pb == 144
 
@@ -373,8 +375,8 @@ class TestCrossoverParents:
         from glicko2 import Glicko2Player
 
         # Only 2 bots, adjacent versions — no gap candidate, fallback to second
-        active = ["national_v145", "national_v146"]
-        strength = {"national_v145": 0.55, "national_v146": 0.50}
+        active = [bot_name(145), bot_name(146)]
+        strength = {bot_name(145): 0.55, bot_name(146): 0.50}
         ratings = {b: Glicko2Player() for b in active}
 
         import generation_scheduler as gs
@@ -389,8 +391,8 @@ class TestCrossoverParents:
     def test_candidate_child_ledger_is_not_a_selection_input(self, monkeypatch):
         from glicko2 import Glicko2Player
 
-        active = ["national_v143", "national_v144", "national_v147"]
-        strength = {"national_v143": 0.50, "national_v144": 0.49, "national_v147": 0.90}
+        active = [bot_name(143), bot_name(144), bot_name(147)]
+        strength = {bot_name(143): 0.50, bot_name(144): 0.49, bot_name(147): 0.90}
         ratings = {b: Glicko2Player() for b in active}
 
         import generation_scheduler as gs
@@ -411,9 +413,9 @@ class TestCrossoverParents:
 
     def test_returns_none_single_bot(self, monkeypatch):
         import generation_scheduler as gs
-        active = ["national_v143"]
-        strength = {"national_v143": 0.5}
-        ratings = {"national_v143": Glicko2Player()}
+        active = [bot_name(143)]
+        strength = {bot_name(143): 0.5}
+        ratings = {bot_name(143): Glicko2Player()}
         view = _frozen_selection_view(monkeypatch, gs, active, strength, ratings)
         result = gs._pick_crossover_parents(
             ratings, 143, selection_view=view
@@ -431,15 +433,16 @@ class TestRdDecayInDaemon:
         p_a = Glicko2Player(1600, 50, 0.06)
         p_b = Glicko2Player(1500, 50, 0.06)
         p_c = Glicko2Player(1400, 50, 0.06)
-        ratings = {"national_v143": p_a, "national_v144": p_b, "national_v145": p_c}
+        v143, v144, v145 = bot_name(143), bot_name(144), bot_name(145)
+        ratings = {v143: p_a, v144: p_b, v145: p_c}
 
-        active_bots = ["national_v143", "national_v144", "national_v145"]
-        played = {"national_v143", "national_v144"}
+        active_bots = [v143, v144, v145]
+        played = {v143, v144}
 
         for b in active_bots:
             if b not in played and b in ratings:
                 ratings[b] = decay_rd(ratings[b])
 
-        assert ratings["national_v145"].rd > 50
-        assert ratings["national_v143"].rd == 50
-        assert ratings["national_v144"].rd == 50
+        assert ratings[v145].rd > 50
+        assert ratings[v143].rd == 50
+        assert ratings[v144].rd == 50

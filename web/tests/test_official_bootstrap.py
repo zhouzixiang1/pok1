@@ -4,6 +4,8 @@ from copy import deepcopy
 from pathlib import Path
 
 from bot_artifact import canonical_digest
+from bot_namespace import bot_name
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name
 from evaluation_contract import ALWAYS_CRITICAL_EXACT, CONTRACT_VERSION
 import official_bootstrap
 
@@ -16,9 +18,9 @@ def _binding(tmp_path: Path) -> dict:
         "schema_version": 1,
         "kind": "official-first-strict-candidate-binding",
         "epoch": "national_tcp_policy_v1",
-        "candidate": str((tmp_path / "bots" / "national_v143").resolve()),
-        "candidate_label": "national_v143",
-        "candidate_version": 143,
+        "candidate": str((tmp_path / "bots" / strict_bot_name()).resolve()),
+        "candidate_label": strict_bot_name(),
+        "candidate_version": STRICT_TARGET_V,
         "candidate_hash": "a" * 64,
         "source_artifact_inherited": False,
     }
@@ -31,8 +33,8 @@ def _control_receipt() -> dict:
     payload = {
         "schema_version": 1,
         "kind": "system-first-strict-control-receipt",
-        "candidate_version": 143,
-        "source_version": 142,
+        "candidate_version": STRICT_TARGET_V,
+        "source_version": STRICT_SOURCE_V,
         "active_policy_bots": [],
         "control": {
             "identity_digest": "b" * 64,
@@ -46,9 +48,9 @@ def test_policy_admits_only_current_control_for_v143_and_retires_v141_execution(
     policy = official_bootstrap.load_first_strict_bootstrap_policy()
 
     assert policy["candidate"] == {
-        "label": "national_v143",
-        "version": 143,
-        "source_version_authority": 142,
+        "label": strict_bot_name(),
+        "version": STRICT_TARGET_V,
+        "source_version_authority": STRICT_SOURCE_V,
     }
     assert policy["control"]["control_id"] == CONTROL_ID
     assert policy["control"]["normal_official_opponent"] is False
@@ -203,7 +205,7 @@ def test_tampered_selection_receipt_is_rejected(tmp_path, monkeypatch):
 def test_unknown_or_historical_control_id_is_never_selectable(tmp_path):
     result = official_bootstrap.select_first_strict_control(
         "national-v141-official-full-v5-signed-ledger-root",
-        tmp_path / "bots" / "national_v143",
+        tmp_path / "bots" / strict_bot_name(),
         checkpoint={},
     )
     assert result["selected"] is False
@@ -222,7 +224,7 @@ def test_completed_authorization_accepts_production_normalized_selection(
     tmp_path,
     monkeypatch,
 ):
-    candidate = (tmp_path / "bots" / "national_v143").resolve()
+    candidate = (tmp_path / "bots" / strict_bot_name()).resolve()
     authorization = {
         "kind": "official-first-strict-control-operator-authorization",
         "authorization_digest": "d" * 64,

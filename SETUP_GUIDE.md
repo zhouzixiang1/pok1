@@ -87,9 +87,9 @@ The system runtime owns packet splitting, authoritative state, implicit
 street-close completion, terminal/showdown tracking, fallback, deadline,
 legality, action throttle, and the socket.
 
-The reset preserves `national-bot-v142` only as the numeric high-water and
-targets `national_v143` first. Do not select or repair an untagged higher
-directory such as old-wrapper `national_v155`; the runtime reset archives it as
+The reset preserves `national-cloud-bot-v0` only as the numeric high-water and
+targets `national_cloud_v1` first. Do not select or repair an untagged higher
+directory such as old-wrapper `national_cloud_v13`; the runtime reset archives it as
 stale unpublished debris.
 
 ## 7. Diagnostic Arena

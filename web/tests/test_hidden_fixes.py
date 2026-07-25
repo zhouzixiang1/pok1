@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from bot_namespace import bot_name, bot_tag, parse_bot_version
 
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
@@ -31,7 +32,7 @@ def _strict_artifact(root, version, *, action="pass"):
 
 
 def _resolve_published_parent(name, **_kwargs):
-    version = int(str(name).rsplit("national_v", 1)[1])
+    version = parse_bot_version(str(name))
     return SimpleNamespace(
         eligible=True,
         version=version,
@@ -40,7 +41,7 @@ def _resolve_published_parent(name, **_kwargs):
         epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
         publication_identity={
             "published": True,
-            "tag": f"national-bot-v{version}",
+            "tag": bot_tag(version),
             "version": version,
         },
         certificate_digest="b" * 64,
@@ -545,7 +546,7 @@ def test_H3_finalize_bare_commit_requires_verified_gate_ledger(tmp_path, monkeyp
     import evolution_infra
     import tool_commit
 
-    bot_dir = tmp_path / "bots" / "national_v888"
+    bot_dir = tmp_path / "bots" / bot_name(888)
     _strict_artifact(bot_dir, 888)
 
     monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
@@ -568,7 +569,7 @@ def test_H3_bare_commit_recovery_blocks_stale_code_fingerprint(tmp_path, monkeyp
     import tool_commit
     from tool_gates import _bot_code_fingerprint
 
-    bot_dir = tmp_path / "bots" / "national_v889"
+    bot_dir = tmp_path / "bots" / bot_name(889)
     _strict_artifact(bot_dir, 889, action="fold")
     current_fp = _bot_code_fingerprint(bot_dir)
 
@@ -637,7 +638,7 @@ def test_H3_cleanup_incomplete_preserves_bare_commit(tmp_path, monkeypatch):
 
     # Set up a fake bots dir with a bare-commit-style v entry.
     fake_bots = tmp_path / "bots"
-    fake_v_dir = fake_bots / "national_v888"
+    fake_v_dir = fake_bots / bot_name(888)
     _strict_artifact(fake_v_dir, 888)
 
     # Stub the evolution_infra helpers used by _cleanup_incomplete.
@@ -734,8 +735,8 @@ def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
     evolution_infra.write_pipeline_checkpoint(232, 224, "direction_audited")
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
     command = (
-        "mkdir -p bots/national_v232 && "
-        "cp bots/national_v224/policy.py bots/national_v232/policy.py"
+        f"mkdir -p bots/{bot_name(232)} && "
+        f"cp bots/{bot_name(224)}/policy.py bots/{bot_name(232)}/policy.py"
     )
 
     output = asyncio.run(hook(
@@ -803,7 +804,7 @@ def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkey
 
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
     output = asyncio.run(hook(
-        {"tool_name": "Bash", "tool_input": {"command": "grep -n decide bots/national_v268/policy.py"}},
+        {"tool_name": "Bash", "tool_input": {"command": f"grep -n decide bots/{bot_name(268)}/policy.py"}},
         "call_test_actionable_guard",
         None,
     ))
@@ -839,7 +840,7 @@ def test_P1_guard_hook_routes_critic_checked_to_precommit(tmp_path, monkeypatch)
 
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
     output = asyncio.run(hook(
-        {"tool_name": "Bash", "tool_input": {"command": "grep -n decide bots/national_v327/policy.py"}},
+        {"tool_name": "Bash", "tool_input": {"command": f"grep -n decide bots/{bot_name(327)}/policy.py"}},
         "call_test_precommit_route_guard",
         None,
     ))

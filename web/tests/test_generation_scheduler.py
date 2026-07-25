@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from bot_namespace import bot_name
+
 
 def test_prepare_generation_blocks_legacy_adapter_workflow(monkeypatch):
     import epoch_authority
@@ -154,7 +156,7 @@ class TestParseBranchFrom:
 
     def test_v_prefix(self):
         from generation_scheduler import _parse_branch_from
-        assert _parse_branch_from("national_v15") == 15
+        assert _parse_branch_from(bot_name(15)) == 15
 
     def test_retired_namespace_is_rejected(self):
         from generation_scheduler import _parse_branch_from
@@ -176,14 +178,18 @@ class TestParseBranchFrom:
 def _frozen_evidence(gs):
     from glicko2 import Glicko2Player
 
-    active = ("national_v143", "national_v146")
+    weak_v = 143
+    strong_v = 146
+    weak_name = bot_name(weak_v)
+    strong_name = bot_name(strong_v)
+    active = (weak_name, strong_name)
     ratings = {
-        "national_v143": Glicko2Player(r=1510, rd=80, sigma=0.06),
-        "national_v146": Glicko2Player(r=1550, rd=70, sigma=0.06),
+        weak_name: Glicko2Player(r=1510, rd=80, sigma=0.06),
+        strong_name: Glicko2Player(r=1550, rd=70, sigma=0.06),
     }
     rows = (
         {
-            "name": "national_v143",
+            "name": weak_name,
             "selection_score": 0.55,
             "leaderboard_score": 0.56,
             "secondary_net_chips_mean": 100.0,
@@ -195,7 +201,7 @@ def _frozen_evidence(gs):
             "strength_confidence": "medium",
         },
         {
-            "name": "national_v146",
+            "name": strong_name,
             "selection_score": 0.65,
             "leaderboard_score": 0.66,
             "secondary_net_chips_mean": 200.0,
@@ -212,7 +218,7 @@ def _frozen_evidence(gs):
         ratings=ratings,
         bot_stats={name: {"games": 20, "win_rate": 0.5} for name in active},
         h2h={
-            "national_v143 vs national_v146": {
+            f"{weak_name} vs {strong_name}": {
                 "games": 20,
                 "a_wins": 9,
                 "b_wins": 11,
@@ -254,7 +260,7 @@ def test_frozen_selection_view_drives_leader_and_crossover_without_live_reads(mo
     )
     assert result == ("crossover", 146, (146, 143))
     with pytest.raises(TypeError):
-        view.metrics["national_v146"]["selection_score"] = 0.0
+        view.metrics[bot_name(146)]["selection_score"] = 0.0
 
 
 def test_selection_never_reads_mutable_candidate_child_counts(monkeypatch):
@@ -275,7 +281,7 @@ def test_selection_never_reads_mutable_candidate_child_counts(monkeypatch):
     weak_rows = []
     for row in evidence.selection_rows:
         row = dict(row)
-        if row["name"] == "national_v143":
+        if row["name"] == bot_name(143):
             row["selection_score"] = 0.40
         weak_rows.append(row)
     evidence = gs.EvaluationEvidence(
@@ -302,7 +308,7 @@ def test_frozen_selection_view_never_selects_inactive_rating(monkeypatch):
     result = gs._decide_strategy(
         {"is_stagnant": False, "confidence": "low"},
         current_v=146,
-        ratings={**evidence.ratings, "national_v199": inactive},
+        ratings={**evidence.ratings, bot_name(199): inactive},
         selection_view=view,
     )
 

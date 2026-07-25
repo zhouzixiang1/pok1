@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from bot_artifact import hash_path
-from bot_namespace import STRICT_ARTIFACT_FILES, strict_artifact_layout_errors
+from bot_namespace import STRICT_ARTIFACT_FILES, bot_name, strict_artifact_layout_errors
 from llm_availability import LLMAvailabilityBlocked, classify_llm_availability
 
 
@@ -152,7 +152,7 @@ def test_combined_analyst_availability_bubbles_without_retry(
     monkeypatch.setattr(combined_analyst, "run_claude_query", unavailable)
 
     row = {
-        "name": "national_v7",
+        "name": bot_name(7),
         "selection_score": 0.5,
         "leaderboard_score": 0.5,
         "h2h_avg_wr": 0.5,
@@ -163,7 +163,7 @@ def test_combined_analyst_availability_bubbles_without_retry(
     with pytest.raises(LLMAvailabilityBlocked):
         asyncio.run(combined_analyst._run_combined_analysis(
             7,
-            ["national_v7"],
+            [bot_name(7)],
             {},
             _UI(),
             h2h_data={},
@@ -197,7 +197,7 @@ def test_prepare_degeneration_availability_is_checkpoint_and_candidate_neutral(
         checkpoint_file,
         _checkpoint(144, 143, "archived"),
     )
-    candidate = _write_strict_bot(tmp_path / "national_v145")
+    candidate = _write_strict_bot(tmp_path / bot_name(145))
     candidate_hash = hash_path(candidate)
 
     profile = SimpleNamespace(
@@ -216,7 +216,7 @@ def test_prepare_degeneration_availability_is_checkpoint_and_candidate_neutral(
         "allocation_floor": 144,
         "next_v": 145,
         "next_v_authority": "paired_annotated_tag_high_water",
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [bot_name(143), bot_name(144)],
         "active_generation": None,
         "ignored_checkpoint": None,
     }
@@ -246,7 +246,7 @@ def test_prepare_degeneration_availability_is_checkpoint_and_candidate_neutral(
     monkeypatch.setattr(
         evolution_infra,
         "get_active_bots",
-        lambda: ["national_v143", "national_v144"],
+        lambda: [bot_name(143), bot_name(144)],
     )
     monkeypatch.setattr(evolution_infra, "find_max_committed_v", lambda: 144)
     monkeypatch.setattr(evolution_infra, "find_abandoned_version_floor", lambda: 0)
@@ -272,7 +272,7 @@ def test_prepare_degeneration_availability_is_checkpoint_and_candidate_neutral(
         lambda *_a, **_k: {"available": True},
     )
     frozen_evidence = scheduler.EvaluationEvidence(
-        active_bots=("national_v143", "national_v144"),
+        active_bots=(bot_name(143), bot_name(144)),
         ratings={},
         bot_stats={},
         h2h={},
@@ -364,8 +364,8 @@ def _master_tool_fixture(tmp_path, monkeypatch, *, next_v=145, source_v=144):
     import workflow_profiles
     from prepared_baseline_contract import build_prepared_artifact_contract
 
-    source = tmp_path / f"national_v{source_v}"
-    candidate = tmp_path / f"national_v{next_v}"
+    source = tmp_path / bot_name(source_v)
+    candidate = tmp_path / bot_name(next_v)
     _write_strict_bot(source)
     _write_strict_bot(candidate)
     checkpoint = _checkpoint(
@@ -457,7 +457,7 @@ def test_direction_audit_availability_is_checkpoint_and_candidate_neutral(
 ):
     import tool_planning
 
-    candidate = _write_strict_bot(tmp_path / "national_v146")
+    candidate = _write_strict_bot(tmp_path / bot_name(146))
     checkpoint = _checkpoint(146, 145, "prepared")
     checkpoint_file = tmp_path / "pipeline_state.json"
     before = _write_checkpoint_bytes(checkpoint_file, checkpoint)
@@ -553,8 +553,8 @@ def _gate_tool_fixture(tmp_path, monkeypatch, *, stage):
     from bot_artifact import canonical_digest
 
     source_v, next_v = 147, 148
-    source = tmp_path / f"national_v{source_v}"
-    candidate = tmp_path / f"national_v{next_v}"
+    source = tmp_path / bot_name(source_v)
+    candidate = tmp_path / bot_name(next_v)
     _write_strict_bot(source, policy_value=1)
     _write_strict_bot(candidate, policy_value=2)
     capability_row = {
@@ -716,9 +716,9 @@ def _tool_crossover_fixture(tmp_path, monkeypatch):
     import tool_commit
     import workflow_profiles
 
-    parent_a = _write_strict_bot(tmp_path / "national_v150", completed=True)
-    parent_b = _write_strict_bot(tmp_path / "national_v149", completed=True)
-    target = tmp_path / "national_v151"
+    parent_a = _write_strict_bot(tmp_path / bot_name(150), completed=True)
+    parent_b = _write_strict_bot(tmp_path / bot_name(149), completed=True)
+    target = tmp_path / bot_name(151)
     checkpoint = _checkpoint(151, 150, "selected", parent2_v=149)
     checkpoint.update({
         "checkpoint_schema_version": 2,
@@ -743,7 +743,7 @@ def _tool_crossover_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(
         tool_commit,
         "get_active_bots",
-        lambda: ["national_v149", "national_v150"],
+        lambda: [bot_name(149), bot_name(150)],
     )
     monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
     monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
@@ -865,9 +865,9 @@ def test_crossover_role_uses_isolated_workspace_before_availability_pause(
     prompts = tmp_path / "prompts"
     logs = tmp_path / "logs"
     results = tmp_path / "results"
-    parent_a = _write_strict_bot(bots / "national_v150", policy_value=1)
-    parent_b = _write_strict_bot(bots / "national_v149", policy_value=2)
-    target = _write_strict_bot(bots / "national_v151", policy_value=3)
+    parent_a = _write_strict_bot(bots / bot_name(150), policy_value=1)
+    parent_b = _write_strict_bot(bots / bot_name(149), policy_value=2)
+    target = _write_strict_bot(bots / bot_name(151), policy_value=3)
     prompts.mkdir()
     logs.mkdir()
     (prompts / "crossover_prompt.md").write_text(
@@ -978,7 +978,7 @@ def test_crossover_role_uses_isolated_workspace_before_availability_pause(
     assert "exact lease policy.py write target" in captured_prompt
     assert "system quality gate owns compilation" in captured_prompt
     assert "py_compile" not in captured_prompt
-    assert "bots/national_v151/policy.py" not in captured_prompt
+    assert f"bots/{bot_name(151)}/policy.py" not in captured_prompt
 
 
 def test_runtime_heartbeat_is_identity_bound_and_restart_stale(tmp_path, monkeypatch):

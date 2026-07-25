@@ -3,6 +3,7 @@ import subprocess
 
 import bot_artifact
 from bot_artifact import published_bot_identity
+from bot_namespace import EVOLUTION_BRANCH, bot_name, bot_tag
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -19,14 +20,17 @@ def _git(repo: Path, *args: str) -> str:
 def _repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init", "-b", "main")
+    # The publication authority checks ``refs/heads/{EVOLUTION_BRANCH}``
+    # (main on the canonical branch, tencent-cloud-runtime on the cloud line).
+    # Seed the repo on that branch so the identity resolver finds the commit.
+    _git(repo, "init", "-b", EVOLUTION_BRANCH)
     _git(repo, "config", "user.name", "Official Identity Test")
     _git(repo, "config", "user.email", "official-identity@example.invalid")
     return repo
 
 
 def _write_bot(repo: Path, body: str = "print('ready')\n") -> Path:
-    bot = repo / "bots" / "national_v1"
+    bot = repo / "bots" / bot_name(1)
     bot.mkdir(parents=True, exist_ok=True)
     (bot / "national_bot.py").write_text(body, encoding="utf-8")
     return bot
@@ -41,7 +45,7 @@ def test_published_identity_requires_annotated_tag_on_main(monkeypatch, tmp_path
     repo = _repo(tmp_path)
     bot = _write_bot(repo)
     _commit_all(repo, "add bot")
-    _git(repo, "tag", "-a", "national-bot-v1", "-m", "complete")
+    _git(repo, "tag", "-a", bot_tag(1), "-m", "complete")
     monkeypatch.setattr(bot_artifact, "ROOT", repo)
 
     identity = published_bot_identity(bot)
@@ -56,7 +60,7 @@ def test_published_identity_rejects_lightweight_tag(monkeypatch, tmp_path):
     repo = _repo(tmp_path)
     bot = _write_bot(repo)
     _commit_all(repo, "add bot")
-    _git(repo, "tag", "national-bot-v1")
+    _git(repo, "tag", bot_tag(1))
     monkeypatch.setattr(bot_artifact, "ROOT", repo)
 
     identity = published_bot_identity(bot)
@@ -73,8 +77,8 @@ def test_published_identity_rejects_tag_commit_outside_main(monkeypatch, tmp_pat
     _git(repo, "switch", "-c", "candidate")
     bot = _write_bot(repo)
     _commit_all(repo, "candidate bot")
-    _git(repo, "tag", "-a", "national-bot-v1", "-m", "complete")
-    _git(repo, "switch", "main")
+    _git(repo, "tag", "-a", bot_tag(1), "-m", "complete")
+    _git(repo, "switch", EVOLUTION_BRANCH)
     bot = _write_bot(repo)
     _commit_all(repo, "independent main bot")
     monkeypatch.setattr(bot_artifact, "ROOT", repo)
@@ -90,7 +94,7 @@ def test_published_identity_rejects_main_tree_drift_after_tag(monkeypatch, tmp_p
     repo = _repo(tmp_path)
     bot = _write_bot(repo)
     _commit_all(repo, "add bot")
-    _git(repo, "tag", "-a", "national-bot-v1", "-m", "complete")
+    _git(repo, "tag", "-a", bot_tag(1), "-m", "complete")
     (bot / "national_bot.py").write_text("print('changed')\n", encoding="utf-8")
     _commit_all(repo, "change bot after completion")
     monkeypatch.setattr(bot_artifact, "ROOT", repo)

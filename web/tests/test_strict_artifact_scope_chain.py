@@ -9,9 +9,11 @@ import sys
 from bot_artifact import canonical_digest, hash_path
 from bot_namespace import (
     SYSTEM_DERIVED_IDENTITY_FILES,
+    bot_name,
     policy_identity_document_errors,
     refresh_policy_identity_documents,
 )
+from conftest import STRICT_TARGET_V
 from prepared_baseline_contract import build_prepared_artifact_contract
 from tool_gates import _prepared_artifact_delta_files
 from worker_boundary import (
@@ -166,20 +168,21 @@ def test_worker_pre_identity_cleanup_does_not_hide_extra_artifact(tmp_path):
 def test_first_strict_blueprint_three_file_delta_is_not_scope_rejected(tmp_path):
     from system_strict_bootstrap import BLUEPRINT_DIR, materialize_fresh_candidate
 
-    bot = tmp_path / "national_v143"
-    materialize_fresh_candidate(bot, version=143)
+    target_v = STRICT_TARGET_V
+    bot = tmp_path / bot_name(target_v)
+    materialize_fresh_candidate(bot, version=target_v)
     prepared = build_prepared_artifact_contract(
         bot,
-        source_v=142,
-        next_v=143,
+        source_v=target_v - 1,
+        next_v=target_v,
     )
     checkpoint = {
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": target_v - 1,
+        "next_v": target_v,
         "audit_context": {"prepared_artifact_contract": prepared},
     }
     (bot / "policy.py").write_bytes((BLUEPRINT_DIR / "policy.py").read_bytes())
-    refresh_policy_identity_documents(bot, 143, parent_versions=())
+    refresh_policy_identity_documents(bot, target_v, parent_versions=())
 
     changed, errors = _prepared_artifact_delta_files(checkpoint, bot)
     assert errors == []
@@ -188,7 +191,7 @@ def test_first_strict_blueprint_three_file_delta_is_not_scope_rejected(tmp_path)
         changed,
         [_task()],
         candidate_dir=bot,
-        version=143,
+        version=target_v,
         parent_versions=(),
     )
     assert result.passed
@@ -326,20 +329,22 @@ def test_quality_scope_rejects_semantically_equal_identity_json_rewrite(tmp_path
 
 
 def test_preparation_rebinds_parent_receipt_to_new_version_and_lineage(tmp_path):
+    parent_v = STRICT_TARGET_V
+    child_v = STRICT_TARGET_V + 1
     bot = _strict_bot(
         tmp_path / "copied_parent",
-        version=143,
+        version=parent_v,
         parents=(),
     )
-    refresh_policy_identity_documents(bot, 144, parent_versions=(143,))
+    refresh_policy_identity_documents(bot, child_v, parent_versions=(parent_v,))
 
     receipt = json.loads(
         (bot / "policy_epoch_receipt.json").read_text(encoding="utf-8")
     )
-    assert receipt["version"] == 144
-    assert receipt["lineage"]["parent_versions"] == [143]
+    assert receipt["version"] == child_v
+    assert receipt["lineage"]["parent_versions"] == [parent_v]
     assert policy_identity_document_errors(
         bot,
-        144,
-        parent_versions=(143,),
+        child_v,
+        parent_versions=(parent_v,),
     ) == []

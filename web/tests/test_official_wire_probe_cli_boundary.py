@@ -16,6 +16,7 @@ from bot_namespace import (
     build_runtime_manifest,
     canonical_identity_document_bytes,
 )
+from conftest import STRICT_TARGET_V, strict_bot_name
 from national_native import ensure_native_entry
 
 
@@ -52,7 +53,7 @@ def _strict_bot(root: Path) -> Path:
     )
     receipt = build_policy_epoch_receipt(
         root,
-        143,
+        STRICT_TARGET_V,
         parent_versions=(),
     )
     (root / POLICY_EPOCH_RECEIPT).write_bytes(
@@ -99,7 +100,7 @@ def test_wire_probe_rejects_arbitrary_script_and_symlink_paths(tmp_path):
     with pytest.raises(ValueError, match="arbitrary script paths are forbidden"):
         module._strict_bot_directory(script)
 
-    bot = _strict_bot(tmp_path / "national_v143")
+    bot = _strict_bot(tmp_path / strict_bot_name())
     alias = tmp_path / "candidate-alias"
     alias.symlink_to(bot, target_is_directory=True)
     with pytest.raises(ValueError, match="strict_bot_directory"):
@@ -142,7 +143,7 @@ def test_wire_probe_invalid_source_is_recorded_before_platform_launch(
 
 def test_wire_probe_rejects_pyc_before_endpoint_or_output_consumption(tmp_path):
     module = _load_cli()
-    bot = _strict_bot(tmp_path / "bots" / "national_v143")
+    bot = _strict_bot(tmp_path / "bots" / strict_bot_name())
     cache = bot / "__pycache__"
     cache.mkdir()
     (cache / "policy.cpython-test.pyc").write_bytes(b"unchecked-cache")
@@ -183,7 +184,7 @@ def test_wire_probe_canonical_candidate_validation_rejects_pollution_and_forgery
     expected,
 ):
     module = _load_cli()
-    bot = _strict_bot(tmp_path / mutation / "bots" / "national_v143")
+    bot = _strict_bot(tmp_path / mutation / "bots" / strict_bot_name())
     if mutation == "task_context":
         control = bot / ".task_context"
         control.mkdir()
@@ -215,7 +216,7 @@ def test_wire_probe_strict_candidate_uses_managed_formal_launch_not_host_popen(
         raise AssertionError("bot must not use the host _popen path")
 
     monkeypatch.setattr(module, "_popen", forbidden_host_popen)
-    bot = _strict_bot(tmp_path / "bots" / "national_v143")
+    bot = _strict_bot(tmp_path / "bots" / strict_bot_name())
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))

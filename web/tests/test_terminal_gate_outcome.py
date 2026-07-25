@@ -6,6 +6,8 @@ from itertools import product
 
 import pytest
 
+from bot_namespace import bot_name
+
 
 _VALID_TERMINAL_SEMANTICS = frozenset({
     ("quality", "quality_gate_rejected", "quality_gate"),
@@ -583,7 +585,7 @@ def test_dual_review_terminal_projection_is_exact_and_resumable(
     import system_strict_bootstrap as bootstrap
     import tool_bot_management
 
-    candidate = tmp_path / "bots" / "national_v143"
+    candidate = tmp_path / "bots" / bot_name(143)
     candidate.mkdir(parents=True)
     (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
     live = _checkpoint(candidate, stage="quality_passed", revision=7)
@@ -736,7 +738,7 @@ def test_dual_review_terminal_projection_cas_failure_preserves_source(
     import system_strict_bootstrap as bootstrap
     import tool_bot_management
 
-    candidate = tmp_path / "bots" / "national_v143"
+    candidate = tmp_path / "bots" / bot_name(143)
     candidate.mkdir(parents=True)
     (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
     checkpoint = _checkpoint(candidate, stage="quality_passed", revision=7)

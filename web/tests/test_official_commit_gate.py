@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 
 from bot_artifact import canonical_digest
+from bot_namespace import bot_name, bot_relpath
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 from official_certification import STATUS_CERTIFIED, STATUS_INCONCLUSIVE
 
 
@@ -206,11 +208,14 @@ def test_strict_normal_full_commit_binds_admission_before_job_and_blocks_missing
 def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     import official_certification
     import official_certification_job
+    import official_platform_harness
     import tool_commit
 
+    target_v = STRICT_TARGET_V + 10
+    source_v = STRICT_TARGET_V + 9
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _native_bot(tmp_path / "bots" / "national_v134")
-    opponent = _native_bot(tmp_path / "bots" / "national_v70")
+    candidate = _native_bot(tmp_path / "bots" / bot_name(target_v))
+    opponent = _native_bot(tmp_path / "bots" / bot_name(STRICT_TARGET_V + 5))
     (opponent / ".completed").touch()
     monkeypatch.setenv("POK_OFFICIAL_OPPONENT", str(opponent))
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [str(opponent)])
@@ -231,6 +236,11 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
         official_certification,
         "official_full_certified",
         lambda status, _candidate, **_kwargs: status.get("status") == STATUS_CERTIFIED,
+    )
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: {"valid": True, "issues": [], "admission": _structural_quality_admission(candidate, next_v=target_v)},
     )
     calls = []
 
@@ -254,8 +264,8 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
 
     result = asyncio.run(
         tool_commit._run_official_full_commit_gate(
-            134,
-            123,
+            target_v,
+            source_v,
             candidate,
             {"national_execution_mode": "native_tcp"},
             {},
@@ -269,7 +279,7 @@ def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     assert spec.self_play_rounds == 5
     assert spec.opponent_rounds == 3
     assert spec.target_hands == 70
-    assert kwargs["source_v"] == 123
+    assert kwargs["source_v"] == source_v
     assert kwargs["retry_terminal"] is False
     assert result["opponent_selection"]["opponent"]["reason"] == "official_certified"
 
@@ -451,11 +461,14 @@ def test_official_full_commit_gate_does_not_reuse_invalid_existing_certificate(
 def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypatch):
     import official_certification
     import official_certification_job
+    import official_platform_harness
     import tool_commit
 
+    target_v = STRICT_TARGET_V + 10
+    source_v = STRICT_TARGET_V + 9
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _native_bot(tmp_path / "bots" / "national_v134")
-    opponent = _native_bot(tmp_path / "bots" / "national_v70")
+    candidate = _native_bot(tmp_path / "bots" / bot_name(target_v))
+    opponent = _native_bot(tmp_path / "bots" / bot_name(STRICT_TARGET_V + 5))
     (opponent / ".completed").touch()
     monkeypatch.setenv("POK_OFFICIAL_OPPONENT", str(opponent))
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [str(opponent)])
@@ -477,6 +490,11 @@ def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypa
         "official_full_certified",
         lambda _status, _candidate, **_kwargs: False,
     )
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: {"valid": True, "issues": [], "admission": _structural_quality_admission(candidate, next_v=target_v)},
+    )
 
     def fake_start_or_poll(_spec, **_kwargs):
         return {
@@ -496,8 +514,8 @@ def test_official_full_commit_gate_blocks_inconclusive_result(tmp_path, monkeypa
 
     result = asyncio.run(
         tool_commit._run_official_full_commit_gate(
-            134,
-            123,
+            target_v,
+            source_v,
             candidate,
             {"national_execution_mode": "native_tcp"},
             {},
@@ -1575,7 +1593,11 @@ def test_git_commit_bot_rejects_certificate_drift_while_staging(monkeypatch, tmp
     import bot_artifact
     import evolution_infra
 
-    candidate = _native_bot(tmp_path / "bots" / "national_v143")
+    target_v = STRICT_TARGET_V
+    source_v = STRICT_SOURCE_V
+    candidate = _native_bot(tmp_path / "bots" / bot_name(target_v))
+    bot_rel = bot_relpath(target_v)
+    cert_rel = f"official_certificates/{bot_name(target_v)}.json"
     git_calls = []
     staged = []
 
@@ -1586,14 +1608,14 @@ def test_git_commit_bot_rejects_certificate_drift_while_staging(monkeypatch, tmp
         if args == (
             "add",
             "--",
-            "bots/national_v143",
-            "official_certificates/national_v143.json",
+            bot_rel,
+            cert_rel,
         ):
             staged.extend([
-                "bots/national_v143/national_bot.py",
-                "official_certificates/national_v143.json",
+                f"{bot_rel}/national_bot.py",
+                cert_rel,
             ])
-        if args[:4] == ("restore", "--staged", "--", "bots/national_v143"):
+        if args[:4] == ("restore", "--staged", "--", bot_rel):
             staged.clear()
         return ""
 
@@ -1607,14 +1629,14 @@ def test_git_commit_bot_rejects_certificate_drift_while_staging(monkeypatch, tmp
         "official_certification.publish_certificate_attestation",
         lambda *_a, **_k: {
             "certificate_digest": "cert-digest",
-            "relative_path": "official_certificates/national_v143.json",
+            "relative_path": cert_rel,
         },
     )
 
     with __import__("pytest").raises(RuntimeError, match="changed while staging"):
         evolution_infra.git_commit_bot(
-            143,
-            142,
+            target_v,
+            source_v,
             "test",
             official_certificate={
                 "certificate_digest": "cert-digest",
@@ -1627,7 +1649,7 @@ def test_git_commit_bot_rejects_certificate_drift_while_staging(monkeypatch, tmp
         "restore",
         "--staged",
         "--",
-        "bots/national_v143",
-        "official_certificates/national_v143.json",
+        bot_rel,
+        cert_rel,
     ) in git_calls
     assert not any(call and call[0] in {"commit", "tag"} for call in git_calls)

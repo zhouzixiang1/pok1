@@ -3,14 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from bot_namespace import bot_tag, parse_bot_version
+from conftest import STRICT_TARGET_V, strict_bot_name
+
 
 def _published_identity(path: Path) -> dict[str, object]:
-    version = int(path.name.removeprefix("national_v"))
+    version = parse_bot_version(path.name)
     return {
         "published": True,
         "label": path.name,
         "version": version,
-        "tag": f"national-bot-v{version}",
+        "tag": bot_tag(version),
     }
 
 
@@ -26,7 +29,7 @@ def test_system_runtime_identity_accepts_only_exact_current_bytes(tmp_path):
     )
     from system_strict_bootstrap import materialize_fresh_candidate
 
-    bot = tmp_path / "national_v143"
+    bot = tmp_path / strict_bot_name()
     materialize_fresh_candidate(bot, final_policy=True)
     assert current_system_native_runtime_errors(bot) == []
     identity = current_system_native_runtime_identity()
@@ -45,7 +48,7 @@ def test_system_runtime_identity_rejects_precompute_only_drift(tmp_path):
     from national_runtime_authority import current_system_native_runtime_errors
     from system_strict_bootstrap import materialize_fresh_candidate
 
-    bot = tmp_path / "national_v143"
+    bot = tmp_path / strict_bot_name()
     materialize_fresh_candidate(bot, final_policy=True)
     precompute = bot / "precompute.py"
     precompute.write_bytes(precompute.read_bytes() + b"\n# precompute drift\n")
@@ -64,14 +67,14 @@ def test_strict_discovery_has_no_pre_policy_or_quarantine_path(tmp_path):
 
     bots = tmp_path / "bots"
     bots.mkdir()
-    materialize_fresh_candidate(bots / "national_v143", final_policy=True)
-    (bots / "national_v142").mkdir()
+    materialize_fresh_candidate(bots / strict_bot_name(), final_policy=True)
+    (bots / strict_bot_name(STRICT_TARGET_V - 1)).mkdir()
 
     assert strict_published_bot_names(
         bots_dir=bots,
         publication_resolver=_published_identity,
         certificate_resolver=_certificate,
-    ) == ("national_v143",)
+    ) == (strict_bot_name(),)
 
 
 def test_strict_discovery_defaults_fresh_and_observers_must_opt_into_cache(
@@ -81,7 +84,7 @@ def test_strict_discovery_defaults_fresh_and_observers_must_opt_into_cache(
     import national_runtime_authority as authority
 
     bots = tmp_path / "bots"
-    (bots / "national_v143").mkdir(parents=True)
+    (bots / strict_bot_name()).mkdir(parents=True)
     observed = []
 
     monkeypatch.setattr(
@@ -97,12 +100,12 @@ def test_strict_discovery_defaults_fresh_and_observers_must_opt_into_cache(
     monkeypatch.setattr(authority, "resolve_national_bot_spec", resolve)
 
     assert authority.strict_published_bot_names(bots_dir=bots) == (
-        "national_v143",
+        strict_bot_name(),
     )
     assert authority.strict_published_bot_names(
         bots_dir=bots,
         ledger_fresh=False,
-    ) == ("national_v143",)
+    ) == (strict_bot_name(),)
     assert observed == [True, False]
 
 

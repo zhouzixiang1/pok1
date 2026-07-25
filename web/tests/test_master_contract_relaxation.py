@@ -13,11 +13,15 @@ from agent_master import (
     _proposal_schema_repair_guidance,
     _proposal_measurement_contract_valid,
 )
+from bot_namespace import bot_name
+from conftest import STRICT_TARGET_V
 from output_schema import (
     master_plan_executable_contract_text,
     RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS,
     NATIONAL_POLICY_FOCUS_ID,
 )
+
+_TARGET_BOT = bot_name(STRICT_TARGET_V)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -118,7 +122,7 @@ def test_guidance_still_capped_at_four():
 # ═══════════════════════════════════════════════════════════════════════════
 
 _UPPERCASE_MEASUREMENT = (
-    "TARGET=national_v143; PRIMARY=COMPLETE_70_HAND_WLD; "
+    f"TARGET={_TARGET_BOT}; PRIMARY=COMPLETE_70_HAND_WLD; "
     "EXPECTED_DELTA=0.03; SAMPLES=>=30_COMPLETE_MATCHES; "
     "UNCERTAINTY=WILSON_WLD_INTERVAL; SECONDARY=net_chip_ci"
 )
@@ -134,7 +138,7 @@ def test_measurement_uppercase_now_accepted():
 
 def test_measurement_mixed_case_accepted():
     mixed = (
-        "target=national_v143; PRIMARY=complete_70_hand_wld; "
+        f"target={_TARGET_BOT}; PRIMARY=complete_70_hand_wld; "
         "expected_delta=0.01; samples=>=30_COMPLETE_MATCHES; "
         "uncertainty=WILSON_WLD_INTERVAL; secondary=net_chip_ci"
     )
@@ -146,7 +150,7 @@ def test_measurement_mixed_case_accepted():
 def test_measurement_canonical_still_accepted():
     """The canonical lowercase form (as in the prompt template) still passes."""
     canonical = (
-        "target=national_v143; primary=complete_70_hand_wld; "
+        f"target={_TARGET_BOT}; primary=complete_70_hand_wld; "
         "expected_delta=0.03; samples=>=30_complete_matches; "
         "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
     )
@@ -158,7 +162,7 @@ def test_measurement_canonical_still_accepted():
 def test_measurement_nonsense_still_rejected():
     """Nonsense values are still rejected even after case normalization."""
     assert not _proposal_measurement_contract_valid(
-        "target=national_v143; primary=imagination; expected_delta=0.03; "
+        f"target={_TARGET_BOT}; primary=imagination; expected_delta=0.03; "
         "samples=>=30_complete_matches; uncertainty=wilson_wld_interval; "
         "secondary=net_chip_ci",
         "frozen_strength_snapshot",

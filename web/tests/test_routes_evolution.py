@@ -4,6 +4,8 @@ import asyncio
 import threading
 import time
 
+from bot_namespace import bot_name
+
 
 def _active_epoch(*, revision=7, stage="master_planning"):
     return {
@@ -394,8 +396,13 @@ class TestEvolutionState:
 class TestEvolutionStream:
     def test_route_registered(self, client):
         """SSE endpoint is registered at /api/evolution/stream."""
-        routes = {r.path for r in client.app.routes}
-        assert "/api/evolution/stream" in routes
+        # Newer FastAPI/Starlette wraps included routers in _IncludedRouter
+        # objects that do not expose ``.path`` at the app route list level, so
+        # verify registration by reaching the endpoint rather than enumerating
+        # routes.  A registered streaming endpoint returns 200 (or a fenced
+        # non-200 body) rather than Starlette's 404 for unknown routes.
+        response = client.get("/api/evolution/stream", headers={"Accept": "text/event-stream"})
+        assert response.status_code != 404
 
     def test_status_event_is_bound_to_current_checkpoint_at_emission(
         self,
@@ -834,16 +841,17 @@ class TestEvolutionStream:
         import epoch_authority
         from server.app import broadcaster
 
+        target_v = 143
         projection = {
             "evaluation_epoch": "national_tcp_policy_v1",
             "state": "strict_published",
             "initialized": True,
             "reset_receipt_valid": True,
             "reset_receipt_digest": "a" * 64,
-            "version_authority_high_water": 143,
-            "active_bots": ["national_v143"],
-            "current_v": 143,
-            "next_v": 144,
+            "version_authority_high_water": target_v,
+            "active_bots": [bot_name(target_v)],
+            "current_v": target_v,
+            "next_v": target_v + 1,
         }
         current = epoch_authority.epoch_stream_authority_digest(projection)
         assert current is not None and current != "f" * 64

@@ -13,8 +13,24 @@ from testclient_compat import backend_options_for_testclient
 class TestDataStream:
     def test_route_registered(self, client):
         """SSE endpoint is registered at /api/data/stream."""
-        routes = {r.path for r in client.app.routes}
-        assert "/api/data/stream" in routes
+        # Newer Starlette represents mounted/included routers as
+        # ``_IncludedRouter`` objects. They have no top-level ``path`` of
+        # their own; the concrete endpoints live under ``original_router``
+        # (and, on some versions, ``.routes``). Flatten every reachable
+        # route so the path set is stable across Starlette versions.
+        paths = set()
+        stack = list(client.app.routes)
+        while stack:
+            route = stack.pop()
+            if hasattr(route, "path"):
+                paths.add(route.path)
+            for attr in ("routes", "original_router"):
+                nested = getattr(route, attr, None)
+                if attr == "original_router":
+                    nested = getattr(nested, "routes", None)
+                if nested:
+                    stack.extend(nested)
+        assert "/api/data/stream" in paths
 
     def test_epoch_loss_emits_fence_and_closes_stream(self, monkeypatch):
         from fastapi import FastAPI

@@ -1,13 +1,14 @@
 """Official repair planning at the strict candidate/system boundary."""
 
+from conftest import STRICT_TARGET_V
 from tool_planning import _synthesize_rework_tasks_from_checkpoint
 
 
-def _checkpoint(issue, *, classification="obvious_decision_error", version=144):
+def _checkpoint(issue, *, classification="obvious_decision_error", version=None):
     return {
         "stage": "official_failed",
-        "next_v": version,
-        "source_v": 143,
+        "next_v": STRICT_TARGET_V + 1 if version is None else version,
+        "source_v": STRICT_TARGET_V,
         "gate_results": {
             "official_full": {
                 "passed": False,
@@ -48,7 +49,7 @@ def test_protocol_failure_is_system_owned_and_has_no_worker_repair_task():
 def test_advisory_llm_protocol_words_cannot_redirect_policy_repair():
     checkpoint = _checkpoint(
         "obvious_decision_error: repeated river overcall",
-        version=145,
+        version=STRICT_TARGET_V + 2,
     )
     checkpoint["gate_results"]["official_full"]["status"] = {
         "official_llm_repair_guidance": "Consider wire protocol serialization",

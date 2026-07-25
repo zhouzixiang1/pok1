@@ -6,6 +6,8 @@ import sys
 import pytest
 
 from bot_artifact import canonical_digest
+from bot_namespace import bot_name
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 from official_certification import build_spec
 import official_certification_job as jobs
 
@@ -87,11 +89,11 @@ def _structural_quality_admission(candidate: Path) -> dict:
 
 
 def _spec(tmp_path: Path):
-    candidate = _bot(tmp_path / "bots" / "national_v200")
+    candidate = _bot(tmp_path / "bots" / bot_name(STRICT_TARGET_V + 50))
     return build_spec(
         "full",
         candidate,
-        opponent=_bot(tmp_path / "bots" / "national_v142"),
+        opponent=_bot(tmp_path / "bots" / bot_name(STRICT_TARGET_V + 49)),
         quality_admission=_structural_quality_admission(candidate),
     )
 
@@ -508,7 +510,7 @@ def test_bootstrap_job_delayed_state_drift_fails_before_worker_spawn(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(tmp_path / "jobs"))
-    candidate = _bot(tmp_path / "bots" / "national_v143")
+    candidate = _bot(tmp_path / "bots" / bot_name(STRICT_TARGET_V))
     opponent = _bot(tmp_path / "controls" / "first_strict_control_v1")
     spec = build_spec(
         "full",

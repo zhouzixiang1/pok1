@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from bot_artifact import canonical_digest, hash_path
+from bot_namespace import bot_name
+from conftest import STRICT_TARGET_V, strict_bot_name
 from managed_bot_executor import IsolationIdentity
 import official_platform_harness as harness
 from web.tests.runtime_probe_fixtures import (
@@ -235,7 +237,7 @@ def _current_formal_quality_checkpoint(tmp_path, monkeypatch):
     from workflow_profiles import get_workflow_profile
 
     repo = tmp_path / "repo"
-    candidate = repo / "bots" / "national_v200"
+    candidate = repo / "bots" / bot_name(200)
     candidate.mkdir(parents=True)
     (candidate / "policy.py").write_text("def decide(context):\n    return {'kind': 'pass'}\n", encoding="utf-8")
     candidate_hash = hash_path(candidate)
@@ -319,7 +321,7 @@ def test_pokctl_defaults_official_smoke_to_durable_job():
 def test_official_platform_cli_defaults_to_manual_70_hand_rounds():
     from scripts.official_platform_acceptance import parse_args
 
-    args = parse_args(["--candidate", "bots/national_v1"])
+    args = parse_args(["--candidate", f"bots/{bot_name(1)}"])
 
     assert args.self_play_rounds == 1
     assert args.opponent_rounds == 1
@@ -574,12 +576,12 @@ def test_official_diagnostic_rejects_script_symlink_and_outside_namespace(
     with pytest.raises(RuntimeError, match="strict_bot_directory"):
         harness._validate_active_diagnostic_bot(script, repo_root=repo)
 
-    outside = repo / "outside" / "national_v143"
+    outside = repo / "outside" / strict_bot_name()
     outside.mkdir(parents=True)
     with pytest.raises(RuntimeError, match="outside_active_namespace"):
         harness._validate_active_diagnostic_bot(outside, repo_root=repo)
 
-    alias = repo / "bots" / "national_v143"
+    alias = repo / "bots" / strict_bot_name()
     alias.symlink_to(outside, target_is_directory=True)
     with pytest.raises(RuntimeError, match="strict_bot_directory"):
         harness._validate_active_diagnostic_bot(alias, repo_root=repo)
@@ -588,7 +590,7 @@ def test_official_diagnostic_rejects_script_symlink_and_outside_namespace(
 def test_low_authority_bot_launch_still_uses_central_executor(
     tmp_path, monkeypatch
 ):
-    bot_dir = tmp_path / "national_v1"
+    bot_dir = tmp_path / bot_name(1)
     bot_dir.mkdir()
     (bot_dir / "national_bot.py").write_text("pass\n", encoding="utf-8")
     artifact_hash = hash_path(bot_dir)
@@ -751,7 +753,7 @@ def test_official_round_rejects_non_symmetric_formal_launch_contract(
 
 
 def _bootstrap_authorization_case(tmp_path):
-    candidate = tmp_path / "national_v143"
+    candidate = tmp_path / strict_bot_name()
     opponent = tmp_path / "first_strict_control_v1"
     candidate.mkdir()
     opponent.mkdir()
@@ -861,8 +863,8 @@ def test_normal_formal_quality_admission_roundtrips_through_spec_and_job_envelop
 ):
     import official_certification as certification
 
-    candidate = tmp_path / "bots" / "national_v200"
-    opponent = tmp_path / "bots" / "national_v199"
+    candidate = tmp_path / "bots" / bot_name(200)
+    opponent = tmp_path / "bots" / bot_name(199)
     candidate.mkdir(parents=True)
     opponent.mkdir(parents=True)
     (candidate / "national_bot.py").write_text("candidate\n", encoding="utf-8")
@@ -905,8 +907,8 @@ def test_strict_normal_full_refuses_missing_or_tampered_admission_before_worker(
 
     import official_certification as certification
 
-    candidate = tmp_path / "bots" / "national_v200"
-    opponent = tmp_path / "bots" / "national_v199"
+    candidate = tmp_path / "bots" / bot_name(200)
+    opponent = tmp_path / "bots" / bot_name(199)
     candidate.mkdir(parents=True)
     opponent.mkdir(parents=True)
     (candidate / "national_bot.py").write_text("candidate\n", encoding="utf-8")

@@ -1097,9 +1097,13 @@ def test_fresh_first_strict_evaluation_contract_never_walks_numeric_high_water(
     import os
 
     import evaluation_contract
+    from bot_namespace import bot_name
+    from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 
-    retired = tmp_path / "bots" / "national_v142"
-    candidate = tmp_path / "bots" / "national_v143"
+    retired_name = bot_name(STRICT_SOURCE_V)
+    candidate_name = bot_name(STRICT_TARGET_V)
+    retired = tmp_path / "bots" / retired_name
+    candidate = tmp_path / "bots" / candidate_name
     retired.mkdir(parents=True)
     candidate.mkdir(parents=True)
     (retired / "policy.py").write_text("RETIRED_POISON = True\n", encoding="utf-8")
@@ -1111,42 +1115,44 @@ def test_fresh_first_strict_evaluation_contract_never_walks_numeric_high_water(
     def active_only_walk(path, *args, **kwargs):
         resolved = str(path)
         walked.append(resolved)
-        if "national_v142" in resolved:
-            raise AssertionError("numeric-only v142 must never be walked")
+        if retired_name in resolved:
+            raise AssertionError(
+                f"numeric-only {retired_name} must never be walked"
+            )
         return real_walk(path, *args, **kwargs)
 
     monkeypatch.setattr(evaluation_contract.os, "walk", active_only_walk)
     checkpoint = {
         "stage": "selected",
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "audit_context": {
             "protocol_bootstrap": {
                 "mode": "fresh_national_policy_bootstrap",
-                "source_v": 142,
-                "next_v": 143,
+                "source_v": STRICT_SOURCE_V,
+                "next_v": STRICT_TARGET_V,
                 "source_artifact_inherited": False,
             },
         },
     }
     contract = evaluation_contract.build_evaluation_contract(
         tmp_path,
-        candidate_v=143,
-        source_v=142,
+        candidate_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
         checkpoint=checkpoint,
         stage="selected",
         national_execution_mode="native_tcp",
     )
 
-    assert contract["bot_versions"] == [143]
-    assert "bots/national_v143/" in contract["path_prefixes"]
-    assert "bots/national_v142/" not in contract["path_prefixes"]
+    assert contract["bot_versions"] == [STRICT_TARGET_V]
+    assert f"bots/{candidate_name}/" in contract["path_prefixes"]
+    assert f"bots/{retired_name}/" not in contract["path_prefixes"]
     before = evaluation_contract.evaluation_contract_hash(tmp_path, contract)
     (retired / "policy.py").write_text("RETIRED_POISON = 'changed'\n", encoding="utf-8")
     assert evaluation_contract.evaluation_contract_hash(tmp_path, contract) == before
     (candidate / "policy.py").write_text("CURRENT = 2\n", encoding="utf-8")
     assert evaluation_contract.evaluation_contract_hash(tmp_path, contract) != before
-    assert walked and all("national_v142" not in path for path in walked)
+    assert walked and all(retired_name not in path for path in walked)
 
 
 def test_every_checkpoint_stage_binds_its_exact_llm_prompt_inputs():

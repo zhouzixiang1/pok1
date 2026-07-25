@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from bot_namespace import STRICT_ARTIFACT_FILES, strict_artifact_layout_errors
+from bot_namespace import STRICT_ARTIFACT_FILES, bot_name, strict_artifact_layout_errors
+from conftest import STRICT_TARGET_V
 import tool_planning
 
 
@@ -26,12 +27,12 @@ def _write_strict_bot(root: Path) -> Path:
 
 def _seed_bot_dirs(tmp_path, monkeypatch, changed_files):
     bots = tmp_path / "bots"
-    _write_strict_bot(bots / "national_v143")
-    _write_strict_bot(bots / "national_v144")
+    _write_strict_bot(bots / bot_name(STRICT_TARGET_V))
+    _write_strict_bot(bots / bot_name(STRICT_TARGET_V + 1))
     monkeypatch.setattr(
         tool_planning,
         "get_bot_dir",
-        lambda version: bots / f"national_v{version}",
+        lambda version: bots / bot_name(version),
     )
     monkeypatch.setattr(
         tool_planning,
@@ -43,8 +44,8 @@ def _seed_bot_dirs(tmp_path, monkeypatch, changed_files):
 def _checkpoint(directive="National TCP precommit FAILED: 0W-1L vs parent"):
     return {
         "stage": "precommit_failed",
-        "source_v": 143,
-        "next_v": 144,
+        "source_v": STRICT_TARGET_V,
+        "next_v": STRICT_TARGET_V + 1,
         "gate_results": {"precommit_eval": {"directive": directive}},
     }
 

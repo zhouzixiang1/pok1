@@ -8,6 +8,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "web" / "core"))
 
+from bot_namespace import bot_name, bot_tag, high_water_tag
+
 
 def _patch_checkpoint(monkeypatch, checkpoint):
     import orchestrator
@@ -27,16 +29,16 @@ def _strict_checkpoint(checkpoint):
     source = checkpoint["source_v"]
     identity = {
         "version": source,
-        "bot": f"national_v{source}",
+        "bot": bot_name(source),
         "role": "parent_source",
         "epoch": "national_tcp_policy_v1",
         "runtime_manifest_digest": "1" * 64,
         "epoch_receipt_digest": "2" * 64,
         "publication_identity_digest": "3" * 64,
         "certificate_digest": "4" * 64,
-        "completion_tag": f"national-bot-v{source}",
+        "completion_tag": bot_tag(source),
         "completion_tag_object_oid": "5" * 40,
-        "high_water_tag": f"national-high-water-v{source}",
+        "high_water_tag": high_water_tag(source),
         "high_water_tag_object_oid": "6" * 40,
         "publication_commit_oid": "7" * 40,
         "completion_tree_oid": "8" * 40,

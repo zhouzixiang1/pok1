@@ -3,6 +3,7 @@ import json
 
 import checkpoint_schema
 import pytest
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name
 from pipeline_state import (
     STAGE_GATE_ALLOWLIST,
     route_policy as _route_policy,
@@ -57,7 +58,7 @@ def _reset_receipt():
         "created_at": "2026-07-14T00:00:00.000000",
         "git_head": "a" * 40,
         "archive_root": archive_root,
-        "first_target_version": 143,
+        "first_target_version": STRICT_TARGET_V,
         "checkout_role": "autonomous_evolution_runtime",
         "one_time": True,
     }
@@ -76,13 +77,13 @@ def _reset_receipt():
             "prior_reset_evidence_required_empty": True,
             "claim_digest": claim_digest,
         },
-        "archived_version_high_water": 142,
-        "version_authority_high_water": 142,
-        "first_target_version": 143,
+        "archived_version_high_water": STRICT_SOURCE_V,
+        "version_authority_high_water": STRICT_SOURCE_V,
+        "first_target_version": STRICT_TARGET_V,
         "source_code_inherited": False,
         "seed_bot": None,
         "active_namespace": {
-            "bot": "national_v143",
+            "bot": strict_bot_name(),
             "protocol": "official-national-raw-tcp-v1",
             "policy_abi": "national-tcp-policy-runtime-v1",
         },
@@ -129,10 +130,10 @@ def _fresh(checkpoint, reset_receipt):
         "selection": {"strategy": "fresh_policy_bootstrap"},
     }
     binding = checkpoint_schema.build_checkpoint_epoch_binding(
-        next_v=143,
-        source_v=142,
+        next_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
         audit_context=audit_context,
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
     )
@@ -156,8 +157,8 @@ def test_verified_stage_retains_content_bound_official_gate():
 def test_official_failed_routes_to_worker_repair():
     route = route_policy(_strict({
         "stage": "official_failed",
-        "next_v": 144,
-        "source_v": 143,
+        "next_v": STRICT_TARGET_V + 1,
+        "source_v": STRICT_TARGET_V,
         "gate_results": {"official_full": {"passed": False}},
     }))
 
@@ -171,8 +172,8 @@ def test_official_failed_routes_to_worker_repair():
 def test_official_inconclusive_has_no_automatic_commit_retry():
     route = route_policy(_strict({
         "stage": "official_inconclusive",
-        "next_v": 144,
-        "source_v": 143,
+        "next_v": STRICT_TARGET_V + 1,
+        "source_v": STRICT_TARGET_V,
         "gate_results": {"official_full": {"passed": False}},
     }))
 
@@ -184,8 +185,8 @@ def test_official_inconclusive_has_no_automatic_commit_retry():
 def test_official_bootstrap_required_has_no_orchestrator_tool_route():
     route = route_policy(_fresh({
         "stage": "official_bootstrap_required",
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
         "parent2_v": None,
         "gate_results": {"official_full": {"passed": False}},
     }, _strip_test_claim(_reset_receipt())))
@@ -220,17 +221,18 @@ def test_official_bootstrap_required_uses_commit_evaluation_contract():
 
 
 def test_official_inconclusive_recovery_is_blocked(tmp_path):
+    from bot_namespace import EVOLUTION_BRANCH, bot_name
     from pipeline_recovery import checkpoint_recovery_diagnostics
 
     root = tmp_path
-    (root / "bots" / "national_v144").mkdir(parents=True)
+    (root / "bots" / bot_name(STRICT_TARGET_V + 1)).mkdir(parents=True)
     checkpoint = _strict({
         "stage": "official_inconclusive",
-        "next_v": 144,
-        "source_v": 143,
-        "repo_baseline": {"branch": "main", "head": "abc123"},
+        "next_v": STRICT_TARGET_V + 1,
+        "source_v": STRICT_TARGET_V,
+        "repo_baseline": {"branch": EVOLUTION_BRANCH, "head": "abc123"},
     })
-    snapshot = {"ok": True, "branch": "main", "head": "abc123", "entries": []}
+    snapshot = {"ok": True, "branch": EVOLUTION_BRANCH, "head": "abc123", "entries": []}
 
     diag = checkpoint_recovery_diagnostics(checkpoint, snapshot=snapshot, project_root=root)
 
@@ -240,19 +242,20 @@ def test_official_inconclusive_recovery_is_blocked(tmp_path):
 
 
 def test_official_bootstrap_required_recovery_waits_for_operator(tmp_path):
+    from bot_namespace import EVOLUTION_BRANCH, bot_name
     from pipeline_recovery import checkpoint_recovery_diagnostics
 
     root = tmp_path
-    (root / "bots" / "national_v143").mkdir(parents=True)
+    (root / "bots" / bot_name(STRICT_TARGET_V)).mkdir(parents=True)
     reset_receipt = _write_reset_authority(root, _reset_receipt())
     checkpoint = _fresh({
         "stage": "official_bootstrap_required",
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
         "parent2_v": None,
-        "repo_baseline": {"branch": "main", "head": "abc123"},
+        "repo_baseline": {"branch": EVOLUTION_BRANCH, "head": "abc123"},
     }, reset_receipt)
-    snapshot = {"ok": True, "branch": "main", "head": "abc123", "entries": []}
+    snapshot = {"ok": True, "branch": EVOLUTION_BRANCH, "head": "abc123", "entries": []}
 
     diag = checkpoint_recovery_diagnostics(
         checkpoint,

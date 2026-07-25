@@ -6,6 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+from bot_namespace import bot_tag
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,14 +24,20 @@ def test_primary_guides_name_one_epoch_and_one_version_authority():
         "SETUP_GUIDE.md",
         "ONBOARDING.md",
     )
+    # Branch-portable version literals the guides must name consistently:
+    # the first strict candidate, a representative high published version,
+    # and the source high-water completion tag.
+    candidate_literal = strict_bot_name()
+    high_version_literal = strict_bot_name(STRICT_TARGET_V + 12)
+    source_tag_literal = bot_tag(STRICT_SOURCE_V)
     for relative in guides:
         text = _read(relative)
         assert "national_tcp_policy_v1" in text, relative
-        assert "national_v143" in text, relative
-        assert "national_v155" in text, relative
+        assert candidate_literal in text, relative
+        assert high_version_literal in text, relative
 
     combined = "\n".join(_read(relative) for relative in guides)
-    assert "national-bot-v142" in combined
+    assert source_tag_literal in combined
     assert "numeric high-water" in combined or "numeric high-water" in combined.lower()
     assert "old-wrapper" in combined
     agents = _read("AGENTS.md")
@@ -215,9 +224,12 @@ def test_operator_helper_help_preserves_epoch_and_evidence_boundaries():
     restart = _read("scripts/pok_restart_observe.sh")
     process_control = _read("pokctl.sh")
 
+    # The reset help is branch-portable: it names the archived version-authority
+    # high-water floor and the first strict target via the active namespace
+    # rather than hardcoding main-branch literals (142 / national_v143).
     assert "One-time national_tcp_policy_v1 runtime reset" in reset
-    assert "v142 only as the numeric/tag high-water" in reset
-    assert "first target is national_v143" in reset
+    assert f"high-water ({STRICT_SOURCE_V} on this branch)" in reset
+    assert f"first target is {strict_bot_name()}" in reset
     assert "No bot, rating," in reset
     assert "Inspect the national_tcp_policy_v1 rating-data identity" in identity
     assert "never migrated into the new" in identity

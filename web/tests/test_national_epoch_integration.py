@@ -1,12 +1,18 @@
+import json
 from types import SimpleNamespace
 
 import pytest
+
+from bot_namespace import bot_name
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 
 
 def test_record_reaped_bot_publishes_tombstone_before_ledger(monkeypatch, tmp_path):
     import evolution_infra
     import national_epoch_registry
 
+    reaped_v = STRICT_TARGET_V + 5
+    reaped_tag = f"national-reaped-v{reaped_v}"
     order = []
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", tmp_path / "reaped_bots.jsonl")
@@ -16,7 +22,7 @@ def test_record_reaped_bot_publishes_tombstone_before_ledger(monkeypatch, tmp_pa
         national_epoch_registry,
         "create_reaped_tombstone",
         lambda *_args, **_kwargs: order.append("tombstone")
-        or SimpleNamespace(created_tags=("national-reaped-v142",)),
+        or SimpleNamespace(created_tags=(reaped_tag,)),
     )
     monkeypatch.setattr(
         evolution_infra,
@@ -29,11 +35,11 @@ def test_record_reaped_bot_publishes_tombstone_before_ledger(monkeypatch, tmp_pa
         lambda *_args, **_kwargs: order.append("ledger"),
     )
 
-    result = evolution_infra.record_reaped_bot("national_v142", reason="test")
+    result = evolution_infra.record_reaped_bot(bot_name(reaped_v), reason="test")
 
     assert order == [
         "tombstone",
-        ("push", ("national-reaped-v142",)),
+        ("push", (reaped_tag,)),
         "ledger",
     ]
     assert result["registry"]["pushed"] is True
@@ -43,6 +49,8 @@ def test_record_reaped_bot_push_failure_never_writes_ledger(monkeypatch, tmp_pat
     import evolution_infra
     import national_epoch_registry
 
+    reaped_v = STRICT_TARGET_V + 5
+    reaped_tag = f"national-reaped-v{reaped_v}"
     ledger_writes = []
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", tmp_path / "reaped_bots.jsonl")
@@ -51,7 +59,7 @@ def test_record_reaped_bot_push_failure_never_writes_ledger(monkeypatch, tmp_pat
     monkeypatch.setattr(
         national_epoch_registry,
         "create_reaped_tombstone",
-        lambda *_args, **_kwargs: SimpleNamespace(created_tags=("national-reaped-v142",)),
+        lambda *_args, **_kwargs: SimpleNamespace(created_tags=(reaped_tag,)),
     )
     monkeypatch.setattr(evolution_infra, "git_push_refs", lambda *_refs: False)
     monkeypatch.setattr(
@@ -61,7 +69,7 @@ def test_record_reaped_bot_push_failure_never_writes_ledger(monkeypatch, tmp_pat
     )
 
     with pytest.raises(RuntimeError, match="failed to publish durable reaped tombstone"):
-        evolution_infra.record_reaped_bot("national_v142", reason="test")
+        evolution_infra.record_reaped_bot(bot_name(reaped_v), reason="test")
 
     assert ledger_writes == []
 
@@ -70,7 +78,7 @@ def test_git_commit_registry_preflight_blocks_before_any_git(monkeypatch, tmp_pa
     import bot_artifact
     import evolution_infra
 
-    candidate = tmp_path / "national_v143"
+    candidate = tmp_path / bot_name(STRICT_TARGET_V)
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("import socket\n", encoding="utf-8")
     git_calls = []
@@ -85,8 +93,8 @@ def test_git_commit_registry_preflight_blocks_before_any_git(monkeypatch, tmp_pa
 
     with pytest.raises(RuntimeError, match="registry migration marker missing"):
         evolution_infra.git_commit_bot(
-            143,
-            142,
+            STRICT_TARGET_V,
+            STRICT_SOURCE_V,
             "test",
             official_certificate={
                 "certificate_digest": "cert-digest",
@@ -105,13 +113,14 @@ async def test_reap_failure_keeps_completed_sentinel(monkeypatch, tmp_path):
     bots_dir = tmp_path / "bots"
     results_dir = tmp_path / "web" / "core" / "results"
     results_dir.mkdir(parents=True)
-    for version in (143, 144):
-        bot_dir = bots_dir / f"national_v{version}"
+    versions = (STRICT_TARGET_V, STRICT_TARGET_V + 1)
+    for version in versions:
+        bot_dir = bots_dir / bot_name(version)
         bot_dir.mkdir(parents=True)
         (bot_dir / "policy.py").write_text("# policy\n", encoding="utf-8")
         (bot_dir / ".completed").touch()
     (results_dir / "bot_stats.json").write_text(
-        '{"national_v143":{"games":1000},"national_v144":{"games":1000}}\n',
+        json.dumps({bot_name(v): {"games": 1000} for v in versions}) + "\n",
         encoding="utf-8",
     )
 
@@ -121,14 +130,14 @@ async def test_reap_failure_keeps_completed_sentinel(monkeypatch, tmp_path):
     monkeypatch.setattr(
         bot_management,
         "get_active_bots",
-        lambda: ["national_v143", "national_v144"],
+        lambda: [bot_name(v) for v in versions],
     )
     monkeypatch.setattr(
         bot_management,
         "load_ratings",
         lambda: {
-            "national_v143": bot_management.Glicko2Player(r=1200, rd=50),
-            "national_v144": bot_management.Glicko2Player(r=1600, rd=50),
+            bot_name(versions[0]): bot_management.Glicko2Player(r=1200, rd=50),
+            bot_name(versions[1]): bot_management.Glicko2Player(r=1600, rd=50),
         },
     )
     monkeypatch.setattr(bot_management, "load_h2h_avg_winrates", lambda: {})
@@ -142,4 +151,4 @@ async def test_reap_failure_keeps_completed_sentinel(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="publish failed"):
         await bot_management._do_reap_weakest(quiet=True)
 
-    assert (bots_dir / "national_v143" / ".completed").exists()
+    assert (bots_dir / bot_name(versions[0]) / ".completed").exists()

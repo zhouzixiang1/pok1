@@ -3,6 +3,9 @@ from pathlib import Path
 
 import pytest
 
+from bot_namespace import bot_name
+from conftest import STRICT_TARGET_V
+
 
 def _payload(module, *, prompt="complete prompt"):
     return module.build_synthesis_input(
@@ -224,15 +227,18 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     from workflow_kernel import WorkflowStore
 
     bots = tmp_path / "bots"
-    parent_a = bots / "national_v143"
-    parent_b = bots / "national_v146"
-    target = bots / "national_v147"
+    parent_a_v = STRICT_TARGET_V
+    parent_b_v = STRICT_TARGET_V + 3
+    target_v = STRICT_TARGET_V + 4
+    parent_a = bots / bot_name(parent_a_v)
+    parent_b = bots / bot_name(parent_b_v)
+    target = bots / bot_name(target_v)
     from bot_namespace import refresh_policy_identity_documents
     from system_strict_bootstrap import materialize_fresh_candidate
 
-    materialize_fresh_candidate(parent_a, version=143, final_policy=True)
+    materialize_fresh_candidate(parent_a, version=parent_a_v, final_policy=True)
     shutil.copytree(parent_a, parent_b)
-    refresh_policy_identity_documents(parent_b, 146, parent_versions=(143,))
+    refresh_policy_identity_documents(parent_b, parent_b_v, parent_versions=(parent_a_v,))
     prompts = tmp_path / "prompts"
     prompts.mkdir()
     (prompts / "crossover_prompt.md").write_text(
@@ -242,15 +248,15 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     logs = tmp_path / "logs"
     logs.mkdir()
     results = tmp_path / "results"
-    evidence_snapshot_dir = results / "v147" / "evidence_snapshot"
+    evidence_snapshot_dir = results / f"v{target_v}" / "evidence_snapshot"
     evidence_snapshot_dir.mkdir(parents=True)
     checkpoint = {
-        "next_v": 147,
-        "source_v": 143,
-        "parent2_v": 146,
+        "next_v": target_v,
+        "source_v": parent_a_v,
+        "parent2_v": parent_b_v,
         "stage": "selected",
         "checkpoint_revision": 4,
-        "workflow_run_id": "generation:147:crossover-replay-test",
+        "workflow_run_id": f"generation:{target_v}:crossover-replay-test",
         "audit_context": {"selection": {"strategy": "crossover"}},
         "checkpoint_schema_version": 2,
         "evaluation_epoch": "national_tcp_policy_v1",
@@ -264,7 +270,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     }
 
     def bot_dir(version):
-        return {143: parent_a, 146: parent_b, 147: target}[int(version)]
+        return {parent_a_v: parent_a, parent_b_v: parent_b, target_v: target}[int(version)]
 
     from bot_artifact import hash_path
 
@@ -281,7 +287,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     async def query(prompt, *_args, **kwargs):
         store = WorkflowStore(results / "workflow" / "events.sqlite3")
         effect = store.effect(
-            "crossover-synthesis:generation:147:crossover-replay-test:attempt-1"
+            f"crossover-synthesis:generation:{target_v}:crossover-replay-test:attempt-1"
         )
         # Persistence and lease acquisition must both precede the provider call.
         assert effect["status"] == "running"
@@ -377,9 +383,9 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     monkeypatch.setattr(audit_agents, "RESULTS_DIR", results)
     monkeypatch.setattr(audit_agents, "get_bot_dir", bot_dir)
     snapshot_bundle = audit_agents.capture_crossover_parent_snapshots(
-        143,
-        146,
-        147,
+        parent_a_v,
+        parent_b_v,
+        target_v,
         checkpoint=checkpoint,
         checkpoint_reader=lambda: checkpoint,
         artifact_store=WorkerArtifactStore(results / "workflow" / "artifacts"),
@@ -395,7 +401,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     }
     with pytest.raises(KeyboardInterrupt):
         asyncio.run(agent_review._run_crossover(
-            143, 146, 147, type("UI", (), {
+            parent_a_v, parent_b_v, target_v, type("UI", (), {
                 "log_history": lambda self, *_a, **_k: None,
                 "clear_io": lambda self: None,
                 "set_status": lambda self, *_a, **_k: None,
@@ -403,7 +409,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
         ))
 
     effect_id = (
-        "crossover-synthesis:generation:147:crossover-replay-test:attempt-1"
+        f"crossover-synthesis:generation:{target_v}:crossover-replay-test:attempt-1"
     )
     store = WorkflowStore(results / "workflow" / "events.sqlite3")
     completed = store.effect(effect_id)
@@ -430,7 +436,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
         lambda **kwargs: projection_calls.append(kwargs) or True,
     )
     result = asyncio.run(agent_review._run_crossover(
-        143, 146, 147, type("UI", (), {
+        parent_a_v, parent_b_v, target_v, type("UI", (), {
             "log_history": lambda self, *_a, **_k: None,
             "clear_io": lambda self: None,
             "set_status": lambda self, *_a, **_k: None,

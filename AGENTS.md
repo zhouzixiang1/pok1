@@ -36,7 +36,9 @@ an archive directory to `sys.path` or `PYTHONPATH`.
 
 The version-authority high-water on this branch is **0**
 (`ARCHIVED_VERSION_HIGH_WATER = 0` in `web/core/bot_namespace.py`), so the first
-strict target is `national_cloud_v1` (`FIRST_STRICT_POLICY_VERSION = 1`). No
+strict target is `national_cloud_v1` (`FIRST_STRICT_POLICY_VERSION = 1`) and the
+retired numeric high-water tag is `national-cloud-bot-v0`. Later published
+cloud candidates (e.g. `national_cloud_v13`) advance the same namespace. No
 main-namespace version history (142/143/156) is carried into this epoch — that
 is identity continuity only and it carries no source bytes, ratings, H2H,
 experience, capabilities, or certification. Legacy main-namespace bots

@@ -4,6 +4,12 @@ import json
 import time
 from pathlib import Path
 
+from bot_namespace import (
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+)
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name
+
 
 def _strict_artifact(root: Path, version: int) -> Path:
     from bot_namespace import refresh_policy_identity_documents
@@ -23,7 +29,7 @@ def _strict_artifact(root: Path, version: int) -> Path:
     refresh_policy_identity_documents(
         root,
         version,
-        parent_versions=() if version == 143 else (version - 1,),
+        parent_versions=() if version == FIRST_STRICT_POLICY_VERSION else (version - 1,),
     )
     return root
 
@@ -73,8 +79,8 @@ class TestBuildMatchMatrix:
 
     def test_pair_counts_are_not_used_when_h2h_is_missing(self):
         from server.routes._helpers import build_match_matrix
-        stats = {"pairs": {"national_v143 vs national_v144": 10}}
-        ratings = {"national_v143": {"r": 1500}, "national_v144": {"r": 1500}}
+        stats = {"pairs": {f"{strict_bot_name()} vs {strict_bot_name(STRICT_TARGET_V + 1)}": 10}}
+        ratings = {strict_bot_name(): {"r": 1500}, strict_bot_name(STRICT_TARGET_V + 1): {"r": 1500}}
         result = build_match_matrix(None, ratings, stats)
         assert result["bots"] == []
         assert result["matrix"] == []
@@ -200,21 +206,25 @@ class TestUpdateH2H:
 class TestBotEntry:
     def test_strict_version_uses_policy_runtime_entrypoint(self):
         from tool_helpers import _bot_entry
-        path = _bot_entry("national_v143")
+        path = _bot_entry(strict_bot_name())
         assert path == (
             Path(__file__).resolve().parents[2]
             / "bots"
-            / "national_v143"
+            / strict_bot_name()
             / "national_bot.py"
         )
 
     def test_archived_version_is_not_an_entrypoint_fallback(self):
         from tool_helpers import _bot_entry
-        path = _bot_entry("national_v142")
+        # A sub-floor (archived) version label never redirects into an archive
+        # directory; it resolves verbatim under bots/.  Use the branch's archived
+        # high-water so the label is meaningful on every evolution line.
+        archived_label = bot_name(STRICT_SOURCE_V)
+        path = _bot_entry(archived_label)
         expected = (
             Path(__file__).resolve().parents[2]
             / "bots"
-            / "national_v142"
+            / archived_label
             / "national_bot.py"
         )
         assert path == expected
@@ -242,18 +252,18 @@ class TestSelectPrecommitOpponents:
             lambda _version: {"available": False, "reason": "missing"},
         )
 
-        assert _select_precommit_opponents(144, 143) == []
+        assert _select_precommit_opponents(STRICT_TARGET_V + 1, STRICT_TARGET_V) == []
 
 
 class TestValidateWorkerBoundaries:
     def test_no_changes(self, tmp_path, monkeypatch):
         from tool_helpers import _validate_worker_boundaries
 
-        artifact = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
+        artifact = _strict_artifact(tmp_path / "bots" / strict_bot_name(), STRICT_TARGET_V)
         monkeypatch.setattr("tool_helpers.get_bot_dir", lambda _version: artifact)
         errors = _validate_worker_boundaries(
             [{"target_files": ["policy.py"], "role": "Algorithmic Logic Architect"}],
-            source_v=143, next_v=143,
+            source_v=STRICT_TARGET_V, next_v=STRICT_TARGET_V,
         )
         assert errors == []
 
@@ -264,7 +274,7 @@ class TestValidateWorkerBoundaries:
     ):
         import tool_helpers
 
-        candidate = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
+        candidate = _strict_artifact(tmp_path / "bots" / strict_bot_name(), STRICT_TARGET_V)
         before = (candidate / "policy.py").read_text(encoding="utf-8")
         (candidate / "policy.py").write_text(
             before + "\nBOOTSTRAP_POLICY = True\n",
@@ -272,7 +282,9 @@ class TestValidateWorkerBoundaries:
         )
 
         def retired_source_is_forbidden(_version):
-            raise AssertionError("numeric-only v142 path must not be resolved")
+            raise AssertionError(
+                f"numeric-only v{STRICT_SOURCE_V} path must not be resolved"
+            )
 
         monkeypatch.setattr(tool_helpers, "get_bot_dir", retired_source_is_forbidden)
         errors = tool_helpers._validate_worker_boundaries(
@@ -280,8 +292,8 @@ class TestValidateWorkerBoundaries:
                 "target_files": ["policy.py"],
                 "role": "Algorithmic Logic Architect",
             }],
-            source_v=142,
-            next_v=143,
+            source_v=STRICT_SOURCE_V,
+            next_v=STRICT_TARGET_V,
             worker_snapshots={(0, "policy.py"): before},
             candidate_dir=candidate,
             source_artifact_inherited=False,
@@ -296,10 +308,12 @@ class TestValidateWorkerBoundaries:
     ):
         import tool_helpers
 
-        candidate = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
+        candidate = _strict_artifact(tmp_path / "bots" / strict_bot_name(), STRICT_TARGET_V)
 
         def retired_source_is_forbidden(_version):
-            raise AssertionError("numeric-only v142 path must not be resolved")
+            raise AssertionError(
+                f"numeric-only v{STRICT_SOURCE_V} path must not be resolved"
+            )
 
         monkeypatch.setattr(tool_helpers, "get_bot_dir", retired_source_is_forbidden)
         errors = tool_helpers._validate_worker_boundaries(
@@ -307,8 +321,8 @@ class TestValidateWorkerBoundaries:
                 "target_files": ["policy.py"],
                 "role": "Algorithmic Logic Architect",
             }],
-            source_v=142,
-            next_v=143,
+            source_v=STRICT_SOURCE_V,
+            next_v=STRICT_TARGET_V,
             worker_snapshots=None,
             candidate_dir=candidate,
             source_artifact_inherited=False,
@@ -325,7 +339,11 @@ class TestFindCurrentV:
         from evolution_infra import find_current_v
         v = find_current_v()
         assert isinstance(v, int)
-        assert v > 0
+        # The published high-water sits at or above the branch's archived floor
+        # (main: 142, cloud: 0).  An isolated namespace with no paired strict
+        # tags legitimately returns ARCHIVED_VERSION_HIGH_WATER, so the portable
+        # contract is v >= STRICT_SOURCE_V, not v > 0.
+        assert v >= STRICT_SOURCE_V
 
 
 class TestGetBotDir:
@@ -333,15 +351,15 @@ class TestGetBotDir:
         import evolution_infra
 
         bots_dir = tmp_path / "bots"
-        expected = _strict_artifact(bots_dir / "national_v143", 143)
+        expected = _strict_artifact(bots_dir / strict_bot_name(), STRICT_TARGET_V)
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
 
-        assert evolution_infra.get_bot_dir(143) == expected
+        assert evolution_infra.get_bot_dir(STRICT_TARGET_V) == expected
 
     def test_archived_version_has_no_transparent_directory_fallback(self):
         from evolution_infra import BOTS_DIR, get_bot_dir
-        d = get_bot_dir(142)
-        assert d == BOTS_DIR / "national_v142"
+        d = get_bot_dir(STRICT_SOURCE_V)
+        assert d == BOTS_DIR / bot_name(STRICT_SOURCE_V)
         assert "archive" not in d.parts
 
     def test_nonexistent(self):

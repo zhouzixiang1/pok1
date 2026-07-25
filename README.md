@@ -25,9 +25,9 @@ national bots, and their analyses have been retired. Active code must not add
 active pool, or inject retired ratings/experience into prompts.
 
 Version numbering preserves only the annotated completion-tag high-water.
-`national-bot-v142` is the retired numeric high-water, so the first strict
-target is `national_v143`; an untagged old-wrapper directory such as
-`national_v155` is stale debris and cannot advance the version, join the pool,
+`national-cloud-bot-v0` is the retired numeric high-water, so the first strict
+target is `national_cloud_v1`; an untagged old-wrapper directory such as
+`national_cloud_v13` is stale debris and cannot advance the version, join the pool,
 or provide source/evidence bytes.
 
 ## Candidate boundary
@@ -85,7 +85,7 @@ python scripts/official_platform_acceptance.py \
 python scripts/official_certify.py full bots/national_v<N> --wait-if-busy
 
 # One-time first strict publication, only while the active pool is empty
-python scripts/official_certify.py bootstrap-first-strict bots/national_v143 \
+python scripts/official_certify.py bootstrap-first-strict bots/national_cloud_v1 \
   --control-id first_strict_control_v1 \
   --acknowledge-one-time-first-strict-control --wait-if-busy
 

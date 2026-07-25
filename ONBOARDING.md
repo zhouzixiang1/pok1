@@ -22,9 +22,9 @@ system. Read `AGENTS.md` first; it is the repository-wide working contract.
 
 ## Version and evidence authority
 
-`national-bot-v142` is the retired numeric high-water only. The first strict
-target is `national_v143`. An untagged old-wrapper directory such as
-`national_v155` is stale runtime debris, not a completed bot and not version
+`national-cloud-bot-v0` is the retired numeric high-water only. The first strict
+target is `national_cloud_v1`. An untagged old-wrapper directory such as
+`national_cloud_v13` is stale runtime debris, not a completed bot and not version
 authority.
 
 Strategy strength comes only from complete 70-hand local native TCP matches in

@@ -202,7 +202,7 @@ def _prompts(*roles: tuple[str, str, str, tuple[str, ...]]) -> tuple[PromptBindi
 _CORE_PROMPTS = _prompts(
     (
         "Master",
-        "web/core/agent_master.py",
+        "web/core/agent_master_validation.py",
         "_render_master_final_provider_prompt",
         ("web/core/prompts/master_prompt.md",),
     ),
@@ -631,7 +631,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("docs/official-terminal-settlement-oracle-2026-07-11.md"),
         ),
         production_owners=(
-            _ref("web/core/national_native.py", "OpponentTracker"),
+            _ref("web/core/national_native_templates.py", "OpponentTracker"),
             _ref("web/core/national_native.py", "NativeNationalBot"),
         ),
         dynamic_gates=(
@@ -854,7 +854,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         production_owners=(
             _ref("web/core/llm_query.py", "ACTIVE_LLM_ROLE_CONTRACTS"),
-            _ref("web/core/agent_master.py", "_render_master_final_provider_prompt"),
+            _ref("web/core/agent_master_validation.py", "_render_master_final_provider_prompt"),
             _ref("web/core/agent_workers.py", "_render_worker_provider_prompt"),
             _ref("web/core/tool_gates.py", "_render_reviewer_provider_prompt"),
             _ref("web/core/reviewer_retry.py", "build_review_attempt_receipt"),
@@ -933,7 +933,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/evidence_snapshot.py", "ensure_generation_h2h_snapshot"),
             _ref("web/core/evaluation_bundle.py", "load_current_strict_evaluation_bundle"),
             _ref("web/core/rating_snapshot.py", "reconstruct_h2h_from_match_history"),
-            _ref("web/core/agent_master.py", "_validated_snapshot_reference"),
+            _ref("web/core/agent_master_validation.py", "_validated_snapshot_reference"),
         ),
         dynamic_gates=(
             _ref("web/core/evidence_snapshot.py", "validate_h2h_citations_against_snapshot"),
@@ -1116,7 +1116,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         evidence_state=SOURCE_CONTRACT,
         authority=(
             _ref("web/core/output_schema.py", "WORKER_PROMPT_MAX_CHARS"),
-            _ref("web/core/agent_master.py", "_selected_proposal_binding"),
+            _ref("web/core/agent_master_validation.py", "_selected_proposal_binding"),
             _ref(
                 "web/core/system_strict_bootstrap.py",
                 "validate_selected_proposal_for_blueprint",
@@ -1127,14 +1127,14 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             ),
         ),
         production_owners=(
-            _ref("web/core/agent_master.py", "_canonical_provider_worker_prompt"),
+            _ref("web/core/agent_master_validation.py", "_canonical_provider_worker_prompt"),
             _ref("web/core/plan_compiler.py", "compile_master_plan"),
             _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/system_strict_bootstrap.py", "build_master_receipt"),
             _ref("web/core/tool_bot_management.py", "_generic_abandon_stage_block"),
         ),
         dynamic_gates=(
-            _ref("web/core/agent_master.py", "_validate_final_proposal_binding"),
+            _ref("web/core/agent_master_validation.py", "_validate_final_proposal_binding"),
             _ref("web/core/tool_planning.py", "run_master"),
             _ref(
                 "web/core/system_strict_bootstrap.py",
@@ -1682,25 +1682,25 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         evidence_state=SOURCE_CONTRACT,
         authority=(
             _ref("web/core/output_schema.py", "MASTER_PROPOSAL_FALSIFIER_TESTS"),
-            _ref("web/core/agent_master.py", "_validated_master_proposal"),
+            _ref("web/core/agent_master_validation.py", "_validated_master_proposal"),
             _ref("web/core/strict_authority_workflow.py", "_project_role_result"),
         ),
         production_owners=(
             _ref(
-                "web/core/agent_master.py",
+                "web/core/agent_master_validation.py",
                 "_render_master_proposal_provider_prompt",
             ),
-            _ref("web/core/agent_master.py", "_proposal_closed_json_shape"),
-            _ref("web/core/agent_master.py", "_proposal_schema_repair_guidance"),
-            _ref("web/core/agent_master.py", "_parse_master_proposal_output_with_mode"),
-            _ref("web/core/agent_master.py", "_validated_master_proposal"),
+            _ref("web/core/agent_master_validation.py", "_proposal_closed_json_shape"),
+            _ref("web/core/agent_master_validation.py", "_proposal_schema_repair_guidance"),
+            _ref("web/core/agent_master_validation.py", "_parse_master_proposal_output_with_mode"),
+            _ref("web/core/agent_master_validation.py", "_validated_master_proposal"),
             _ref("web/core/llm_query.py", "render_llm_role_contract_suffix"),
         ),
         dynamic_gates=(
-            _ref("web/core/agent_master.py", "_master_proposal_repair_kind"),
-            _ref("web/core/agent_master.py", "_parse_master_proposal_output_with_mode"),
-            _ref("web/core/agent_master.py", "_validated_master_proposal"),
-            _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
+            _ref("web/core/agent_master_validation.py", "_master_proposal_repair_kind"),
+            _ref("web/core/agent_master_validation.py", "_parse_master_proposal_output_with_mode"),
+            _ref("web/core/agent_master_validation.py", "_validated_master_proposal"),
+            _ref("web/core/agent_master_validation.py", "_proposal_mechanism_target_errors"),
             _ref("web/core/strict_authority_workflow.py", "_project_role_result"),
         ),
         prompts=_CORE_PROMPTS,
@@ -1761,25 +1761,25 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         authority=(
             _ref("web/core/output_schema.py", "WORKER_PROMPT_MAX_CHARS"),
             _ref("web/core/output_schema.py", "STATE_LEARNING_INTERVENTION_TARGET_ALIASES"),
-            _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
-            _ref("web/core/agent_master.py", "_FRESH_STRICT_CONTROL_MEASUREMENT"),
+            _ref("web/core/agent_master_validation.py", "_proposal_mechanism_target_errors"),
+            _ref("web/core/agent_master_validation.py", "_FRESH_STRICT_CONTROL_MEASUREMENT"),
             _ref("web/core/agent_master.py", "_PROPOSAL_UNCERTAINTY_PROMPT_VALUE"),
         ),
         production_owners=(
-            _ref("web/core/agent_master.py", "_render_master_proposal_provider_prompt"),
-            _ref("web/core/agent_master.py", "_validated_master_proposal"),
-            _ref("web/core/agent_master.py", "_canonicalize_selected_proposal_metadata"),
-            _ref("web/core/agent_master.py", "_master_final_emission_guard"),
+            _ref("web/core/agent_master_validation.py", "_render_master_proposal_provider_prompt"),
+            _ref("web/core/agent_master_validation.py", "_validated_master_proposal"),
+            _ref("web/core/agent_master_validation.py", "_canonicalize_selected_proposal_metadata"),
+            _ref("web/core/agent_master_validation.py", "_master_final_emission_guard"),
             _ref("web/core/llm_query.py", "_role_timeout_policy"),
             _ref("web/core/plan_compiler.py", "compile_master_plan"),
             _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
         ),
         dynamic_gates=(
-            _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
-            _ref("web/core/agent_master.py", "_system_bound_proposal_measurement"),
-            _ref("web/core/agent_master.py", "_proposal_measurement_contract_valid"),
-            _ref("web/core/agent_master.py", "_validate_final_proposal_binding"),
+            _ref("web/core/agent_master_validation.py", "_proposal_mechanism_target_errors"),
+            _ref("web/core/agent_master_validation.py", "_system_bound_proposal_measurement"),
+            _ref("web/core/agent_master_validation.py", "_proposal_measurement_contract_valid"),
+            _ref("web/core/agent_master_validation.py", "_validate_final_proposal_binding"),
             _ref("web/core/llm_query.py", "_role_timeout_policy"),
             _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
@@ -1854,7 +1854,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         production_owners=(
             _ref("web/core/llm_query.py", "is_operator_shutdown_requested"),
-            _ref("web/core/tool_planning.py", "_run_durable_worker_effect"),
+            _ref("web/core/tool_planning_worker.py", "_run_durable_worker_effect"),
             _ref(
                 "web/core/worker_workflow.py",
                 "operator_shutdown_interrupted",
@@ -1866,7 +1866,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             ),
         ),
         dynamic_gates=(
-            _ref("web/core/tool_planning.py", "_run_durable_worker_effect"),
+            _ref("web/core/tool_planning_worker.py", "_run_durable_worker_effect"),
             _ref(
                 "web/core/worker_workflow.py",
                 "operator_shutdown_interrupted",
