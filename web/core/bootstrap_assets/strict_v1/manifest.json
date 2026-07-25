@@ -13,7 +13,7 @@
   "executor": "system_policy_bootstrap_v1",
   "files": {
     "policy.py": "600133ba79b429e85c67300ca189f4d28a6d4947d948bc5ac8b67ef0e4ef86cd",
-    "prepared_policy.py": "28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816"
+    "prepared_policy.py": "8a0244fd27e7735ebaeb83cd681944ac562e48adb29b0e034fa9f5186a3628a8"
   },
   "mode": "fresh_national_policy_bootstrap",
   "official_oracles": {
