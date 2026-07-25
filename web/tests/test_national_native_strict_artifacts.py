@@ -14,10 +14,19 @@ from bot_namespace import (
     NATIONAL_RUNTIME_MANIFEST,
     POLICY_EPOCH_RECEIPT,
     ROLE_CANDIDATE,
+    bot_name,
     build_policy_epoch_receipt,
     build_runtime_manifest,
     resolve_national_bot_spec,
 )
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+
+# Branch-portable strict-policy versions. On ``main`` these resolve to
+# 143/142 (national_v namespace); on ``tencent-cloud-runtime`` they resolve to
+# 1/0 (national_cloud_v namespace). Every literal 143/144/142 in this module
+# is replaced by one of these so the suite passes on both branches.
+V = STRICT_TARGET_V
+S = STRICT_SOURCE_V
 
 
 POLICY = """\
@@ -41,7 +50,7 @@ def test_system_owned_native_runtime_stays_within_publication_hard_cap():
 
 
 def _strict_bot(repo: Path, version: int, *, parents=()) -> Path:
-    bot = repo / "bots" / f"national_v{version}"
+    bot = repo / "bots" / bot_name(version)
     bot.mkdir(parents=True)
     national_native.ensure_native_entry(bot)
     (bot / "policy.py").write_text(POLICY, encoding="utf-8")
@@ -64,21 +73,22 @@ def _strict_bot(repo: Path, version: int, *, parents=()) -> Path:
 
 def test_resolve_bot_accepts_only_active_strict_policy_namespace(tmp_path, monkeypatch):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot = _strict_bot(tmp_path, 143)
+    bot = _strict_bot(tmp_path, V)
+    label = bot_name(V)
 
-    assert national_native.resolve_bot("national_v143") == (
-        "national_v143",
+    assert national_native.resolve_bot(label) == (
+        label,
         bot.absolute(),
     )
     assert national_native.resolve_bot(bot / "national_bot.py") == (
-        "national_v143",
+        label,
         bot.absolute(),
     )
 
     for token in ("143", "v143", "bot143", "claude_v143"):
         with pytest.raises(ValueError):
             national_native.resolve_bot(token)
-    archived = tmp_path / "archive" / "national_v142"
+    archived = tmp_path / "archive" / bot_name(S)
     with pytest.raises(ValueError, match="outside the active strict namespace"):
         national_native.resolve_bot(archived)
 
@@ -87,10 +97,10 @@ def test_native_spec_binds_original_artifact_without_copy_or_overlay(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot = _strict_bot(tmp_path, 143)
+    bot = _strict_bot(tmp_path, V)
     before = hash_path(bot)
 
-    spec = national_native._prepare_native_spec("national_v143", bot)
+    spec = national_native._prepare_native_spec(bot_name(V), bot)
 
     assert spec.path == bot.absolute()
     assert spec.entry == bot.absolute() / "national_bot.py"
@@ -102,7 +112,7 @@ def test_native_spec_binds_original_artifact_without_copy_or_overlay(
 
 
 def test_candidate_abi_rejects_every_sixth_artifact_file(tmp_path):
-    bot = _strict_bot(tmp_path, 143)
+    bot = _strict_bot(tmp_path, V)
     assert resolve_national_bot_spec(
         bot,
         ROLE_CANDIDATE,
@@ -123,8 +133,8 @@ def test_strength_runner_passes_exact_content_bound_artifacts(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
     captured = {}
     progress = []
 
@@ -222,8 +232,8 @@ def test_strength_runner_passes_exact_content_bound_artifacts(
     assert national_native._artifact_execution_is_valid(
         result["artifact_execution"],
         {
-            "national_v143": hash_path(bot_a),
-            "national_v144": hash_path(bot_b),
+            bot_name(V): hash_path(bot_a),
+            bot_name(V + 1): hash_path(bot_b),
         },
     )
 
@@ -232,8 +242,8 @@ def test_strength_runner_clears_launch_progress_when_capacity_wait_fails(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
     progress = []
 
     async def acquire(*_args, **_kwargs):
@@ -271,8 +281,8 @@ def test_strength_runner_clears_launch_progress_when_capacity_wait_fails(
 
 def test_strength_runner_publishes_one_outer_terminal_outcome(tmp_path, monkeypatch):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
     progress = []
 
     class Lease:
@@ -321,7 +331,7 @@ def test_strength_runner_publishes_one_outer_terminal_outcome(tmp_path, monkeypa
 
 
 def test_native_artifact_preparation_timeout_is_enforced(tmp_path, monkeypatch):
-    bot = _strict_bot(tmp_path, 143)
+    bot = _strict_bot(tmp_path, V)
     monkeypatch.setattr(
         national_native,
         "NATIVE_ARTIFACT_PREPARATION_PER_BOT_TIMEOUT_SEC",
@@ -339,10 +349,10 @@ def test_native_artifact_preparation_timeout_is_enforced(tmp_path, monkeypatch):
     monkeypatch.setattr(national_native, "_prepare_native_spec", slow_prepare)
     with pytest.raises(
         RuntimeError,
-        match="native_artifact_preparation_timeout:national_v143",
+        match=f"native_artifact_preparation_timeout:{bot_name(V)}",
     ):
         asyncio.run(national_native._prepare_native_spec_bounded(
-            "national_v143",
+            bot_name(V),
             bot,
             timing_plan=timing_plan,
         ))
@@ -352,10 +362,10 @@ def test_native_startup_watchdog_uses_one_absolute_monotonic_deadline(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
-    spec_a = national_native._prepare_native_spec("national_v143", bot_a)
-    spec_b = national_native._prepare_native_spec("national_v144", bot_b)
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
+    spec_a = national_native._prepare_native_spec(bot_name(V), bot_a)
+    spec_b = national_native._prepare_native_spec(bot_name(V + 1), bot_b)
     plan = replace(
         national_native.build_native_match_timing_plan(
             hands=70,
@@ -444,10 +454,10 @@ def test_native_startup_watchdog_covers_server_bind_before_any_client_launch(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
-    spec_a = national_native._prepare_native_spec("national_v143", bot_a)
-    spec_b = national_native._prepare_native_spec("national_v144", bot_b)
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
+    spec_a = national_native._prepare_native_spec(bot_name(V), bot_a)
+    spec_b = national_native._prepare_native_spec(bot_name(V + 1), bot_b)
     plan = replace(
         national_native.build_native_match_timing_plan(
             hands=70,
@@ -508,10 +518,10 @@ def test_native_fast_server_bind_oserror_is_not_reclassified_as_timeout(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
-    spec_a = national_native._prepare_native_spec("national_v143", bot_a)
-    spec_b = national_native._prepare_native_spec("national_v144", bot_b)
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
+    spec_a = national_native._prepare_native_spec(bot_name(V), bot_a)
+    spec_b = national_native._prepare_native_spec(bot_name(V + 1), bot_b)
     plan = national_native.build_native_match_timing_plan(
         hands=70,
         requested_timeout_sec=420.0,
@@ -557,8 +567,8 @@ def test_launch_heartbeat_refreshes_freshness_without_rolling_deadline(
         "NATIVE_LAUNCH_HEARTBEAT_INTERVAL_SEC",
         0.01,
     )
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
     progress = []
 
     class Lease:
@@ -757,10 +767,10 @@ def test_immutable_rating_cycle_uses_shared_full_match_budget(
     monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: "fixture-hash")
 
     result = elo_daemon._run_national_rating_match(
-        "national_v143",
-        "national_v144",
-        tmp_path / "national_v143" / "national_bot.py",
-        tmp_path / "national_v144" / "national_bot.py",
+        bot_name(V),
+        bot_name(V + 1),
+        tmp_path / bot_name(V) / "national_bot.py",
+        tmp_path / bot_name(V + 1) / "national_bot.py",
         {
             "national_hands": 70,
             "national_matches": 1,
@@ -789,8 +799,8 @@ def test_immutable_rating_cycle_uses_shared_full_match_budget(
 
 def test_full_match_liveness_timeout_remains_fail_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
 
     class Lease:
         def release(self):
@@ -825,8 +835,8 @@ def test_handshake_timeout_is_not_mislabeled_as_full_match_liveness(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
 
     class Lease:
         def release(self):
@@ -860,9 +870,10 @@ def test_handshake_timeout_is_not_mislabeled_as_full_match_liveness(
 def test_system_native_name_handshake_evidence_is_required_but_legacy_fixture_is_not(
     tmp_path,
 ):
+    label = bot_name(V)
     entry = tmp_path / "strict-handshake" / "national_bot.py"
     spec = national_native.NativeBotSpec(
-        label="national_v143",
+        label=label,
         path=entry.parent,
         entry=entry,
         artifact_hash="a" * 64,
@@ -889,7 +900,7 @@ def test_system_native_name_handshake_evidence_is_required_but_legacy_fixture_is
     ) == []
     assert national_native._system_native_name_handshake_issues(
         spec.label, spec, process_info, {"name_handshake": {}}
-    ) == ["national_v143: native_name_handshake_missing"]
+    ) == [f"{label}: native_name_handshake_missing"]
 
     duplicate = copy.deepcopy(valid)
     duplicate["name_handshake"].update({
@@ -898,7 +909,7 @@ def test_system_native_name_handshake_evidence_is_required_but_legacy_fixture_is
     })
     assert national_native._system_native_name_handshake_issues(
         spec.label, spec, process_info, duplicate
-    ) == ["national_v143: native_name_handshake_repeated count=2"]
+    ) == [f"{label}: native_name_handshake_repeated count=2"]
 
     failed = copy.deepcopy(valid)
     failed["name_handshake"].update({
@@ -909,13 +920,13 @@ def test_system_native_name_handshake_evidence_is_required_but_legacy_fixture_is
     })
     assert national_native._system_native_name_handshake_issues(
         spec.label, spec, process_info, failed
-    ) == ["national_v143: native_name_handshake_launch_failed"]
+    ) == [f"{label}: native_name_handshake_launch_failed"]
 
     malformed = copy.deepcopy(valid)
     malformed["name_handshake"]["malformed_count"] = 1
     assert national_native._system_native_name_handshake_issues(
         spec.label, spec, process_info, malformed
-    ) == ["national_v143: native_name_handshake_malformed"]
+    ) == [f"{label}: native_name_handshake_malformed"]
 
     legacy = replace(spec, entry_digest="legacy-fixture")
     assert national_native._system_native_name_handshake_issues(
@@ -932,10 +943,10 @@ def test_real_system_native_pair_records_one_valid_name_worker_handshake(
     """The pair-quality path consumes the actual generated bot logs."""
 
     monkeypatch.setattr(national_native, "ROOT", tmp_path)
-    bot_a = _strict_bot(tmp_path, 143)
-    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
-    spec_a = national_native._prepare_native_spec("national_v143", bot_a)
-    spec_b = national_native._prepare_native_spec("national_v144", bot_b)
+    bot_a = _strict_bot(tmp_path, V)
+    bot_b = _strict_bot(tmp_path, V + 1, parents=(V,))
+    spec_a = national_native._prepare_native_spec(bot_name(V), bot_a)
+    spec_b = national_native._prepare_native_spec(bot_name(V + 1), bot_b)
     timing_plan = national_native.build_native_match_timing_plan(
         hands=1,
         requested_timeout_sec=None,
@@ -965,8 +976,8 @@ def test_real_system_native_pair_records_one_valid_name_worker_handshake(
 async def test_native_precommit_rejects_name_handshake_compliance_failure(
     tmp_path, monkeypatch
 ):
-    candidate = tmp_path / "national_v143"
-    opponent = tmp_path / "national_v144"
+    candidate = tmp_path / bot_name(V)
+    opponent = tmp_path / bot_name(V + 1)
     candidate.mkdir()
     opponent.mkdir()
 
@@ -979,7 +990,7 @@ async def test_native_precommit_rejects_name_handshake_compliance_failure(
             "net_chips_a": 7,
             "hands_played": 70,
             "passed_compliance": False,
-            "issues": ["national_v143: native_name_handshake_missing"],
+            "issues": [f"{bot_name(V)}: native_name_handshake_missing"],
             "artifact_execution": {},
         }
 
@@ -1045,12 +1056,12 @@ def test_first_strict_runner_journals_liveness_budget_before_outer_idempotent_co
             epoch_receipt_digest=filler,
         )
 
-    candidate = spec("national_v143", "candidate")
+    candidate = spec(bot_name(V), "candidate")
     control = spec("first_strict_control_v1", "control")
     scope = {
-        "workflow_run_id": "generation:143:liveness-journal-test",
+        "workflow_run_id": f"generation:{V}:liveness-journal-test",
         "checkpoint_revision": 1,
-        "candidate_version": 143,
+        "candidate_version": V,
         "candidate_label": candidate.label,
         "candidate_artifact_hash": candidate.artifact_hash,
         "control_id": control.label,

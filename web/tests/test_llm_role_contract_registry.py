@@ -9,8 +9,18 @@ from pathlib import Path
 import pytest
 from claude_agent_sdk import ResultMessage
 
+from bot_namespace import bot_name, bot_tag
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Branch-portable strict-policy bot versions used by the synthetic scope dirs.
+# The role-scope validator admits only canonical active-namespace bot read dirs
+# (``national_cloud_v<N>`` on this branch), so the paths must be derived from
+# ``bot_name`` rather than hardcoded ``national_v143``/``national_v145``.
+SOURCE_V = 143
+TARGET_V = 145
+SOURCE_BOT_DIR = ROOT / "bots" / bot_name(SOURCE_V)
+TARGET_BOT_DIR = ROOT / "bots" / bot_name(TARGET_V)
 
 
 class _UI:
@@ -36,9 +46,9 @@ class _UI:
 # Independent expectations: these values are deliberately not derived from the
 # production registry under test.
 CASES = (
-    ("MASTER PROPOSAL mechanism", "master_proposal", ["Read"], "agent_master", "_render_master_proposal_provider_prompt", "web/core/agent_master.py", "master_planning_context", "agent_master.py::_run_master_proposal_ensemble/proposal_renderer"),
-    ("MASTER PROPOSAL CRITIC mechanism", "master_proposal_critic", [], "agent_master", "_render_master_proposal_critic_provider_prompt", "web/core/agent_master.py", "frozen_proposal_packet", "agent_master.py::_run_master_proposal_ensemble/critic_renderer"),
-    ("MASTER (Try 1)", "master_final", [], "agent_master", "_render_master_final_provider_prompt", "web/core/agent_master.py", "compiled_master_context", "prompts/master_prompt.md+master_context_contract.py"),
+    ("MASTER PROPOSAL mechanism", "master_proposal", ["Read"], "agent_master", "_render_master_proposal_provider_prompt", "web/core/agent_master_validation.py", "master_planning_context", "agent_master.py::_run_master_proposal_ensemble/proposal_renderer"),
+    ("MASTER PROPOSAL CRITIC mechanism", "master_proposal_critic", [], "agent_master", "_render_master_proposal_critic_provider_prompt", "web/core/agent_master_validation.py", "frozen_proposal_packet", "agent_master.py::_run_master_proposal_ensemble/critic_renderer"),
+    ("MASTER (Try 1)", "master_final", [], "agent_master", "_render_master_final_provider_prompt", "web/core/agent_master_validation.py", "compiled_master_context", "prompts/master_prompt.md+master_context_contract.py"),
     ("WORKER_COT_CHECK_W1", "worker_cot_audit", [], "audit_agents", "_render_worker_cot_provider_prompt", "web/core/audit_agents.py", "worker_output_diff", "prompts/worker_cot_check.md::_run_worker_cot_check"),
     ("WORKER W1 (logic)", "worker", ["Bash", "Read", "Edit"], "agent_workers", "_render_worker_provider_prompt", "web/core/agent_workers.py", "compiled_worker_task", "prompts/worker_prompt.md+prompts/worker_profile_national_native.md"),
     ("DEBUG AGENT (v150)", "debug_agent", ["Read"], "agent_workers", "_render_debug_provider_prompt", "web/core/agent_workers.py", "worker_gate_failure", "prompts/debug_worker_prompt.md::_run_debug_agent"),
@@ -241,8 +251,8 @@ def _renderer_inputs(role_id, marker):
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "version": 145,
                 "source_v": 143,
-                "bot_name": "national_v145",
-                "git_tag": "national-bot-v145",
+                "bot_name": bot_name(145),
+                "git_tag": bot_tag(145),
                 "publication": {
                     "publication_id": "a" * 64,
                     "commit_oid": "b" * 40,
@@ -272,7 +282,7 @@ def _renderer_inputs(role_id, marker):
 
 
 def _scope(role_id):
-    canonical = [ROOT / "bots/national_v143", ROOT / "bots/national_v145"]
+    canonical = [SOURCE_BOT_DIR, TARGET_BOT_DIR]
     worker = ROOT / "web/core/results/workflow/artifacts/workspaces" / ("a" * 64)
     if role_id in {"master_proposal", "lead_code_reviewer", "strategy_critic"}:
         return {"allowed_read_dirs": canonical}
@@ -475,8 +485,8 @@ def test_master_proposal_schema_repair_emission_gate_is_last_provider_instructio
         role,
         tools=["Read"],
         allowed_read_dirs=[
-            ROOT / "bots/national_v143",
-            ROOT / "bots/national_v145",
+            SOURCE_BOT_DIR,
+            TARGET_BOT_DIR,
         ],
         model="sonnet",
     )
@@ -509,7 +519,7 @@ def test_master_proposal_initial_emission_gate_names_the_bounded_repair():
         rendered,
         role,
         tools=["Read"],
-        allowed_read_dirs=[ROOT / "bots/national_v143"],
+        allowed_read_dirs=[SOURCE_BOT_DIR],
         model="sonnet",
     )
 
@@ -904,8 +914,8 @@ def test_strict_authority_uses_internal_copy_after_quota_wait(
             tmp_path / "strict.log",
             tools=["Read"],
             allowed_read_dirs=[
-                ROOT / "bots/national_v143",
-                ROOT / "bots/national_v145",
+                SOURCE_BOT_DIR,
+                TARGET_BOT_DIR,
             ],
             strict_authority=owner,
         )
@@ -993,7 +1003,7 @@ def test_strict_provider_replay_keeps_original_log_bytes(monkeypatch, tmp_path):
         role,
         log_file,
         tools=["Read"],
-        allowed_read_dirs=[ROOT / "bots/national_v143"],
+        allowed_read_dirs=[SOURCE_BOT_DIR],
         strict_authority=owner,
     ))
 
@@ -1354,7 +1364,9 @@ def test_durable_worker_effect_supplies_no_external_context_files():
     import llm_query
 
     assert llm_query.resolve_llm_role_contract("WORKER 1 (logic)").allows_context_files is False
-    path = ROOT / "web/core/tool_planning.py"
+    # The Worker execution path was extracted into the tool_planning_worker
+    # companion module; the _execute_workers call site lives there now.
+    path = ROOT / "web/core/tool_planning_worker.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     calls = [
         node

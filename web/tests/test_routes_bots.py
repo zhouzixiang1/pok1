@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 from bot_namespace import (
     ACTIVE_BOT_PREFIX,
+    FIRST_STRICT_POLICY_VERSION,
     NATIONAL_RUNTIME_MANIFEST,
     POLICY_EPOCH_RECEIPT,
     bot_name,
+    bot_tag,
     build_policy_epoch_receipt,
     build_runtime_manifest,
+    parse_bot_version,
 )
 
 
@@ -30,7 +33,8 @@ def _write_strict_bot(root: Path, version: int) -> Path:
     (bot / NATIONAL_RUNTIME_MANIFEST).write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
-    parents = () if version == 143 else (143,)
+    first_strict = FIRST_STRICT_POLICY_VERSION
+    parents = () if version == first_strict else (first_strict,)
     receipt = build_policy_epoch_receipt(bot, version, parent_versions=parents)
     (bot / POLICY_EPOCH_RECEIPT).write_text(
         json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
@@ -85,47 +89,51 @@ class TestListBots:
     ):
         from server.routes import bots as bots_mod
 
+        published = bot_name(143)
+        unpublished = bot_name(155)
         bots_root = tmp_path / "bots"
-        (bots_root / "national_v143").mkdir(parents=True)
-        (bots_root / "national_v155").mkdir()
+        (bots_root / published).mkdir(parents=True)
+        (bots_root / unpublished).mkdir()
         monkeypatch.setattr(bots_mod, "BOTS_DIR", bots_root)
         monkeypatch.setattr(
             bots_mod,
             "build_bot_summary",
             lambda path, name, *_args, **_kwargs: {
                 "name": name,
-                "version": int(name.removeprefix("national_v")),
+                "version": parse_bot_version(name),
                 "completed": True,
             },
         )
 
         result = bots_mod.build_bot_listing(
-            {"national_v143": {"r": 1500, "rd": 80}},
-            {"national_v143": {"games": 1}},
+            {published: {"r": 1500, "rd": 80}},
+            {published: {"games": 1}},
             {},
             include_history=True,
-            active_names=["national_v143"],
+            active_names=[published],
             generation_identities={
-                "national_v143": {
+                published: {
                     "generation_ordinal": 1,
                     "canonical_version": 143,
-                    "canonical_bot_name": "national_v143",
-                    "canonical_tag": "national-bot-v143",
+                    "canonical_bot_name": published,
+                    "canonical_tag": bot_tag(143),
                 },
             },
         )
 
-        assert [row["name"] for row in result["active"]] == ["national_v143"]
-        assert [row["name"] for row in result["history"]] == ["national_v143"]
-        assert "national_v155" not in json.dumps(result)
+        assert [row["name"] for row in result["active"]] == [published]
+        assert [row["name"] for row in result["history"]] == [published]
+        assert unpublished not in json.dumps(result)
 
     def test_backend_ordinals_survive_sorting_and_pool_filtering(
         self, monkeypatch, tmp_path
     ):
         from server.routes import bots as bots_mod
 
+        name_a = bot_name(143)
+        name_b = bot_name(144)
         bots_root = tmp_path / "bots"
-        for name in ("national_v143", "national_v144"):
+        for name in (name_a, name_b):
             (bots_root / name).mkdir(parents=True)
         monkeypatch.setattr(bots_mod, "BOTS_DIR", bots_root)
         monkeypatch.setattr(
@@ -133,7 +141,7 @@ class TestListBots:
             "build_bot_summary",
             lambda _path, name, *_args, **_kwargs: {
                 "name": name,
-                "version": int(name.removeprefix("national_v")),
+                "version": parse_bot_version(name),
                 "completed": True,
             },
         )
@@ -141,41 +149,41 @@ class TestListBots:
         both = bots_mod.build_bot_listing(
             {}, {}, {},
             include_history=False,
-            active_names=["national_v144", "national_v143"],
+            active_names=[name_b, name_a],
             generation_identities={
-                "national_v143": {
+                name_a: {
                     "generation_ordinal": 1,
                     "canonical_version": 143,
-                    "canonical_bot_name": "national_v143",
-                    "canonical_tag": "national-bot-v143",
+                    "canonical_bot_name": name_a,
+                    "canonical_tag": bot_tag(143),
                 },
-                "national_v144": {
+                name_b: {
                     "generation_ordinal": 2,
                     "canonical_version": 144,
-                    "canonical_bot_name": "national_v144",
-                    "canonical_tag": "national-bot-v144",
+                    "canonical_bot_name": name_b,
+                    "canonical_tag": bot_tag(144),
                 },
             },
         )["active"]
         assert [(row["canonical_bot_name"], row["generation_ordinal"]) for row in both] == [
-            ("national_v143", 1),
-            ("national_v144", 2),
+            (name_a, 1),
+            (name_b, 2),
         ]
         only_second = bots_mod.build_bot_listing(
             {}, {}, {},
             include_history=False,
-            active_names=["national_v144"],
+            active_names=[name_b],
             generation_identities={
-                "national_v144": {
+                name_b: {
                     "generation_ordinal": 2,
                     "canonical_version": 144,
-                    "canonical_bot_name": "national_v144",
-                    "canonical_tag": "national-bot-v144",
+                    "canonical_bot_name": name_b,
+                    "canonical_tag": bot_tag(144),
                 },
             },
         )["active"]
         assert only_second[0]["generation_ordinal"] == 2
-        assert only_second[0]["canonical_tag"] == "national-bot-v144"
+        assert only_second[0]["canonical_tag"] == bot_tag(144)
 
     def test_published_summary_name_version_mismatch_fails_closed(self):
         from server.routes import bots as bots_mod
@@ -235,19 +243,22 @@ class TestListBots:
     ):
         import epoch_authority
         from server.routes import bots as bots_mod
+        from conftest import STRICT_TARGET_V
 
+        first_v = STRICT_TARGET_V
+        second_v = STRICT_TARGET_V + 4
         identities = [
             {
                 "generation_ordinal": 1,
-                "canonical_version": 143,
-                "canonical_bot_name": "national_v143",
-                "canonical_tag": "national-bot-v143",
+                "canonical_version": first_v,
+                "canonical_bot_name": bot_name(first_v),
+                "canonical_tag": bot_tag(first_v),
             },
             {
                 "generation_ordinal": 2,
-                "canonical_version": 147,
-                "canonical_bot_name": "national_v147",
-                "canonical_tag": "national-bot-v147",
+                "canonical_version": second_v,
+                "canonical_bot_name": bot_name(second_v),
+                "canonical_tag": bot_tag(second_v),
             },
         ]
         monkeypatch.setattr(
@@ -255,15 +266,15 @@ class TestListBots:
             "strict_epoch_projection",
             lambda **_kwargs: {
                 "initialized": True,
-                "active_bots": ["national_v147"],
+                "active_bots": [bot_name(second_v)],
                 "strict_published_bot_identities": identities,
             },
         )
 
         names, by_name = bots_mod._strict_published_authority()
-        assert names == ["national_v147"]
-        assert by_name["national_v143"]["generation_ordinal"] == 1
-        assert by_name["national_v147"]["generation_ordinal"] == 2
+        assert names == [bot_name(second_v)]
+        assert by_name[bot_name(first_v)]["generation_ordinal"] == 1
+        assert by_name[bot_name(second_v)]["generation_ordinal"] == 2
 
     def test_data_stream_bot_snapshot_uses_active_namespace(
         self, synthetic_published_bot_authority
@@ -287,7 +298,7 @@ class TestBotDetail:
         assert data["version"] == version
         assert data["canonical_version"] == version
         assert data["canonical_bot_name"] == bot_name(version)
-        assert data["canonical_tag"] == f"national-bot-v{version}"
+        assert data["canonical_tag"] == bot_tag(version)
         expected_identity = next(
             identity
             for identity in synthetic_published_bot_authority["identities"]
@@ -323,14 +334,17 @@ class TestBotDetail:
         self, monkeypatch, tmp_path
     ):
         from server.routes import bots as bots_mod
+        from conftest import STRICT_TARGET_V
 
-        bot = _write_strict_bot(tmp_path, 143)
+        version = STRICT_TARGET_V
+        name = bot_name(version)
+        bot = _write_strict_bot(tmp_path, version)
         (bot / ".completed").touch()
         monkeypatch.setattr(bots_mod, "BOTS_DIR", tmp_path / "bots")
         monkeypatch.setattr(
             bots_mod,
             "_strict_published_inventory",
-            lambda: ["national_v143"],
+            lambda: [name],
         )
         monkeypatch.setattr(bots_mod, "_strict_snapshot", lambda: {})
         monkeypatch.setattr(
@@ -338,7 +352,7 @@ class TestBotDetail:
             "build_bot_summary",
             lambda _path, name, *_args, **_kwargs: {
                 "name": name,
-                "version": 143,
+                "version": version,
                 "completed": True,
             },
         )
@@ -348,19 +362,19 @@ class TestBotDetail:
             {},
             {},
             include_history=False,
-            active_names=["national_v143"],
+            active_names=[name],
             generation_identities={
-                "national_v143": {
+                name: {
                     "generation_ordinal": 1,
-                    "canonical_version": 143,
-                    "canonical_bot_name": "national_v143",
-                    "canonical_tag": "national-bot-v143",
+                    "canonical_version": version,
+                    "canonical_bot_name": name,
+                    "canonical_tag": bot_tag(version),
                 },
             },
             strength_evidence_available=False,
         )
 
-        assert [row["name"] for row in result["active"]] == ["national_v143"]
+        assert [row["name"] for row in result["active"]] == [name]
         assert result["active"][0]["strength_evidence_available"] is False
         assert result["active"][0]["strength_evidence_status"] == "awaiting_first_rating_cycle"
 

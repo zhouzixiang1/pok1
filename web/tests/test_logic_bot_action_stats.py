@@ -18,7 +18,27 @@ from bot_action_stats import (
     extract_actions_from_replay,
     get_global_stats,
 )
-from test_logic_replay_analysis import IDENTITY, make_strict_replay
+from bot_namespace import bot_name
+from conftest import STRICT_SOURCE_V
+from test_logic_replay_analysis import (
+    BOT_A,
+    BOT_B,
+    IDENTITY,
+    make_strict_replay,
+)
+
+# Branch-portable strict-policy bot labels. ``make_strict_replay`` (in the
+# shared ``test_logic_replay_analysis`` module) already emits branch-active
+# labels via ``bot_name(143)``/``bot_name(144)``, so the replay's ``bot0``/
+# ``bot1`` and ``artifact_execution.by_player`` keys resolve to the active
+# namespace on every branch (``national_v143``/``national_v144`` on main,
+# ``national_cloud_v143``/``national_cloud_v144`` on tencent-cloud-runtime).
+# Importing those same labels here keeps the ``active_bots`` argument and the
+# stats-dict lookups in lock-step with whatever the fixture actually emitted.
+# ARCHIVED_BOT is the pre-policy floor: version 142 on main / 0 on cloud. It
+# is outside the active namespace on both branches, so the stats pipeline
+# admits no evidence for it.
+ARCHIVED_BOT = bot_name(STRICT_SOURCE_V)
 
 
 def _digest(value) -> str:
@@ -60,8 +80,8 @@ def test_extracts_only_native_hand_record_actions():
 
 def test_rejects_alternate_replay_shape_without_fallback():
     alternate = {
-        "bot0": "national_v143",
-        "bot1": "national_v144",
+        "bot0": BOT_A,
+        "bot1": BOT_B,
         "games": [{"logs": [], "bot0_chips": 1}],
     }
     assert extract_actions_from_replay(alternate) == []
@@ -70,13 +90,13 @@ def test_rejects_alternate_replay_shape_without_fallback():
 def test_per_opponent_stats_and_terminal_showdown_learning(tmp_path):
     _write_replay(tmp_path)
     stats = compute_all_bot_stats(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         tmp_path,
         force_full=True,
         expected_evaluation_identity_digest=IDENTITY,
     )
-    hero = stats["national_v143"]["national_v144"]
-    villain = stats["national_v144"]["national_v143"]
+    hero = stats[BOT_A][BOT_B]
+    villain = stats[BOT_B][BOT_A]
     assert hero["preflop"]["total"] == 2
     assert hero["preflop"]["allin"] == 1
     assert hero["preflop"]["raise"] == 2
@@ -103,21 +123,21 @@ def test_per_opponent_stats_and_terminal_showdown_learning(tmp_path):
 def test_global_stats_preserve_identity_derived_tracker(tmp_path):
     _write_replay(tmp_path)
     per_opponent = compute_all_bot_stats(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         tmp_path,
         expected_evaluation_identity_digest=IDENTITY,
     )
-    flat = get_global_stats(per_opponent, "national_v144")
+    flat = get_global_stats(per_opponent, BOT_B)
     assert flat["total_hands"] == 70
     assert flat["preflop"]["total"] == 2
-    assert set(flat["opponent_trackers"]) == {"national_v143"}
-    assert flat["opponent_trackers"]["national_v143"]["epoch"] == "national_tcp_policy_v1"
+    assert set(flat["opponent_trackers"]) == {BOT_A}
+    assert flat["opponent_trackers"][BOT_A]["epoch"] == "national_tcp_policy_v1"
 
 
 def test_single_bot_api_keeps_opponent_context(tmp_path):
     _write_replay(tmp_path)
     flat = compute_bot_action_stats(
-        "national_v143",
+        BOT_A,
         tmp_path,
         expected_evaluation_identity_digest=IDENTITY,
     )
@@ -128,36 +148,36 @@ def test_single_bot_api_keeps_opponent_context(tmp_path):
 def test_wrong_identity_and_pre_policy_bot_fail_closed(tmp_path):
     _write_replay(tmp_path)
     wrong = compute_all_bot_stats(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         tmp_path,
         expected_evaluation_identity_digest="f" * 64,
     )
-    assert wrong == {"national_v143": {}, "national_v144": {}}
+    assert wrong == {BOT_A: {}, BOT_B: {}}
     archived = compute_all_bot_stats(
-        ["national_v142"],
+        [ARCHIVED_BOT],
         tmp_path,
         expected_evaluation_identity_digest=IDENTITY,
     )
-    assert archived == {"national_v142": {}}
+    assert archived == {ARCHIVED_BOT: {}}
 
 
 def test_allowed_replay_ids_are_an_exact_input_window(tmp_path):
     _write_replay(tmp_path, "allowed.json")
     _write_replay(tmp_path, "excluded.json")
     stats = compute_all_bot_stats(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         tmp_path,
         allowed_replay_ids={"allowed.json"},
         expected_evaluation_identity_digest=IDENTITY,
     )
-    assert stats["national_v143"]["national_v144"]["total_hands"] == 70
+    assert stats[BOT_A][BOT_B]["total_hands"] == 70
 
 
 def test_identity_bound_cache_is_exact_digest_metadata_not_action_authority(tmp_path):
     replay = _write_replay(tmp_path)
     cache_path = tmp_path / ".stats_etag.json"
     kwargs = {
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [BOT_A, BOT_B],
         "replays_dir": tmp_path,
         "etag_path": cache_path,
         "allowed_replay_ids": {replay["id"]},
@@ -200,12 +220,12 @@ def test_cache_from_other_identity_is_not_reused(tmp_path):
         "files": {"strict.json": {"etag": "forged", "contribution": {}}},
     }), encoding="utf-8")
     stats = compute_all_bot_stats(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         tmp_path,
         etag_path=cache_path,
         expected_evaluation_identity_digest=IDENTITY,
     )
-    assert stats["national_v143"]["national_v144"]["preflop"]["total"] == 2
+    assert stats[BOT_A][BOT_B]["preflop"]["total"] == 2
     refreshed = json.loads(cache_path.read_text(encoding="utf-8"))
     assert refreshed["schema_version"] == 4
     assert refreshed["evaluation_identity_digest"] == IDENTITY
@@ -215,7 +235,7 @@ def test_resigned_forged_cache_cannot_inject_contribution(tmp_path):
     replay = _write_replay(tmp_path)
     cache_path = tmp_path / ".stats_etag.json"
     kwargs = {
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [BOT_A, BOT_B],
         "replays_dir": tmp_path,
         "etag_path": cache_path,
         "expected_evaluation_identity_digest": IDENTITY,
@@ -239,7 +259,7 @@ def test_forged_cache_cannot_mask_replay_identity_drift(tmp_path):
     replay_path = tmp_path / replay["id"]
     cache_path = tmp_path / ".stats_etag.json"
     kwargs = {
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [BOT_A, BOT_B],
         "replays_dir": tmp_path,
         "etag_path": cache_path,
         "expected_evaluation_identity_digest": IDENTITY,
@@ -256,7 +276,7 @@ def test_forged_cache_cannot_mask_replay_identity_drift(tmp_path):
 
     actual = compute_all_bot_stats(**kwargs)
 
-    assert actual == {"national_v143": {}, "national_v144": {}}
+    assert actual == {BOT_A: {}, BOT_B: {}}
     refreshed = json.loads(cache_path.read_text(encoding="utf-8"))
     assert refreshed["files"] == {}
 
@@ -266,7 +286,7 @@ def test_same_etag_replay_rewrite_is_rehashed_and_rederived(tmp_path):
     replay_path = tmp_path / replay["id"]
     cache_path = tmp_path / ".stats_etag.json"
     kwargs = {
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [BOT_A, BOT_B],
         "replays_dir": tmp_path,
         "etag_path": cache_path,
         "expected_evaluation_identity_digest": IDENTITY,
@@ -289,8 +309,8 @@ def test_same_etag_replay_rewrite_is_rehashed_and_rederived(tmp_path):
 
     after = compute_all_bot_stats(**kwargs)
 
-    assert before["national_v143"]["national_v144"]["preflop"]["allin"] == 1
-    assert after["national_v143"]["national_v144"]["preflop"]["allin"] == 2
+    assert before[BOT_A][BOT_B]["preflop"]["allin"] == 1
+    assert after[BOT_A][BOT_B]["preflop"]["allin"] == 2
     after_cache = json.loads(cache_path.read_text(encoding="utf-8"))
     assert (
         after_cache["files"][replay["id"]]["replay_sha256"]
@@ -311,8 +331,8 @@ def test_old_same_identity_contribution_cache_is_recomputed(tmp_path):
                 "etag": "0:0",
                 "replay_sha256": "0" * 64,
                 "contribution": {
-                    "bot0": "national_v143",
-                    "bot1": "national_v144",
+                    "bot0": BOT_A,
+                    "bot1": BOT_B,
                     "actions": [],
                     "trackers": {},
                     "hands": [],
@@ -322,13 +342,13 @@ def test_old_same_identity_contribution_cache_is_recomputed(tmp_path):
     }), encoding="utf-8")
 
     stats = compute_all_bot_stats(
-        ["national_v143", "national_v144"],
+        [BOT_A, BOT_B],
         tmp_path,
         etag_path=cache_path,
         expected_evaluation_identity_digest=IDENTITY,
     )
 
-    assert stats["national_v143"]["national_v144"]["preflop"]["total"] == 2
+    assert stats[BOT_A][BOT_B]["preflop"]["total"] == 2
     refreshed = json.loads(cache_path.read_text(encoding="utf-8"))
     assert refreshed["schema_version"] == 4
     assert "contribution" not in refreshed["files"]["strict.json"]
@@ -340,22 +360,22 @@ def test_replay_symlink_and_hardlink_are_not_evidence(tmp_path):
     try:
         (tmp_path / "linked.json").symlink_to(outside)
         symlink_stats = compute_all_bot_stats(
-            ["national_v143", "national_v144"],
+            [BOT_A, BOT_B],
             tmp_path,
             allowed_replay_ids={"linked.json"},
             expected_evaluation_identity_digest=IDENTITY,
         )
-        assert symlink_stats == {"national_v143": {}, "national_v144": {}}
+        assert symlink_stats == {BOT_A: {}, BOT_B: {}}
 
         (tmp_path / "linked.json").unlink()
         os.link(outside, tmp_path / "linked.json")
         hardlink_stats = compute_all_bot_stats(
-            ["national_v143", "national_v144"],
+            [BOT_A, BOT_B],
             tmp_path,
             allowed_replay_ids={"linked.json"},
             expected_evaluation_identity_digest=IDENTITY,
         )
-        assert hardlink_stats == {"national_v143": {}, "national_v144": {}}
+        assert hardlink_stats == {BOT_A: {}, BOT_B: {}}
     finally:
         outside.unlink(missing_ok=True)
 
@@ -367,7 +387,7 @@ def test_unsafe_cache_links_are_ignored_without_mutating_their_targets(tmp_path)
     outside.write_bytes(forged_bytes)
     cache_path = tmp_path / ".stats_etag.json"
     kwargs = {
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [BOT_A, BOT_B],
         "replays_dir": tmp_path,
         "etag_path": cache_path,
         "expected_evaluation_identity_digest": IDENTITY,
@@ -375,13 +395,13 @@ def test_unsafe_cache_links_are_ignored_without_mutating_their_targets(tmp_path)
     try:
         cache_path.symlink_to(outside)
         stats = compute_all_bot_stats(**kwargs)
-        assert stats["national_v143"]["national_v144"]["preflop"]["total"] == 2
+        assert stats[BOT_A][BOT_B]["preflop"]["total"] == 2
         assert outside.read_bytes() == forged_bytes
 
         cache_path.unlink()
         os.link(outside, cache_path)
         stats = compute_all_bot_stats(**kwargs)
-        assert stats["national_v143"]["national_v144"]["preflop"]["total"] == 2
+        assert stats[BOT_A][BOT_B]["preflop"]["total"] == 2
         assert outside.read_bytes() == forged_bytes
     finally:
         outside.unlink(missing_ok=True)
@@ -390,20 +410,20 @@ def test_unsafe_cache_links_are_ignored_without_mutating_their_targets(tmp_path)
 def test_incremental_and_concurrent_calls_remain_deterministic(tmp_path):
     _write_replay(tmp_path, "first.json")
     kwargs = {
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [BOT_A, BOT_B],
         "replays_dir": tmp_path,
         "etag_path": tmp_path / ".stats_etag.json",
         "expected_evaluation_identity_digest": IDENTITY,
     }
     first = compute_all_bot_stats(**kwargs)
-    assert first["national_v143"]["national_v144"]["total_hands"] == 70
+    assert first[BOT_A][BOT_B]["total_hands"] == 70
     _write_replay(tmp_path, "second.json")
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _index: compute_all_bot_stats(**kwargs), range(8)))
 
     assert all(result == results[0] for result in results)
-    assert results[0]["national_v143"]["national_v144"]["total_hands"] == 140
+    assert results[0][BOT_A][BOT_B]["total_hands"] == 140
     cache = json.loads((tmp_path / ".stats_etag.json").read_text(encoding="utf-8"))
     assert set(cache["files"]) == {"first.json", "second.json"}
     _resign_cache(cache)

@@ -3,6 +3,14 @@ import subprocess
 
 import pytest
 
+from bot_namespace import (
+    EVOLUTION_BRANCH,
+    bot_name,
+    bot_tag,
+    high_water_tag,
+)
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+
 
 def _git(repo, *args):
     return subprocess.run(
@@ -16,7 +24,7 @@ def _git(repo, *args):
 
 def _init_repo(path):
     path.mkdir()
-    _git(path, "init", "-b", "main")
+    _git(path, "init", "-b", EVOLUTION_BRANCH)
     _git(path, "config", "user.email", "test@example.com")
     _git(path, "config", "user.name", "Test")
     (path / "README.md").write_text("baseline\n", encoding="utf-8")
@@ -32,8 +40,8 @@ def _intent(
     remote_required=True,
     remote_enabled=True,
     prepublication_strict_bots=(),
-    version=2,
-    source_v=1,
+    version=None,
+    source_v=None,
 ):
     from bot_artifact import hash_path
     from publication_transaction import (
@@ -41,8 +49,14 @@ def _intent(
         file_sha256,
     )
 
-    candidate = repo / "bots" / f"national_v{version}"
-    certificate = repo / "official_certificates" / f"national_v{version}.json"
+    if version is None:
+        version = STRICT_TARGET_V + 1
+    if source_v is None:
+        source_v = STRICT_TARGET_V
+    candidate = repo / "bots" / bot_name(version)
+    certificate = (
+        repo / "official_certificates" / f"{bot_name(version)}.json"
+    )
     checkpoint = {
         "next_v": version,
         "source_v": source_v,
@@ -58,7 +72,7 @@ def _intent(
         certificate_digest=payload["certificate_digest"],
         certificate_policy_id="official-full-v5",
         official_status={"status": "certified", "certificate_digest": "b" * 64},
-        certificate_relative_path=f"official_certificates/national_v{version}.json",
+        certificate_relative_path=f"official_certificates/{bot_name(version)}.json",
         certificate_file_sha256=file_sha256(certificate),
         certificate_attestation_digest=payload["attestation_digest"],
         final_gate_ledger_digest="d" * 64,
@@ -73,11 +87,15 @@ def _intent(
     )
 
 
-def _write_candidate_and_certificate(repo, *, version=2):
-    candidate = repo / "bots" / f"national_v{version}"
+def _write_candidate_and_certificate(repo, *, version=None):
+    if version is None:
+        version = STRICT_TARGET_V + 1
+    candidate = repo / "bots" / bot_name(version)
     candidate.mkdir(parents=True)
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
-    certificate = repo / "official_certificates" / f"national_v{version}.json"
+    certificate = (
+        repo / "official_certificates" / f"{bot_name(version)}.json"
+    )
     certificate.parent.mkdir()
     certificate.write_text(
         json.dumps({
@@ -91,16 +109,17 @@ def _write_candidate_and_certificate(repo, *, version=2):
 
 def _add_bare_origin(repo, bare):
     subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(bare)],
+        ["git", "init", "--bare", f"--initial-branch={EVOLUTION_BRANCH}", str(bare)],
         check=True,
         capture_output=True,
         text=True,
     )
     _git(repo, "remote", "add", "origin", str(bare))
-    _git(repo, "push", "-u", "origin", "main")
+    _git(repo, "push", "-u", "origin", EVOLUTION_BRANCH)
 
 
 def _prepare_competing_strict_checkout(path, bare):
+    competing_v = STRICT_TARGET_V + 2
     subprocess.run(
         ["git", "clone", str(bare), str(path)],
         check=True,
@@ -109,45 +128,53 @@ def _prepare_competing_strict_checkout(path, bare):
     )
     _git(path, "config", "user.email", "competitor@example.com")
     _git(path, "config", "user.name", "Competitor")
-    bot = path / "bots" / "national_v3"
+    bot = path / "bots" / bot_name(competing_v)
     bot.mkdir(parents=True)
     (bot / "national_bot.py").write_text("# competing strict\n", encoding="utf-8")
-    certificate = path / "official_certificates" / "national_v3.json"
+    certificate = (
+        path / "official_certificates" / f"{bot_name(competing_v)}.json"
+    )
     certificate.parent.mkdir(exist_ok=True)
     certificate.write_text("{}\n", encoding="utf-8")
-    _git(path, "add", "bots/national_v3", "official_certificates/national_v3.json")
-    _git(path, "commit", "-m", "publish competing strict v3")
+    _git(
+        path,
+        "add",
+        f"bots/{bot_name(competing_v)}",
+        f"official_certificates/{bot_name(competing_v)}.json",
+    )
+    _git(path, "commit", "-m", f"publish competing strict v{competing_v}")
     commit_oid = _git(path, "rev-parse", "HEAD")
     _git(
         path,
         "tag",
         "-a",
-        "national-bot-v3",
+        bot_tag(competing_v),
         commit_oid,
         "-m",
-        "National bot v3 competing strict",
+        f"National bot v{competing_v} competing strict",
     )
     _git(
         path,
         "tag",
         "-a",
-        "national-high-water-v3",
+        high_water_tag(competing_v),
         commit_oid,
         "-m",
-        "high water 3",
+        f"high water {competing_v}",
     )
     return commit_oid
 
 
 def _push_competing_strict(path):
+    competing_v = STRICT_TARGET_V + 2
     _git(
         path,
         "push",
         "--atomic",
         "origin",
-        "main",
-        "national-bot-v3",
-        "national-high-water-v3",
+        EVOLUTION_BRANCH,
+        bot_tag(competing_v),
+        high_water_tag(competing_v),
     )
 
 
@@ -169,7 +196,7 @@ def _patch_real_publication_runtime(monkeypatch, evolution_infra, repo, candidat
     monkeypatch.setattr(bot_artifact, "ROOT", repo)
 
     def advance_high_water(version):
-        tag = f"national-high-water-v{int(version)}"
+        tag = high_water_tag(int(version))
         if not _git(repo, "tag", "-l", tag):
             _git(repo, "tag", "-a", tag, "HEAD", "-m", f"high water {version}")
         return tag
@@ -193,10 +220,11 @@ def test_commit_without_tag_is_recovered_from_exact_frozen_commit(
     repo = tmp_path / "repo"
     _init_repo(repo)
     baseline = _git(repo, "rev-parse", "HEAD")
-    candidate = repo / "bots" / "national_v2"
+    version = STRICT_TARGET_V + 1
+    candidate = repo / "bots" / bot_name(version)
     candidate.mkdir(parents=True)
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
-    certificate = repo / "official_certificates" / "national_v2.json"
+    certificate = repo / "official_certificates" / f"{bot_name(version)}.json"
     certificate.parent.mkdir()
     certificate.write_text(
         json.dumps({
@@ -206,7 +234,12 @@ def test_commit_without_tag_is_recovered_from_exact_frozen_commit(
         encoding="utf-8",
     )
     intent = _intent(repo, baseline)
-    _git(repo, "add", "bots/national_v2", "official_certificates/national_v2.json")
+    _git(
+        repo,
+        "add",
+        f"bots/{bot_name(version)}",
+        f"official_certificates/{bot_name(version)}.json",
+    )
     _git(repo, "commit", "-m", intent["commit_message"])
     committed = _git(repo, "rev-parse", "HEAD")
 
@@ -214,7 +247,7 @@ def test_commit_without_tag_is_recovered_from_exact_frozen_commit(
     monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: candidate)
 
     assert evolution_infra._resolve_existing_publication_commit(intent) == committed
-    assert _git(repo, "tag", "-l", "national-bot-v2") == ""
+    assert _git(repo, "tag", "-l", bot_tag(version)) == ""
     assert _git(repo, "rev-list", "--count", "HEAD") == "2"
 
 
@@ -226,10 +259,11 @@ def test_recovery_rejects_a_second_commit_touching_frozen_paths(
     repo = tmp_path / "repo"
     _init_repo(repo)
     baseline = _git(repo, "rev-parse", "HEAD")
-    candidate = repo / "bots" / "national_v2"
+    version = STRICT_TARGET_V + 1
+    candidate = repo / "bots" / bot_name(version)
     candidate.mkdir(parents=True)
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
-    certificate = repo / "official_certificates" / "national_v2.json"
+    certificate = repo / "official_certificates" / f"{bot_name(version)}.json"
     certificate.parent.mkdir()
     certificate.write_text(
         json.dumps({
@@ -239,10 +273,15 @@ def test_recovery_rejects_a_second_commit_touching_frozen_paths(
         encoding="utf-8",
     )
     intent = _intent(repo, baseline)
-    _git(repo, "add", "bots/national_v2", "official_certificates/national_v2.json")
+    _git(
+        repo,
+        "add",
+        f"bots/{bot_name(version)}",
+        f"official_certificates/{bot_name(version)}.json",
+    )
     _git(repo, "commit", "-m", intent["commit_message"])
     (candidate / "national_bot.py").write_text("# native\n# drift\n", encoding="utf-8")
-    _git(repo, "add", "bots/national_v2")
+    _git(repo, "add", f"bots/{bot_name(version)}")
     _git(repo, "commit", "-m", "second mutation")
 
     monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", repo)
@@ -258,15 +297,19 @@ def test_remote_publication_requires_exact_objects_peeled_commits_and_main(
     import evolution_infra
     from publication_transaction import build_publication_intent
 
+    version = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
+    completion = bot_tag(version)
+    high_water = high_water_tag(version)
     commit = "1" * 40
     tag_object = "2" * 40
     water_object = "3" * 40
     remote_main = "4" * 40
     checkpoint = {
-        "next_v": 2,
-        "source_v": 1,
+        "next_v": version,
+        "source_v": source_v,
         "parent2_v": None,
-        "workflow_run_id": "generation:2:test",
+        "workflow_run_id": f"generation:{version}:test",
         "checkpoint_revision": 1,
         "stage": "verified",
     }
@@ -276,7 +319,7 @@ def test_remote_publication_requires_exact_objects_peeled_commits_and_main(
         certificate_digest="b" * 64,
         certificate_policy_id="official-full-v5",
         official_status={"status": "certified"},
-        certificate_relative_path="official_certificates/national_v2.json",
+        certificate_relative_path=f"official_certificates/{bot_name(version)}.json",
         certificate_file_sha256="c" * 64,
         certificate_attestation_digest="d" * 64,
         final_gate_ledger_digest="e" * 64,
@@ -292,22 +335,22 @@ def test_remote_publication_requires_exact_objects_peeled_commits_and_main(
     local_state = {
         "commit_oid": commit,
         "local_refs": {
-            "national-bot-v2": {
+            completion: {
                 "object_oid": tag_object,
                 "peeled_commit_oid": commit,
             },
-            "national-high-water-v2": {
+            high_water: {
                 "object_oid": water_object,
                 "peeled_commit_oid": commit,
             },
         },
     }
     refs = {
-        "refs/heads/main": remote_main,
-        "refs/tags/national-bot-v2": tag_object,
-        "refs/tags/national-bot-v2^{}": commit,
-        "refs/tags/national-high-water-v2": water_object,
-        "refs/tags/national-high-water-v2^{}": commit,
+        f"refs/heads/{EVOLUTION_BRANCH}": remote_main,
+        f"refs/tags/{completion}": tag_object,
+        f"refs/tags/{completion}^{{}}": commit,
+        f"refs/tags/{high_water}": water_object,
+        f"refs/tags/{high_water}^{{}}": commit,
     }
 
     def fake_git(*args, **_kwargs):
@@ -315,7 +358,7 @@ def test_remote_publication_requires_exact_objects_peeled_commits_and_main(
             return "\n".join(f"{oid}\t{ref}" for ref, oid in refs.items())
         if args[:3] == ("fetch", "--no-tags", "origin"):
             return ""
-        if args == ("rev-parse", "refs/remotes/origin/main"):
+        if args == ("rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}"):
             return remote_main
         return ""
 
@@ -325,12 +368,12 @@ def test_remote_publication_requires_exact_objects_peeled_commits_and_main(
     assert evolution_infra.verify_remote_bot_publication(
         intent, local_state=local_state
     )["valid"] is True
-    refs.pop("refs/tags/national-bot-v2^{}")
+    refs.pop(f"refs/tags/{completion}^{{}}")
     invalid = evolution_infra.verify_remote_bot_publication(
         intent, local_state=local_state
     )
     assert invalid["valid"] is False
-    assert "remote_tag_peeled_mismatch:national-bot-v2" in invalid["issues"]
+    assert f"remote_tag_peeled_mismatch:{completion}" in invalid["issues"]
 
 
 def test_remote_publication_is_proven_against_a_real_bare_origin(
@@ -345,7 +388,13 @@ def test_remote_publication_is_proven_against_a_real_bare_origin(
     baseline = _git(repo, "rev-parse", "HEAD")
     candidate, _certificate = _write_candidate_and_certificate(repo)
     intent = _intent(repo, baseline)
-    _git(repo, "add", "bots/national_v2", "official_certificates/national_v2.json")
+    version = STRICT_TARGET_V + 1
+    _git(
+        repo,
+        "add",
+        f"bots/{bot_name(version)}",
+        f"official_certificates/{bot_name(version)}.json",
+    )
     _git(repo, "commit", "-m", intent["commit_message"])
     commit_oid = _git(repo, "rev-parse", "HEAD")
     _git(
@@ -370,7 +419,7 @@ def test_remote_publication_is_proven_against_a_real_bare_origin(
         repo,
         "push",
         "origin",
-        "main",
+        EVOLUTION_BRANCH,
         intent["completion_tag"],
         intent["high_water_tag"],
     )
@@ -395,9 +444,12 @@ def test_remote_publication_is_proven_against_a_real_bare_origin(
 
     assert proof["valid"] is True
     assert proof["remote_main_oid"] == commit_oid
-    assert proof["remote_refs"]["refs/tags/national-bot-v2^{}"] == commit_oid
     assert (
-        proof["remote_refs"]["refs/tags/national-high-water-v2^{}"]
+        proof["remote_refs"][f"refs/tags/{intent['completion_tag']}^{{}}"]
+        == commit_oid
+    )
+    assert (
+        proof["remote_refs"][f"refs/tags/{intent['high_water_tag']}^{{}}"]
         == commit_oid
     )
 
@@ -417,7 +469,13 @@ def test_existing_completion_tag_at_wrong_commit_is_never_rewritten(
         remote_required=False,
         remote_enabled=False,
     )
-    _git(repo, "add", "bots/national_v2", "official_certificates/national_v2.json")
+    version = STRICT_TARGET_V + 1
+    _git(
+        repo,
+        "add",
+        f"bots/{bot_name(version)}",
+        f"official_certificates/{bot_name(version)}.json",
+    )
     _git(repo, "commit", "-m", intent["commit_message"])
     _git(
         repo,
@@ -607,24 +665,26 @@ def test_competing_strict_before_first_strict_push_has_no_candidate_remote_effec
             pre_push_authority=authority,
         )
 
+    version = STRICT_TARGET_V + 1
+    competing_v = STRICT_TARGET_V + 2
     remote = _git(
         repo,
         "ls-remote",
         "origin",
-        "refs/heads/main",
-        "refs/tags/national-bot-v2",
-        "refs/tags/national-high-water-v2",
-        "refs/tags/national-bot-v3",
+        f"refs/heads/{EVOLUTION_BRANCH}",
+        f"refs/tags/{bot_tag(version)}",
+        f"refs/tags/{high_water_tag(version)}",
+        f"refs/tags/{bot_tag(competing_v)}",
     )
     remote_refs = {
         ref: oid
         for line in remote.splitlines()
         for oid, ref in [line.split("\t", 1)]
     }
-    assert remote_refs["refs/heads/main"] == competing_commit
-    assert remote_refs["refs/tags/national-bot-v3"]
-    assert "refs/tags/national-bot-v2" not in remote_refs
-    assert "refs/tags/national-high-water-v2" not in remote_refs
+    assert remote_refs[f"refs/heads/{EVOLUTION_BRANCH}"] == competing_commit
+    assert remote_refs[f"refs/tags/{bot_tag(competing_v)}"]
+    assert f"refs/tags/{bot_tag(version)}" not in remote_refs
+    assert f"refs/tags/{high_water_tag(version)}" not in remote_refs
     assert _git(repo, "rev-parse", "HEAD") == candidate_commit
     assert len(authority_calls) == (0 if race_timing == "before_preflight" else 1)
 
@@ -675,16 +735,17 @@ def test_first_strict_push_rejects_remote_completion_namespace_drift(
     )
     _git(observer, "config", "user.email", "observer@example.com")
     _git(observer, "config", "user.name", "Observer")
+    competing_completion = bot_tag(STRICT_TARGET_V + 8)
     _git(
         observer,
         "tag",
         "-a",
-        "national-bot-v9",
+        competing_completion,
         baseline,
         "-m",
         "concurrent completion publication",
     )
-    _git(observer, "push", "origin", "national-bot-v9")
+    _git(observer, "push", "origin", competing_completion)
 
     with pytest.raises(RuntimeError, match="remote strict completion refs changed"):
         evolution_infra.ensure_bot_git_publication(
@@ -693,22 +754,28 @@ def test_first_strict_push_rejects_remote_completion_namespace_drift(
             pre_push_authority=lambda: None,
         )
 
+    version = STRICT_TARGET_V + 1
     remote = _git(
         repo,
         "ls-remote",
         "origin",
-        "refs/heads/main",
-        "refs/tags/national-bot-v2",
-        "refs/tags/national-high-water-v2",
+        f"refs/heads/{EVOLUTION_BRANCH}",
+        f"refs/tags/{bot_tag(version)}",
+        f"refs/tags/{high_water_tag(version)}",
     )
-    assert f"{baseline}\trefs/heads/main" in remote
-    assert "national-bot-v2" not in remote
-    assert "national-high-water-v2" not in remote
+    assert f"{baseline}\trefs/heads/{EVOLUTION_BRANCH}" in remote
+    assert bot_tag(version) not in remote
+    assert high_water_tag(version) not in remote
 
 
 def test_first_strict_atomic_push_leases_main_and_never_forces_tags(monkeypatch):
     import evolution_infra
+    from bot_namespace import bot_tag_glob, high_water_tag_glob
 
+    version = STRICT_TARGET_V + 1
+    completion = bot_tag(version)
+    high_water = high_water_tag(version)
+    local_pub_ref = f"refs/heads/{EVOLUTION_BRANCH}"
     baseline = "1" * 40
     commit_oid = "2" * 40
     completion_object = "3" * 40
@@ -717,21 +784,21 @@ def test_first_strict_atomic_push_leases_main_and_never_forces_tags(monkeypatch)
     authority_calls = []
 
     def fake_git(*args, **_kwargs):
-        if args == ("rev-parse", "refs/heads/main"):
+        if args == ("rev-parse", local_pub_ref):
             return commit_oid
         if args == ("fetch", "origin", "--prune", "--tags"):
             return ""
         if args == (
             "ls-remote",
             "origin",
-            "refs/heads/main",
-            "refs/tags/national-bot-v*",
-            "refs/tags/national-high-water-v2",
+            local_pub_ref,
+            f"refs/tags/{bot_tag_glob()}",
+            f"refs/tags/{high_water}",
         ):
-            return f"{baseline}\trefs/heads/main"
-        if args == ("rev-parse", "refs/tags/national-bot-v2"):
+            return f"{baseline}\t{local_pub_ref}"
+        if args == ("rev-parse", f"refs/tags/{completion}"):
             return completion_object
-        if args == ("rev-parse", "refs/tags/national-high-water-v2"):
+        if args == ("rev-parse", f"refs/tags/{high_water}"):
             return high_water_object
         if args[:2] == ("push", "--atomic"):
             push_calls.append(args)
@@ -746,14 +813,14 @@ def test_first_strict_atomic_push_leases_main_and_never_forces_tags(monkeypatch)
         {
             "baseline_remote_main": baseline,
             "baseline_remote_completion_refs": {},
-            "completion_tag": "national-bot-v2",
-            "high_water_tag": "national-high-water-v2",
+            "completion_tag": completion,
+            "high_water_tag": high_water,
             "prepublication_strict_bots": [],
         },
         commit_oid,
         {
-            "national-bot-v2": {"object_oid": completion_object},
-            "national-high-water-v2": {"object_oid": high_water_object},
+            completion: {"object_oid": completion_object},
+            high_water: {"object_oid": high_water_object},
         },
         pre_push_authority=lambda: authority_calls.append(True),
     ) is True
@@ -761,13 +828,15 @@ def test_first_strict_atomic_push_leases_main_and_never_forces_tags(monkeypatch)
     assert authority_calls == [True]
     assert len(push_calls) == 1
     push = push_calls[0]
-    assert f"--force-with-lease=refs/heads/main:{baseline}" in push
+    assert f"--force-with-lease={local_pub_ref}:{baseline}" in push
     assert not any(
         item.startswith("--force-with-lease=refs/tags/") for item in push
     )
-    assert "refs/tags/national-bot-v2:refs/tags/national-bot-v2" in push
     assert (
-        "refs/tags/national-high-water-v2:refs/tags/national-high-water-v2"
+        f"refs/tags/{completion}:refs/tags/{completion}" in push
+    )
+    assert (
+        f"refs/tags/{high_water}:refs/tags/{high_water}"
         in push
     )
     assert not any(item.startswith("+") for item in push)
@@ -846,7 +915,7 @@ def test_non_first_publication_keeps_existing_reconcile_push_strategy(
     intent = _intent(
         repo,
         baseline,
-        prepublication_strict_bots=("national_v1",),
+        prepublication_strict_bots=(bot_name(STRICT_TARGET_V),),
     )
     _patch_real_publication_runtime(monkeypatch, evolution_infra, repo, candidate)
     push_calls = []
@@ -868,10 +937,11 @@ def test_non_first_publication_keeps_existing_reconcile_push_strategy(
         pre_push_authority=lambda: authority_calls.append(True),
     )
 
+    version = STRICT_TARGET_V + 1
     assert result["push_ok"] is True
     assert authority_calls == [True]
     assert push_calls == [
-        ("main", "national-bot-v2", "national-high-water-v2")
+        (EVOLUTION_BRANCH, bot_tag(version), high_water_tag(version))
     ]
 
 
@@ -890,18 +960,20 @@ def test_local_only_inflight_tag_does_not_activate_or_repair_sentinel(
         remote_required=False,
         remote_enabled=False,
     )
+    version = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
     checkpoint = {
-        "next_v": 2,
-        "source_v": 1,
+        "next_v": version,
+        "source_v": source_v,
         "parent2_v": None,
-        "workflow_run_id": "generation:2:test",
+        "workflow_run_id": f"generation:{version}:test",
         "checkpoint_revision": 10,
         "stage": "publishing",
         "publication_intent": intent,
     }
     monkeypatch.setattr(evolution_infra, "BOTS_DIR", repo / "bots")
     monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
-    monkeypatch.setattr(evolution_infra, "_tagged_bot_versions", lambda: {2})
+    monkeypatch.setattr(evolution_infra, "_tagged_bot_versions", lambda: {version})
     monkeypatch.setattr(evolution_infra, "evolution_git_push_required", lambda: False)
     monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(
@@ -918,7 +990,7 @@ def test_local_only_inflight_tag_does_not_activate_or_repair_sentinel(
     (candidate / ".completed").write_text(
         f"publication_id={intent['publication_id']}\n", encoding="utf-8"
     )
-    assert evolution_infra.get_active_bots() == ["national_v2"]
+    assert evolution_infra.get_active_bots() == [bot_name(version)]
 
 
 @pytest.mark.parametrize("first_failure", ["after_sentinel", "cas_rejected"])
@@ -934,8 +1006,8 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     repo = tmp_path / "repo"
     _init_repo(repo)
     baseline = _git(repo, "rev-parse", "HEAD")
-    version = 144
-    source_v = 143
+    version = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
     candidate, _certificate = _write_candidate_and_certificate(
         repo,
         version=version,
@@ -1002,13 +1074,13 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda **_k: (f"national_v{version}",),
+        lambda **_k: (bot_name(version),),
     )
     monkeypatch.setattr(
         national_runtime_authority,
         "build_pending_local_publication_proof",
         lambda _path: {
-            "bot": f"national_v{version}",
+            "bot": bot_name(version),
             "proof_digest": "proof",
         },
     )
@@ -1103,11 +1175,13 @@ def test_publication_intent_digest_covers_strategy_and_remote_requirement():
         publication_intent_structure_errors,
     )
 
+    version = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
     checkpoint = {
-        "next_v": 2,
-        "source_v": 1,
+        "next_v": version,
+        "source_v": source_v,
         "parent2_v": None,
-        "workflow_run_id": "generation:2:test",
+        "workflow_run_id": f"generation:{version}:test",
         "checkpoint_revision": 1,
         "stage": "verified",
     }
@@ -1117,7 +1191,7 @@ def test_publication_intent_digest_covers_strategy_and_remote_requirement():
         certificate_digest="b" * 64,
         certificate_policy_id="official-full-v5",
         official_status={"status": "certified"},
-        certificate_relative_path="official_certificates/national_v2.json",
+        certificate_relative_path=f"official_certificates/{bot_name(version)}.json",
         certificate_file_sha256="c" * 64,
         certificate_attestation_digest="d" * 64,
         final_gate_ledger_digest="e" * 64,
@@ -1133,7 +1207,7 @@ def test_publication_intent_digest_covers_strategy_and_remote_requirement():
     assert publication_intent_structure_errors(intent) == []
     remote_ref_drift = dict(intent)
     remote_ref_drift["baseline_remote_completion_refs"] = {
-        "refs/tags/national-bot-v1": "3" * 40,
+        f"refs/tags/{bot_tag(source_v)}": "3" * 40,
     }
     assert "publication_intent_digest_mismatch" in publication_intent_structure_errors(
         remote_ref_drift
@@ -1150,7 +1224,7 @@ def test_completed_sentinel_rejects_unbound_existing_path(
 ):
     import tool_commit
 
-    candidate = tmp_path / "bots" / "national_v2"
+    candidate = tmp_path / "bots" / bot_name(STRICT_TARGET_V + 1)
     candidate.mkdir(parents=True)
     sentinel = candidate / ".completed"
     if existing_kind == "wrong_bytes":
@@ -1169,7 +1243,7 @@ def test_completed_sentinel_rejects_unbound_existing_path(
 def test_completed_sentinel_exact_recovery_is_idempotent(tmp_path):
     import tool_commit
 
-    candidate = tmp_path / "bots" / "national_v2"
+    candidate = tmp_path / "bots" / bot_name(STRICT_TARGET_V + 1)
     candidate.mkdir(parents=True)
     publication_id = "a" * 64
     assert tool_commit._write_completed_sentinel_durable(
@@ -1227,8 +1301,11 @@ def test_private_index_commit_is_immune_to_post_seal_worktree_drift(
 
     commit_oid = evolution_infra._create_publication_commit(intent)
 
+    version = STRICT_TARGET_V + 1
     assert _git(repo, "rev-parse", "HEAD") == commit_oid
-    assert _git(repo, "show", f"{commit_oid}:bots/national_v2/national_bot.py") == (
+    assert _git(
+        repo, "show", f"{commit_oid}:bots/{bot_name(version)}/national_bot.py"
+    ) == (
         "# native"
     )
     assert (candidate / "national_bot.py").read_text(encoding="utf-8") == (
@@ -1244,7 +1321,9 @@ def test_pre_push_authority_reopens_latest_publishing_checkpoint(
     import national_runtime_authority
     import tool_commit
 
-    candidate = tmp_path / "bots" / "national_v2"
+    version = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
+    candidate = tmp_path / "bots" / bot_name(version)
     candidate.mkdir(parents=True)
     intent = {"publication_id": "a" * 64}
     latest = {
@@ -1269,7 +1348,7 @@ def test_pre_push_authority_reopens_latest_publishing_checkpoint(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v2",),
+        lambda: (bot_name(version),),
     )
 
     def ledger(_v, _source_v, checkpoint, **_kwargs):
@@ -1305,8 +1384,8 @@ def test_pre_push_authority_reopens_latest_publishing_checkpoint(
 
     with pytest.raises(RuntimeError, match="pre-push publication authority changed"):
         tool_commit._revalidate_publication_authority_before_push(
-            2,
-            1,
+            version,
+            source_v,
             intent=intent,
             bot_dir=candidate,
         )

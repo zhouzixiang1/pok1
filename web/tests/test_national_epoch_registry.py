@@ -10,8 +10,10 @@ import pytest
 from national_epoch_registry import (
     GitResult,
     GitRepository,
+    HIGH_WATER_TAG_PREFIX,
     MIGRATION_MARKER_TAG,
     MigrationError,
+    REAPED_TAG_PREFIX,
     RegistryUnavailableError,
     advance_high_water,
     apply_migration_plan,
@@ -22,6 +24,7 @@ from national_epoch_registry import (
     parse_legacy_ledger,
     subprocess_git_runner,
 )
+from bot_namespace import bot_name, bot_tag, high_water_tag
 
 
 def _git(repo: Path, *args: str, input_text: str | None = None, check: bool = True) -> str:
@@ -51,13 +54,13 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _commit_bot(repo: Path, version: int) -> str:
-    bot_dir = repo / "bots" / f"national_v{version}"
+    bot_dir = repo / "bots" / bot_name(version)
     bot_dir.mkdir(parents=True)
     (bot_dir / "national_bot.py").write_text(f"VERSION = {version}\n", encoding="utf-8")
     _git(repo, "add", str(bot_dir.relative_to(repo)))
     _git(repo, "commit", "-m", f"evolve national v{version}")
     commit = _git(repo, "rev-parse", "HEAD")
-    _git(repo, "tag", "-a", f"national-bot-v{version}", "-m", f"complete v{version}", commit)
+    _git(repo, "tag", "-a", bot_tag(version), "-m", f"complete v{version}", commit)
     return commit
 
 
@@ -65,7 +68,7 @@ def _write_ledger(path: Path, versions: list[int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(
-            json.dumps({"bot": f"national_v{version}", "version": version}) + "\n"
+            json.dumps({"bot": bot_name(version), "version": version}) + "\n"
             for version in versions
         ),
         encoding="utf-8",
@@ -73,14 +76,18 @@ def _write_ledger(path: Path, versions: list[int]) -> None:
 
 
 def _registry_tags(repo: Path) -> list[str]:
+    # The migration marker tag (national-reaped-registry-v1) shares the
+    # ``national-reaped-`` stem with the per-version reaped tombstones
+    # (national-reaped-vN), so glob that stem to capture both families.
+    reaped_stem = REAPED_TAG_PREFIX.removesuffix("v").rstrip("-")
     output = _git(
         repo,
         "tag",
         "-l",
-        "national-reaped-*",
+        f"{reaped_stem}-*",
         check=True,
     )
-    extra = _git(repo, "tag", "-l", "national-high-water-*", check=True)
+    extra = _git(repo, "tag", "-l", f"{HIGH_WATER_TAG_PREFIX}*", check=True)
     return sorted(filter(None, (output + "\n" + extra).splitlines()))
 
 
@@ -103,8 +110,8 @@ def test_missing_legacy_ledger_without_marker_is_unavailable(tmp_path):
     [
         ("", "legacy_ledger_empty"),
         ("not-json\n", "invalid_json"),
-        ('{"version": 2, "bot": "national_v3"}\n', "version_bot_mismatch"),
-        ('{"version": "2", "bot": "national_v2"}\n', "invalid_version"),
+        ('{"version": 2, "bot": "%s"}\n' % bot_name(3), "version_bot_mismatch"),
+        ('{"version": "2", "bot": "%s"}\n' % bot_name(2), "invalid_version"),
         ('{"version": 2}\n\n', "blank_line"),
     ],
 )
@@ -176,7 +183,7 @@ def test_migrated_registry_can_repair_high_water_without_legacy_ledger(tmp_path)
 
     assert plan.ready is True
     assert plan.already_migrated is True
-    assert [tag.name for tag in plan.create_tags] == ["national-high-water-v4"]
+    assert [tag.name for tag in plan.create_tags] == [f"{HIGH_WATER_TAG_PREFIX}4"]
     apply_migration_plan(plan, repo_root=repo)
     state = load_registry_state(repo, legacy_ledger=ledger)
     assert state.available is True
@@ -187,14 +194,14 @@ def test_effective_target_uses_requested_completion_high_water_and_history(tmp_p
     repo = _repo(tmp_path)
     _commit_bot(repo, 3)
     commit = _commit_bot(repo, 12)
-    _git(repo, "tag", "-a", "national-high-water-v12", "-m", "water", commit)
+    _git(repo, "tag", "-a", high_water_tag(12), "-m", "water", commit)
     ledger = tmp_path / "reaped.jsonl"
     _write_ledger(ledger, [3])
 
     assert effective_target_version(2, repo_root=repo, legacy_ledger=ledger) == 13
 
-    _git(repo, "tag", "-d", "national-bot-v12")
-    _git(repo, "tag", "-d", "national-high-water-v12")
+    _git(repo, "tag", "-d", bot_tag(12))
+    _git(repo, "tag", "-d", high_water_tag(12))
 
     state = load_registry_state(repo, legacy_ledger=ledger)
     assert state.history_high_water == 12
@@ -252,9 +259,9 @@ def test_successful_migration_is_atomic_annotated_idempotent_and_head_safe(tmp_p
     result = apply_migration_plan(plan, repo_root=repo, now=lambda: 1_700_000_000)
 
     assert set(result.created_tags) == {
-        "national-reaped-v1",
-        "national-reaped-v2",
-        "national-high-water-v2",
+        f"{REAPED_TAG_PREFIX}1",
+        f"{REAPED_TAG_PREFIX}2",
+        f"{HIGH_WATER_TAG_PREFIX}2",
         MIGRATION_MARKER_TAG,
     }
     assert result.head_before == result.head_after == head_before
@@ -286,10 +293,10 @@ def test_runtime_tombstone_and_high_water_apis_create_annotated_monotonic_tags(t
     reaped = create_reaped_tombstone(3, repo_root=repo, legacy_ledger=ledger)
     water = advance_high_water(2, repo_root=repo, legacy_ledger=ledger)
 
-    assert reaped.created_tags == ("national-reaped-v3",)
-    assert water.created_tags == ("national-high-water-v3",)
-    assert _git(repo, "cat-file", "-t", "refs/tags/national-reaped-v3") == "tag"
-    assert _git(repo, "cat-file", "-t", "refs/tags/national-high-water-v3") == "tag"
+    assert reaped.created_tags == (f"{REAPED_TAG_PREFIX}3",)
+    assert water.created_tags == (f"{HIGH_WATER_TAG_PREFIX}3",)
+    assert _git(repo, "cat-file", "-t", f"refs/tags/{REAPED_TAG_PREFIX}3") == "tag"
+    assert _git(repo, "cat-file", "-t", f"refs/tags/{HIGH_WATER_TAG_PREFIX}3") == "tag"
     state = load_registry_state(repo, legacy_ledger=ledger)
     assert state.reaped_versions == frozenset({1, 3})
     assert max(state.high_water_versions) == 3

@@ -5,6 +5,9 @@ import re
 
 import pytest
 
+from bot_namespace import bot_name, bot_relpath
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+
 
 class _UI:
     def clear_io(self):
@@ -48,7 +51,7 @@ def _write_source(root):
 def _write_strength_snapshot(root):
     root.mkdir(parents=True, exist_ok=True)
     (root / "head_to_head.json").write_text(json.dumps({
-        "national_v143 vs national_v144": {
+        f"{bot_name(STRICT_TARGET_V)} vs {bot_name(STRICT_TARGET_V + 1)}": {
             "games": 36,
             "a_wins": 14,
             "b_wins": 20,
@@ -76,7 +79,7 @@ def _proposal(
             "expected_delta=not_applicable; samples=official_5_plus_3; "
             "uncertainty=no_strength_claim; secondary=none"
             if fresh else
-            "target=national_v143; primary=complete_70_hand_wld; "
+            f"target={bot_name(STRICT_TARGET_V)}; primary=complete_70_hand_wld; "
             "expected_delta=0.03; "
             "samples=>=30_complete_matches; uncertainty=wilson_wld_interval; "
             "secondary=net_chip_ci"
@@ -110,7 +113,8 @@ def _proposal(
     }
     if snapshot:
         payload["evidence_refs"].append(
-            "snapshot:head_to_head.json#/national_v143 vs national_v144"
+            "snapshot:head_to_head.json#/"
+            f"{bot_name(STRICT_TARGET_V)} vs {bot_name(STRICT_TARGET_V + 1)}"
         )
     return "```json\n" + json.dumps(payload) + "\n```"
 
@@ -223,7 +227,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     packet_text = await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -623,7 +627,7 @@ def test_strength_snapshot_node_is_digest_bound_with_resolved_projection(tmp_pat
     binding = proposal["snapshot_evidence"][0]
     node = json.loads(
         (snapshot_dir / "head_to_head.json").read_text(encoding="utf-8")
-    )["national_v143 vs national_v144"]
+    )[f"{bot_name(STRICT_TARGET_V)} vs {bot_name(STRICT_TARGET_V + 1)}"]
     canonical = json.dumps(
         node,
         ensure_ascii=False,
@@ -668,7 +672,7 @@ async def test_no_strength_mode_rejects_fake_snapshot_reference(
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     packet = json.loads(await agent_master._run_master_proposal_ensemble(
         "singleton parent without published strength snapshot",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=144,
         ui=_UI(),
         log_dir=tmp_path,
@@ -693,8 +697,8 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         ),
         "direction": "mechanism",
         "directive": "one structural mechanism",
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "protocol_bootstrap_prepared_only": True,
         "singleton_no_strength": False,
         "source_symbol_index": (
@@ -712,7 +716,10 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     scope = prompt.rsplit("SCOUT TOOL/CHAIN SCOPE", 1)[1]
 
     assert "Do not call Read on any docs/" in scope
-    assert "Use Read only inside the prepared target bots/national_v143/" in scope
+    assert (
+        "Use Read only inside the prepared target "
+        f"{bot_relpath(STRICT_TARGET_V)}/"
+    ) in scope
     assert "Never use a future edge" in scope
     assert "A blocked Read grants no evidence" in scope
     assert "ending exactly at the one existing change_symbol" in prompt
@@ -749,8 +756,8 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "planning_context": "Frozen snapshot path is evidence data only.",
         "direction": "mechanism",
         "directive": "one structural mechanism",
-        "source_v": 143,
-        "next_v": 144,
+        "source_v": STRICT_TARGET_V,
+        "next_v": STRICT_TARGET_V + 1,
         "protocol_bootstrap_prepared_only": False,
         "singleton_no_strength": False,
         "source_symbol_index": "SYSTEM-VERIFIED SOURCE CALL INDEX",
@@ -765,8 +772,8 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     )
     assert "<W/L/D interval method>" not in normal_prompt
     normal = normal_prompt.rsplit("SCOUT TOOL/CHAIN SCOPE", 1)[1]
-    assert "bots/national_v143/" in normal
-    assert "bots/national_v144/" in normal
+    assert f"{bot_relpath(STRICT_TARGET_V)}/" in normal
+    assert f"{bot_relpath(STRICT_TARGET_V + 1)}/" in normal
     assert "one exact supplied frozen evidence snapshot" in normal
     assert "Other web/core/results paths" in normal
 
@@ -793,7 +800,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "never replace it with natural-language W/L/D prose" in singleton_prompt
 
     round_trip_measurement = (
-        "target=national_v143; primary=complete_70_hand_wld; "
+        f"target={bot_name(STRICT_TARGET_V)}; primary=complete_70_hand_wld; "
         "expected_delta=0.03; "
         f"samples={agent_master._PROPOSAL_STRENGTH_SAMPLE_FLOOR}; "
         f"uncertainty={agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE}; "
@@ -1212,7 +1219,7 @@ async def test_critic_proposal_order_is_context_digest_deterministic(monkeypatch
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     kwargs = dict(
         planning_context="same frozen planning context",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -1264,7 +1271,7 @@ async def test_two_critic_rejects_veto_one_proposal_and_parser_recomputes_ids(
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     packet_text = await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -1315,7 +1322,7 @@ async def test_two_critic_rejects_of_all_three_fail_closed(monkeypatch, tmp_path
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     packet = json.loads(await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -1371,7 +1378,7 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
 
     packet = json.loads(await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -1669,7 +1676,7 @@ async def test_scout_transport_failure_never_becomes_schema_retry(
     with pytest.raises(agent_master.MasterInfrastructureError) as caught:
         await agent_master._run_master_proposal_ensemble(
             "frozen planning context",
-            source_v=143,
+            source_v=STRICT_TARGET_V,
             next_v=149,
             ui=_UI(),
             log_dir=tmp_path,
@@ -1713,7 +1720,7 @@ async def test_duplicate_proposal_gets_one_causally_distinct_repair(
 
     packet = json.loads(await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -1759,7 +1766,7 @@ async def test_second_duplicate_fails_closed_without_critics_or_another_repair(
 
     packet = json.loads(await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=143,
+        source_v=STRICT_TARGET_V,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -2357,7 +2364,8 @@ async def test_singleton_successor_partial_packet_replays_only_missing_scout(
     no_strength_dir = candidate_dir / ".protocol_bootstrap_no_strength_evidence"
     no_strength_dir.mkdir()
     results_dir = tmp_path / "results"
-    log_dir = results_dir / "v147" / "logs"
+    next_v = STRICT_TARGET_V + 4
+    log_dir = results_dir / f"v{next_v}" / "logs"
     store = WorkflowStore(tmp_path / "singleton-authority.sqlite3")
     monkeypatch.setattr(authority, "_store", lambda: store)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
@@ -2440,8 +2448,8 @@ async def test_singleton_successor_partial_packet_replays_only_missing_scout(
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     checkpoint = {
         "workflow_run_id": "generation:147:workflow-v-test",
-        "source_v": 143,
-        "next_v": 147,
+        "source_v": STRICT_TARGET_V,
+        "next_v": next_v,
         "stage": "direction_audited",
         "checkpoint_revision": 7,
         "audit_context": {
@@ -2454,12 +2462,12 @@ async def test_singleton_successor_partial_packet_replays_only_missing_scout(
     }
     kwargs = {
         "planning_context": "frozen singleton successor context",
-        "source_v": 143,
-        "next_v": 147,
+        "source_v": STRICT_TARGET_V,
+        "next_v": next_v,
         "ui": _UI(),
         "log_dir": log_dir,
         "allowed_evidence_snapshot_dir": str(no_strength_dir),
-        "baseline_v": 147,
+        "baseline_v": next_v,
         "protocol_bootstrap_prepared_only": False,
         "singleton_no_strength": True,
     }
@@ -2683,7 +2691,7 @@ async def test_singleton_predispatch_failure_cannot_claim_attempt_neutral_park(
     with pytest.raises(agent_master.MasterInfrastructureError) as caught:
         await agent_master._run_master_proposal_ensemble(
             planning_context="frozen singleton predispatch context",
-            source_v=143,
+            source_v=STRICT_TARGET_V,
             next_v=147,
             ui=_UI(),
             log_dir=log_dir,
@@ -2798,7 +2806,7 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
         "proposal_id": "a" * 16,
         "targeted_failure": "One exact evidence-bound reachable failure.",
         "measurement": (
-            "target=national_v143; primary=complete_70_hand_wld; "
+            f"target={bot_name(STRICT_TARGET_V)}; primary=complete_70_hand_wld; "
             "expected_delta=0.03; samples=>=30_complete_matches; "
             "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
         ),
@@ -4184,7 +4192,7 @@ def test_selected_proposal_contract_digest_binds_counterfactual_and_measurement(
     changed_counterfactual["counterfactual"] += " Change only opponent posterior."
     changed_measurement = json.loads(json.dumps(proposal))
     changed_measurement["measurement"] = (
-        "target=national_v143; primary=complete_70_hand_wld; "
+        f"target={bot_name(STRICT_TARGET_V)}; primary=complete_70_hand_wld; "
         "expected_delta=0.05; samples=>=30_complete_matches; "
         "uncertainty=bootstrap_wld_interval; secondary=net_chip_ci"
     )

@@ -317,7 +317,7 @@ def _write_synthetic_route_bot(root: Path, version: int) -> Path:
     route test from skipped/empty to positive.
     """
 
-    bot = root / f"national_v{int(version)}"
+    bot = root / bot_name(int(version))
     bot.mkdir(parents=True, exist_ok=False)
     (bot / NATIONAL_ENTRYPOINT).write_text(
         "def main():\n    return 0\n",
@@ -671,14 +671,14 @@ def synthetic_published_bot_authority(isolate_state, monkeypatch):
     real annotated completion tag.
     """
 
-    from bot_namespace import NationalBotSpec
+    from bot_namespace import NationalBotSpec, bot_name, bot_tag, parse_bot_version
     import epoch_authority
     from server.routes import bots as bots_mod
 
     versions = (9001, 9002)
     paths = []
     for version in versions:
-        path = bots_mod.BOTS_DIR / f"national_v{version}"
+        path = bots_mod.BOTS_DIR / bot_name(version)
         if path.exists():
             raise AssertionError(f"synthetic route Bot already exists: {path}")
         paths.append(_write_synthetic_route_bot(bots_mod.BOTS_DIR, version))
@@ -687,10 +687,10 @@ def synthetic_published_bot_authority(isolate_state, monkeypatch):
         {
             "generation_ordinal": ordinal,
             "canonical_version": version,
-            "canonical_bot_name": name,
-            "canonical_tag": f"national-bot-v{version}",
+            "canonical_bot_name": bot_name(version),
+            "canonical_tag": bot_tag(version),
         }
-        for ordinal, (version, name) in enumerate(zip(versions, names), start=1)
+        for ordinal, version in enumerate(versions, start=1)
     ]
 
     monkeypatch.setattr(
@@ -717,7 +717,7 @@ def synthetic_published_bot_authority(isolate_state, monkeypatch):
         if not path.is_absolute():
             path = bots_mod.BOTS_DIR / path.name
         if path.parent == bots_mod.BOTS_DIR and path.name in names:
-            version = int(path.name.removeprefix("national_v"))
+            version = parse_bot_version(path.name)
             return NationalBotSpec(
                 path=path,
                 label=path.name,
@@ -725,7 +725,7 @@ def synthetic_published_bot_authority(isolate_state, monkeypatch):
                 role=role,
                 publication_identity={
                     "published": True,
-                    "tag": f"national-bot-v{version}",
+                    "tag": bot_tag(version),
                     "version": version,
                 },
                 certificate_digest="c" * 64,

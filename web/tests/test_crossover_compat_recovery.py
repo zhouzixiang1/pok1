@@ -5,11 +5,18 @@ from types import SimpleNamespace
 import pytest
 import runtime_architecture_policy  # Import before capability-failure monkeypatches.
 
+from bot_namespace import bot_name, parse_bot_version
+
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
 def _published_parent(label, **_kwargs):
-    version = int(str(label).rsplit("_v", 1)[1])
+    version = parse_bot_version(str(label))
+    if version is None:
+        # ``resolve_national_bot_spec`` may receive a path whose basename is not
+        # a canonical active-namespace label in legacy callers; fall back to the
+        # historical suffix parse so behavior is preserved on both branches.
+        version = int(str(label).rsplit("_v", 1)[1])
     return SimpleNamespace(
         eligible=True,
         version=version,
@@ -54,6 +61,7 @@ def _strict_checkpoint(next_v, source_v, parent2_v, *, stage, workflow_run_id):
 def _eligible_test_parents(monkeypatch):
     import checkpoint_schema
     import tool_commit
+    from bot_namespace import bot_name
 
     monkeypatch.setattr(
         checkpoint_schema,
@@ -64,7 +72,7 @@ def _eligible_test_parents(monkeypatch):
     monkeypatch.setattr(
         tool_commit,
         "get_active_bots",
-        lambda: ["national_v143", "national_v149"],
+        lambda: [bot_name(143), bot_name(149)],
     )
     monkeypatch.setattr(
         tool_commit,
@@ -250,11 +258,11 @@ def test_crossover_compatibility_uses_glicko_r_stable_h2h_and_architecture_conte
         lambda _target: {
             "available": True,
             "ratings": {
-                "national_v149": {"r": 1600.0, "rd": 55.0},
-                "national_v143": {"r": 1510.0, "rd": 70.0},
+                bot_name(149): {"r": 1600.0, "rd": 55.0},
+                bot_name(143): {"r": 1510.0, "rd": 70.0},
             },
             "h2h": {
-                "national_v143 vs national_v149": {
+                f"{bot_name(143)} vs {bot_name(149)}": {
                     "games": 120,
                     "a_wins": 52,
                     "b_wins": 68,

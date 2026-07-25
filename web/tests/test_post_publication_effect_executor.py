@@ -4,6 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from bot_namespace import bot_name, bot_tag, FIRST_STRICT_POLICY_VERSION
+from conftest import STRICT_TARGET_V
+
+# Branch-portable active-bot names for the pool-reap fixtures.  The reap plan
+# validator only accepts canonical active-namespace labels, so ``national_v143``
+# literals fail on the tencent-cloud-runtime branch (``national_cloud_v*``).
+_BOTS = [bot_name(143), bot_name(144), bot_name(145), bot_name(146)]
+
 
 def _bind_runtime_dirs(monkeypatch, tmp_path):
     import tool_commit
@@ -51,14 +59,21 @@ def test_strict_log_plan_never_opens_legacy_and_preserves_siblings(
     tmp_path, monkeypatch
 ):
     tool_commit, results, _archive = _bind_runtime_dirs(monkeypatch, tmp_path)
-    poison = results / "v1" / "logs"
+    # The legacy poison lives at the version immediately below the strict
+    # policy floor (v142 on main, v0 on cloud); the strict log scan starts at
+    # FIRST_STRICT_POLICY_VERSION and must never reach it.
+    poison_v = FIRST_STRICT_POLICY_VERSION - 1
+    strict_log_v = STRICT_TARGET_V
+    handoff_v = STRICT_TARGET_V + 6
+    cutoff_v = handoff_v - 5
+    poison = results / f"v{poison_v}" / "logs"
     poison.mkdir(parents=True)
     (poison / "legacy-poison.txt").write_text("must-not-open", encoding="utf-8")
-    logs = results / "v143" / "logs"
+    logs = results / f"v{strict_log_v}" / "logs"
     logs.mkdir(parents=True)
     (logs / "worker.txt").write_text("strict log\n", encoding="utf-8")
-    sibling_result = results / "v143" / "result.json"
-    sibling_replay = results / "v143" / "replay.json"
+    sibling_result = results / f"v{strict_log_v}" / "result.json"
+    sibling_replay = results / f"v{strict_log_v}" / "replay.json"
     sibling_result.write_text("result", encoding="utf-8")
     sibling_replay.write_text("replay", encoding="utf-8")
 
@@ -67,19 +82,19 @@ def test_strict_log_plan_never_opens_legacy_and_preserves_siblings(
 
     def audited_manifest(path, *, version):
         opened_versions.append(version)
-        assert version >= 143
-        assert "v1/" not in str(path)
+        assert version >= FIRST_STRICT_POLICY_VERSION
+        assert f"v{poison_v}/" not in str(path)
         return real_manifest(path, version=version)
 
     monkeypatch.setattr(tool_commit, "_safe_log_tree_manifest", audited_manifest)
-    plan = tool_commit._build_strict_log_cleanup_plan(149)
+    plan = tool_commit._build_strict_log_cleanup_plan(handoff_v)
     assert plan["keep_generations"] == 5
-    assert plan["cutoff_version"] == 144
+    assert plan["cutoff_version"] == cutoff_v
     receipts = tool_commit._execute_strict_log_cleanup(
-        plan, expected_handoff_version=149
+        plan, expected_handoff_version=handoff_v
     )
 
-    assert opened_versions and set(opened_versions) == {143}
+    assert opened_versions and set(opened_versions) == {strict_log_v}
     assert receipts[0]["effect_mode"] == "nondestructive-immutable-archive"
     assert receipts[0]["live_log_tree_preserved"] is True
     assert receipts[0]["quarantine_log_tree_touched"] is False
@@ -94,11 +109,13 @@ def test_v143_log_plan_performs_zero_legacy_path_probes(tmp_path, monkeypatch):
     tool_commit, _results, _archive = _bind_runtime_dirs(monkeypatch, tmp_path)
 
     def forbidden(_path):
-        raise AssertionError("v143 handoff must not probe any pre-epoch log path")
+        raise AssertionError("strict handoff must not probe any pre-epoch log path")
 
     monkeypatch.setattr(tool_commit.os.path, "lexists", forbidden)
-    plan = tool_commit._build_strict_log_cleanup_plan(143)
-    assert plan["cutoff_version"] == 138
+    # At the first strict handoff the cutoff falls below the strict floor, so
+    # no log tree is scanned and no pre-epoch path is probed.
+    plan = tool_commit._build_strict_log_cleanup_plan(STRICT_TARGET_V)
+    assert plan["cutoff_version"] == STRICT_TARGET_V - 5
     assert plan["archives"] == []
 
 
@@ -514,11 +531,11 @@ def test_pool_reap_plan_freezes_every_target(monkeypatch):
     monkeypatch.setattr(
         tool_commit,
         "get_active_bots",
-        lambda: ["national_v143", "national_v144", "national_v145", "national_v146"],
+        lambda: list(_BOTS),
     )
 
     snapshot = _frozen_reap_snapshot(
-        ["national_v143", "national_v144", "national_v145", "national_v146"],
+        list(_BOTS),
         max_active_bots=2,
     )
     monkeypatch.setattr(
@@ -535,8 +552,8 @@ def test_pool_reap_plan_freezes_every_target(monkeypatch):
     }
     plan = tool_commit._build_pool_reap_plan(record)
     assert [row["candidate"] for row in plan["targets"]] == [
-        "national_v143",
-        "national_v144",
+        _BOTS[0],
+        _BOTS[1],
     ]
     assert plan["required_reaps"] == 2
     assert plan["schema_version"] == 2
@@ -566,9 +583,7 @@ async def test_multi_reap_crash_converges_without_reselecting_or_repeating(
 ):
     import tool_bot_management
     import tool_commit
-    active = [
-        "national_v143", "national_v144", "national_v145", "national_v146",
-    ]
+    active = list(_BOTS)
     calls = []
     monkeypatch.setattr(tool_commit, "MAX_ACTIVE_BOTS", 2)
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: list(active))
@@ -593,7 +608,7 @@ async def test_multi_reap_crash_converges_without_reselecting_or_repeating(
     def prove(name, _record):
         nonlocal injected
         proof_calls.append(name)
-        if name == "national_v144" and not injected:
+        if name == _BOTS[1] and not injected:
             injected = True
             raise RuntimeError("injected-proof-crash")
         return {"bot": name, "tombstone": "proven"}
@@ -609,13 +624,13 @@ async def test_multi_reap_crash_converges_without_reselecting_or_repeating(
     plan = tool_commit._build_pool_reap_plan(record)
     with pytest.raises(RuntimeError, match="injected-proof-crash"):
         await tool_commit._execute_pool_reap_plan(plan, record)
-    assert active == ["national_v145", "national_v146"]
+    assert active == [_BOTS[2], _BOTS[3]]
 
     output = await tool_commit._execute_pool_reap_plan(plan, record)
-    assert calls == ["national_v143", "national_v144"]
-    assert output["removed_bots"] == ["national_v143", "national_v144"]
+    assert calls == [_BOTS[0], _BOTS[1]]
+    assert output["removed_bots"] == [_BOTS[0], _BOTS[1]]
     assert proof_calls == [
-        "national_v143", "national_v144", "national_v143", "national_v144",
+        _BOTS[0], _BOTS[1], _BOTS[0], _BOTS[1],
     ]
 
 
@@ -625,9 +640,7 @@ async def test_forged_pool_reap_target_is_rejected_before_any_effect(monkeypatch
     import tool_commit
     from bot_artifact import canonical_digest
 
-    active = [
-        "national_v143", "national_v144", "national_v145", "national_v146",
-    ]
+    active = list(_BOTS)
     monkeypatch.setattr(tool_commit, "MAX_ACTIVE_BOTS", 2)
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: list(active))
     frozen = _frozen_reap_snapshot(active, max_active_bots=2)
@@ -644,7 +657,7 @@ async def test_forged_pool_reap_target_is_rejected_before_any_effect(monkeypatch
         }
     }
     plan = tool_commit._build_pool_reap_plan(record)
-    plan["targets"][0]["candidate"] = "national_v146"
+    plan["targets"][0]["candidate"] = _BOTS[3]
     # Recompute the public digest too: target validity comes from deterministic
     # policy replay, not from trusting a self-asserted checksum.
     plan["target_sequence_digest"] = canonical_digest(plan["targets"])
@@ -663,9 +676,7 @@ async def test_forged_pool_reap_target_is_rejected_before_any_effect(monkeypatch
     with pytest.raises(RuntimeError, match="target_sequence_invalid"):
         await tool_commit._execute_pool_reap_plan(plan, record)
     assert effect_calls == []
-    assert active == [
-        "national_v143", "national_v144", "national_v145", "national_v146",
-    ]
+    assert active == list(_BOTS)
 
 
 def test_housekeeping_is_read_only_verification(monkeypatch):
@@ -765,8 +776,8 @@ async def test_executor_crash_after_effect_resumes_from_persisted_plan(
         "evaluation_epoch": "national_tcp_policy_v1",
         "version": 143,
         "source_v": 142,
-        "bot_name": "national_v143",
-        "git_tag": "national-bot-v143",
+        "bot_name": bot_name(143),
+        "git_tag": bot_tag(143),
         "publication_identity": {
             "version": 143,
             "source_v": 142,
@@ -903,8 +914,8 @@ async def test_executor_crash_after_effect_resumes_from_persisted_plan(
                 "epoch": "national_tcp_policy_v1",
                 "version": 143,
                 "source_v": 142,
-                "bot": "national_v143",
-                "tag": "national-bot-v143",
+                "bot": bot_name(143),
+                "tag": bot_tag(143),
                 "artifact_hash": "c" * 64,
                 "strength_evidence_identity": {"mode": "test"},
             },

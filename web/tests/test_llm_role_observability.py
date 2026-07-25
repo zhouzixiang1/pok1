@@ -309,7 +309,7 @@ def test_strict_query_parses_and_persists_terminal_result_not_stream_aggregate(
             "MASTER PROPOSAL mechanism",
             str(tmp_path / "strict_terminal_io.txt"),
             tools=["Read"],
-            allowed_read_dirs=[evolution_infra.PROJECT_ROOT / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)],
+            allowed_read_dirs=[evolution_infra.PROJECT_ROOT / "bots" / bot_name(143)],
             strict_authority=strict_call,
         )
     )

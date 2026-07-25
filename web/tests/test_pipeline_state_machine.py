@@ -31,6 +31,12 @@ from core.tool_planning import (
     _has_legacy_critic_repair_contract,
     _synthesize_rework_tasks_from_checkpoint,
 )
+from bot_namespace import (
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+    high_water_tag,
+)
 
 
 def _digest(payload):
@@ -58,23 +64,32 @@ def _strict_checkpoint(checkpoint):
         return checkpoint
     target = checkpoint.get("next_v")
     source = checkpoint.get("source_v")
-    if type(target) is not int or type(source) is not int or target < 144 or source < 143:
+    # The first strict generation has no strict parent to inherit from, so the
+    # parent envelope below only applies to later generations.  Use the
+    # branch-portable strict floor rather than a hardcoded main-branch version.
+    first_strict = FIRST_STRICT_POLICY_VERSION
+    if (
+        type(target) is not int
+        or type(source) is not int
+        or target < first_strict + 1
+        or source < first_strict
+    ):
         return checkpoint
     parent2 = checkpoint.get("parent2_v")
     parents = [source] + ([parent2] if type(parent2) is int else [])
     identities = [
         {
             "version": version,
-            "bot": f"national_v{version}",
+            "bot": bot_name(version),
             "role": "parent_source",
             "epoch": "national_tcp_policy_v1",
             "runtime_manifest_digest": "1" * 64,
             "epoch_receipt_digest": "2" * 64,
             "publication_identity_digest": "3" * 64,
             "certificate_digest": "4" * 64,
-            "completion_tag": f"national-bot-v{version}",
+            "completion_tag": bot_tag(version),
             "completion_tag_object_oid": "5" * 40,
-            "high_water_tag": f"national-high-water-v{version}",
+            "high_water_tag": high_water_tag(version),
             "high_water_tag_object_oid": "6" * 40,
             "publication_commit_oid": "7" * 40,
             "completion_tree_oid": "8" * 40,

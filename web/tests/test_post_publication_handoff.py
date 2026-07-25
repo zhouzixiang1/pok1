@@ -9,8 +9,21 @@ from pathlib import Path
 
 import pytest
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 
-def _write_pair(module, *, version: int = 143, source_v: int = 142):
+# Branch-portable strict-policy versions. On ``main`` these resolve to
+# 143/142 (national_v namespace); on ``tencent-cloud-runtime`` they resolve to
+# 1/0 (national_cloud_v namespace). Every literal 143/142 in this module is
+# replaced by one of these so the suite passes on both branches.
+V = STRICT_TARGET_V
+S = STRICT_SOURCE_V
+
+
+def _write_pair(module, *, version: int = None, source_v: int = None):
+    if version is None:
+        version = V
+    if source_v is None:
+        source_v = S
     publication_id = f"{version:064x}"
     commit_oid = f"{version:040x}"
     completion_object = f"{version + 1:040x}"
@@ -19,7 +32,7 @@ def _write_pair(module, *, version: int = 143, source_v: int = 142):
     certificate_digest = f"{version + 4:064x}"
     completion_tree_oid = f"{version + 5:040x}"
     completion_name = module.bot_tag(version)
-    high_water_name = f"national-high-water-v{version}"
+    high_water_name = module.high_water_tag(version)
     proof_payload = {
         "schema_version": 1,
         "kind": "national-tcp-policy-pending-local-publication",
@@ -207,11 +220,15 @@ def handoff_env(tmp_path, monkeypatch):
 
 def _complete_all_steps(
     module,
-    version=143,
-    source_v=142,
+    version=None,
+    source_v=None,
     *,
     finalize=True,
 ):
+    if version is None:
+        version = V
+    if source_v is None:
+        source_v = S
     remote_calls = []
     original_remote = module._remote_handoff_identity_errors
 
@@ -460,7 +477,7 @@ def test_exact_suffix_marker_is_ignored_and_first_run_completes(handoff_env):
     assert not module._active_pointer_path().exists()
     assert marker.exists()
     assert module.pending_handoff_route()["status"] == "none"
-    assert (results / "archive" / "v143.json").exists()
+    assert (results / "archive" / f"v{V}.json").exists()
     planned = completed["steps"]["stability_observation"]
     assert planned["plan_digest"] == planned["receipt"]["plan_digest"]
 
@@ -502,8 +519,8 @@ def test_ensure_resumes_each_pre_clear_publication_boundary(
     )
 
     resumed = module.ensure_post_publication_handoff(
-        version=143,
-        source_v=142,
+        version=V,
+        source_v=S,
         publishing_checkpoint={},
         publication_result={},
     )
@@ -558,26 +575,26 @@ def test_ensure_refuses_publication_until_authority_directories_are_durable(
     monkeypatch.setattr(module, "_fsync_directory", injected_fsync)
     with pytest.raises(OSError, match="injected authority parent fsync failure"):
         module.ensure_post_publication_handoff(
-            version=143,
-            source_v=142,
+            version=V,
+            source_v=S,
             publishing_checkpoint={},
             publication_result={},
         )
     assert not record_path.exists()
     assert not module._active_pointer_path().exists()
-    assert not module._archive_path(143).exists()
+    assert not module._archive_path(V).exists()
 
     fail_parent_fsync["enabled"] = False
     resumed = module.ensure_post_publication_handoff(
-        version=143,
-        source_v=142,
+        version=V,
+        source_v=S,
         publishing_checkpoint={},
         publication_result={},
     )
     assert resumed["state"] == "pending"
     assert record_path.exists()
     assert module._active_pointer_path().exists()
-    assert module._archive_path(143).exists()
+    assert module._archive_path(V).exists()
 
 
 def test_publication_identity_requires_the_exact_local_tag_tree_proof(handoff_env):
@@ -605,8 +622,8 @@ def test_publication_identity_requires_the_exact_local_tag_tree_proof(handoff_en
         "remote_proof": {"valid": True, "local_only": True},
     }
     produced = module._publication_identity(
-        version=143,
-        source_v=142,
+        version=V,
+        source_v=S,
         checkpoint=checkpoint,
         publication_result=publication_result,
         allow_local_only=True,
@@ -623,8 +640,8 @@ def test_publication_identity_requires_the_exact_local_tag_tree_proof(handoff_en
         match="local_publication_proof_shape_invalid",
     ):
         module._publication_identity(
-            version=143,
-            source_v=142,
+            version=V,
+            source_v=S,
             checkpoint=checkpoint,
             publication_result=missing,
             allow_local_only=True,
@@ -636,24 +653,24 @@ def test_released_claim_becomes_pending_and_another_claim_can_take_over(
 ):
     module, _results = handoff_env
     record_path, _record, _archive = _write_pair(module)
-    _claimed, first_claim = module.claim_post_publication_handoff(143, 142)
+    _claimed, first_claim = module.claim_post_publication_handoff(V, S)
     running_route = module.pending_handoff_route()
     assert running_route["status"] == "pending"
     assert running_route["state"] == "running"
     assert running_route["owner_scope"] == "current_process"
 
     module.release_post_publication_handoff_claim(
-        143, 142, first_claim, error="injected crash"
+        V, S, first_claim, error="injected crash"
     )
     released = module._read_json(record_path)
     assert released["state"] == "pending"
     assert released["owner"] is None
     assert released["last_error"] == "injected crash"
 
-    claimed, second_claim = module.claim_post_publication_handoff(143, 142)
+    claimed, second_claim = module.claim_post_publication_handoff(V, S)
     assert second_claim != first_claim
     assert claimed["state"] == "running"
-    module.release_post_publication_handoff_claim(143, 142, second_claim)
+    module.release_post_publication_handoff_claim(V, S, second_claim)
 
 
 def test_dead_running_owner_projects_effective_pending(handoff_env):
@@ -685,7 +702,7 @@ def test_same_process_running_row_without_exact_volatile_claim_is_resumable(
 ):
     module, _results = handoff_env
     _write_pair(module)
-    _record, claim_id = module.claim_post_publication_handoff(143, 142)
+    _record, claim_id = module.claim_post_publication_handoff(V, S)
     with module._ACTIVE_CLAIMS_LOCK:
         module._ACTIVE_CLAIMS.discard(claim_id)
 
@@ -723,7 +740,7 @@ def test_live_foreign_owner_cannot_be_stolen_even_with_old_heartbeat(
     module, _results = handoff_env
     record_path, _record, _archive = _write_pair(module)
     claimed, claim_id = module.claim_post_publication_handoff(
-        143, 142, now=1.0
+        V, S, now=1.0
     )
     claimed["owner"].update({
         "pid": os.getpid() + 100_000,
@@ -744,9 +761,9 @@ def test_live_foreign_owner_cannot_be_stolen_even_with_old_heartbeat(
         module.PostPublicationHandoffError,
         match="already_running",
     ):
-        module.claim_post_publication_handoff(143, 142, now=10_000.0)
+        module.claim_post_publication_handoff(V, S, now=10_000.0)
 
-    module.release_post_publication_handoff_claim(143, 142, claim_id)
+    module.release_post_publication_handoff_claim(V, S, claim_id)
 
 
 def test_release_write_failure_drops_volatile_claim_and_allows_recovery(
@@ -754,7 +771,7 @@ def test_release_write_failure_drops_volatile_claim_and_allows_recovery(
 ):
     module, _results = handoff_env
     _write_pair(module)
-    _record, claim_id = module.claim_post_publication_handoff(143, 142)
+    _record, claim_id = module.claim_post_publication_handoff(V, S)
     original_write = module._atomic_write
 
     def fail_release_write(_path, _payload):
@@ -762,17 +779,17 @@ def test_release_write_failure_drops_volatile_claim_and_allows_recovery(
 
     monkeypatch.setattr(module, "_atomic_write", fail_release_write)
     module.release_post_publication_handoff_claim(
-        143, 142, claim_id, error="worker failed"
+        V, S, claim_id, error="worker failed"
     )
 
     with module._ACTIVE_CLAIMS_LOCK:
         assert claim_id not in module._ACTIVE_CLAIMS
 
     monkeypatch.setattr(module, "_atomic_write", original_write)
-    recovered, recovered_claim = module.claim_post_publication_handoff(143, 142)
+    recovered, recovered_claim = module.claim_post_publication_handoff(V, S)
     assert recovered["state"] == "running"
     assert recovered_claim and recovered_claim != claim_id
-    module.release_post_publication_handoff_claim(143, 142, recovered_claim)
+    module.release_post_publication_handoff_claim(V, S, recovered_claim)
 
 
 def test_completed_history_damage_is_not_scanned_without_active_pointer(
@@ -809,9 +826,9 @@ def test_completed_record_replace_with_failed_parent_fsync_stays_blocked_until_r
 
     monkeypatch.setattr(evolution_infra, "_fsync_directory", injected_fsync)
     with pytest.raises(OSError, match="injected handoff parent fsync failure"):
-        module.complete_post_publication_handoff(143, 142, claim_id)
+        module.complete_post_publication_handoff(V, S, claim_id)
     module.release_post_publication_handoff_claim(
-        143, 142, claim_id, error="final record fsync failed"
+        V, S, claim_id, error="final record fsync failed"
     )
 
     # os.replace happened, but neither the failed call nor a status reader may
@@ -822,7 +839,7 @@ def test_completed_record_replace_with_failed_parent_fsync_stays_blocked_until_r
     assert module._active_pointer_path().exists()
 
     fail_handoff_parent["enabled"] = False
-    completed, replay_claim = module.claim_post_publication_handoff(143, 142)
+    completed, replay_claim = module.claim_post_publication_handoff(V, S)
     assert completed["state"] == "completed"
     assert replay_claim == ""
     assert not module._active_pointer_path().exists()
@@ -831,7 +848,7 @@ def test_completed_record_replace_with_failed_parent_fsync_stays_blocked_until_r
 
 def test_stable_sidecar_rejects_inode_swap_and_releases_lock(handoff_env):
     module, _results = handoff_env
-    target = module._handoff_path(143, "f" * 64)
+    target = module._handoff_path(V, "f" * 64)
     lock = module._JournalLock(target)
 
     with pytest.raises(OSError, match="sidecar lock"):
@@ -853,7 +870,7 @@ def test_schema_owner_and_step_prefix_are_exact(handoff_env):
     assert module.validate_handoff_record(baseline, reopen_archive=False) == []
 
     bad_type = copy.deepcopy(baseline)
-    bad_type["identity"]["version"] = "143"
+    bad_type["identity"]["version"] = str(V)
     bad_type["identity_digest"] = module.canonical_digest(bad_type["identity"])
     bad_type["record_digest"] = module._record_digest(bad_type)
     assert "handoff_subject_identity_invalid" in module.validate_handoff_record(
@@ -905,12 +922,12 @@ def test_schema_owner_and_step_prefix_are_exact(handoff_env):
 def test_planned_effect_receipt_must_echo_the_exact_plan_digest(handoff_env):
     module, _results = handoff_env
     _record_path, _record, archive = _write_pair(module)
-    record, claim_id = module.claim_post_publication_handoff(143, 142)
+    record, claim_id = module.claim_post_publication_handoff(V, S)
     step = module.REQUIRED_STEPS[0]
     identity = record["identity"]
     record = module.plan_handoff_step(
-        143,
-        142,
+        V,
+        S,
         claim_id,
         step,
         {
@@ -938,16 +955,16 @@ def test_planned_effect_receipt_must_echo_the_exact_plan_digest(handoff_env):
         match="output_plan_binding_mismatch",
     ):
         module.complete_handoff_step(
-            143,
-            142,
+            V,
+            S,
             claim_id,
             step,
             {**valid_output, "plan_digest": "0" * 64},
         )
     module.complete_handoff_step(
-        143, 142, claim_id, step, valid_output
+        V, S, claim_id, step, valid_output
     )
-    module.release_post_publication_handoff_claim(143, 142, claim_id)
+    module.release_post_publication_handoff_claim(V, S, claim_id)
 
 
 def test_recomputed_forged_step_receipt_cannot_skip_required_effect(handoff_env):
@@ -977,7 +994,7 @@ def test_recomputed_forged_step_receipt_cannot_skip_required_effect(handoff_env)
         )
         for issue in issues
     )
-    module.release_post_publication_handoff_claim(143, 142, claim_id)
+    module.release_post_publication_handoff_claim(V, S, claim_id)
 
 
 def test_stability_plan_and_receipt_bind_frozen_evidence_and_ten_run_target(
@@ -985,7 +1002,7 @@ def test_stability_plan_and_receipt_bind_frozen_evidence_and_ten_run_target(
 ):
     module, _results = handoff_env
     _write_pair(module)
-    record, claim_id = module.claim_post_publication_handoff(143, 142)
+    record, claim_id = module.claim_post_publication_handoff(V, S)
     identity = record["identity"]
     forged_plan = {
         "schema_version": 1,
@@ -1001,9 +1018,9 @@ def test_stability_plan_and_receipt_bind_frozen_evidence_and_ten_run_target(
         match="stability_evidence_digest_mismatch",
     ):
         module.plan_handoff_step(
-            143, 142, claim_id, "stability_observation", forged_plan
+            V, S, claim_id, "stability_observation", forged_plan
         )
-    module.release_post_publication_handoff_claim(143, 142, claim_id)
+    module.release_post_publication_handoff_claim(V, S, claim_id)
 
 
 def test_operational_reproof_reopens_stability_and_reissues_exact_signals(
@@ -1069,7 +1086,7 @@ def test_operational_reproof_reopens_stability_and_reissues_exact_signals(
         match="stability_observation_reproof_mismatch",
     ):
         module._test_original_reprove_operational_steps(record)
-    module.release_post_publication_handoff_claim(143, 142, claim_id)
+    module.release_post_publication_handoff_claim(V, S, claim_id)
 
 
 def test_external_reproof_reopens_housekeeping_instead_of_trusting_booleans(
@@ -1102,7 +1119,7 @@ def test_external_reproof_reopens_housekeeping_instead_of_trusting_booleans(
         match="housekeeping_worktree_reproof_mismatch",
     ):
         module._test_original_reprove_external_steps(forged)
-    module.release_post_publication_handoff_claim(143, 142, claim_id)
+    module.release_post_publication_handoff_claim(V, S, claim_id)
 
 
 def _install_archivist_dirty_fixture(
