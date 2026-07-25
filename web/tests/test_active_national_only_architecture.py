@@ -254,20 +254,12 @@ def test_active_national_wire_implementations_cannot_restore_newline_framing():
 
 
 def test_system_native_template_rejects_legacy_newline_wire_apis():
-    source = (CORE / "national_native.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(CORE / "national_native.py"))
-    template = None
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == "NATIVE_BOT_TEMPLATE"
-            for target in node.targets
-        ):
-            continue
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            template = node.value.value
-            break
+    # The system-owned bot template lives in the national_native_templates
+    # companion and is re-exported by national_native. Assert over the imported
+    # runtime value (byte-identical to the previous in-module definition) so the
+    # test tracks the template CONTENT regardless of which module defines it.
+    from national_native import NATIVE_BOT_TEMPLATE as template
+
     assert template is not None
     for token in (
         "makefile(",
