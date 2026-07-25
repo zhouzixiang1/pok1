@@ -2175,12 +2175,26 @@ def _schema_repair_hints(errors) -> str:
     if "change_symbol_not_chain_terminal" in error_text:
         hints.append(
             "FIX change_symbol/chain: reachable_chain must be a direct "
-            "caller->callee path that ENDS exactly at change_symbol. Example: "
-            "change_symbol=\"policy.py:get_baseline_decision\" requires "
-            "reachable_chain=[\"policy.py:get_baseline_decision\"] (length-1 "
-            "chain ending at the same symbol). A longer chain like "
-            "[\"policy.py:get_baseline_decision\",\"policy.py:_hole_ids\"] "
-            "requires change_symbol=\"policy.py:_hole_ids\" (the LAST item)."
+            "caller->callee path of 2-8 symbols that ENDS exactly at "
+            "change_symbol. Example: change_symbol=\"policy.py:get_baseline_decision\" "
+            "requires reachable_chain=[\"policy.py:iter_decisions\","
+            "\"policy.py:get_baseline_decision\"] (a 2-symbol chain from the "
+            "policy-ABI entrypoint iter_decisions to the change target). "
+            "Do NOT emit a single-element chain like [\"policy.py:get_baseline_decision\"] "
+            "— the validator requires at least 2 symbols. Find the CALLER of "
+            "your change_symbol from the SYSTEM-VERIFIED SOURCE CALL INDEX and "
+            "put it first in reachable_chain."
+        )
+    if "reachable_chain_count_invalid" in error_text:
+        hints.append(
+            "FIX reachable_chain length: reachable_chain MUST contain 2 to 8 "
+            "symbols. A single-element chain like "
+            "[\"policy.py:get_baseline_decision\"] is INVALID. You need at least "
+            "a caller and the change_symbol callee. Use the SYSTEM-VERIFIED "
+            "PREFERRED CURRENT STARTING EDGES from the prompt to find a valid "
+            "2-symbol chain ending at your change_symbol. For example: "
+            "[\"policy.py:iter_decisions\",\"policy.py:get_baseline_decision\"] "
+            "is valid because iter_decisions calls get_baseline_decision."
         )
     if "shared_leaf_requires_full_namespace" in error_text:
         hints.append(
