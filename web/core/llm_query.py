@@ -201,7 +201,7 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         "master_proposal_critic",
         r"^MASTER PROPOSAL CRITIC(?:\s|$)",
         renderer="agent_master.py::_run_master_proposal_ensemble/critic_renderer",
-        producer_file="web/core/agent_master.py",
+        producer_file="web/core/agent_master_validation.py",
         producer_name="_render_master_proposal_critic_provider_prompt",
         evidence_kind="frozen_proposal_packet",
         required_evidence_fields=(
@@ -217,7 +217,7 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         "master_proposal",
         r"^MASTER PROPOSAL(?:\s|$)",
         renderer="agent_master.py::_run_master_proposal_ensemble/proposal_renderer",
-        producer_file="web/core/agent_master.py",
+        producer_file="web/core/agent_master_validation.py",
         producer_name="_render_master_proposal_provider_prompt",
         evidence_kind="master_planning_context",
         required_evidence_fields=(
@@ -241,7 +241,7 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         "master_final",
         r"^MASTER(?:\s+\(TRY\s+\d+\))?$",
         renderer="prompts/master_prompt.md+master_context_contract.py",
-        producer_file="web/core/agent_master.py",
+        producer_file="web/core/agent_master_validation.py",
         producer_name="_render_master_final_provider_prompt",
         template_paths=("web/core/prompts/master_prompt.md",),
         evidence_kind="compiled_master_context",
