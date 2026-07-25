@@ -222,6 +222,19 @@ value, timeout, read failure, or release failure terminates and reaps the
 process before returning. The owner marker is never injected into the sandbox,
 and launches without an owner do not acquire this barrier.
 
+The typed runtime probe and every quality-gate `runtime_import` check also
+execute the candidate inside an unprivileged `bwrap --unshare-user` sandbox
+(no host process owner, no `--block-fd`). On Ubuntu >= 24.04 the kernel
+defaults `kernel.apparmor_restrict_unprivileged_userns = 1`, which makes
+every such `bwrap` fail with `setting up uid map: Permission denied` or
+`Unexpected capabilities but not setuid`. Every candidate then fails
+`runtime_import` and the generation is canonically abandoned regardless of
+`policy.py` correctness. The host must disable that restriction before the
+first generation (`deploy/tencent-cloud/README.md` documents the one-time
+`sysctl` fix). The candidate-side `incremental_opponent_model` /
+`typed_runtime_probe` failures are downstream symptoms of this sandbox
+failure, not policy bugs.
+
 The runtime computes an always-legal fallback before candidate work. It targets
 a 250 ms policy baseline, allows bounded refinement through 54 seconds, and
 returns by a 55 second hard deadline, reserving the remaining official minute

@@ -42,6 +42,48 @@ refuses to run; see its header comment. The one-time epoch reset is performed
 by `scripts/reset_national_tcp_policy_epoch.py --execute
 --acknowledge-runtime-checkout` inside `.evolution_pok`.
 
+## Host prerequisites
+
+### Bubblewrap (bwrap) and unprivileged user namespaces
+
+The quality gates and the typed runtime probe execute candidate `policy.py`
+inside a [Bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`)
+sandbox that unshares user/ipc/pid/net/uts/cgroup namespaces. On modern
+Ubuntu kernels (>= 6.8, e.g. Ubuntu 24.04) **AppArmor restricts unprivileged
+user namespaces by default**
+(`kernel.apparmor_restrict_unprivileged_userns = 1`), which makes every
+`bwrap --unshare-user` invocation fail with one of:
+
+- `bwrap: Unexpected capabilities but not setuid, old file caps config?`
+- `bwrap: setting up uid map: Permission denied`
+- `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+
+Every candidate then fails the `runtime_import` quality gate and the
+generation is canonically abandoned, regardless of how correct the Worker's
+`policy.py` is. The candidate-side `incremental_opponent_model` /
+`typed_runtime_probe` failures are downstream symptoms of this sandbox
+failure, not policy bugs.
+
+Fix (one-time, host-level). Disable the AppArmor user-namespace restriction:
+
+```bash
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' \
+  | sudo tee /etc/sysctl.d/99-pok-bwrap.conf
+sudo sysctl -p /etc/sysctl.d/99-pok-bwrap.conf
+# Verify:
+cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns   # -> 0
+bwrap --unshare-user --unshare-net --ro-bind /usr /usr -- /bin/echo ok   # -> ok
+```
+
+This setting survives reboots through `/etc/sysctl.d/99-pok-bwrap.conf`.
+It does **not** disable AppArmor itself — only the blanket rejection of
+unprivileged user namespaces, restoring the pre-24.04 behavior that
+`bwrap` and many other sandboxing tools rely on. If a stricter policy is
+required, alternatively install `bwrap` with the setuid bit
+(`sudo chmod u+s $(which bwrap)`) or grant it the `cap_setuid` file
+capability, but the sysctl approach is the simplest and matches the
+upstream `bwrap` deployment guidance for non-setuid installs.
+
 ## Dual-checkout layout
 
 ```
