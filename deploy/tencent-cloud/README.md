@@ -197,28 +197,61 @@ stay under ~2.5 GiB with these defaults.
 
 ## LLM timing (GLM-5.2 deep reasoning)
 
-GLM-5.2 with enabled thinking spends 100–320s thinking before emitting visible
-text on complex Master-proposal prompts. The default `MASTER_PROPOSAL` role
-timeouts in `web/core/llm_query.py` (`stall=360s`, `idle=360s`, `total=900s`)
-are too tight and killed Scouts mid-thought. `env.runtime` raises them via
-role-scoped env overrides:
+GLM-5.2 with enabled thinking and `effort=max` spends 4–9 min (up to 15–20 min
+during peak provider load) on complex Master-proposal prompts. The default
+role timeouts are far too tight and killed Scouts mid-thought. `env.runtime`
+raises them via role-scoped env overrides:
 
-- `POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT=600` (productive-message silence)
-- `POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT=600` (total stream silence)
-- `POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT=1200`
+- All LLM roles: `total=3600s`, `stall=1200s`, `idle=1800s`
+- `CYCLE_TIMEOUT=14400s` (4h), `WATCHDOG_TIMEOUT=28800s` (8h)
 
-The `stall` gate fires first and is the one that must be raised. Other roles
-(Review, Critic, Worker) keep their defaults; raise them similarly if a role
-repeatedly times out on GLM.
+The `stall` gate (productive-message silence) is the primary stuck-stream
+detector; these generous values avoid killing GLM mid-reasoning while still
+catching truly hung streams.
 
-### Why `effort=max` is unset
+### `effort=max` and thinking budget
 
-`effort=max` (which GLM maps `high`/`xhigh`/`max` all to) is harmful on this
-endpoint: it drives GLM into an infinite thinking loop (64k+ thinking tokens,
-zero text output) on complex prompts, regardless of `budget_tokens`. The
-runtime therefore leaves `POK_LLM_EFFORT` unset and uses `budget_tokens=32000`,
-which converges reliably while still producing deep reasoning and detailed
-text output.
+`effort=max` is GLM-5.2's strongest reasoning depth. It is **NOT a death-loop**:
+thinking tokens grow linearly and GLM eventually emits visible text. The
+earlier "infinite loop" diagnosis was a misattribution — the stream was killed
+at 900s while GLM was still productively reasoning at 27k+ thinking tokens.
+
+Configuration (in `env.runtime`, all env-overridable):
+- `POK_LLM_THINKING_MODE=enabled` (default; `adaptive` is known to hang on GLM)
+- `POK_LLM_THINKING_BUDGET=64000` (GLM treats this as a soft target, not a cap)
+- `POK_LLM_EFFORT=max`
+
+### GLM 429 quota exhaustion and recovery-window waiting
+
+GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the provider
+returns HTTP 429 with a Chinese body containing the reset timestamp:
+`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 2026-07-25 16:20:12 重置。]`.
+
+The system handles this through the singleton `rate_limiter`
+(`web/core/rate_limiter.py`):
+
+1. **Detection** — When any sub-agent LLM call raises a `ClaudeSDKError`
+   whose text matches the GLM 429 pattern, `rate_limiter.parse_429()`
+   extracts the reset timestamp from the Chinese body. Detection is wired
+   at both `ClaudeSDKError` sites in `web/core/llm_query.py` (the
+   signature-retry loop fallthrough and the `run_claude_query` outer
+   handler). A bare 429 without an explicit reset timestamp does **not**
+   set the block — the existing bounded retry behavior is preserved.
+2. **Pipeline pause** — `rate_limiter.is_blocked()` returns `True`. The
+   orchestrator loop checks this every cycle and blocks the entire
+   evolution pipeline via `await rate_limiter.wait_until_reset()` until
+   the quota resets. Every `run_claude_query` entry also checks before
+   dispatching.
+3. **Crash recovery** — The reset timestamp is persisted to
+   `web/core/results/rate_limit_state.json`. A service restart re-applies
+   the block until the reset time.
+4. **Operator visibility** — A `pipeline.llm_quota_exceeded_detected`
+   event is emitted with the role and reset time. The UI status shows
+   `⏳ 配额等待中 → <reset_time>`.
+
+No environment variable configures the 429 behavior — `rate_limiter` is
+always active. The `api_concurrency` adaptive backoff (which halves global
+LLM concurrency per 429) still fires as an immediate first reaction.
 
 ## What stays out of main
 

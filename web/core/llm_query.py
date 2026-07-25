@@ -3457,6 +3457,42 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
         ui.log_io(f"[LLM UNAVAILABLE] {issue.summary}", "error", role_name)
         raise
     except ClaudeSDKError as e:
+        # GLM 429 配额耗尽检测：与签名重试循环相同的检测逻辑。这覆盖那些
+        # 绕过签名重试循环、直接在外层抛出的 429（例如 availability block
+        # 路径，或 SDK 在建立流之前就拒绝的情况）。
+        try:
+            if _is_quota_exceeded(str(e)):
+                from rate_limiter import rate_limiter
+                rate_limiter.parse_429(str(e))
+                _emit_llm_event(
+                    "pipeline.llm_quota_exceeded_detected", "error",
+                    (
+                        f"{role_name}: GLM 429 quota exhaustion detected "
+                        f"(outer handler); rate_limiter will block pipeline "
+                        f"until reset"
+                    ),
+                    role=role_name,
+                    elapsed_sec=round(time.time() - stream_started_at, 2),
+                    messages_seen=message_count,
+                    exception_type=type(e).__name__,
+                    reset_time=(
+                        rate_limiter.reset_time_str()
+                        if rate_limiter.is_blocked() else None
+                    ),
+                    **_role_log_metadata(log_file_path),
+                )
+                if ui:
+                    ui.log_history(
+                        f"{role_name}: GLM API 配额耗尽 (429)。"
+                        + (
+                            f" 将暂停进化直到 {rate_limiter.reset_time_str()} 自动恢复。"
+                            if rate_limiter.is_blocked()
+                            else " 未检测到重置时间。"
+                        ),
+                        "error",
+                    )
+        except Exception:
+            pass
         availability_block = availability_trace.blocked(
             role=role_name,
             exception=e,
@@ -4320,6 +4356,43 @@ async def _run_stream_with_signature_retry_attempts(
                         or "所有供应商" in _es or "rate limit" in _es or "429" in _es):
                     from api_concurrency import record_llm_outcome
                     record_llm_outcome(success=False, rate_limited=True)
+            except Exception:
+                pass
+            # GLM 429 配额耗尽检测：解析重置时间戳到全局 rate_limiter。
+            # rate_limiter.parse_429 只在 GLM 返回明确的 "限额将在 ... 重置"
+            # 时间戳时设置阻塞；无重置证据的裸 429 返回 False，不阻塞（保持
+            # 现有有限重试行为）。一旦 rate_limiter 被设置，orchestrator_loop
+            # 的 is_blocked() 检查会暂停整个 pipeline 直到恢复窗口，所有后续
+            # run_claude_query 入口也会等待。这是 "等待恢复窗口" 语义的核心。
+            try:
+                if _is_quota_exceeded(str(e)):
+                    from rate_limiter import rate_limiter
+                    rate_limiter.parse_429(str(e))
+                    _emit_llm_event(
+                        "pipeline.llm_quota_exceeded_detected", "error",
+                        (
+                            f"{role_name}: GLM 429 quota exhaustion detected; "
+                            f"rate_limiter will block pipeline until reset"
+                        ),
+                        role=role_name,
+                        sdk_attempt=sdk_attempt + 1,
+                        max_attempts=_SIGNATURE_MAX_ATTEMPTS,
+                        reset_time=(
+                            rate_limiter.reset_time_str()
+                            if rate_limiter.is_blocked() else None
+                        ),
+                        **_role_log_metadata(log_file_path),
+                    )
+                    if ui:
+                        ui.log_history(
+                            f"{role_name}: GLM API 配额耗尽 (429)。"
+                            + (
+                                f" 将暂停进化直到 {rate_limiter.reset_time_str()} 自动恢复。"
+                                if rate_limiter.is_blocked()
+                                else " 未检测到重置时间，将继续有限重试。"
+                            ),
+                            "error",
+                        )
             except Exception:
                 pass
             raise  # non-signature SDK error, or signature retries exhausted

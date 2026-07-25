@@ -302,6 +302,51 @@ all LLM roles total=3600s, stall=1200s, idle=1800s. The `CYCLE_TIMEOUT` is
 generous values avoid killing GLM mid-reasoning while still catching truly
 hung streams.
 
+### GLM 429 quota exhaustion and recovery-window waiting
+
+GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the
+provider returns an HTTP 429 with a Chinese body such as
+`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 2026-07-25 16:20:12 重置。]`.
+This is **quota exhaustion**, distinct from a transient 529 overload:
+the only correct response is to **wait for the reset window**, not to
+exponentially backoff.
+
+The system handles this through the singleton `rate_limiter`
+(`web/core/rate_limiter.py`):
+
+1. **Detection**: When a sub-agent LLM call (Master/Worker/Reviewer/Critic,
+   all routed through `run_claude_query`) raises a `ClaudeSDKError` whose
+   text matches the GLM 429 pattern, `_is_quota_exceeded()` detects it and
+   `rate_limiter.parse_429()` extracts the reset timestamp from the Chinese
+   body. Detection is wired at **both** `ClaudeSDKError` sites in
+   `llm_query.py`: the signature-retry loop fallthrough (inner handler) and
+   the `run_claude_query` outer handler. A bare 429 without an explicit
+   reset timestamp does **not** set the block — `parse_429` returns `False`
+   and the existing bounded retry behavior is preserved.
+2. **Pipeline pause**: Once `rate_limiter` has a future reset time,
+   `rate_limiter.is_blocked()` returns `True`. The orchestrator loop checks
+   this at the top of every cycle (`orchestrator.py` ~line 6013) and
+   `await rate_limiter.wait_until_reset(shutdown_mgr)` blocks the entire
+   evolution pipeline until the quota resets. Every `run_claude_query`
+   entry point also checks `is_blocked()` before dispatching, so
+   background analysts and direct MCP calls cannot bypass the pause.
+3. **Crash recovery**: The reset timestamp is persisted to
+   `web/core/results/rate_limit_state.json`. A service restart re-loads it
+   and re-applies the block until the reset time, so a restart during a
+   quota window cannot accidentally burn more calls.
+4. **Operator visibility**: A `pipeline.llm_quota_exceeded_detected` event
+   is emitted with the role and reset time, and the UI status shows
+   `⏳ 配额等待中 → <reset_time>`. The orchestrator log shows
+   `⏳ API 配额耗尽，暂停进化。将在 <reset_time> 自动恢复 (<seconds>s)`.
+5. **Graceful shutdown**: `wait_until_reset` checks `shutdown_mgr` every
+   30s, so the service can be stopped cleanly during a quota wait.
+
+The `api_concurrency` adaptive backoff (which halves the global LLM
+concurrency cap per 429) still fires as an immediate first reaction, but
+the `rate_limiter` block is the authoritative pause that prevents the
+Master ensemble from burning its 3 role-attempt budget on a guaranteed-to-
+fail retry during a multi-hour quota window.
+
 ### Global LLM concurrency (producer-consumer model)
 
 All sub-agent LLM calls are capped at **2 simultaneous in-flight streams**
