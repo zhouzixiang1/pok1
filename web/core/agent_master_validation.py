@@ -330,6 +330,12 @@ def _render_master_proposal_provider_prompt(inputs):
         "manifest-declared, content-bound asset ABI. Propose "
         "a causally distinct policy mechanism over decision_context that returns only "
         "typed pass/fold/allin/raise intents (raise uses raise_to). "
+        "IMPORTANT for fresh bootstrap: change_symbol MUST be "
+        "\"policy.py:get_baseline_decision\" — it is the only function whose AST body "
+        "the first Worker may modify. Do NOT select iter_decisions (its dispatch edge "
+        "to get_baseline_decision is system-preserved) or _hole_ids (its call sites "
+        "inside get_baseline_decision are system-preserved). Selecting any other "
+        "symbol as change_symbol will be rejected by the do-not-touch contract. "
         "IMPORTANT: falsifier.test_name MUST be exactly one of: "
         + ", ".join(allowed_tests)
         + ". "
