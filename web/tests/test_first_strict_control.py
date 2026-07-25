@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+
 
 def _fresh_checkpoint() -> dict:
     from system_strict_bootstrap import build_fresh_bootstrap_receipt
@@ -10,8 +12,8 @@ def _fresh_checkpoint() -> dict:
         active_bots=(), epoch_reset_receipt_digest="a" * 64
     )
     return {
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "audit_context": {
             "protocol_bootstrap": receipt,
             "selection": {
@@ -71,13 +73,14 @@ def test_control_receipt_is_empty_pool_only_and_never_strength_authority():
 
 def test_control_receipt_rejects_pool_or_authority_escalation():
     import first_strict_control as control
+    from conftest import strict_bot_name
 
     checkpoint = _fresh_checkpoint()
     receipt = control.build_control_receipt(checkpoint, active_bots=[])
     assert control.validate_control_receipt(
         receipt,
         checkpoint=checkpoint,
-        active_bots=["national_v143"],
+        active_bots=[strict_bot_name()],
     )
 
     tampered = deepcopy(receipt)

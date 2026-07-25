@@ -4,6 +4,8 @@ import hashlib
 import json
 from types import SimpleNamespace
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+from bot_namespace import bot_name, bot_tag, high_water_tag
 import checkpoint_schema
 import evolution_infra
 import pipeline_recovery
@@ -15,7 +17,9 @@ from system_strict_bootstrap import build_fresh_bootstrap_receipt
 
 def test_checkpoint_schema_is_always_evaluation_contract_critical():
     assert "web/core/checkpoint_schema.py" in ALWAYS_CRITICAL_EXACT
-    assert classify_path("web/core/checkpoint_schema.py", candidate_v=144) == "critical"
+    assert classify_path(
+        "web/core/checkpoint_schema.py", candidate_v=STRICT_TARGET_V + 1
+    ) == "critical"
 
 
 def _canonical_digest(payload):
@@ -41,7 +45,7 @@ def _policy_epoch_reset_receipt():
         "created_at": "2026-07-14T00:00:00.000000",
         "git_head": "a" * 40,
         "archive_root": archive_root,
-        "first_target_version": 143,
+        "first_target_version": STRICT_TARGET_V,
         "checkout_role": "autonomous_evolution_runtime",
         "one_time": True,
     }
@@ -63,13 +67,13 @@ def _policy_epoch_reset_receipt():
             "prior_reset_evidence_required_empty": True,
             "claim_digest": claim["claim_digest"],
         },
-        "archived_version_high_water": 142,
-        "version_authority_high_water": 142,
-        "first_target_version": 143,
+        "archived_version_high_water": STRICT_SOURCE_V,
+        "version_authority_high_water": STRICT_SOURCE_V,
+        "first_target_version": STRICT_TARGET_V,
         "source_code_inherited": False,
         "seed_bot": None,
         "active_namespace": {
-            "bot": "national_v143",
+            "bot": bot_name(STRICT_TARGET_V),
             "protocol": "official-national-raw-tcp-v1",
             "policy_abi": "national-tcp-policy-runtime-v1",
         },
@@ -127,7 +131,7 @@ def _published_parent(version):
         epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
         publication_identity={
             "published": True,
-            "tag": f"national-bot-v{version}",
+            "tag": bot_tag(version),
             "version": version,
         },
         certificate_digest="b" * 64,
@@ -136,9 +140,9 @@ def _published_parent(version):
 
 def _published_parent_tags(*, version, **_kwargs):
     return {
-        "completion_tag": f"national-bot-v{version}",
+        "completion_tag": bot_tag(version),
         "completion_tag_object_oid": "c" * 40,
-        "high_water_tag": f"national-high-water-v{version}",
+        "high_water_tag": high_water_tag(version),
         "high_water_tag_object_oid": "d" * 40,
         "publication_commit_oid": "e" * 40,
         "completion_tree_oid": "f" * 40,
@@ -207,10 +211,10 @@ def test_fresh_v143_resume_requires_and_accepts_live_reset_receipt(tmp_path):
         "selection": {"strategy": "fresh_policy_bootstrap"},
     }
     binding = checkpoint_schema.build_checkpoint_epoch_binding(
-        next_v=143,
-        source_v=142,
+        next_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
         audit_context=audit_context,
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
         repo_root=tmp_path,
@@ -218,10 +222,10 @@ def test_fresh_v143_resume_requires_and_accepts_live_reset_receipt(tmp_path):
     checkpoint = _checkpoint(
         binding,
         audit_context,
-        next_v=143,
-        source_v=142,
+        next_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
     )
-    (tmp_path / "bots" / "national_v143").mkdir(parents=True)
+    (tmp_path / "bots" / bot_name(STRICT_TARGET_V)).mkdir(parents=True)
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
         checkpoint,
@@ -253,17 +257,17 @@ def test_fresh_v143_resume_rejects_missing_live_reset_receipt(tmp_path):
     }
     checkpoint = _checkpoint(
         checkpoint_schema.build_checkpoint_epoch_binding(
-            next_v=143,
-            source_v=142,
+            next_v=STRICT_TARGET_V,
+            source_v=STRICT_SOURCE_V,
             audit_context=audit_context,
-            published_high_water=142,
+            published_high_water=STRICT_SOURCE_V,
             abandoned_receipt_floor=0,
             abandoned_receipt_head_digest=None,
             repo_root=tmp_path,
         ),
         audit_context,
-        next_v=143,
-        source_v=142,
+        next_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
     )
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(

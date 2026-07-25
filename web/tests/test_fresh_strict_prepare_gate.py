@@ -6,6 +6,9 @@ import asyncio
 from copy import deepcopy
 import json
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+from bot_namespace import bot_name, bot_tag
+
 
 def _tool_payload(result: dict) -> dict:
     return json.loads(result["content"][0]["text"])
@@ -30,7 +33,7 @@ def _install_prepare_environment(
     writes: list[dict] = []
 
     def bot_dir(version: int):
-        return bots / f"national_v{int(version)}"
+        return bots / bot_name(int(version))
 
     def read_checkpoint():
         return deepcopy(state)
@@ -60,7 +63,7 @@ def _install_prepare_environment(
         return True
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", bot_dir)
-    monkeypatch.setattr(tool_gates, "find_current_v", lambda: 142)
+    monkeypatch.setattr(tool_gates, "find_current_v", lambda: STRICT_SOURCE_V)
     monkeypatch.setattr(tool_gates, "read_pipeline_checkpoint", read_checkpoint)
     monkeypatch.setattr(tool_gates, "_matching_checkpoint", matching)
     monkeypatch.setattr(tool_gates, "_set_pipeline_status", lambda *_args: None)
@@ -105,8 +108,8 @@ def test_real_prepare_materializes_fresh_142_to_143_without_source_tag_or_bytes(
     )
     assert validate_fresh_bootstrap_receipt(receipt, active_bots=()) == []
     checkpoint = {
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "stage": "selected",
         "audit_context": {
             "protocol_bootstrap": receipt,
@@ -126,7 +129,7 @@ def test_real_prepare_materializes_fresh_142_to_143_without_source_tag_or_bytes(
 
     # A historical source tree may exist locally, but no byte from it is an
     # input to the fresh strict artifact.
-    source = bot_dir(142)
+    source = bot_dir(STRICT_SOURCE_V)
     source.mkdir()
     (source / ".completed").write_text("historical-only\n", encoding="utf-8")
     (source / "legacy_marker.py").write_text(
@@ -139,7 +142,7 @@ def test_real_prepare_materializes_fresh_142_to_143_without_source_tag_or_bytes(
     )
 
     def copying_old_source_is_forbidden(*_args, **_kwargs):
-        raise AssertionError("fresh bootstrap must not copy v142")
+        raise AssertionError("fresh bootstrap must not copy archived source")
 
     import evolution_infra
 
@@ -150,20 +153,27 @@ def test_real_prepare_materializes_fresh_142_to_143_without_source_tag_or_bytes(
     )
 
     def resolve_target_only(version: int):
-        if int(version) == 142:
+        if int(version) == STRICT_SOURCE_V:
             raise AssertionError(
-                "fresh bootstrap must not even resolve the stale v142 path"
+                "fresh bootstrap must not even resolve the stale archived source path"
             )
         return bot_dir(version)
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", resolve_target_only)
 
     payload = _tool_payload(asyncio.run(
-        tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
+        tool_gates.prepare_next_gen.handler({
+            "source_v": STRICT_SOURCE_V,
+            "next_v": STRICT_TARGET_V,
+        })
     ))
 
-    candidate = bot_dir(143)
-    assert payload == {"prepared": True, "next_v": 143, "source_v": 142}
+    candidate = bot_dir(STRICT_TARGET_V)
+    assert payload == {
+        "prepared": True,
+        "next_v": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
+    }
     assert sorted(path.name for path in candidate.iterdir()) == [
         "national_bot.py",
         "national_runtime_manifest.json",
@@ -193,7 +203,10 @@ def test_real_prepare_materializes_fresh_142_to_143_without_source_tag_or_bytes(
         if path.is_file()
     }
     resumed = _tool_payload(asyncio.run(
-        tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
+        tool_gates.prepare_next_gen.handler({
+            "source_v": STRICT_SOURCE_V,
+            "next_v": STRICT_TARGET_V,
+        })
     ))
     after_retry = {
         path.name: path.read_bytes()
@@ -219,10 +232,10 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
         epoch_reset_receipt_digest="a" * 64,
     )
     checkpoint = {
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "stage": "selected",
-        "workflow_run_id": "generation:143:workflow-v9",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v9",
         "checkpoint_revision": 4,
         "audit_context": {
             "protocol_bootstrap": receipt,
@@ -236,7 +249,7 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
         active_bots=[],
         tagged_versions=set(),
     )
-    target = bot_dir(143)
+    target = bot_dir(STRICT_TARGET_V)
     target.mkdir()
     marker = target / "unbound-policy.py"
     marker.write_text("UNTRUSTED_PREIMAGE = True\n", encoding="utf-8")
@@ -256,8 +269,8 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
             "finalize_receipt_digest": "3" * 64,
             "abandon_checkpoint_identity": {
                 "workflow_run_id": checkpoint["workflow_run_id"],
-                "next_v": 143,
-                "source_v": 142,
+                "next_v": STRICT_TARGET_V,
+                "source_v": STRICT_SOURCE_V,
                 "checkpoint_revision": 4,
                 "stage": "selected",
             },
@@ -270,7 +283,10 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
     )
 
     payload = _tool_payload(asyncio.run(
-        tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
+        tool_gates.prepare_next_gen.handler({
+            "source_v": STRICT_SOURCE_V,
+            "next_v": STRICT_TARGET_V,
+        })
     ))
 
     assert payload["error"] == "TARGET_PREIMAGE_REQUIRES_CANONICAL_ABANDON"
@@ -281,8 +297,8 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
             "stale_blueprint_rejection:prepare_preimage_unbound",
             {
                 "expected_workflow_run_id": checkpoint["workflow_run_id"],
-                "expected_next_v": 143,
-                "expected_source_v": 142,
+                "expected_next_v": STRICT_TARGET_V,
+                "expected_source_v": STRICT_SOURCE_V,
                 "expected_checkpoint_revision": 4,
                 "expected_checkpoint_stage": "selected",
             },
@@ -296,18 +312,26 @@ def test_preexisting_target_without_checkpoint_is_never_adopted_or_deleted(
     tmp_path,
     monkeypatch,
 ):
-    checkpoint = {"source_v": 143, "next_v": 144, "stage": "selected"}
+    from conftest import strict_bot_name
+
+    parent_v = STRICT_TARGET_V
+    child_v = STRICT_TARGET_V + 1
+    checkpoint = {
+        "source_v": parent_v,
+        "next_v": child_v,
+        "stage": "selected",
+    }
     tool_gates, bot_dir, _state, writes = _install_prepare_environment(
         tmp_path,
         monkeypatch,
         checkpoint=checkpoint,
-        active_bots=["national_v143"],
-        tagged_versions={143},
+        active_bots=[strict_bot_name(parent_v)],
+        tagged_versions={parent_v},
     )
-    source = bot_dir(143)
+    source = bot_dir(parent_v)
     source.mkdir()
     (source / ".completed").write_text("published\n", encoding="utf-8")
-    target = bot_dir(144)
+    target = bot_dir(child_v)
     target.mkdir()
     marker = target / "orphan.py"
     marker.write_text("ORPHAN = True\n", encoding="utf-8")
@@ -316,7 +340,10 @@ def test_preexisting_target_without_checkpoint_is_never_adopted_or_deleted(
     monkeypatch.setattr(tool_gates, "_matching_checkpoint", lambda *_a, **_k: None)
 
     payload = _tool_payload(asyncio.run(
-        tool_gates.prepare_next_gen.handler({"source_v": 143, "next_v": 144})
+        tool_gates.prepare_next_gen.handler({
+            "source_v": parent_v,
+            "next_v": child_v,
+        })
     ))
 
     assert payload["error"] == "TARGET_PREIMAGE_REQUIRES_CANONICAL_ABANDON"
@@ -329,24 +356,35 @@ def test_normal_unpublished_parent_still_fails_closed_before_copy(
     tmp_path,
     monkeypatch,
 ):
-    checkpoint = {"source_v": 143, "next_v": 144, "stage": "selected"}
+    from conftest import strict_bot_name
+
+    parent_v = STRICT_TARGET_V
+    child_v = STRICT_TARGET_V + 1
+    checkpoint = {
+        "source_v": parent_v,
+        "next_v": child_v,
+        "stage": "selected",
+    }
     tool_gates, bot_dir, _state, writes = _install_prepare_environment(
         tmp_path,
         monkeypatch,
         checkpoint=checkpoint,
-        active_bots=["national_v143"],
+        active_bots=[strict_bot_name(parent_v)],
         tagged_versions=set(),
     )
-    source = bot_dir(143)
+    source = bot_dir(parent_v)
     source.mkdir()
     (source / ".completed").write_text("local-only\n", encoding="utf-8")
 
     payload = _tool_payload(asyncio.run(
-        tool_gates.prepare_next_gen.handler({"source_v": 143, "next_v": 144})
+        tool_gates.prepare_next_gen.handler({
+            "source_v": parent_v,
+            "next_v": child_v,
+        })
     ))
 
-    assert "has no git tag 'national-bot-v143'" in payload["error"]
-    assert not bot_dir(144).exists()
+    assert f"has no git tag '{bot_tag(parent_v)}'" in payload["error"]
+    assert not bot_dir(child_v).exists()
     assert writes == []
 
 
@@ -359,10 +397,10 @@ def test_tampered_fresh_receipt_cannot_obtain_the_v142_tag_exemption(
     receipt = build_fresh_bootstrap_receipt(
         active_bots=(), epoch_reset_receipt_digest="a" * 64
     )
-    receipt["next_v"] = 144
+    receipt["next_v"] = STRICT_TARGET_V + 1
     checkpoint = {
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "stage": "selected",
         "audit_context": {"protocol_bootstrap": receipt},
     }
@@ -375,13 +413,16 @@ def test_tampered_fresh_receipt_cannot_obtain_the_v142_tag_exemption(
     )
 
     payload = _tool_payload(asyncio.run(
-        tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
+        tool_gates.prepare_next_gen.handler({
+            "source_v": STRICT_SOURCE_V,
+            "next_v": STRICT_TARGET_V,
+        })
     ))
 
     assert payload["error"] == "PROTOCOL_BOOTSTRAP_RECEIPT_INVALID"
     assert "system_bootstrap_receipt_digest_mismatch" in payload["validation_errors"]
     assert "fresh_bootstrap_receipt_subject_mismatch" in payload["validation_errors"]
-    assert not bot_dir(143).exists()
+    assert not bot_dir(STRICT_TARGET_V).exists()
     assert writes == []
 
 
@@ -393,20 +434,22 @@ def test_singleton_receipt_cannot_replace_current_parent_role_eligibility(
     import generation_evidence
     from system_strict_bootstrap import materialize_fresh_candidate
 
+    parent_v = STRICT_TARGET_V
+    child_v = STRICT_TARGET_V + 1
     subject = {
         "schema_version": 1,
         "kind": "national-tcp-policy-singleton-bootstrap-v1",
         "mode": "singleton_strict_bootstrap",
         "epoch": "national_tcp_policy_v1",
-        "source_v": 143,
-        "next_v": 144,
+        "source_v": parent_v,
+        "next_v": child_v,
         "source_artifact_inherited": True,
         "active_bots": [],
     }
     receipt = {**subject, "receipt_digest": canonical_digest(subject)}
     checkpoint = {
-        "source_v": 143,
-        "next_v": 144,
+        "source_v": parent_v,
+        "next_v": child_v,
         "stage": "selected",
         "audit_context": {"protocol_bootstrap": receipt},
     }
@@ -415,22 +458,25 @@ def test_singleton_receipt_cannot_replace_current_parent_role_eligibility(
         monkeypatch,
         checkpoint=checkpoint,
         active_bots=[],
-        tagged_versions={143},
+        tagged_versions={parent_v},
     )
     monkeypatch.setattr(
         generation_evidence,
         "live_protocol_bootstrap_allocation_errors",
         lambda *_args, **_kwargs: [],
     )
-    source = bot_dir(143)
-    materialize_fresh_candidate(source, version=143, final_policy=True)
+    source = bot_dir(parent_v)
+    materialize_fresh_candidate(source, version=parent_v, final_policy=True)
     (source / ".completed").write_text("published-cache-only\n", encoding="utf-8")
 
     payload = _tool_payload(asyncio.run(
-        tool_gates.prepare_next_gen.handler({"source_v": 143, "next_v": 144})
+        tool_gates.prepare_next_gen.handler({
+            "source_v": parent_v,
+            "next_v": child_v,
+        })
     ))
 
     assert "not eligible for the active national pool" in payload["error"]
     assert "signed full-v5 certificate" in payload["error"]
-    assert not bot_dir(144).exists()
+    assert not bot_dir(child_v).exists()
     assert writes == []

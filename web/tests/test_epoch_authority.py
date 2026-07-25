@@ -5,11 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+from bot_namespace import bot_name, bot_tag, high_water_tag, parse_bot_version
+
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
 def _published_parent(name, **_kwargs):
-    version = int(str(name).rsplit("national_v", 1)[1])
+    # parse_bot_version handles whichever active namespace (national_v on main,
+    # national_cloud_v on cloud) is configured for this branch, so the parent
+    # fixture stays branch-portable.
+    version = parse_bot_version(str(name))
+    assert version is not None, f"unrecognized bot label: {name!r}"
     return SimpleNamespace(
         eligible=True,
         version=version,
@@ -18,7 +25,7 @@ def _published_parent(name, **_kwargs):
         epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
         publication_identity={
             "published": True,
-            "tag": f"national-bot-v{version}",
+            "tag": bot_tag(version),
             "version": version,
         },
         certificate_digest="b" * 64,
@@ -66,17 +73,19 @@ def _strict_checkpoint(
 def _schema2_abandon_claim_for_status():
     import epoch_authority
 
+    target_v = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
     checkpoint = {
         "digest": "d" * 64,
-        "next_v": 144,
-        "source_v": 143,
+        "next_v": target_v,
+        "source_v": source_v,
         "stage": "master_planned",
-        "workflow_run_id": "generation:144:workflow-v1",
+        "workflow_run_id": f"generation:{target_v}:workflow-v1",
         "checkpoint_revision": 1,
     }
     candidate = {
         "present": True,
-        "path": "bots/national_v144",
+        "path": f"bots/{bot_name(target_v)}",
         "manifest_digest": "e" * 64,
         "entry_count": 5,
         "total_bytes": 100,
@@ -86,8 +95,8 @@ def _schema2_abandon_claim_for_status():
         "tracked_worktree_clean": True,
         "candidate_tracked": False,
         "publication_refs": {
-            "national-bot-v144": False,
-            "national-high-water-v144": False,
+            bot_tag(target_v): False,
+            high_water_tag(target_v): False,
         },
     }
     ledger = {
@@ -137,14 +146,14 @@ def test_missing_reset_projects_fresh_v143_and_ignores_old_checkpoint(monkeypatc
             "reset_receipt_valid": False,
             "reset_receipt_digest": None,
             "reset_receipt_issues": ["policy_epoch_reset_receipt_missing_or_unsafe"],
-            "version_authority_high_water": 142,
-            "first_strict_version": 143,
+            "version_authority_high_water": STRICT_SOURCE_V,
+            "first_strict_version": STRICT_TARGET_V,
             "operator_action": "execute_policy_epoch_reset",
             "operator_command": epoch_authority.RESET_COMMAND,
         },
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 142)
-    monkeypatch.setattr(evolution_infra, "find_max_committed_v", lambda: 142)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_SOURCE_V)
+    monkeypatch.setattr(evolution_infra, "find_max_committed_v", lambda: STRICT_SOURCE_V)
     monkeypatch.setattr(
         evolution_infra,
         "abandoned_version_authority",
@@ -159,19 +168,19 @@ def test_missing_reset_projects_fresh_v143_and_ignores_old_checkpoint(monkeypatc
         evolution_infra,
         "read_pipeline_checkpoint",
         lambda: {
-            "next_v": 155,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V + 12,
+            "source_v": STRICT_SOURCE_V,
             "stage": "direction_audited",
-            "workflow_run_id": "generation:155:workflow-v1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V + 12}:workflow-v1",
         },
     )
 
     projection = epoch_authority.strict_epoch_projection()
 
-    assert projection["current_v"] == 142
-    assert projection["next_v"] == 143
+    assert projection["current_v"] == STRICT_SOURCE_V
+    assert projection["next_v"] == STRICT_TARGET_V
     assert projection["active_generation"] is None
-    assert projection["ignored_checkpoint"]["next_v"] == 155
+    assert projection["ignored_checkpoint"]["next_v"] == STRICT_TARGET_V + 12
     assert projection["ignored_checkpoint"]["reason"] == (
         "checkpoint_not_bound_to_strict_epoch"
     )
@@ -187,12 +196,12 @@ def test_invalid_durable_reset_claim_requires_recovery_not_rerun(tmp_path, monke
         encoding="utf-8",
     )
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 142)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_SOURCE_V)
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
         lambda: SimpleNamespace(
-            high_water=142,
+            high_water=STRICT_SOURCE_V,
             unpaired_completion_versions=(),
             unpaired_high_water_versions=(),
         ),
@@ -218,7 +227,7 @@ def test_strict_tag_without_eligible_publication_requires_recovery(tmp_path, mon
     import national_runtime_authority
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 155)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V + 12)
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
@@ -240,13 +249,13 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
     import national_runtime_authority
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
         lambda: SimpleNamespace(
-            high_water=143,
-            paired_versions=(143,),
+            high_water=STRICT_TARGET_V,
+            paired_versions=(STRICT_TARGET_V,),
             unpaired_completion_versions=(),
             unpaired_high_water_versions=(),
         ),
@@ -255,7 +264,7 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
 
     def strict_bots(**kwargs):
         observed_ledger_fresh.append(kwargs["ledger_fresh"])
-        return ("national_v143",)
+        return (bot_name(STRICT_TARGET_V),)
 
     monkeypatch.setattr(
         national_runtime_authority,
@@ -275,18 +284,18 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
     assert state["state"] == "strict_published"
     assert state["initialized"] is True
     assert state["strict_published"] is True
-    assert state["strict_published_bots"] == ["national_v143"]
+    assert state["strict_published_bots"] == [bot_name(STRICT_TARGET_V)]
     assert state["strict_published_bot_identities"] == [{
         "generation_ordinal": 1,
-        "canonical_version": 143,
-        "canonical_bot_name": "national_v143",
-        "canonical_tag": "national-bot-v143",
+        "canonical_version": STRICT_TARGET_V,
+        "canonical_bot_name": bot_name(STRICT_TARGET_V),
+        "canonical_tag": bot_tag(STRICT_TARGET_V),
     }]
     assert state["namespace_publication_proven"] is True
     assert state["strict_publication_versions_above_high_water"] == []
-    assert projection["active_bots"] == ["national_v143"]
-    assert projection["strict_published_versions"] == [143]
-    assert observer_projection["active_bots"] == ["national_v143"]
+    assert projection["active_bots"] == [bot_name(STRICT_TARGET_V)]
+    assert projection["strict_published_versions"] == [STRICT_TARGET_V]
+    assert observer_projection["active_bots"] == [bot_name(STRICT_TARGET_V)]
     assert observed_ledger_fresh == [True, True, False]
 
 
@@ -299,13 +308,13 @@ def test_reaped_active_pool_subset_does_not_renumber_published_history(
     import national_runtime_authority
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 147)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V + 4)
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
         lambda: SimpleNamespace(
-            high_water=147,
-            paired_versions=(143, 147),
+            high_water=STRICT_TARGET_V + 4,
+            paired_versions=(STRICT_TARGET_V, STRICT_TARGET_V + 4),
             unpaired_completion_versions=(),
             unpaired_high_water_versions=(),
         ),
@@ -313,7 +322,7 @@ def test_reaped_active_pool_subset_does_not_renumber_published_history(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda **_kwargs: ("national_v147",),
+        lambda **_kwargs: (bot_name(STRICT_TARGET_V + 4),),
     )
     monkeypatch.setattr(
         evolution_infra,
@@ -325,9 +334,9 @@ def test_reaped_active_pool_subset_does_not_renumber_published_history(
         },
     )
     checkpoint = _strict_checkpoint(
-        148,
-        147,
-        published_high_water=147,
+        STRICT_TARGET_V + 5,
+        STRICT_TARGET_V + 4,
+        published_high_water=STRICT_TARGET_V + 4,
     )
     monkeypatch.setattr(
         evolution_infra,
@@ -344,15 +353,18 @@ def test_reaped_active_pool_subset_does_not_renumber_published_history(
     projection = epoch_authority.strict_epoch_projection()
 
     assert state["initialized"] is True
-    assert state["strict_published_bots"] == ["national_v147"]
-    assert state["strict_published_versions"] == [143, 147]
+    assert state["strict_published_bots"] == [bot_name(STRICT_TARGET_V + 4)]
+    assert state["strict_published_versions"] == [
+        STRICT_TARGET_V,
+        STRICT_TARGET_V + 4,
+    ]
     assert [
         identity["generation_ordinal"]
         for identity in state["strict_published_bot_identities"]
     ] == [1, 2]
-    assert projection["active_bots"] == ["national_v147"]
+    assert projection["active_bots"] == [bot_name(STRICT_TARGET_V + 4)]
     assert projection["strict_generation_count"] == 2
-    assert projection["active_generation"]["canonical_version"] == 148
+    assert projection["active_generation"]["canonical_version"] == STRICT_TARGET_V + 5
     assert projection["active_generation"]["generation_ordinal"] == 3
 
 
@@ -370,7 +382,7 @@ def test_namespace_second_read_failure_does_not_project_active_bot_authority(
         "PIPELINE_STATE_FILE",
         tmp_path / "pipeline_state.json",
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
@@ -379,7 +391,7 @@ def test_namespace_second_read_failure_does_not_project_active_bot_authority(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda **_kwargs: ("national_v143",),
+        lambda **_kwargs: (bot_name(STRICT_TARGET_V),),
     )
 
     initialization = epoch_authority.policy_epoch_initialization(
@@ -400,8 +412,8 @@ def test_namespace_second_read_failure_does_not_project_active_bot_authority(
 @pytest.mark.parametrize(
     "strict_bots",
     (
-        ("national_v144",),
-        ("national_v143", "national_v144"),
+        (f"strict_target_plus_one",),
+        (f"strict_target_and_plus_one",),
     ),
 )
 def test_strict_publication_must_match_paired_namespace_high_water(
@@ -413,13 +425,21 @@ def test_strict_publication_must_match_paired_namespace_high_water(
     import evolution_infra
     import national_runtime_authority
 
+    bot_labels = {
+        "strict_target_plus_one": (bot_name(STRICT_TARGET_V + 1),),
+        "strict_target_and_plus_one": (
+            bot_name(STRICT_TARGET_V),
+            bot_name(STRICT_TARGET_V + 1),
+        ),
+    }[strict_bots[0]]
+
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
         lambda: SimpleNamespace(
-            high_water=143,
+            high_water=STRICT_TARGET_V,
             unpaired_completion_versions=(),
             unpaired_high_water_versions=(),
         ),
@@ -427,7 +447,7 @@ def test_strict_publication_must_match_paired_namespace_high_water(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda **_kwargs: strict_bots,
+        lambda **_kwargs: bot_labels,
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
@@ -439,13 +459,15 @@ def test_strict_publication_must_match_paired_namespace_high_water(
     assert state["initialized"] is False
     assert state["namespace_publication_proven"] is False
     assert state["strict_published_bots"] == []
-    assert state["strict_publication_versions_above_high_water"] == [144]
+    assert state["strict_publication_versions_above_high_water"] == [
+        STRICT_TARGET_V + 1
+    ]
     assert state["operator_action"] == "inspect_strict_version_authority"
     assert projection["active_bots"] == []
     assert projection["strict_published_versions"] == []
 
 
-@pytest.mark.parametrize("namespace_high_water", (142, 144))
+@pytest.mark.parametrize("namespace_high_water", (STRICT_SOURCE_V, STRICT_TARGET_V + 1))
 def test_namespace_high_water_drift_withholds_active_bot_authority(
     tmp_path,
     monkeypatch,
@@ -456,7 +478,7 @@ def test_namespace_high_water_drift_withholds_active_bot_authority(
     import national_runtime_authority
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
@@ -469,7 +491,7 @@ def test_namespace_high_water_drift_withholds_active_bot_authority(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda **_kwargs: ("national_v143",),
+        lambda **_kwargs: (bot_name(STRICT_TARGET_V),),
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
@@ -490,7 +512,10 @@ def test_abandoned_floor_is_epoch_scoped(tmp_path, monkeypatch):
     import evolution_infra
 
     abandoned = tmp_path / "abandoned_versions.jsonl"
-    abandoned.write_text('{"v": 155}\n{"v": 167}\n', encoding="utf-8")
+    abandoned.write_text(
+        '{"v": %d}\n{"v": %d}\n' % (STRICT_TARGET_V + 12, STRICT_TARGET_V + 24),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(evolution_infra, "ABANDONED_VERSIONS_FILE", abandoned)
     monkeypatch.setattr(
         epoch_authority,
@@ -514,9 +539,9 @@ def test_abandoned_floor_is_epoch_scoped(tmp_path, monkeypatch):
         evolution_infra.find_abandoned_version_floor()
 
     abandoned.unlink()
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     first = evolution_infra.append_abandoned_version_receipt(
-        _strict_checkpoint(144, 143),
+        _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V),
         reason="test-v144",
         timestamp=1.0,
         path=abandoned,
@@ -524,10 +549,10 @@ def test_abandoned_floor_is_epoch_scoped(tmp_path, monkeypatch):
     )
     evolution_infra.append_abandoned_version_receipt(
         _strict_checkpoint(
-            145,
-            143,
-            published_high_water=143,
-            abandoned_receipt_floor=144,
+            STRICT_TARGET_V + 2,
+            STRICT_TARGET_V,
+            published_high_water=STRICT_TARGET_V,
+            abandoned_receipt_floor=STRICT_TARGET_V + 1,
             abandoned_receipt_head_digest=first["receipt_digest"],
         ),
         reason="test-v145",
@@ -535,7 +560,7 @@ def test_abandoned_floor_is_epoch_scoped(tmp_path, monkeypatch):
         path=abandoned,
         project_root=tmp_path,
     )
-    assert evolution_infra.find_abandoned_version_floor() == 145
+    assert evolution_infra.find_abandoned_version_floor() == STRICT_TARGET_V + 2
 
 
 def test_failed_reserved_v143_attempt_is_audited_but_does_not_burn_label(
@@ -554,9 +579,9 @@ def test_failed_reserved_v143_attempt_is_audited_but_does_not_burn_label(
         },
     )
     receipts = [{
-        "version": 143,
+        "version": STRICT_TARGET_V,
         "receipt_digest": "a" * 64,
-        "workflow_run_id": "generation:143:workflow-v18",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v18",
     }]
     monkeypatch.setattr(
         evolution_infra,
@@ -565,14 +590,14 @@ def test_failed_reserved_v143_attempt_is_audited_but_does_not_burn_label(
     )
 
     assert evolution_infra.find_abandoned_version_floor() == 0
-    assert evolution_infra.abandoned_version_attempt_count(143) == 18
+    assert evolution_infra.abandoned_version_attempt_count(STRICT_TARGET_V) == 18
 
     receipts.append({
-        "version": 144,
+        "version": STRICT_TARGET_V + 1,
         "receipt_digest": "b" * 64,
-        "workflow_run_id": "generation:144:workflow-v1",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V + 1}:workflow-v1",
     })
-    assert evolution_infra.find_abandoned_version_floor() == 144
+    assert evolution_infra.find_abandoned_version_floor() == STRICT_TARGET_V + 1
 
 
 def test_abandon_receipt_is_checkpoint_bound_chained_and_tamper_evident(
@@ -582,9 +607,9 @@ def test_abandon_receipt_is_checkpoint_bound_chained_and_tamper_evident(
     import evolution_infra
 
     ledger = tmp_path / "abandoned_versions.jsonl"
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     first = evolution_infra.append_abandoned_version_receipt(
-        _strict_checkpoint(144, 143, revision=3),
+        _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=3),
         reason="quality-repair-exhausted",
         timestamp=1.0,
         path=ledger,
@@ -592,11 +617,11 @@ def test_abandon_receipt_is_checkpoint_bound_chained_and_tamper_evident(
     )
     second = evolution_infra.append_abandoned_version_receipt(
         _strict_checkpoint(
-            145,
-            143,
+            STRICT_TARGET_V + 2,
+            STRICT_TARGET_V,
             revision=7,
-            published_high_water=143,
-            abandoned_receipt_floor=144,
+            published_high_water=STRICT_TARGET_V,
+            abandoned_receipt_floor=STRICT_TARGET_V + 1,
             abandoned_receipt_head_digest=first["receipt_digest"],
         ),
         reason="native-precommit-exhausted",
@@ -609,12 +634,15 @@ def test_abandon_receipt_is_checkpoint_bound_chained_and_tamper_evident(
         path=ledger,
         project_root=tmp_path,
     )
-    assert [row["version"] for row in receipts] == [144, 145]
+    assert [row["version"] for row in receipts] == [
+        STRICT_TARGET_V + 1,
+        STRICT_TARGET_V + 2,
+    ]
     assert first["previous_receipt_digest"] is None
     assert second["previous_receipt_digest"] == first["receipt_digest"]
     assert receipts[0]["checkpoint_envelope"]["epoch_binding"][
         "binding_digest"
-    ] == _strict_checkpoint(144, 143, revision=3)["epoch_binding"][
+    ] == _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=3)["epoch_binding"][
         "binding_digest"
     ]
 
@@ -641,8 +669,8 @@ def test_abandon_receipt_replay_is_idempotent_after_checkpoint_clear_failure(
     import evolution_infra
 
     ledger = tmp_path / "abandoned_versions.jsonl"
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
-    checkpoint = _strict_checkpoint(144, 143, revision=9)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=9)
     first = evolution_infra.append_abandoned_version_receipt(
         checkpoint,
         reason="checkpoint-clear-failed",
@@ -680,8 +708,8 @@ def test_historical_abandon_receipt_cannot_be_replayed_after_chain_advances(
     import evolution_infra
 
     ledger = tmp_path / "abandoned_versions.jsonl"
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
-    stale_checkpoint = _strict_checkpoint(144, 143, revision=3)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    stale_checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=3)
     first = evolution_infra.append_abandoned_version_receipt(
         stale_checkpoint,
         reason="first-terminal-command",
@@ -691,11 +719,11 @@ def test_historical_abandon_receipt_cannot_be_replayed_after_chain_advances(
     )
     evolution_infra.append_abandoned_version_receipt(
         _strict_checkpoint(
-            145,
-            143,
+            STRICT_TARGET_V + 2,
+            STRICT_TARGET_V,
             revision=4,
-            published_high_water=143,
-            abandoned_receipt_floor=144,
+            published_high_water=STRICT_TARGET_V,
+            abandoned_receipt_floor=STRICT_TARGET_V + 1,
             abandoned_receipt_head_digest=first["receipt_digest"],
         ),
         reason="later-terminal-command",
@@ -725,8 +753,8 @@ def test_concurrent_same_checkpoint_abandon_is_one_durable_receipt(
     import evolution_infra
 
     ledger = tmp_path / "abandoned_versions.jsonl"
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
-    checkpoint = _strict_checkpoint(144, 143, revision=3)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=3)
 
     def append(_index):
         return evolution_infra.append_abandoned_version_receipt(
@@ -753,13 +781,13 @@ def test_abandon_receipt_size_preflight_never_mutates_ledger(
     import evolution_infra
 
     ledger = tmp_path / "abandoned_versions.jsonl"
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     with pytest.raises(
         evolution_infra.AbandonedVersionLedgerError,
         match="reason exceeds byte limit",
     ):
         evolution_infra.append_abandoned_version_receipt(
-            _strict_checkpoint(144, 143),
+            _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V),
             reason="x" * (evolution_infra._ABANDONED_VERSION_REASON_MAX_BYTES + 1),
             path=ledger,
             project_root=tmp_path,
@@ -770,7 +798,7 @@ def test_abandon_receipt_size_preflight_never_mutates_ledger(
         match="infra_failure exceeds byte limit",
     ):
         evolution_infra.append_abandoned_version_receipt(
-            _strict_checkpoint(144, 143),
+            _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V),
             reason="oversize-infra",
             infra_failure={
                 "detail": "x" * evolution_infra._ABANDONED_VERSION_INFRA_FAILURE_MAX_BYTES
@@ -781,7 +809,7 @@ def test_abandon_receipt_size_preflight_never_mutates_ledger(
     assert not ledger.exists()
 
     first = evolution_infra.append_abandoned_version_receipt(
-        _strict_checkpoint(144, 143),
+        _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V),
         reason="first",
         path=ledger,
         project_root=tmp_path,
@@ -798,10 +826,10 @@ def test_abandon_receipt_size_preflight_never_mutates_ledger(
     ):
         evolution_infra.append_abandoned_version_receipt(
             _strict_checkpoint(
-                145,
-                143,
-                published_high_water=143,
-                abandoned_receipt_floor=144,
+                STRICT_TARGET_V + 2,
+                STRICT_TARGET_V,
+                published_high_water=STRICT_TARGET_V,
+                abandoned_receipt_floor=STRICT_TARGET_V + 1,
                 abandoned_receipt_head_digest=first["receipt_digest"],
             ),
             reason="second",
@@ -822,14 +850,14 @@ def test_abandon_sidecar_lock_symlink_is_rejected_without_data_creation(
     outside = tmp_path / "outside.lock"
     outside.write_text("untouched", encoding="utf-8")
     lock.symlink_to(outside)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
 
     with pytest.raises(
         evolution_infra.AbandonedVersionLedgerError,
         match="append failed|sidecar lock",
     ):
         evolution_infra.append_abandoned_version_receipt(
-            _strict_checkpoint(144, 143),
+            _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V),
             reason="unsafe-lock",
             path=ledger,
             project_root=tmp_path,
@@ -934,10 +962,10 @@ def test_abandon_receipt_rejects_unbound_checkpoint_without_creating_ledger(
     ):
         evolution_infra.append_abandoned_version_receipt(
             {
-                "next_v": 144,
-                "source_v": 143,
+                "next_v": STRICT_TARGET_V + 1,
+                "source_v": STRICT_TARGET_V,
                 "stage": "master_planned",
-                "workflow_run_id": "generation:144:unbound",
+                "workflow_run_id": f"generation:{STRICT_TARGET_V + 1}:unbound",
                 "checkpoint_revision": 1,
             },
             reason="must-not-bind",
@@ -951,13 +979,16 @@ def test_bare_commit_diagnostic_cannot_advance_allocation():
     import evolution_infra
 
     assert evolution_infra.compute_next_generation_v(
-        current_v=143,
+        current_v=STRICT_TARGET_V,
         max_committed_v=999,
-        abandoned_floor=144,
-    ) == 145
+        abandoned_floor=STRICT_TARGET_V + 1,
+    ) == STRICT_TARGET_V + 2
 
 
-@pytest.mark.parametrize("target", (144, 146, 150))
+@pytest.mark.parametrize(
+    "target",
+    (STRICT_TARGET_V + 1, STRICT_TARGET_V + 3, STRICT_TARGET_V + 7),
+)
 def test_checkpoint_binding_rejects_non_successor_target(target):
     import checkpoint_schema
 
@@ -967,10 +998,10 @@ def test_checkpoint_binding_rejects_non_successor_target(target):
     ):
         checkpoint_schema.build_checkpoint_epoch_binding(
             next_v=target,
-            source_v=143,
+            source_v=STRICT_TARGET_V,
             audit_context={},
-            published_high_water=143,
-            abandoned_receipt_floor=144,
+            published_high_water=STRICT_TARGET_V,
+            abandoned_receipt_floor=STRICT_TARGET_V + 1,
             abandoned_receipt_head_digest="a" * 64,
             parent_resolver=_published_parent,
         )
@@ -980,16 +1011,16 @@ def test_live_checkpoint_rejects_published_floor_and_ledger_head_drift():
     import checkpoint_schema
 
     checkpoint = _strict_checkpoint(
-        145,
-        143,
-        published_high_water=143,
-        abandoned_receipt_floor=144,
+        STRICT_TARGET_V + 2,
+        STRICT_TARGET_V,
+        published_high_water=STRICT_TARGET_V,
+        abandoned_receipt_floor=STRICT_TARGET_V + 1,
         abandoned_receipt_head_digest="a" * 64,
     )
     errors = checkpoint_schema.live_checkpoint_allocation_authority_errors(
         checkpoint,
-        published_high_water=145,
-        abandoned_receipt_floor=145,
+        published_high_water=STRICT_TARGET_V + 2,
+        abandoned_receipt_floor=STRICT_TARGET_V + 2,
         abandoned_receipt_head_digest="b" * 64,
     )
     assert "checkpoint_target_not_above_live_allocation_floor" in errors
@@ -1012,22 +1043,22 @@ def test_projection_splits_published_high_water_from_allocation_floor(
             "state": "strict_published",
             "initialized": True,
             "strict_published": True,
-            "strict_published_bots": ["national_v143"],
+            "strict_published_bots": [bot_name(STRICT_TARGET_V)],
             "reset_receipt_valid": False,
             "reset_receipt_digest": None,
             "reset_receipt_issues": [],
-            "version_authority_high_water": 143,
-            "first_strict_version": 143,
+            "version_authority_high_water": STRICT_TARGET_V,
+            "first_strict_version": STRICT_TARGET_V,
             "operator_action": None,
             "operator_command": None,
         },
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "abandoned_version_authority",
         lambda **_kwargs: {
-            "floor": 145,
+            "floor": STRICT_TARGET_V + 2,
             "head_digest": "a" * 64,
             "receipt_count": 1,
         },
@@ -1042,11 +1073,11 @@ def test_projection_splits_published_high_water_from_allocation_floor(
 
     projection = epoch_authority.strict_epoch_projection()
 
-    assert projection["published_high_water"] == 143
-    assert projection["allocation_floor"] == 145
-    assert projection["abandoned_receipt_floor"] == 145
-    assert projection["next_v"] == 146
-    assert projection["max_committed_v"] == 143
+    assert projection["published_high_water"] == STRICT_TARGET_V
+    assert projection["allocation_floor"] == STRICT_TARGET_V + 2
+    assert projection["abandoned_receipt_floor"] == STRICT_TARGET_V + 2
+    assert projection["next_v"] == STRICT_TARGET_V + 3
+    assert projection["max_committed_v"] == STRICT_TARGET_V
     assert projection["next_v_authority"] == "published_tags_and_abandon_receipts"
 
 
@@ -1077,22 +1108,22 @@ def test_claimed_terminal_or_incomplete_checkpoint_never_becomes_scheduler_bound
             "state": "strict_published",
             "initialized": True,
             "strict_published": True,
-            "strict_published_bots": ["national_v143"],
+            "strict_published_bots": [bot_name(STRICT_TARGET_V)],
             "reset_receipt_valid": False,
             "reset_receipt_digest": None,
             "reset_receipt_issues": [],
-            "version_authority_high_water": 143,
-            "first_strict_version": 143,
+            "version_authority_high_water": STRICT_TARGET_V,
+            "first_strict_version": STRICT_TARGET_V,
             "operator_action": None,
             "operator_command": None,
         },
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "abandoned_version_authority",
         lambda **_kwargs: {
-            "floor": 143,
+            "floor": STRICT_TARGET_V,
             "head_digest": None,
             "receipt_count": 0,
         },
@@ -1103,11 +1134,11 @@ def test_claimed_terminal_or_incomplete_checkpoint_never_becomes_scheduler_bound
         tmp_path / "pipeline_state.json",
     )
     if checkpoint_case in {"archived", "abandoned"}:
-        checkpoint = _strict_checkpoint(144, 143, stage=checkpoint_case)
+        checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, stage=checkpoint_case)
     elif checkpoint_case == "missing_stage":
-        checkpoint = {"stage": None, "next_v": 144, "source_v": 143}
+        checkpoint = {"stage": None, "next_v": STRICT_TARGET_V + 1, "source_v": STRICT_TARGET_V}
     else:
-        checkpoint = {"stage": "master_planned", "next_v": None, "source_v": 143}
+        checkpoint = {"stage": "master_planned", "next_v": None, "source_v": STRICT_TARGET_V}
     monkeypatch.setattr(
         evolution_infra,
         "read_pipeline_checkpoint",
@@ -1145,22 +1176,22 @@ def test_checkpoint_disappearing_during_projection_is_not_clean_scheduler_bounda
             "state": "strict_published",
             "initialized": True,
             "strict_published": True,
-            "strict_published_bots": ["national_v143"],
+            "strict_published_bots": [bot_name(STRICT_TARGET_V)],
             "reset_receipt_valid": False,
             "reset_receipt_digest": None,
             "reset_receipt_issues": [],
-            "version_authority_high_water": 143,
-            "first_strict_version": 143,
+            "version_authority_high_water": STRICT_TARGET_V,
+            "first_strict_version": STRICT_TARGET_V,
             "operator_action": None,
             "operator_command": None,
         },
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "abandoned_version_authority",
         lambda **_kwargs: {
-            "floor": 143,
+            "floor": STRICT_TARGET_V,
             "head_digest": None,
             "receipt_count": 0,
         },
@@ -1210,30 +1241,30 @@ def test_valid_active_checkpoint_owns_target_but_not_published_high_water(
             "state": "strict_published",
             "initialized": True,
             "strict_published": True,
-            "strict_published_bots": ["national_v143"],
+            "strict_published_bots": [bot_name(STRICT_TARGET_V)],
             "reset_receipt_valid": False,
             "reset_receipt_digest": None,
             "reset_receipt_issues": [],
-            "version_authority_high_water": 143,
-            "first_strict_version": 143,
+            "version_authority_high_water": STRICT_TARGET_V,
+            "first_strict_version": STRICT_TARGET_V,
             "operator_action": None,
             "operator_command": None,
         },
     )
     checkpoint = _strict_checkpoint(
-        145,
-        143,
+        STRICT_TARGET_V + 2,
+        STRICT_TARGET_V,
         revision=8,
-        published_high_water=143,
-        abandoned_receipt_floor=144,
+        published_high_water=STRICT_TARGET_V,
+        abandoned_receipt_floor=STRICT_TARGET_V + 1,
         abandoned_receipt_head_digest="a" * 64,
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "abandoned_version_authority",
         lambda **_kwargs: {
-            "floor": 144,
+            "floor": STRICT_TARGET_V + 1,
             "head_digest": "a" * 64,
             "receipt_count": 1,
         },
@@ -1243,19 +1274,23 @@ def test_valid_active_checkpoint_owns_target_but_not_published_high_water(
 
     projection = epoch_authority.strict_epoch_projection()
 
-    assert projection["published_high_water"] == 143
-    assert projection["allocation_floor"] == 144
-    assert projection["next_v"] == 145
+    assert projection["published_high_water"] == STRICT_TARGET_V
+    assert projection["allocation_floor"] == STRICT_TARGET_V + 1
+    assert projection["next_v"] == STRICT_TARGET_V + 2
     assert projection["next_v_authority"] == "active_checkpoint_epoch_binding"
     assert projection["active_generation"]["checkpoint_revision"] == 8
-    assert projection["active_generation"]["next_v"] == 145
-    assert projection["active_generation"]["canonical_version"] == 145
-    # v144 is canonically abandoned and therefore consumes no user-visible
-    # Bot ordinal.  The next candidate remains the second potential Bot while
-    # retaining its immutable canonical v145 identity.
+    assert projection["active_generation"]["next_v"] == STRICT_TARGET_V + 2
+    assert projection["active_generation"]["canonical_version"] == STRICT_TARGET_V + 2
+    # The intervening version is canonically abandoned and therefore consumes no
+    # user-visible Bot ordinal.  The next candidate remains the second potential
+    # Bot while retaining its immutable canonical identity.
     assert projection["active_generation"]["generation_ordinal"] == 2
-    assert projection["active_generation"]["canonical_bot_name"] == "national_v145"
-    assert projection["active_generation"]["canonical_tag"] == "national-bot-v145"
+    assert projection["active_generation"]["canonical_bot_name"] == bot_name(
+        STRICT_TARGET_V + 2
+    )
+    assert projection["active_generation"]["canonical_tag"] == bot_tag(
+        STRICT_TARGET_V + 2
+    )
 
 
 def test_projection_routes_exact_recorded_abandon_to_cas_finalize(
@@ -1265,9 +1300,9 @@ def test_projection_routes_exact_recorded_abandon_to_cas_finalize(
     import epoch_authority
     import evolution_infra
 
-    checkpoint = _strict_checkpoint(144, 143, revision=6)
+    checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=6)
     ledger = tmp_path / "abandoned_versions.jsonl"
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     terminal = evolution_infra.append_abandoned_version_receipt(
         checkpoint,
         reason="clear-cas-failed",
@@ -1282,12 +1317,12 @@ def test_projection_routes_exact_recorded_abandon_to_cas_finalize(
             "state": "strict_published",
             "initialized": True,
             "strict_published": True,
-            "strict_published_bots": ["national_v143"],
+            "strict_published_bots": [bot_name(STRICT_TARGET_V)],
             "reset_receipt_valid": False,
             "reset_receipt_digest": None,
             "reset_receipt_issues": [],
-            "version_authority_high_water": 143,
-            "first_strict_version": 143,
+            "version_authority_high_water": STRICT_TARGET_V,
+            "first_strict_version": STRICT_TARGET_V,
             "operator_action": None,
             "operator_command": None,
         },
@@ -1296,7 +1331,7 @@ def test_projection_routes_exact_recorded_abandon_to_cas_finalize(
         evolution_infra,
         "abandoned_version_authority",
         lambda **_kwargs: {
-            "floor": 144,
+            "floor": STRICT_TARGET_V + 1,
             "head_digest": terminal["receipt_digest"],
             "receipt_count": 1,
         },
@@ -1353,16 +1388,16 @@ async def test_scheduler_resumes_only_canonical_active_checkpoint(monkeypatch):
         "strict_epoch_projection",
         lambda **_kwargs: {
             "initialized": True,
-            "current_v": 143,
-            "published_high_water": 143,
-            "allocation_floor": 144,
-            "abandoned_receipt_floor": 144,
-            "next_v": 150,
+            "current_v": STRICT_TARGET_V,
+            "published_high_water": STRICT_TARGET_V,
+            "allocation_floor": STRICT_TARGET_V + 1,
+            "abandoned_receipt_floor": STRICT_TARGET_V + 1,
+            "next_v": STRICT_TARGET_V + 7,
             "next_v_authority": "active_checkpoint_epoch_binding",
             "ignored_checkpoint": None,
             "active_generation": {
-                "next_v": 150,
-                "source_v": 143,
+                "next_v": STRICT_TARGET_V + 7,
+                "source_v": STRICT_TARGET_V,
                 "parent2_v": None,
                 "stage": "master_planned",
             },
@@ -1377,9 +1412,9 @@ async def test_scheduler_resumes_only_canonical_active_checkpoint(monkeypatch):
     result = await generation_scheduler.prepare_generation(None)
 
     assert result is not None
-    assert result.current_v == 143
-    assert result.next_v == 150
-    assert result.source_v == 143
+    assert result.current_v == STRICT_TARGET_V
+    assert result.next_v == STRICT_TARGET_V + 7
+    assert result.source_v == STRICT_TARGET_V
 
 
 def test_reset_command_contains_required_runtime_acknowledgement():
@@ -1406,14 +1441,14 @@ def test_first_strict_bootstrap_checkpoint_projects_exact_operator_command(monke
             "reset_receipt_valid": True,
             "reset_receipt_digest": "a" * 64,
             "reset_receipt_issues": [],
-            "version_authority_high_water": 142,
-            "first_strict_version": 143,
+            "version_authority_high_water": STRICT_SOURCE_V,
+            "first_strict_version": STRICT_TARGET_V,
             "operator_action": None,
             "operator_command": None,
         },
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 142)
-    monkeypatch.setattr(evolution_infra, "find_max_committed_v", lambda: 142)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_SOURCE_V)
+    monkeypatch.setattr(evolution_infra, "find_max_committed_v", lambda: STRICT_SOURCE_V)
     monkeypatch.setattr(
         evolution_infra,
         "abandoned_version_authority",
@@ -1427,10 +1462,10 @@ def test_first_strict_bootstrap_checkpoint_projects_exact_operator_command(monke
         evolution_infra,
         "read_pipeline_checkpoint",
         lambda: {
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "stage": "official_bootstrap_required",
-            "workflow_run_id": "generation:143:strict-test",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:strict-test",
             "generation_attempt": 1,
             "checkpoint_revision": 7,
         },
@@ -1458,7 +1493,7 @@ def test_first_strict_bootstrap_checkpoint_projects_exact_operator_command(monke
     assert projection["active_generation"]["checkpoint_revision"] == 7
     assert projection["operator_action"] == "run_first_strict_official_certification"
     assert projection["operator_command"] == epoch_authority.FIRST_STRICT_BOOTSTRAP_COMMAND
-    assert "bots/national_v143" in projection["operator_command"]
+    assert f"bots/{bot_name(STRICT_TARGET_V)}" in projection["operator_command"]
     assert "--acknowledge-one-time-first-strict-control" in projection["operator_command"]
 
 
@@ -1466,10 +1501,10 @@ def test_first_strict_operator_transition_is_digest_bound_for_all_four_states():
     import epoch_authority
 
     checkpoint = {
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
         "stage": "official_bootstrap_required",
-        "workflow_run_id": "generation:143:transition-digest",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:transition-digest",
         "checkpoint_revision": 11,
         "audit_context": {
             "official_bootstrap_request": {
@@ -1520,7 +1555,7 @@ def test_first_strict_operator_transition_is_digest_bound_for_all_four_states():
         assert transition["transition_digest"] == expected
         assert transition["candidate_hash"] == "a" * 64
         assert transition["parked_request_digest"] == "b" * 64
-        assert transition["source_v"] == 142
+        assert transition["source_v"] == STRICT_SOURCE_V
         assert transition["action"] == action
         assert transition["command"] == command
 
@@ -1559,9 +1594,12 @@ def test_publication_ref_proof_rejects_lightweight_missing_or_wrong_tree_tag(
 ):
     import evolution_infra
 
+    target_v = STRICT_TARGET_V + 1
+    completion_tag = bot_tag(target_v)
+    high_water = high_water_tag(target_v)
     intent = {
-        "completion_tag": "national-bot-v144",
-        "high_water_tag": "national-high-water-v144",
+        "completion_tag": completion_tag,
+        "high_water_tag": high_water,
         "tag_message": "exact-message",
     }
     commit = "a" * 40
@@ -1570,13 +1608,13 @@ def test_publication_ref_proof_rejects_lightweight_missing_or_wrong_tree_tag(
         if args[:2] == ("cat-file", "-t"):
             return (
                 completion_type
-                if args[2].endswith("national-bot-v144")
+                if args[2].endswith(completion_tag)
                 else high_water_type
             )
         if args[0] == "rev-parse" and args[1].endswith("^{commit}"):
             return (
                 commit
-                if "national-bot-v144" in args[1]
+                if completion_tag in args[1]
                 else high_water_commit
             )
         if args[0] == "rev-parse":
@@ -1600,7 +1638,7 @@ def test_publication_reconciliation_rejects_invalid_completed_sentinel(
     import national_runtime_authority
     import publication_transaction
 
-    bot_dir = tmp_path / "national_v144"
+    bot_dir = tmp_path / bot_name(STRICT_TARGET_V + 1)
     bot_dir.mkdir()
     outside = tmp_path / "outside"
     outside.write_text("publication_id=pub\n", encoding="utf-8")
@@ -1609,17 +1647,18 @@ def test_publication_reconciliation_rejects_invalid_completed_sentinel(
         completed.write_text("publication_id=other\n", encoding="utf-8")
     else:
         completed.symlink_to(outside)
+    target_v = STRICT_TARGET_V + 1
     intent = {
-        "version": 144,
-        "workflow_run_id": "generation:144:workflow-v1",
-        "completion_tag": "national-bot-v144",
+        "version": target_v,
+        "workflow_run_id": f"generation:{target_v}:workflow-v1",
+        "completion_tag": bot_tag(target_v),
         "publication_id": "pub",
         "candidate_artifact_hash": "artifact",
         "official_certificate_digest": "d" * 64,
     }
     checkpoint = {
         "stage": "publishing",
-        "next_v": 144,
+        "next_v": target_v,
         "workflow_run_id": intent["workflow_run_id"],
         "publication_intent": intent,
     }
@@ -1644,10 +1683,10 @@ def test_publication_reconciliation_rejects_invalid_completed_sentinel(
         national_runtime_authority,
         "build_pending_local_publication_proof",
         lambda _path: {
-            "version": 144,
+            "version": target_v,
             "artifact_hash": "artifact",
             "commit_oid": "a" * 40,
-            "tag": "national-bot-v144",
+            "tag": bot_tag(target_v),
         },
     )
     monkeypatch.setattr(
@@ -1661,7 +1700,7 @@ def test_publication_reconciliation_rejects_invalid_completed_sentinel(
 
     assert evolution_infra._publication_checkpoint_reconciliation_allowed(
         checkpoint,
-        {"published_high_water": 144},
+        {"published_high_water": target_v},
     ) is False
 
 
@@ -1687,7 +1726,7 @@ def test_reconciliation_barrier_projects_no_active_bots(monkeypatch):
     import epoch_authority
     import evolution_infra
 
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
     monkeypatch.setattr(
         evolution_infra,
         "abandoned_version_authority",
@@ -1702,8 +1741,8 @@ def test_reconciliation_barrier_projects_no_active_bots(monkeypatch):
             "initialized": False,
             "epoch_initialized": True,
             "strict_published": True,
-            "strict_published_bots": ["national_v143"],
-            "strict_published_versions": [143],
+            "strict_published_bots": [bot_name(STRICT_TARGET_V)],
+            "strict_published_versions": [STRICT_TARGET_V],
             "namespace_publication_proven": True,
             "publication_recovery_ready": False,
             "unpaired_completion_versions": [],
@@ -1711,7 +1750,7 @@ def test_reconciliation_barrier_projects_no_active_bots(monkeypatch):
             "reset_receipt_valid": True,
             "reset_receipt_digest": "a" * 64,
             "reset_receipt_issues": [],
-            "version_authority_high_water": 143,
+            "version_authority_high_water": STRICT_TARGET_V,
             "runtime_reconciliation_claimed": True,
             "runtime_reconciliation_claim_valid": False,
             "runtime_reconciliation_claim_issues": [

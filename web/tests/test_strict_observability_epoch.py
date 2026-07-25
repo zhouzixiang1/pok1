@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+from bot_namespace import bot_name, bot_tag, high_water_tag
 import checkpoint_schema
 import evaluation_bundle
 from server.routes import _helpers
@@ -37,7 +39,7 @@ def _reset_receipt() -> dict:
         "created_at": "2026-07-14T00:00:00.000000",
         "git_head": "a" * 40,
         "archive_root": archive_root,
-        "first_target_version": 143,
+        "first_target_version": STRICT_TARGET_V,
         "checkout_role": "autonomous_evolution_runtime",
         "one_time": True,
     }
@@ -56,13 +58,13 @@ def _reset_receipt() -> dict:
             "prior_reset_evidence_required_empty": True,
             "claim_digest": claim_digest,
         },
-        "archived_version_high_water": 142,
-        "version_authority_high_water": 142,
-        "first_target_version": 143,
+        "archived_version_high_water": STRICT_SOURCE_V,
+        "version_authority_high_water": STRICT_SOURCE_V,
+        "first_target_version": STRICT_TARGET_V,
         "source_code_inherited": False,
         "seed_bot": None,
         "active_namespace": {
-            "bot": "national_v143",
+            "bot": bot_name(STRICT_TARGET_V),
             "protocol": "official-national-raw-tcp-v1",
             "policy_abi": "national-tcp-policy-runtime-v1",
         },
@@ -112,10 +114,10 @@ def _fresh_checkpoint(receipt: dict, *, workflow: str = "generation:143:test") -
         "selection": {"strategy": "fresh_policy_bootstrap"},
     }
     binding = checkpoint_schema.build_checkpoint_epoch_binding(
-        next_v=143,
-        source_v=142,
+        next_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
         audit_context=audit_context,
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
     )
@@ -123,8 +125,8 @@ def _fresh_checkpoint(receipt: dict, *, workflow: str = "generation:143:test") -
         "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
         "evaluation_epoch": "national_tcp_policy_v1",
         "epoch_binding": binding,
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
         "parent2_v": None,
         "stage": "direction_audited",
         "workflow_run_id": workflow,
@@ -133,14 +135,14 @@ def _fresh_checkpoint(receipt: dict, *, workflow: str = "generation:143:test") -
     }
 
 
-def _match(match_id: str, *, bot0: str = "national_v143", epoch: str = "national_tcp_policy_v1") -> dict:
+def _match(match_id: str, *, bot0: str = None, epoch: str = "national_tcp_policy_v1") -> dict:
     return {
         "id": match_id,
         "execution_mode": "native_tcp",
         "evaluation_epoch": epoch,
         "evaluation_identity_digest": IDENTITY,
-        "bot0": bot0,
-        "bot1": "national_v144",
+        "bot0": bot0 if bot0 is not None else bot_name(STRICT_TARGET_V),
+        "bot1": bot_name(STRICT_TARGET_V + 1),
         "strength_sample_unit": "70_hand_match",
         "hands_per_strength_sample": 70,
         "strength_admitted": True,
@@ -152,28 +154,28 @@ def _match(match_id: str, *, bot0: str = "national_v143", epoch: str = "national
 
 
 def _bundle(*, active=None) -> dict:
-    active = active or ["national_v143", "national_v144"]
+    active = active or [bot_name(STRICT_TARGET_V), bot_name(STRICT_TARGET_V + 1)]
     old_history = {
         "period": 1,
         "evaluation_identity_digest": "e" * 64,
-        "ratings": {"national_v142": {"r": 9999, "rd": 1}},
+        "ratings": {bot_name(STRICT_SOURCE_V): {"r": 9999, "rd": 1}},
     }
     current_history = {
         "period": 2,
         "evaluation_identity_digest": IDENTITY,
         "ratings": {
-            "national_v143": {"r": 1500, "rd": 80},
-            "national_v155": {"r": 9999, "rd": 1},
+            bot_name(STRICT_TARGET_V): {"r": 1500, "rd": 80},
+            bot_name(STRICT_TARGET_V + 12): {"r": 9999, "rd": 1},
         },
         "win_rates": {
-            "national_v143": {"games": 1},
-            "national_v155": {"games": 999},
+            bot_name(STRICT_TARGET_V): {"games": 1},
+            bot_name(STRICT_TARGET_V + 12): {"games": 999},
         },
     }
     matches = [
         _match("current.json"),
         _match("old-epoch.json", epoch="national_native_v1"),
-        _match("unpublished.json", bot0="national_v155"),
+        _match("unpublished.json", bot0=bot_name(STRICT_TARGET_V + 12)),
     ]
     return {
         "available": True,
@@ -184,7 +186,7 @@ def _bundle(*, active=None) -> dict:
         "manifest_digest": "f" * 64,
         "ratings": {name: {"r": 1500, "rd": 80} for name in active},
         "h2h": {
-            "national_v143 vs national_v144": {
+            f"{bot_name(STRICT_TARGET_V)} vs {bot_name(STRICT_TARGET_V + 1)}": {
                 "games": 1,
                 "a_wins": 1,
                 "b_wins": 0,
@@ -211,7 +213,7 @@ def _bundle(*, active=None) -> dict:
 
 
 def _current_bundle(*, active=None) -> dict:
-    active = active or ["national_v143", "national_v144"]
+    active = active or [bot_name(STRICT_TARGET_V), bot_name(STRICT_TARGET_V + 1)]
     return {
         **_bundle(active=active),
         "active_bots": active,
@@ -268,7 +270,7 @@ def test_strength_snapshot_stops_when_published_pool_is_empty(monkeypatch, tmp_p
 
 
 def test_strength_snapshot_rejects_singleton_default_rating(monkeypatch, tmp_path):
-    singleton = _current_bundle(active=["national_v143"])
+    singleton = _current_bundle(active=[bot_name(STRICT_TARGET_V)])
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
@@ -280,7 +282,7 @@ def test_strength_snapshot_rejects_singleton_default_rating(monkeypatch, tmp_pat
     assert snapshot == {
         "available": False,
         "reason": "active_pool_singleton",
-        "active_bots": ["national_v143"],
+        "active_bots": [bot_name(STRICT_TARGET_V)],
     }
 
 
@@ -298,7 +300,7 @@ def test_strength_snapshot_rejects_two_bot_zero_sample_cycle(monkeypatch, tmp_pa
     assert snapshot == {
         "available": False,
         "reason": "awaiting_first_complete_cycle",
-        "active_bots": ["national_v143", "national_v144"],
+        "active_bots": [bot_name(STRICT_TARGET_V), bot_name(STRICT_TARGET_V + 1)],
     }
 
 
@@ -313,8 +315,8 @@ def test_strength_snapshot_exposes_only_current_identity_and_active_pool(monkeyp
 
     assert snapshot["available"] is True
     assert [row["period"] for row in snapshot["rating_history"]] == [2]
-    assert set(snapshot["rating_history"][0]["ratings"]) == {"national_v143"}
-    assert set(snapshot["rating_history"][0]["win_rates"]) == {"national_v143"}
+    assert set(snapshot["rating_history"][0]["ratings"]) == {bot_name(STRICT_TARGET_V)}
+    assert set(snapshot["rating_history"][0]["win_rates"]) == {bot_name(STRICT_TARGET_V)}
     assert [row["id"] for row in snapshot["match_history"]] == ["current.json"]
 
 
@@ -376,12 +378,12 @@ def test_core_bundle_authority_rejects_cycle_active_pool_mismatch(
     monkeypatch.setattr(
         evolution_infra,
         "get_published_active_bots_read_only",
-        lambda **_kwargs: ["national_v143", "national_v144"],
+        lambda **_kwargs: [bot_name(STRICT_TARGET_V), bot_name(STRICT_TARGET_V + 1)],
     )
     monkeypatch.setattr(
         evaluation_bundle,
         "load_published_evaluation_bundle",
-        lambda _root: _bundle(active=["national_v143", "national_v155"]),
+        lambda _root: _bundle(active=[bot_name(STRICT_TARGET_V), bot_name(STRICT_TARGET_V + 12)]),
     )
 
     observed = evaluation_bundle.load_current_strict_evaluation_bundle(tmp_path)
@@ -404,7 +406,7 @@ def test_core_bundle_authority_fails_closed_when_cycle_loader_breaks(
     monkeypatch.setattr(
         evolution_infra,
         "get_published_active_bots_read_only",
-        lambda **_kwargs: ["national_v143"],
+        lambda **_kwargs: [bot_name(STRICT_TARGET_V)],
     )
     monkeypatch.setattr(
         evaluation_bundle,
@@ -433,7 +435,7 @@ def test_strict_checkpoint_and_failure_reader_require_exact_workflow_identity(
     failures_path = tmp_path / "worker_failures.jsonl"
     rows = [
         {
-            "gen": 143,
+            "gen": STRICT_TARGET_V,
             "worker_id": 1,
             "role": "worker",
             "error": "current",
@@ -442,23 +444,23 @@ def test_strict_checkpoint_and_failure_reader_require_exact_workflow_identity(
             "workflow_run_id": checkpoint["workflow_run_id"],
         },
         {
-            "gen": 143,
+            "gen": STRICT_TARGET_V,
             "worker_id": 2,
             "role": "worker",
             "error": "old workflow",
             "category": "worker",
             "evaluation_epoch": "national_tcp_policy_v1",
-            "workflow_run_id": "generation:143:old",
+            "workflow_run_id": "generation:{0}:old".format(STRICT_TARGET_V),
         },
         {
-            "gen": 143,
+            "gen": STRICT_TARGET_V,
             "worker_id": 3,
             "role": "worker",
             "error": "unbound legacy row",
             "category": "worker",
         },
         {
-            "gen": 143,
+            "gen": STRICT_TARGET_V,
             "worker_id": 4,
             "role": "worker",
             "error": "old epoch",
@@ -479,7 +481,7 @@ def test_strict_checkpoint_and_failure_reader_require_exact_workflow_identity(
     )
 
     assert observed is not None
-    assert observed["next_v"] == 143
+    assert observed["next_v"] == STRICT_TARGET_V
     assert [row["error"] for row in failures] == ["current"]
 
 
@@ -549,7 +551,7 @@ def test_new_worker_failure_is_identity_bound_at_write_time(monkeypatch, tmp_pat
     )
 
     agent_workers._record_worker_failure(
-        143,
+        STRICT_TARGET_V,
         1,
         "policy worker",
         "test failure",
@@ -573,13 +575,16 @@ def test_web_ui_uses_cycle_selection_instead_of_live_callback_payload(monkeypatc
     ui = WebUI(EventBroadcaster())
 
     ui.update_eval_table(
-        {"national_v155": {"r": 9999, "rd": 1}},
-        ["national_v155"],
+        {bot_name(STRICT_TARGET_V + 12): {"r": 9999, "rd": 1}},
+        [bot_name(STRICT_TARGET_V + 12)],
     )
 
     state = ui.get_state()
     assert [row["name"] for row in state["ratings"]] == [
-        "national_v143",
-        "national_v144",
+        bot_name(STRICT_TARGET_V),
+        bot_name(STRICT_TARGET_V + 1),
     ]
-    assert state["active_bots"] == ["national_v143", "national_v144"]
+    assert state["active_bots"] == [
+        bot_name(STRICT_TARGET_V),
+        bot_name(STRICT_TARGET_V + 1),
+    ]

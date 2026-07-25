@@ -11,20 +11,18 @@ import checkpoint_schema
 import evolution_infra
 import pytest
 from bot_artifact import canonical_digest
+from bot_namespace import bot_name, parse_bot_version
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name
 from system_strict_bootstrap import build_fresh_bootstrap_receipt
 
 from scripts import reconcile_national_policy_epoch as reconcile
-from tests.test_checkpoint_epoch_recovery import (
-    _policy_epoch_reset_receipt,
-    _write_reset_authority,
-)
-from tests.test_epoch_authority import _strict_checkpoint
+from tests.test_checkpoint_epoch_recovery import _write_reset_authority
 
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
 def _published_parent(name, **_kwargs):
-    version = int(str(name).rsplit("national_v", 1)[1])
+    version = parse_bot_version(name)
     return SimpleNamespace(
         eligible=True,
         version=version,
@@ -34,6 +32,105 @@ def _published_parent(name, **_kwargs):
         publication_identity={"published": True, "version": version},
         certificate_digest="b" * 64,
     )
+
+
+def _strict_checkpoint(
+    next_v,
+    source_v,
+    *,
+    stage="master_planned",
+    revision=1,
+    published_high_water=None,
+    abandoned_receipt_floor=0,
+    abandoned_receipt_head_digest=None,
+    workflow_attempt=1,
+):
+    # Local branch-portable copy of tests.test_epoch_authority._strict_checkpoint
+    # that uses this module's parse_bot_version-backed parent resolver, so the
+    # cloud (national_cloud_v) namespace resolves cleanly.
+    binding = checkpoint_schema.build_checkpoint_epoch_binding(
+        next_v=next_v,
+        source_v=source_v,
+        audit_context={},
+        published_high_water=(
+            next_v - 1 if published_high_water is None else published_high_water
+        ),
+        abandoned_receipt_floor=abandoned_receipt_floor,
+        abandoned_receipt_head_digest=abandoned_receipt_head_digest,
+        parent_resolver=_published_parent,
+    )
+    return {
+        "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": binding,
+        "next_v": next_v,
+        "source_v": source_v,
+        "parent2_v": None,
+        "stage": stage,
+        "workflow_run_id": f"generation:{next_v}:workflow-v{workflow_attempt}",
+        "checkpoint_revision": revision,
+        "audit_context": {},
+    }
+
+
+def _policy_epoch_reset_receipt():
+    # Branch-portable local copy of the reset receipt fixture. The authoritative
+    # contract (validate_policy_epoch_reset_archive) pins the high-water and
+    # first-target fields to ARCHIVED_VERSION_HIGH_WATER / FIRST_STRICT_POLICY_VERSION
+    # and the active namespace to bot_name(FIRST_STRICT_POLICY_VERSION), so the
+    # receipt must be rebuilt from the live namespace constants rather than the
+    # main-branch literals 142/143/national_v143.
+    archive_root = (
+        "archive/evolution_epochs/national_native_v1/"
+        "runtime_legacy_untrusted/20260714_000000_000000"
+    )
+    claim_payload = {
+        "schema_version": 1,
+        "kind": "national_tcp_policy_epoch_reset_claim",
+        "epoch": "national_tcp_policy_v1",
+        "created_at": "2026-07-14T00:00:00.000000",
+        "git_head": "a" * 40,
+        "archive_root": archive_root,
+        "first_target_version": STRICT_TARGET_V,
+        "checkout_role": "autonomous_evolution_runtime",
+        "one_time": True,
+    }
+    claim = {
+        **claim_payload,
+        "claim_digest": canonical_digest(claim_payload),
+    }
+    payload = {
+        "schema_version": 2,
+        "kind": "national_tcp_policy_epoch_reset",
+        "epoch": "national_tcp_policy_v1",
+        "created_at": "2026-07-14T00:00:00",
+        "mode": "execute",
+        "git_head": "a" * 40,
+        "archive_root": archive_root,
+        "execution_scope": {
+            "checkout_role": "autonomous_evolution_runtime",
+            "one_time": True,
+            "prior_reset_evidence_required_empty": True,
+            "claim_digest": claim["claim_digest"],
+        },
+        "archived_version_high_water": STRICT_SOURCE_V,
+        "version_authority_high_water": STRICT_SOURCE_V,
+        "first_target_version": STRICT_TARGET_V,
+        "source_code_inherited": False,
+        "seed_bot": None,
+        "active_namespace": {
+            "bot": strict_bot_name(),
+            "protocol": "official-national-raw-tcp-v1",
+            "policy_abi": "national-tcp-policy-runtime-v1",
+        },
+        "archived_runtime": [],
+        "archived_bot_debris": [],
+    }
+    return {
+        **payload,
+        "receipt_digest": canonical_digest(payload),
+        "_test_claim": claim,
+    }
 
 
 def _legacy_v1_binding(binding):
@@ -65,9 +162,12 @@ def _candidate(path: Path):
 
 
 def _legacy_rows(count=17):
+    # The recognized-legacy-shape contract is pinned by the production
+    # reconcile script's regex (``generation:143:workflow-v<N>``); only the
+    # ``v`` field tracks the branch's FIRST_STRICT_POLICY_VERSION floor.
     return "".join(
         json.dumps({
-            "v": 143,
+            "v": STRICT_TARGET_V,
             "reason": f"legacy failure {attempt}",
             "timestamp": float(attempt),
             "workflow_run_id": f"generation:143:workflow-v{attempt}",
@@ -116,7 +216,9 @@ def _configure_paths(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(reconcile, "_runtime_checkout_identity_errors", lambda: [])
     monkeypatch.setattr(reconcile, "_runtime_process_errors", lambda: [])
-    monkeypatch.setattr(reconcile, "_version_authority_high_water", lambda: 142)
+    monkeypatch.setattr(
+        reconcile, "_version_authority_high_water", lambda: STRICT_SOURCE_V
+    )
     monkeypatch.setattr(
         reconcile,
         "_git",
@@ -127,7 +229,7 @@ def _configure_paths(tmp_path, monkeypatch):
         "_git_explicit_presence",
         lambda *_args: False,
     )
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 142)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_SOURCE_V)
     monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", root)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
     monkeypatch.setattr(
@@ -148,10 +250,10 @@ def _fresh_v143_checkpoint(root, reset_receipt, *, workflow_attempt=18):
         "selection": {"strategy": "fresh_policy_bootstrap"},
     }
     binding = checkpoint_schema.build_checkpoint_epoch_binding(
-        next_v=143,
-        source_v=142,
+        next_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
         audit_context=audit_context,
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
         repo_root=root,
@@ -160,11 +262,11 @@ def _fresh_v143_checkpoint(root, reset_receipt, *, workflow_attempt=18):
         "checkpoint_schema_version": 1,
         "evaluation_epoch": "national_tcp_policy_v1",
         "epoch_binding": _legacy_v1_binding(binding),
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
         "parent2_v": None,
         "stage": "direction_audited",
-        "workflow_run_id": f"generation:143:workflow-v{workflow_attempt}",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v{workflow_attempt}",
         "checkpoint_revision": 4,
         "audit_context": audit_context,
     }
@@ -176,7 +278,7 @@ def _prepared_legacy_claim(tmp_path, monkeypatch):
     checkpoint = _fresh_v143_checkpoint(root, reset)
     reconcile.LEDGER.write_text(_legacy_rows(), encoding="utf-8")
     reconcile.CHECKPOINT.write_text(json.dumps(checkpoint), encoding="utf-8")
-    _candidate(bots / "national_v143")
+    _candidate(bots / strict_bot_name())
     claim = reconcile._build_plan()["claim"]
     return root, results, bots, claim
 
@@ -201,9 +303,11 @@ def _completed_receipt_for_archive(archive_root):
         "archive_root": archive_root,
         "legacy_rows_authority_weight": 0,
         "allocation_receipt_digest": None,
-        "abandoned_workflow_run_id": "generation:143:workflow-v18",
+        "abandoned_workflow_run_id": (
+            f"generation:{STRICT_TARGET_V}:workflow-v18"
+        ),
         "workflow_fence": {},
-        "next_target_version": 143,
+        "next_target_version": STRICT_TARGET_V,
         "next_workflow_attempt": 19,
     }
     return {**payload, "receipt_digest": canonical_digest(payload)}
@@ -224,7 +328,7 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
         "stale backup",
         encoding="utf-8",
     )
-    _candidate(bots / "national_v143")
+    _candidate(bots / strict_bot_name())
 
     dry_run = reconcile.run(
         execute=False,
@@ -241,37 +345,41 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
     )
 
     assert receipt["legacy_rows_authority_weight"] == 0
-    assert receipt["abandoned_workflow_run_id"] == "generation:143:workflow-v18"
-    assert receipt["next_target_version"] == 143
+    assert receipt["abandoned_workflow_run_id"] == (
+        f"generation:{STRICT_TARGET_V}:workflow-v18"
+    )
+    assert receipt["next_target_version"] == STRICT_TARGET_V
     assert receipt["next_workflow_attempt"] == 19
     assert receipt["allocation_receipt_digest"]
     assert not reconcile.CHECKPOINT.exists()
-    assert not (bots / "national_v143").exists()
+    assert not (bots / strict_bot_name()).exists()
     strict_rows = evolution_infra.load_abandoned_version_receipts(
         path=reconcile.LEDGER,
         project_root=root,
     )
     assert len(strict_rows) == 1
-    assert strict_rows[0]["workflow_run_id"] == "generation:143:workflow-v18"
-    assert evolution_infra.abandoned_version_attempt_count(143) == 18
+    assert strict_rows[0]["workflow_run_id"] == (
+        f"generation:{STRICT_TARGET_V}:workflow-v18"
+    )
+    assert evolution_infra.abandoned_version_attempt_count(STRICT_TARGET_V) == 18
     stale_v18 = checkpoint_schema.upgrade_legacy_checkpoint_for_controlled_abandon(
         checkpoint,
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
     )
     stale_errors = checkpoint_schema.live_checkpoint_allocation_authority_errors(
         stale_v18,
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=strict_rows[0]["receipt_digest"],
     )
     assert "checkpoint_abandoned_receipt_head_changed" in stale_errors
     new_binding = checkpoint_schema.build_checkpoint_epoch_binding(
-        next_v=143,
-        source_v=142,
+        next_v=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
         audit_context=checkpoint["audit_context"],
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=strict_rows[0]["receipt_digest"],
         repo_root=root,
@@ -280,11 +388,11 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
         **checkpoint,
         "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
         "epoch_binding": new_binding,
-        "workflow_run_id": "generation:143:workflow-v19",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v19",
     }
     assert checkpoint_schema.live_checkpoint_allocation_authority_errors(
         v19,
-        published_high_water=142,
+        published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=strict_rows[0]["receipt_digest"],
     ) == []
@@ -294,7 +402,7 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
     assert hashlib.sha256(archived_legacy.read_bytes()).hexdigest() == (
         dry_run["inputs"]["legacy_ledger"]["sha256"]
     )
-    assert (archive_root / "candidate" / "national_v143").is_dir()
+    assert (archive_root / "candidate" / strict_bot_name()).is_dir()
     assert reconcile.CHECKPOINT.with_suffix(".json.lock").is_file()
     assert not (
         archive_root / "checkpoint_auxiliary" / "pipeline_state.json.lock"
@@ -308,7 +416,7 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
     # Completed command and terminal append are idempotent.
     (results / "generation_cost_ledger.jsonl").write_text(
         json.dumps({
-            "generation_id": "generation:143:workflow-v19",
+            "generation_id": f"generation:{STRICT_TARGET_V}:workflow-v19",
             "kind": "notice",
         }) + "\n",
         encoding="utf-8",
@@ -345,11 +453,15 @@ def test_reconcile_large_legacy_jump_quarantines_without_burning_labels(
     _write_reset_authority(root, _policy_epoch_reset_receipt())
     legacy = _legacy_rows()
     reconcile.LEDGER.write_text(legacy, encoding="utf-8")
+    # A large legacy jump targets a version far beyond the namespace's
+    # expected successor of STRICT_SOURCE_V; allocation must therefore be
+    # None and the quarantine must not burn any strict label.
+    jumped_v = STRICT_TARGET_V + 12
     binding = checkpoint_schema.build_checkpoint_epoch_binding(
-        next_v=155,
-        source_v=143,
+        next_v=jumped_v,
+        source_v=STRICT_TARGET_V,
         audit_context={},
-        published_high_water=154,
+        published_high_water=jumped_v - 1,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
         parent_resolver=_published_parent,
@@ -358,16 +470,16 @@ def test_reconcile_large_legacy_jump_quarantines_without_burning_labels(
         "checkpoint_schema_version": 1,
         "evaluation_epoch": "national_tcp_policy_v1",
         "epoch_binding": _legacy_v1_binding(binding),
-        "next_v": 155,
-        "source_v": 143,
+        "next_v": jumped_v,
+        "source_v": STRICT_TARGET_V,
         "parent2_v": None,
         "stage": "direction_audited",
-        "workflow_run_id": "generation:155:workflow-v18",
+        "workflow_run_id": f"generation:{jumped_v}:workflow-v18",
         "checkpoint_revision": 9,
         "audit_context": {},
     }
     reconcile.CHECKPOINT.write_text(json.dumps(checkpoint), encoding="utf-8")
-    _candidate(bots / "national_v155")
+    _candidate(bots / strict_bot_name(jumped_v))
 
     receipt = reconcile.run(
         execute=True,
@@ -376,10 +488,10 @@ def test_reconcile_large_legacy_jump_quarantines_without_burning_labels(
     )
 
     assert receipt["allocation_receipt_digest"] is None
-    assert receipt["next_target_version"] == 143
+    assert receipt["next_target_version"] == STRICT_TARGET_V
     assert not reconcile.LEDGER.exists()
     assert not reconcile.CHECKPOINT.exists()
-    assert not (bots / "national_v155").exists()
+    assert not (bots / strict_bot_name(jumped_v)).exists()
 
 
 def test_recorded_v2_abandon_finalize_recovers_after_clear_failure(
@@ -390,10 +502,10 @@ def test_recorded_v2_abandon_finalize_recovers_after_clear_failure(
     import tool_bot_management as tbm
 
     root, results, bots = _configure_paths(tmp_path, monkeypatch)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
-    checkpoint = _strict_checkpoint(144, 143, revision=6)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=6)
     reconcile.CHECKPOINT.write_text(json.dumps(checkpoint), encoding="utf-8")
-    candidate = bots / "national_v144"
+    candidate = bots / strict_bot_name(STRICT_TARGET_V + 1)
     _candidate(candidate)
     terminal = evolution_infra.append_abandoned_version_receipt(
         checkpoint,
@@ -406,7 +518,7 @@ def test_recorded_v2_abandon_finalize_recovers_after_clear_failure(
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", reconcile.CHECKPOINT)
     monkeypatch.setattr(tbm, "RESULTS_DIR", results)
     monkeypatch.setattr(tbm, "PROJECT_ROOT", root)
-    monkeypatch.setattr(tbm, "get_bot_dir", lambda version: bots / f"national_v{version}")
+    monkeypatch.setattr(tbm, "get_bot_dir", lambda version: bots / bot_name(version))
     monkeypatch.setattr(tbm, "git_dir_is_committed", lambda _version: False)
     monkeypatch.setattr(tbm, "git_has_publication_ref", lambda _version: False)
     monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
@@ -448,17 +560,17 @@ def test_schema2_live_claim_dry_run_and_execute_resume_quarantined_candidate(
     import tool_bot_management as tbm
 
     root, results, bots = _configure_paths(tmp_path, monkeypatch)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
-    checkpoint = _strict_checkpoint(144, 143, revision=10)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=10)
     reconcile.CHECKPOINT.write_text(json.dumps(checkpoint), encoding="utf-8")
-    candidate = bots / "national_v144"
+    candidate = bots / strict_bot_name(STRICT_TARGET_V + 1)
     _candidate(candidate)
 
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", reconcile.CHECKPOINT)
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", reconcile.CHECKPOINT)
     monkeypatch.setattr(tbm, "RESULTS_DIR", results)
     monkeypatch.setattr(tbm, "PROJECT_ROOT", root)
-    monkeypatch.setattr(tbm, "get_bot_dir", lambda version: bots / f"national_v{version}")
+    monkeypatch.setattr(tbm, "get_bot_dir", lambda version: bots / bot_name(version))
     monkeypatch.setattr(
         tbm,
         "read_pipeline_checkpoint",
@@ -534,10 +646,10 @@ def test_recorded_finalize_recovers_old_clear_before_candidate_delete_window(
     monkeypatch,
 ):
     root, _results, bots = _configure_paths(tmp_path, monkeypatch)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
-    checkpoint = _strict_checkpoint(144, 143, revision=8)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=8)
     reconcile.CHECKPOINT.write_text(json.dumps(checkpoint), encoding="utf-8")
-    candidate = bots / "national_v144"
+    candidate = bots / strict_bot_name(STRICT_TARGET_V + 1)
     _candidate(candidate)
     terminal = evolution_infra.append_abandoned_version_receipt(
         checkpoint,
@@ -572,10 +684,10 @@ def test_recorded_finalize_preserves_drifted_candidate_after_checkpoint_clear(
     monkeypatch,
 ):
     root, _results, bots = _configure_paths(tmp_path, monkeypatch)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
-    checkpoint = _strict_checkpoint(144, 143, revision=9)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    checkpoint = _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=9)
     reconcile.CHECKPOINT.write_text(json.dumps(checkpoint), encoding="utf-8")
-    candidate = bots / "national_v144"
+    candidate = bots / strict_bot_name(STRICT_TARGET_V + 1)
     _candidate(candidate)
     evolution_infra.append_abandoned_version_receipt(
         checkpoint,
@@ -778,7 +890,7 @@ def test_unknown_legacy_bytes_are_zero_weight_and_bad_binding_cannot_mint(
     raw_legacy = b"{malformed-without-final-newline"
     reconcile.LEDGER.write_bytes(raw_legacy)
     reconcile.CHECKPOINT.write_text(json.dumps(checkpoint), encoding="utf-8")
-    _candidate(bots / "national_v143")
+    _candidate(bots / strict_bot_name())
 
     plan = reconcile.run(
         execute=False,
@@ -805,5 +917,5 @@ def test_unknown_legacy_bytes_are_zero_weight_and_bad_binding_cannot_mint(
             project_root=root,
         )
         assert [row["workflow_run_id"] for row in rows] == [
-            "generation:143:workflow-v18"
+            f"generation:{STRICT_TARGET_V}:workflow-v18"
         ]

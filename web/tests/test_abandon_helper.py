@@ -14,8 +14,21 @@ import pytest
 
 import tool_bot_management as tbm
 import strict_authority_workflow as strict_authority
+from bot_namespace import (
+    EVOLUTION_BRANCH,
+    bot_name,
+    bot_tag,
+    high_water_tag,
+)
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
+
+# Branch-portable strict-policy versions. The historical main-branch literals
+# (143/142/national_v143) are replaced by these so the suite resolves to the
+# authoritative cloud-line versions (1/0/national_cloud_v1) on this branch.
+# T = the strict target version (the published parent); T+1 = its candidate.
+T = STRICT_TARGET_V
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +39,7 @@ def _isolate_abandon_receipts(tmp_path, monkeypatch):
     results.mkdir()
     monkeypatch.setattr(tbm, "RESULTS_DIR", results)
     monkeypatch.setattr(tbm, "_is_autonomous_runtime_checkout", lambda: True)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: T)
     monkeypatch.setattr(
         tbm,
         "_evolution_git",
@@ -53,13 +66,17 @@ def _strict_artifact(root, version, *, action="pass"):
     refresh_policy_identity_documents(
         root,
         version,
-        parent_versions=() if version == 143 else (version - 1,),
+        parent_versions=() if version == T else (version - 1,),
     )
     return root
 
 
 def _resolve_published_parent(name, **_kwargs):
-    version = int(str(name).rsplit("national_v", 1)[1])
+    from bot_namespace import parse_bot_version, bot_tag
+
+    version = parse_bot_version(name)
+    if version is None:
+        raise IndexError(f"unresolvable bot name: {name!r}")
     return SimpleNamespace(
         eligible=True,
         version=version,
@@ -68,7 +85,7 @@ def _resolve_published_parent(name, **_kwargs):
         epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
         publication_identity={
             "published": True,
-            "tag": f"national-bot-v{version}",
+            "tag": bot_tag(version),
             "version": version,
         },
         certificate_digest="b" * 64,
@@ -135,6 +152,58 @@ def _resign_schema2_claim(claim):
     return {**unsigned, "claim_digest": canonical_digest(unsigned)}
 
 
+def _branch_reset_receipt():
+    """Branch-portable policy-epoch reset receipt.
+
+    ``tests.test_checkpoint_epoch_recovery._policy_epoch_reset_receipt`` is
+    written for the main branch (high-water 142 / first-target 143 /
+    ``national_v143``).  The live reset-receipt validator rejects any field
+    that does not match this branch's authoritative values, so rewrite the
+    version/namespace fields and recompute the nested canonical digests.
+    """
+
+    import hashlib
+    from bot_namespace import (
+        ARCHIVED_VERSION_HIGH_WATER,
+        FIRST_STRICT_POLICY_VERSION,
+    )
+    from tests.test_checkpoint_epoch_recovery import _policy_epoch_reset_receipt
+
+    def _digest(payload):
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    receipt = dict(_policy_epoch_reset_receipt())
+    claim = dict(receipt.pop("_test_claim"))
+    claim_payload = {
+        key: value for key, value in claim.items() if key != "claim_digest"
+    }
+    claim_payload["first_target_version"] = FIRST_STRICT_POLICY_VERSION
+    claim = {**claim_payload, "claim_digest": _digest(claim_payload)}
+    receipt.pop("receipt_digest", None)
+    receipt["archived_version_high_water"] = ARCHIVED_VERSION_HIGH_WATER
+    receipt["version_authority_high_water"] = ARCHIVED_VERSION_HIGH_WATER
+    receipt["first_target_version"] = FIRST_STRICT_POLICY_VERSION
+    receipt["active_namespace"] = {
+        **receipt["active_namespace"],
+        "bot": bot_name(FIRST_STRICT_POLICY_VERSION),
+    }
+    receipt["execution_scope"] = {
+        **receipt["execution_scope"],
+        "claim_digest": claim["claim_digest"],
+    }
+    receipt = {**receipt, "receipt_digest": _digest(receipt)}
+    receipt["_test_claim"] = claim
+    return receipt
+
+
+
 class TestDoAbandonGeneration:
     def test_corrupt_checkpoint_is_preserved_for_operator_reconcile(
         self, tmp_path, monkeypatch
@@ -143,8 +212,8 @@ class TestDoAbandonGeneration:
 
         corrupt = tmp_path / "pipeline_state.json"
         corrupt.write_text("{not-json", encoding="utf-8")
-        candidate = tmp_path / "national_v144"
-        _strict_artifact(candidate, 144)
+        candidate = tmp_path / bot_name(T + 1)
+        _strict_artifact(candidate, T + 1)
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", corrupt)
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: None)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
@@ -165,14 +234,14 @@ class TestDoAbandonGeneration:
         state_file = tmp_path / "pipeline_state.json"
         state_file.write_text("{}")
         current = _strict_checkpoint(
-            145,
-            144,
+            T + 2,
+            T + 1,
             "master_planned",
-            workflow_run_id="generation:145:new",
+            workflow_run_id=f"generation:{T + 2}:new",
             checkpoint_revision=1,
         )
-        candidate = tmp_path / "national_v145"
-        _strict_artifact(candidate, 145)
+        candidate = tmp_path / bot_name(T + 2)
+        _strict_artifact(candidate, T + 2)
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: current)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
@@ -186,16 +255,16 @@ class TestDoAbandonGeneration:
         result = _run(tbm._do_abandon_generation(
             reason="worker_circuit_breaker",
             _bypass_rate_limit=True,
-            expected_workflow_run_id="generation:144:old",
-            expected_next_v=144,
-            expected_source_v=143,
+            expected_workflow_run_id=f"generation:{T + 1}:old",
+            expected_next_v=T + 1,
+            expected_source_v=T,
             expected_checkpoint_revision=7,
             expected_checkpoint_stage="master_planned",
         ))
 
         assert result["abandoned"] is False
         assert result["action"] == "stale_rejection_ignored"
-        assert result["current_checkpoint"]["next_v"] == 145
+        assert result["current_checkpoint"]["next_v"] == T + 2
         assert cleared == []
         assert candidate.exists()
 
@@ -210,10 +279,10 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         initial = _strict_checkpoint(
-            144,
-            143,
+            T + 1,
+            T,
             "master_planned",
-            workflow_run_id="generation:144:race",
+            workflow_run_id=f"generation:{T + 1}:race",
             checkpoint_revision=1,
         )
         advanced = {**initial, "checkpoint_revision": 2}
@@ -234,8 +303,8 @@ class TestDoAbandonGeneration:
             reason="worker_circuit_breaker",
             _bypass_rate_limit=True,
             expected_workflow_run_id=initial["workflow_run_id"],
-            expected_next_v=144,
-            expected_source_v=143,
+            expected_next_v=T + 1,
+            expected_source_v=T,
             expected_checkpoint_revision=1,
             expected_checkpoint_stage="master_planned",
         ))
@@ -256,11 +325,11 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         initial = _strict_checkpoint(
-            144,
-            143,
+            T + 1,
+            T,
             "master_planned",
-            run_id="144#0",
-            workflow_run_id="generation:144:guard-race",
+            run_id=f"{T + 1}#0",
+            workflow_run_id=f"generation:{T + 1}:guard-race",
             checkpoint_revision=1,
             generation_attempt=0,
         )
@@ -306,11 +375,11 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         checkpoint = _strict_checkpoint(
-            144,
-            143,
+            T + 1,
+            T,
             "master_planned",
-            run_id="144#0",
-            workflow_run_id="generation:144:active-lease",
+            run_id=f"{T + 1}#0",
+            workflow_run_id=f"generation:{T + 1}:active-lease",
             checkpoint_revision=1,
             generation_attempt=0,
             worker_failure_count=0,
@@ -325,8 +394,8 @@ class TestDoAbandonGeneration:
         )
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
 
-        candidate = tmp_path / "national_v144"
-        _strict_artifact(candidate, 144)
+        candidate = tmp_path / bot_name(T + 1)
+        _strict_artifact(candidate, T + 1)
         workflow = WorkerWorkflow.for_checkpoint(checkpoint)
         strict_run_id = strict_authority.authority_run_id(
             checkpoint["workflow_run_id"]
@@ -434,11 +503,11 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         checkpoint = _strict_checkpoint(
-            144,
-            143,
+            T + 1,
+            T,
             "rework_running",
-            run_id="144#0",
-            workflow_run_id="generation:144:nested-abandon",
+            run_id=f"{T + 1}#0",
+            workflow_run_id=f"generation:{T + 1}:nested-abandon",
             checkpoint_revision=4,
             generation_attempt=0,
             worker_failure_count=0,
@@ -453,8 +522,8 @@ class TestDoAbandonGeneration:
         )
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
 
-        candidate = tmp_path / "national_v144"
-        _strict_artifact(candidate, 144)
+        candidate = tmp_path / bot_name(T + 1)
+        _strict_artifact(candidate, T + 1)
         workflow = WorkerWorkflow.for_checkpoint(checkpoint)
         snapshot_hash = workflow.artifacts.capture(candidate)
         envelope = build_worker_envelope(
@@ -512,8 +581,8 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(WorkflowStore, "command_lock", reject_nested_lock)
         with workflow.store.command_lock(workflow.run_id):
             result = _run(tool_planning._force_abandon_frozen_worker_generation(
-                144,
-                143,
+                T + 1,
+                T,
                 "frozen_rework_pre_worker_drift",
                 actor_lock_owned=True,
             ))
@@ -529,7 +598,7 @@ class TestDoAbandonGeneration:
 
     def test_clears_checkpoint_and_removes_incomplete_dir(self, tmp_path, monkeypatch):
         # Active checkpoint -> clear it + remove the incomplete next dir.
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
         fake_state = tmp_path / "pipeline_state.json"
@@ -543,8 +612,8 @@ class TestDoAbandonGeneration:
             lambda **_kwargs: cleared.append(True) or True,
         )
 
-        next_dir = tmp_path / "national_v144"
-        _strict_artifact(next_dir, 144)
+        next_dir = tmp_path / bot_name(T + 1)
+        _strict_artifact(next_dir, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
@@ -554,7 +623,7 @@ class TestDoAbandonGeneration:
         assert result["abandoned"] is True
         assert len(result["abandon_receipt_digest"]) == 64
         assert result["cleared_checkpoint"] is True
-        assert result["removed_directory"] == "national_v144"
+        assert result["removed_directory"] == bot_name(T + 1)
         assert result["reason"] == "abandon_generation"
         assert cleared == [True]          # clear_pipeline_checkpoint called
         assert not next_dir.exists()      # incomplete dir removed
@@ -567,8 +636,8 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE",
                             tmp_path / "nonexistent.json")  # .exists() == False
         monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", lambda **_kwargs: True)
-        next_dir = tmp_path / "national_v145"
-        _strict_artifact(next_dir, 145)
+        next_dir = tmp_path / bot_name(T + 2)
+        _strict_artifact(next_dir, T + 2)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
@@ -584,7 +653,7 @@ class TestDoAbandonGeneration:
     def test_preserves_completed_dir(self, tmp_path, monkeypatch):
         # A completed generation dir is publication evidence: preserve both it
         # and the checkpoint instead of pretending terminal cleanup succeeded.
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
         fake_state = tmp_path / "pipeline_state.json"
@@ -597,8 +666,8 @@ class TestDoAbandonGeneration:
             lambda **_kwargs: cleared.append(True) or True,
         )
 
-        next_dir = tmp_path / "national_v144"
-        _strict_artifact(next_dir, 144)
+        next_dir = tmp_path / bot_name(T + 1)
+        _strict_artifact(next_dir, T + 1)
         (next_dir / ".completed").touch()  # COMPLETED — must be preserved
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
@@ -615,7 +684,7 @@ class TestDoAbandonGeneration:
         # A git-tracked dir without a tag is a bare-commit recovery case, not
         # disposable scratch. Preserve both bytes and checkpoint for operator
         # reconciliation.
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
         fake_state = tmp_path / "pipeline_state.json"
@@ -628,8 +697,8 @@ class TestDoAbandonGeneration:
             lambda **_kwargs: cleared.append(True) or True,
         )
 
-        next_dir = tmp_path / "national_v144"
-        _strict_artifact(next_dir, 144)
+        next_dir = tmp_path / bot_name(T + 1)
+        _strict_artifact(next_dir, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: True)
         monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
@@ -638,7 +707,7 @@ class TestDoAbandonGeneration:
 
         assert result["abandoned"] is False
         assert result["reason"] == "candidate_is_git_tracked"
-        assert result["abandoned_v"] == 144
+        assert result["abandoned_v"] == T + 1
         assert cleared == []
         assert next_dir.exists()
 
@@ -647,7 +716,7 @@ class TestDoAbandonGeneration:
         tmp_path,
         monkeypatch,
     ):
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
 
@@ -657,8 +726,8 @@ class TestDoAbandonGeneration:
         clear_results = iter((False, True))
         clear_observations = []
 
-        next_dir = tmp_path / "national_v144"
-        _strict_artifact(next_dir, 144)
+        next_dir = tmp_path / bot_name(T + 1)
+        _strict_artifact(next_dir, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: next_dir)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda _version: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
@@ -673,7 +742,7 @@ class TestDoAbandonGeneration:
 
         assert first["abandoned"] is False
         assert first["reason"] == "checkpoint_identity_conflict"
-        assert first["removed_directory"] == "national_v144"
+        assert first["removed_directory"] == bot_name(T + 1)
         assert clear_observations == [False]
         assert not next_dir.exists()
 
@@ -709,15 +778,15 @@ class TestDoAbandonGeneration:
         tmp_path,
         monkeypatch,
     ):
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
 
         state_file = tmp_path / "pipeline_state.json"
         state_file.write_text("{}")
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
-        candidate = tmp_path / "national_v144"
-        _strict_artifact(candidate, 144)
+        candidate = tmp_path / bot_name(T + 1)
+        _strict_artifact(candidate, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
         monkeypatch.setattr(tbm, "git_has_publication_ref", lambda _version: True)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda _version: False)
@@ -741,15 +810,15 @@ class TestDoAbandonGeneration:
         tmp_path,
         monkeypatch,
     ):
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
 
         state_file = tmp_path / "pipeline_state.json"
         state_file.write_text("{}")
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
-        candidate = tmp_path / "national_v144"
-        _strict_artifact(candidate, 144)
+        candidate = tmp_path / bot_name(T + 1)
+        _strict_artifact(candidate, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
         monkeypatch.setattr(tbm, "git_has_publication_ref", lambda _version: False)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda _version: False)
@@ -804,19 +873,19 @@ class TestDoAbandonGeneration:
         self,
         tmp_path,
     ):
-        source = tmp_path / "national_v144"
-        _strict_artifact(source, 144)
+        source = tmp_path / bot_name(T + 1)
+        _strict_artifact(source, T + 1)
         identity = tbm._candidate_tree_manifest(source)
         claim = {
             "candidate": {
                 "present": True,
-                "path": "bots/national_v144",
+                "path": f"bots/{bot_name(T + 1)}",
                 **identity,
             }
         }
         quarantine = tmp_path / "transaction" / "candidate"
         quarantine.parent.mkdir()
-        _strict_artifact(quarantine, 144)
+        _strict_artifact(quarantine, T + 1)
 
         with pytest.raises(
             RuntimeError,
@@ -839,16 +908,16 @@ class TestDoAbandonGeneration:
         tmp_path,
         monkeypatch,
     ):
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
 
         state_file = tmp_path / "pipeline_state.json"
         state_file.write_text("{}")
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
-        candidate = tmp_path / "national_v144"
-        _strict_artifact(candidate, 144)
-        displaced = tmp_path / "displaced-national_v144"
+        candidate = tmp_path / bot_name(T + 1)
+        _strict_artifact(candidate, T + 1)
+        displaced = tmp_path / f"displaced-{bot_name(T + 1)}"
         outside = tmp_path / "outside"
         outside.mkdir()
         marker = outside / "must-survive"
@@ -887,15 +956,15 @@ class TestDoAbandonGeneration:
         tmp_path,
         monkeypatch,
     ):
-        checkpoint = _strict_checkpoint(144, 143, "master_planned")
+        checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
 
         state_file = tmp_path / "pipeline_state.json"
         state_file.write_text("{}")
         monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
-        candidate = tmp_path / "national_v144"
-        _strict_artifact(candidate, 144)
+        candidate = tmp_path / bot_name(T + 1)
+        _strict_artifact(candidate, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
         monkeypatch.setattr(tbm, "git_has_publication_ref", lambda _version: False)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda _version: False)
@@ -934,7 +1003,7 @@ class TestDoAbandonGeneration:
         assert cleared == [True]
 
     def test_generic_abandon_refuses_forward_only_reviewed_stage(self, tmp_path, monkeypatch):
-        checkpoint = _strict_checkpoint(144, 143, "reviewed")
+        checkpoint = _strict_checkpoint(T + 1, T, "reviewed")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
         fake_state = tmp_path / "pipeline_state.json"
@@ -948,8 +1017,8 @@ class TestDoAbandonGeneration:
             lambda **_kwargs: cleared.append(True) or True,
         )
 
-        next_dir = tmp_path / "national_v144"
-        _strict_artifact(next_dir, 144)
+        next_dir = tmp_path / bot_name(T + 1)
+        _strict_artifact(next_dir, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
 
@@ -974,7 +1043,7 @@ class TestDoAbandonGeneration:
         assert events[0][0] == "pipeline.abandon_refused_state_guard"
 
     def test_forced_abandon_cannot_bypass_reviewed_stage(self, tmp_path, monkeypatch):
-        checkpoint = _strict_checkpoint(144, 143, "reviewed")
+        checkpoint = _strict_checkpoint(T + 1, T, "reviewed")
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
         import evolution_core
         fake_state = tmp_path / "pipeline_state.json"
@@ -988,8 +1057,8 @@ class TestDoAbandonGeneration:
             lambda **_kwargs: cleared.append(True) or True,
         )
 
-        next_dir = tmp_path / "national_v144"
-        _strict_artifact(next_dir, 144)
+        next_dir = tmp_path / bot_name(T + 1)
+        _strict_artifact(next_dir, T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda v: next_dir)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda v: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *a, **k: None)
@@ -1010,10 +1079,10 @@ class TestDoAbandonGeneration:
             "strict_authority_schema_retry_exhausted:proposal:counterfactual"
         )
 
-        master_checkpoint = _strict_checkpoint(144, 143, "direction_audited")
+        master_checkpoint = _strict_checkpoint(T + 1, T, "direction_audited")
         assert tbm._generic_abandon_stage_block(master_checkpoint, reason) is None
 
-        reviewed_checkpoint = _strict_checkpoint(144, 143, "reviewed")
+        reviewed_checkpoint = _strict_checkpoint(T + 1, T, "reviewed")
         blocked = tbm._generic_abandon_stage_block(reviewed_checkpoint, reason)
         assert blocked["blocked"] is True
         assert blocked["reason"] == "forced_abandon_reason_stage_not_allowed"
@@ -1024,13 +1093,13 @@ class TestDoAbandonGeneration:
         # to crossover_running only on success). crossover_llm_exhausted must
         # be disposable at selected, otherwise exhausted raw-TCP smoke retries
         # deadlock re-entry.
-        reason = "crossover_llm_exhausted:v143xv156"
+        reason = f"crossover_llm_exhausted:v{T}xv{T + 13}"
         for stage in ("selected", "crossover_running", "preparing", "prepared"):
-            ck = _strict_checkpoint(160, 143, stage, parent2_v=156)
+            ck = _strict_checkpoint(T + 17, T, stage, parent2_v=T + 13)
             assert tbm._generic_abandon_stage_block(ck, reason) is None, stage
         # Non-crossover stages still reject the prefix.
         blocked = tbm._generic_abandon_stage_block(
-            _strict_checkpoint(160, 143, "direction_audited", parent2_v=156),
+            _strict_checkpoint(T + 17, T, "direction_audited", parent2_v=T + 13),
             reason,
         )
         assert blocked["blocked"] is True
@@ -1047,10 +1116,10 @@ class TestDoAbandonGeneration:
         reason,
     ):
 
-        master_checkpoint = _strict_checkpoint(144, 143, "direction_audited")
+        master_checkpoint = _strict_checkpoint(T + 1, T, "direction_audited")
         assert tbm._generic_abandon_stage_block(master_checkpoint, reason) is None
 
-        reviewed_checkpoint = _strict_checkpoint(144, 143, "reviewed")
+        reviewed_checkpoint = _strict_checkpoint(T + 1, T, "reviewed")
         blocked = tbm._generic_abandon_stage_block(reviewed_checkpoint, reason)
         assert blocked["blocked"] is True
         assert blocked["reason"] == "forced_abandon_reason_stage_not_allowed"
@@ -1069,11 +1138,11 @@ class TestDoAbandonGeneration:
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         checkpoint = _strict_checkpoint(
-            144,
-            143,
+            T + 1,
+            T,
             "direction_audited",
-            run_id="144#0",
-            workflow_run_id="generation:144:strict-terminal",
+            run_id=f"{T + 1}#0",
+            workflow_run_id=f"generation:{T + 1}:strict-terminal",
             checkpoint_revision=5,
             audit_attempt=1,
         )
@@ -1087,7 +1156,7 @@ class TestDoAbandonGeneration:
         )
         monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
 
-        candidate = _strict_artifact(tmp_path / "national_v144", 144)
+        candidate = _strict_artifact(tmp_path / bot_name(T + 1), T + 1)
         monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
         monkeypatch.setattr(tbm, "git_dir_is_committed", lambda _version: False)
         monkeypatch.setattr(tbm, "log_system_event", lambda *_args, **_kwargs: None)
@@ -1126,11 +1195,11 @@ def _schema2_claim_fixture(
     import evolution_core
     import evolution_infra
 
-    checkpoint = checkpoint or _strict_checkpoint(144, 143, "master_planned")
+    checkpoint = checkpoint or _strict_checkpoint(T + 1, T, "master_planned")
     state_file = tmp_path / "pipeline_state.json"
     state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
-    candidate = tmp_path / "national_v144"
-    _strict_artifact(candidate, 144)
+    candidate = tmp_path / bot_name(T + 1)
+    _strict_artifact(candidate, T + 1)
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tbm.RESULTS_DIR)
     monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
@@ -1156,11 +1225,11 @@ def test_schema3_first_strict_fence_survives_checkpoint_clear_and_revalidates(
         validate_abandon_finalize_receipt,
     )
 
-    checkpoint = _strict_checkpoint(144, 143, "precommit_failed")
+    checkpoint = _strict_checkpoint(T + 1, T, "precommit_failed")
     state_file = tmp_path / "pipeline_state.json"
     state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
-    candidate = tmp_path / "national_v144"
-    _strict_artifact(candidate, 144)
+    candidate = tmp_path / bot_name(T + 1)
+    _strict_artifact(candidate, T + 1)
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tbm.RESULTS_DIR)
     monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
@@ -1174,7 +1243,7 @@ def test_schema3_first_strict_fence_survives_checkpoint_clear_and_revalidates(
         "workflow_run_id": checkpoint["workflow_run_id"],
         "checkpoint_revision": checkpoint["checkpoint_revision"],
         "candidate_version": checkpoint["next_v"],
-        "candidate_label": "national_v144",
+        "candidate_label": bot_name(T + 1),
         "candidate_artifact_hash": "a" * 64,
         "control_id": "first_strict_control_v1",
         "control_artifact_hash": "b" * 64,
@@ -1267,40 +1336,37 @@ def test_private_bootstrap_abandon_preserves_real_succeeded_first_strict_journal
     import tool_gates
     import bootstrap_contract_recovery as bootstrap_recovery
     from bot_artifact import canonical_digest, hash_path
-    from tests.test_checkpoint_epoch_recovery import (
-        _policy_epoch_reset_receipt,
-        _write_reset_authority,
-    )
+    from tests.test_checkpoint_epoch_recovery import _write_reset_authority
 
     runtime_root = tmp_path / ".evolution_pok"
     reset_receipt = _write_reset_authority(
         runtime_root,
-        _policy_epoch_reset_receipt(),
+        _branch_reset_receipt(),
     )
     results_dir = runtime_root / "web" / "core" / "results"
     monkeypatch.setattr(tbm, "PROJECT_ROOT", runtime_root)
     monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", runtime_root)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
-    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 142)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_SOURCE_V)
     monkeypatch.setattr(
         evolution_infra,
         "ABANDONED_VERSIONS_FILE",
         results_dir / "abandoned_versions.jsonl",
     )
-    candidate = _strict_artifact(runtime_root / "bots/national_v143", 143)
+    candidate = _strict_artifact(runtime_root / "bots" / bot_name(T), T)
     timing_plan = national_native.build_native_match_timing_plan(
         hands=70,
         requested_timeout_sec=(
             national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC
         ),
     )
-    workflow_run_id = "generation:143:workflow-v62"
+    workflow_run_id = f"generation:{T}:workflow-v62"
     scope = {
         "workflow_run_id": workflow_run_id,
         "checkpoint_revision": 13,
-        "candidate_version": 143,
-        "candidate_label": "national_v143",
+        "candidate_version": T,
+        "candidate_label": bot_name(T),
         "candidate_artifact_hash": hash_path(candidate),
         "control_id": "first_strict_control_v1",
         "control_artifact_hash": "b" * 64,
@@ -1320,8 +1386,8 @@ def test_private_bootstrap_abandon_preserves_real_succeeded_first_strict_journal
         epoch_reset_receipt_digest=reset_receipt["receipt_digest"],
     )
     checkpoint = _strict_checkpoint(
-        143,
-        142,
+        T,
+        STRICT_SOURCE_V,
         "official_bootstrap_required",
         workflow_run_id=workflow_run_id,
         checkpoint_revision=22,
@@ -1453,8 +1519,8 @@ def test_private_bootstrap_abandon_preserves_real_succeeded_first_strict_journal
         reason=reason,
         _bypass_rate_limit=True,
         expected_workflow_run_id=workflow_run_id,
-        expected_next_v=143,
-        expected_source_v=142,
+        expected_next_v=T,
+        expected_source_v=STRICT_SOURCE_V,
         expected_checkpoint_revision=22,
         expected_checkpoint_stage="official_bootstrap_required",
         _operator_bootstrap_contract_change_claim_digest="a" * 64,
@@ -1545,7 +1611,7 @@ def test_schema2_resigned_forgery_extra_key_and_path_traversal_fail_closed(
     assert state_file.exists()
     assert candidate.exists()
     assert not ledger.exists()
-    assert checkpoint["next_v"] == 144
+    assert checkpoint["next_v"] == T + 1
 
 
 def test_schema2_active_claim_rejects_old_head_and_hardlinked_preimage(
@@ -1723,11 +1789,11 @@ def test_schema2_revalidates_after_live_claim_before_irreversible_ledger_append(
 ):
     import evolution_core
 
-    checkpoint = _strict_checkpoint(144, 143, "master_planned")
+    checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
     state_file = tmp_path / "pipeline_state.json"
     state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
-    candidate = tmp_path / "national_v144"
-    _strict_artifact(candidate, 144)
+    candidate = tmp_path / bot_name(T + 1)
+    _strict_artifact(candidate, T + 1)
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
     monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
     monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
@@ -1806,11 +1872,11 @@ def test_schema2_completed_receipt_survives_later_head_and_ledger_append(
     )
     first = first_rows[-1]
     later_checkpoint = _strict_checkpoint(
-        145,
-        143,
+        T + 2,
+        T,
         "master_planned",
-        published_high_water=143,
-        abandoned_receipt_floor=144,
+        published_high_water=T,
+        abandoned_receipt_floor=T + 1,
         abandoned_receipt_head_digest=first["receipt_digest"],
     )
     evolution_infra.append_abandoned_version_receipt(
@@ -1848,7 +1914,7 @@ def test_timed_out_checkpoint_completes_real_schema2_abandon_transaction(
 ):
     import evolution_infra
 
-    timed_out = _strict_checkpoint(144, 143, "timed_out")
+    timed_out = _strict_checkpoint(T + 1, T, "timed_out")
     checkpoint, state_file, candidate, claim, transaction_dir = (
         _schema2_claim_fixture(
             tmp_path,
@@ -1930,7 +1996,7 @@ def test_completed_abandon_handoff_reproves_exact_live_terminal_result(
 
     wrong_baseline = {
         **checkpoint,
-        "workflow_run_id": "generation:144:foreign-workflow",
+        "workflow_run_id": f"generation:{T + 1}:foreign-workflow",
     }
     with pytest.raises(
         RuntimeError,
@@ -2204,20 +2270,21 @@ def _configure_historical_terminal_main(
     recorded_head="a" * 40,
     current_head="b" * 40,
     remote_head=None,
-    branch="main",
+    branch=EVOLUTION_BRANCH,
     tracked_status="",
     ancestor=True,
 ):
     """Model a clean fetched ``main`` descendant without using test Git."""
 
     remote_head = remote_head if remote_head is not None else current_head
+    remote_main_ref = f"refs/remotes/origin/{EVOLUTION_BRANCH}"
 
     def fake_git(*args, **_kwargs):
         values = {
             ("rev-parse", f"{recorded_head}^{{commit}}"):
                 recorded_head,
             ("rev-parse", "HEAD"): current_head,
-            ("rev-parse", "refs/remotes/origin/main"): remote_head,
+            ("rev-parse", remote_main_ref): remote_head,
             ("branch", "--show-current"): branch,
             ("status", "--porcelain", "--untracked-files=no"):
                 tracked_status,
@@ -2328,7 +2395,7 @@ def test_historical_completed_abandon_reproof_allows_clean_main_descendant(
     assert proof["source"] == {
         "recorded_git_head": "a" * 40,
         "current_git_head": "b" * 40,
-        "remote_main_ref": "refs/remotes/origin/main",
+        "remote_main_ref": f"refs/remotes/origin/{EVOLUTION_BRANCH}",
         "remote_main_head": "b" * 40,
         "source_descendant_verified": True,
     }
@@ -2470,11 +2537,11 @@ def test_historical_completed_abandon_reproof_rejects_advanced_ledger(
         project_root=tbm.PROJECT_ROOT,
     )[-1]
     later = _strict_checkpoint(
-        145,
-        143,
+        T + 2,
+        T,
         "master_planned",
-        published_high_water=143,
-        abandoned_receipt_floor=144,
+        published_high_water=T,
+        abandoned_receipt_floor=T + 1,
         abandoned_receipt_head_digest=original["receipt_digest"],
     )
     evolution_infra.append_abandoned_version_receipt(
@@ -2558,8 +2625,8 @@ def test_completed_abandon_handoff_allows_monotonic_terminal_revision(
     monkeypatch,
 ):
     terminal_checkpoint = _strict_checkpoint(
-        144,
-        143,
+        T + 1,
+        T,
         "master_planned",
         checkpoint_revision=2,
     )
@@ -2768,7 +2835,7 @@ def test_worker_terminal_abandon_rework_reasons_allowed_in_all_rework_stages():
         "worker_terminal_abandon_rework_feedback_mismatch",
     ]
     for stage in rework_stages:
-        checkpoint = _strict_checkpoint(166, 143, stage)
+        checkpoint = _strict_checkpoint(T + 23, T, stage)
         for reason in reasons:
             block = pipeline_state.generic_abandon_block(checkpoint, reason=reason)
             if block:

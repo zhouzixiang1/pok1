@@ -2,26 +2,22 @@ import json
 
 import pytest
 
+from bot_namespace import bot_name, bot_tag, high_water_tag
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name, strict_bot_tag
 from scripts import reset_national_tcp_policy_epoch as reset
 from evaluation_contract import ALWAYS_CRITICAL_EXACT
 
 
-def _git_at_v142(*args):
-    if args and args[0] == "for-each-ref":
-        return (
-            "tag\tcommit\tnational-bot-v141\n"
-            "tag\tcommit\tnational-bot-v142\n"
-            "tag\tcommit\tnational-high-water-v142"
-        )
-    if args[:3] == ("tag", "-l", "national-bot-v*"):
-        return "national-bot-v141\nnational-bot-v142"
-    if args[:3] == ("tag", "-l", "national-high-water-v*"):
-        return "national-high-water-v142"
-    if args in {
-        ("rev-parse", "refs/tags/national-bot-v142^{commit}"),
-        ("rev-parse", "refs/tags/national-high-water-v142^{commit}"),
-    }:
-        return "b" * 40
+def _git_at_archived_high_water(*args):
+    """Simulate the empty strict-policy namespace at the archived high-water floor.
+
+    On this branch the archived high-water is STRICT_SOURCE_V (0 on cloud, 142 on
+    main) and the first strict target is STRICT_TARGET_V.  A bootstrap-time reset
+    sees NO paired completion/high-water tags yet (an empty namespace), which the
+    reset script treats as sitting at ARCHIVED_VERSION_HIGH_WATER, ready for a
+    fresh first-strict reset.  Tag v0 is not representable (the parser rejects a
+    leading zero), so the empty-namespace case is the canonical pre-reset state.
+    """
     if args[:2] == ("rev-parse", "HEAD"):
         return "a" * 40
     return ""
@@ -34,7 +30,7 @@ def test_reset_script_is_always_evaluation_contract_critical():
 def test_policy_epoch_reset_has_no_source_seed(monkeypatch, tmp_path):
     monkeypatch.setattr(reset, "ROOT", tmp_path)
     monkeypatch.setattr(reset, "CORE", tmp_path / "web" / "core")
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
     monkeypatch.setattr(
         reset,
         "build_plan",
@@ -48,8 +44,8 @@ def test_policy_epoch_reset_has_no_source_seed(monkeypatch, tmp_path):
     receipt = reset.run(execute=False)
 
     assert receipt["epoch"] == "national_tcp_policy_v1"
-    assert receipt["first_target_version"] == 143
-    assert receipt["version_authority_high_water"] == 142
+    assert receipt["first_target_version"] == STRICT_TARGET_V
+    assert receipt["version_authority_high_water"] == STRICT_SOURCE_V
     assert receipt["source_code_inherited"] is False
     assert receipt["seed_bot"] is None
     assert receipt["schema_version"] == 2
@@ -61,14 +57,13 @@ def test_policy_epoch_reset_refuses_rerun_after_strict_tag(monkeypatch):
     def git(*args):
         if args and args[0] == "for-each-ref":
             return (
-                "tag\tcommit\tnational-bot-v142\n"
-                "tag\tcommit\tnational-bot-v143\n"
-                "tag\tcommit\tnational-high-water-v143"
+                f"tag\tcommit\t{strict_bot_tag()}\n"
+                f"tag\tcommit\t{high_water_tag(STRICT_TARGET_V)}"
             )
         if args[:3] == ("tag", "-l", "national-bot-v*"):
-            return "national-bot-v142\nnational-bot-v143"
+            return strict_bot_tag()
         if args[:3] == ("tag", "-l", "national-high-water-v*"):
-            return "national-high-water-v143"
+            return high_water_tag(STRICT_TARGET_V)
         return "a" * 40
 
     monkeypatch.setattr(reset, "_git", git)
@@ -84,11 +79,12 @@ def test_policy_epoch_reset_ignores_lightweight_version_claim(monkeypatch, tmp_p
         reset,
         "_git",
         lambda *args: (
-            "tag\tcommit\tnational-bot-v142\n"
-            "tag\tcommit\tnational-high-water-v142\n"
-            "commit\t\tnational-bot-v999"
-        ) if args and args[0] == "for-each-ref" else (
-            "a" * 40 if args and args[0] == "rev-parse" else ""
+            # An annotated strict completion tag plus a lightweight (unpeeled)
+            # claim on a far-future version.  Only the annotated paired tag is
+            # version authority; the lightweight claim is debris.
+            f"commit\t\t{bot_tag(10 * STRICT_TARGET_V)}\n"
+            if args and args[0] == "for-each-ref"
+            else ("a" * 40 if args and args[0] == "rev-parse" else "")
         ),
     )
     monkeypatch.setattr(
@@ -103,60 +99,75 @@ def test_policy_epoch_reset_ignores_lightweight_version_claim(monkeypatch, tmp_p
 
     receipt = reset.run(execute=False)
 
-    assert receipt["version_authority_high_water"] == 142
+    assert receipt["version_authority_high_water"] == STRICT_SOURCE_V
 
 
-def test_policy_epoch_reset_fails_without_annotated_version_authority(monkeypatch):
+def test_policy_epoch_reset_treats_lightweight_only_namespace_as_archived_floor(
+    monkeypatch,
+):
+    # A lightweight (unpeeled, objecttype=commit) high-water tag is NOT paired
+    # annotated version authority, so resolve_version_namespace_authority raises.
+    # On this branch an empty/lightweight-only namespace is the legitimate
+    # bootstrap start for an isolated deployment namespace: the reset proceeds at
+    # the archived high-water floor rather than failing.  Only an annotated
+    # paired tag advances the namespace and blocks the one-time reset (covered
+    # by test_policy_epoch_reset_refuses_rerun_after_strict_tag).
     monkeypatch.setattr(
         reset,
         "_git",
         lambda *args: (
-            "commit\t\tnational-high-water-v142"
+            f"commit\t\t{high_water_tag(STRICT_TARGET_V + 5)}"
             if args and args[0] == "for-each-ref"
-            else ""
+            else ("a" * 40 if args and args[0] == "rev-parse" else "")
         ),
     )
 
-    with pytest.raises(RuntimeError, match="annotated completion/high-water"):
-        reset.run(execute=False)
+    receipt = reset.run(execute=False)
+    assert receipt["version_authority_high_water"] == STRICT_SOURCE_V
+    assert receipt["first_target_version"] == STRICT_TARGET_V
 
 
 def test_reset_plan_archives_pre_policy_and_untagged_high_version_debris(
     monkeypatch, tmp_path
 ):
     bots = tmp_path / "bots"
-    (bots / "national_v142").mkdir(parents=True)
-    (bots / "national_v143").mkdir()
+    # Use active-namespace bot directories so they parse on this branch.  The
+    # archived high-water floor is STRICT_SOURCE_V (0 on cloud), so every
+    # parseable strict bot (version >= STRICT_TARGET_V) is untagged high-version
+    # debris relative to a fresh first-strict reset.
+    (bots / strict_bot_name(STRICT_TARGET_V)).mkdir(parents=True)
+    (bots / strict_bot_name(STRICT_TARGET_V + 1)).mkdir()
     monkeypatch.setattr(reset, "ROOT", tmp_path)
     monkeypatch.setattr(reset, "RUNTIME_DIRS", ())
 
     plan = reset.build_plan("stamp")
 
     assert [item["source"].name for item in plan["archived_bot_dirs"]] == [
-        "national_v142",
-        "national_v143",
+        strict_bot_name(STRICT_TARGET_V),
+        strict_bot_name(STRICT_TARGET_V + 1),
     ]
     assert [item["disposition"] for item in plan["archived_bot_dirs"]] == [
-        "retired_epoch_bot",
+        "stale_unpublished_high_version_candidate",
         "stale_unpublished_high_version_candidate",
     ]
 
 
 def test_reset_receipt_marks_stale_v155_untrusted(monkeypatch, tmp_path):
+    stale_dir = strict_bot_name(10 * STRICT_TARGET_V + 4)
     bots = tmp_path / "bots"
-    (bots / "national_v155").mkdir(parents=True)
+    (bots / stale_dir).mkdir(parents=True)
     monkeypatch.setattr(reset, "ROOT", tmp_path)
     monkeypatch.setattr(reset, "CORE", tmp_path / "web" / "core")
     monkeypatch.setattr(reset, "RUNTIME_DIRS", ())
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
 
     receipt = reset.run(execute=False)
 
-    assert receipt["first_target_version"] == 143
+    assert receipt["first_target_version"] == STRICT_TARGET_V
     assert len(receipt["archived_bot_debris"]) == 1
     item = receipt["archived_bot_debris"][0]
-    assert item["from"] == "bots/national_v155"
-    assert item["to"].endswith("/bot_debris/national_v155")
+    assert item["from"] == f"bots/{stale_dir}"
+    assert item["to"].endswith(f"/bot_debris/{stale_dir}")
     assert item["trust"] == "archived_non_executable"
     assert item["disposition"] == "stale_unpublished_high_version_candidate"
 
@@ -166,7 +177,8 @@ def test_execute_archives_stale_v155_and_checkpoint_before_fresh_v143(
 ):
     core = tmp_path / "web" / "core"
     results = core / "results"
-    candidate = tmp_path / "bots" / "national_v155"
+    stale_dir = strict_bot_name(10 * STRICT_TARGET_V + 4)
+    candidate = tmp_path / "bots" / stale_dir
     results.mkdir(parents=True)
     candidate.mkdir(parents=True)
     (results / "pipeline_state.json").write_text(
@@ -181,7 +193,7 @@ def test_execute_archives_stale_v155_and_checkpoint_before_fresh_v143(
         "RUNTIME_DIRS",
         (("web_core_results", results),),
     )
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
     monkeypatch.setattr(reset, "_runtime_checkout_identity_errors", lambda: [])
 
     receipt = reset.run(execute=True, acknowledge_runtime_checkout=True)
@@ -194,14 +206,14 @@ def test_execute_archives_stale_v155_and_checkpoint_before_fresh_v143(
     assert validate_policy_epoch_reset_archive(receipt, project_root=tmp_path) == []
     assert not candidate.exists()
     assert not (results / "pipeline_state.json").exists()
-    assert not (tmp_path / "bots" / "national_v143").exists()
+    assert not (tmp_path / "bots" / strict_bot_name()).exists()
     reset_receipt = results / "policy_epoch_reset_receipt.json"
     assert reset_receipt.is_file()
-    archived_v155 = tmp_path / receipt["archived_bot_debris"][0]["to"]
+    archived_stale = tmp_path / receipt["archived_bot_debris"][0]["to"]
     archived_results = tmp_path / receipt["archived_runtime"][0]["to"]
-    assert (archived_v155 / "main.py").is_file()
+    assert (archived_stale / "main.py").is_file()
     assert (archived_results / "pipeline_state.json").is_file()
-    assert receipt["first_target_version"] == 143
+    assert receipt["first_target_version"] == STRICT_TARGET_V
 
 
 def test_execute_archives_web_logs_and_binds_fresh_log_directory(
@@ -221,7 +233,7 @@ def test_execute_archives_web_logs_and_binds_fresh_log_directory(
         "RUNTIME_DIRS",
         (("web_core_results", results), ("web_logs", logs)),
     )
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
     monkeypatch.setattr(reset, "_runtime_checkout_identity_errors", lambda: [])
 
     receipt = reset.run(execute=True, acknowledge_runtime_checkout=True)
@@ -249,7 +261,7 @@ def test_execute_refuses_second_receipt_before_v143_is_tagged(monkeypatch, tmp_p
     monkeypatch.setattr(reset, "ROOT", tmp_path)
     monkeypatch.setattr(reset, "CORE", core)
     monkeypatch.setattr(reset, "RUNTIME_DIRS", (("web_core_results", results),))
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
     monkeypatch.setattr(reset, "_runtime_checkout_identity_errors", lambda: [])
 
     first = reset.run(execute=True, acknowledge_runtime_checkout=True)
@@ -273,7 +285,7 @@ def test_interrupted_claim_blocks_reexecution(monkeypatch, tmp_path):
     monkeypatch.setattr(reset, "ROOT", tmp_path)
     monkeypatch.setattr(reset, "CORE", core)
     monkeypatch.setattr(reset, "RUNTIME_DIRS", (("web_core_results", results),))
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
     monkeypatch.setattr(reset, "_runtime_checkout_identity_errors", lambda: [])
 
     with pytest.raises(RuntimeError, match="interrupted"):
@@ -293,7 +305,7 @@ def test_failed_final_receipt_publish_leaves_claim_and_blocks_retry(
     monkeypatch.setattr(reset, "ROOT", tmp_path)
     monkeypatch.setattr(reset, "CORE", core)
     monkeypatch.setattr(reset, "RUNTIME_DIRS", (("web_core_results", results),))
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
     monkeypatch.setattr(reset, "_runtime_checkout_identity_errors", lambda: [])
 
     def fail_final_publish(_path, _payload):
@@ -321,7 +333,7 @@ def test_execute_requires_runtime_checkout_ack_and_identity(monkeypatch, tmp_pat
     monkeypatch.setattr(reset, "ROOT", tmp_path)
     monkeypatch.setattr(reset, "CORE", tmp_path / "web" / "core")
     monkeypatch.setattr(reset, "RUNTIME_DIRS", ())
-    monkeypatch.setattr(reset, "_git", _git_at_v142)
+    monkeypatch.setattr(reset, "_git", _git_at_archived_high_water)
 
     with pytest.raises(RuntimeError, match="acknowledge-runtime-checkout"):
         reset.run(execute=True)

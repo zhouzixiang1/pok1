@@ -7,21 +7,38 @@ from pathlib import Path
 import pytest
 
 from bot_artifact import canonical_digest
+from bot_namespace import (
+    ARCHIVED_VERSION_HIGH_WATER,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+)
 from scripts import recover_completed_first_strict_publication as recovery
 
 
+# Branch-portable first-strict publication identity.  Production pins the
+# completed-publication checkpoint/intent to next_v=FIRST_STRICT_POLICY_VERSION
+# / source_v=ARCHIVED_VERSION_HIGH_WATER and the candidate to bot_name of that
+# version (national_v143 on main, national_cloud_v1 on cloud).  Express every
+# fixture value through these so the same snapshot exercises both floors.
+TARGET_V = FIRST_STRICT_POLICY_VERSION
+SOURCE_V = ARCHIVED_VERSION_HIGH_WATER
+CANDIDATE_LABEL = bot_name(TARGET_V)
+WORKFLOW_RUN_ID = f"generation:{TARGET_V}:workflow-v68"
+
+
 def _snapshot(tmp_path: Path) -> dict:
-    candidate = tmp_path / "bots" / "national_v143"
+    candidate = tmp_path / "bots" / CANDIDATE_LABEL
     candidate.mkdir(parents=True)
     parked_payload = {
         "schema_version": 1,
         "kind": "official-first-strict-control-parked-request",
         "candidate_path": str(candidate.resolve()),
-        "candidate_label": "national_v143",
-        "candidate_version": 143,
+        "candidate_label": CANDIDATE_LABEL,
+        "candidate_version": TARGET_V,
         "candidate_hash": "a" * 64,
-        "source_v": 142,
-        "workflow_run_id": "generation:143:workflow-v68",
+        "source_v": SOURCE_V,
+        "workflow_run_id": WORKFLOW_RUN_ID,
         "checkpoint_contract_digest": "b" * 64,
         "evaluation_contract_version": 42,
         "evaluation_contract_hash": "c" * 64,
@@ -57,10 +74,10 @@ def _snapshot(tmp_path: Path) -> dict:
         "official_verdict_ledger_entry": ledger_entry,
     }
     checkpoint = {
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "verified",
-        "workflow_run_id": "generation:143:workflow-v68",
+        "workflow_run_id": WORKFLOW_RUN_ID,
         "checkpoint_revision": 24,
         "publication_intent": None,
         "official_job": None,
@@ -120,11 +137,11 @@ def _publication_claim() -> dict:
         "evaluation_epoch": "national_tcp_policy_v1",
         "checkpoint": {
             "digest": "d" * 64,
-            "workflow_run_id": "generation:143:workflow-v68",
+            "workflow_run_id": WORKFLOW_RUN_ID,
             "checkpoint_revision": 24,
             "stage": "verified",
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": TARGET_V,
+            "source_v": SOURCE_V,
         },
         "git": {
             "baseline_head": "4" * 40,
@@ -176,8 +193,8 @@ def test_recovery_additions_are_not_verified_evaluation_contract_inputs():
 
     contract = build_evaluation_contract(
         recovery.ROOT,
-        candidate_v=143,
-        source_v=142,
+        candidate_v=TARGET_V,
+        source_v=SOURCE_V,
         checkpoint={"stage": "verified"},
         stage="verified",
     )
@@ -339,7 +356,7 @@ def test_publishing_live_recheck_accepts_portable_status_and_own_sentinel(
     import tool_commit
 
     root = tmp_path / ".evolution_pok"
-    candidate = root / "bots" / "national_v143"
+    candidate = root / "bots" / CANDIDATE_LABEL
     candidate.mkdir(parents=True)
     frozen_status = {"shape": "raw", "certificate_digest": "9" * 64}
     portable_status = {"shape": "portable", "certificate_digest": "9" * 64}
@@ -358,7 +375,7 @@ def test_publishing_live_recheck_accepts_portable_status_and_own_sentinel(
     monkeypatch.setattr(
         evolution_infra,
         "get_active_bots_read_only",
-        lambda: ("national_v143",),
+        lambda: (CANDIDATE_LABEL,),
     )
     monkeypatch.setattr(
         national_runtime_authority,
@@ -368,7 +385,7 @@ def test_publishing_live_recheck_accepts_portable_status_and_own_sentinel(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v143",),
+        lambda: (CANDIDATE_LABEL,),
     )
     monkeypatch.setattr(
         official_certification,
@@ -469,9 +486,9 @@ def test_verified_recovery_snapshot_fails_closed(
 def test_publishing_recovery_requires_matching_receipt_and_intent(tmp_path):
     claim = _publication_claim()
     intent = {
-        "version": 143,
-        "source_v": 142,
-        "workflow_run_id": "generation:143:workflow-v68",
+        "version": TARGET_V,
+        "source_v": SOURCE_V,
+        "workflow_run_id": WORKFLOW_RUN_ID,
         "publication_id": "3" * 64,
         "strategy_tag": recovery.receipt_commit_line(claim["claim_digest"]),
         "candidate_artifact_hash": "8" * 64,
@@ -489,10 +506,10 @@ def test_publishing_recovery_requires_matching_receipt_and_intent(tmp_path):
     }
     receipt = recovery._terminal_receipt(claim, intent)
     checkpoint = {
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "publishing",
-        "workflow_run_id": "generation:143:workflow-v68",
+        "workflow_run_id": WORKFLOW_RUN_ID,
         "audit_context": {
             recovery.CHECKPOINT_RECEIPT_KEY: receipt,
         },
@@ -536,13 +553,13 @@ def test_execute_claim_recovers_attestation_before_cas_crash(
 
     root = tmp_path / ".evolution_pok"
     (root / "web" / "core" / "results").mkdir(parents=True)
-    candidate = root / "bots" / "national_v143"
+    candidate = root / "bots" / CANDIDATE_LABEL
     candidate.mkdir(parents=True)
     checkpoint = {
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "verified",
-        "workflow_run_id": "generation:143:workflow-v68",
+        "workflow_run_id": WORKFLOW_RUN_ID,
         "checkpoint_revision": 24,
         "master_plan": {"strategy": "test-strategy"},
     }
@@ -615,11 +632,11 @@ def test_execute_claim_recovers_attestation_before_cas_crash(
     )
 
     def attest(_status, _candidate):
-        path = root / "official_certificates" / "national_v143.json"
+        path = root / "official_certificates" / f"{CANDIDATE_LABEL}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("attestation\n", encoding="utf-8")
         return {
-            "relative_path": "official_certificates/national_v143.json",
+            "relative_path": f"official_certificates/{CANDIDATE_LABEL}.json",
             "attestation_digest": "e" * 64,
         }
 
@@ -689,9 +706,9 @@ def test_execute_claim_recovers_attestation_before_cas_crash(
         ]
         return {
             "publication_id": "3" * 64,
-            "version": 143,
-            "source_v": 142,
-            "workflow_run_id": "generation:143:workflow-v68",
+            "version": TARGET_V,
+            "source_v": SOURCE_V,
+            "workflow_run_id": WORKFLOW_RUN_ID,
             "strategy_tag": kwargs["strategy_tag"],
             "candidate_artifact_hash": "8" * 64,
             "official_certificate_digest": "9" * 64,
@@ -795,10 +812,10 @@ def test_double_validation_uses_real_verified_checkpoint_persistence(
         evolution_infra,
         "checkpoint_allocation_authority",
         lambda **_kwargs: {
-            "published_high_water": 142,
+            "published_high_water": SOURCE_V,
             "abandoned_receipt_floor": 0,
             "abandoned_receipt_head_digest": None,
-            "allocation_floor": 142,
+            "allocation_floor": SOURCE_V,
         },
     )
     monkeypatch.setattr(
@@ -859,8 +876,8 @@ def test_double_validation_uses_real_verified_checkpoint_persistence(
     )
 
     assert tool_commit._record_official_full_pass_checkpoint(
-        143,
-        142,
+        TARGET_V,
+        SOURCE_V,
         parked,
         {
             "passed": True,
@@ -887,7 +904,7 @@ def test_double_validation_uses_real_verified_checkpoint_persistence(
         completed_validator,
     )
     result = recovery.validate_completed_at_parked_authority(
-        {}, tmp_path / "bots" / "national_v143", verified
+        {}, tmp_path / "bots" / CANDIDATE_LABEL, verified
     )
 
     assert result["valid"] is True

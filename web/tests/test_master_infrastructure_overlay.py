@@ -3,6 +3,8 @@ import json
 import shutil
 from types import SimpleNamespace
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+from bot_namespace import bot_name, bot_tag
 import evolution_infra
 import pytest
 import tool_planning
@@ -295,21 +297,21 @@ def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
     from system_strict_bootstrap import materialize_fresh_candidate
 
     bots = tmp_path / "bots"
-    source = bots / "national_v142"
-    candidate = bots / "national_v143"
+    source = bots / bot_name(STRICT_SOURCE_V)
+    candidate = bots / bot_name(STRICT_TARGET_V)
     bots.mkdir(parents=True)
-    materialize_fresh_candidate(candidate, version=143, final_policy=True)
+    materialize_fresh_candidate(candidate, version=STRICT_TARGET_V, final_policy=True)
     source.mkdir()
     (source / "policy.py").write_text(
-        "raise RuntimeError('poison stale v142 must never be opened')\n",
+        "raise RuntimeError('poison stale archived source must never be opened')\n",
         encoding="utf-8",
     )
 
     real_evaluate = architecture.evaluate_national_capabilities
 
     def candidate_only_evaluate(path):
-        if getattr(path, "name", "") == "national_v142":
-            raise AssertionError("stale v142 capability probe was invoked")
+        if getattr(path, "name", "") == bot_name(STRICT_SOURCE_V):
+            raise AssertionError("stale archived source capability probe was invoked")
         return real_evaluate(path)
 
     monkeypatch.setattr(
@@ -318,14 +320,16 @@ def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
         candidate_only_evaluate,
     )
     snapshot = build_lineage_only_prepared_capability_snapshot(
-        "national_v142",
+        bot_name(STRICT_SOURCE_V),
         candidate,
     )
 
     def target_only_bot_dir(version):
-        if int(version) == 142:
-            raise AssertionError("fresh architecture must not resolve v142")
-        return bots / f"national_v{version}"
+        if int(version) == STRICT_SOURCE_V:
+            raise AssertionError(
+                "fresh architecture must not resolve the archived source"
+            )
+        return bots / bot_name(version)
 
     monkeypatch.setattr(
         tool_planning,
@@ -334,7 +338,7 @@ def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
     )
 
     assessment = tool_planning._build_generation_architecture_policy(
-        142,
+        STRICT_SOURCE_V,
         prepared_capability_snapshot=snapshot,
         prepared_dir=candidate,
         allow_lineage_only_source=True,
@@ -342,9 +346,9 @@ def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
 
     assert assessment["outcome"] == "passed"
     assert assessment["capabilities"]["lineage_only"] is True
-    assert assessment["policy"]["source_bot"] == "national_v142"
+    assert assessment["policy"]["source_bot"] == bot_name(STRICT_SOURCE_V)
     assert assessment["policy"]["source_epoch_compatible"] is False
-    assert assessment["policy"]["effective_baseline_bot"] == "national_v143"
+    assert assessment["policy"]["effective_baseline_bot"] == bot_name(STRICT_TARGET_V)
 
 
 def test_missing_normal_parent_cannot_claim_lineage_only_exception(
@@ -354,10 +358,12 @@ def test_missing_normal_parent_cannot_claim_lineage_only_exception(
     monkeypatch.setattr(
         tool_planning,
         "get_bot_dir",
-        lambda version: tmp_path / f"national_v{version}",
+        lambda version: tmp_path / bot_name(version),
     )
 
-    assessment = tool_planning._build_generation_architecture_policy(143)
+    assessment = tool_planning._build_generation_architecture_policy(
+        STRICT_TARGET_V
+    )
 
     assert assessment["outcome"] == "source_invalid"
 
@@ -371,21 +377,21 @@ def test_fresh_quality_transition_never_resolves_or_probes_stale_v142(
     from system_strict_bootstrap import materialize_fresh_candidate
 
     bots = tmp_path / "bots"
-    stale = bots / "national_v142"
-    candidate = bots / "national_v143"
+    stale = bots / bot_name(STRICT_SOURCE_V)
+    candidate = bots / bot_name(STRICT_TARGET_V)
     bots.mkdir(parents=True)
     stale.mkdir()
     (stale / "policy.py").write_text(
-        "raise RuntimeError('poison stale v142 must never be opened')\n",
+        "raise RuntimeError('poison stale archived source must never be opened')\n",
         encoding="utf-8",
     )
-    materialize_fresh_candidate(candidate, version=143, final_policy=True)
+    materialize_fresh_candidate(candidate, version=STRICT_TARGET_V, final_policy=True)
 
     real_evaluate = architecture.evaluate_national_capabilities
 
     def candidate_only_evaluate(path):
-        if getattr(path, "name", "") == "national_v142":
-            raise AssertionError("quality probed stale v142")
+        if getattr(path, "name", "") == bot_name(STRICT_SOURCE_V):
+            raise AssertionError("quality probed the stale archived source")
         return real_evaluate(path)
 
     monkeypatch.setattr(
@@ -394,22 +400,22 @@ def test_fresh_quality_transition_never_resolves_or_probes_stale_v142(
         candidate_only_evaluate,
     )
     snapshot = architecture.build_lineage_only_prepared_capability_snapshot(
-        "national_v142",
+        bot_name(STRICT_SOURCE_V),
         candidate,
     )
     expected_policy = architecture.build_lineage_only_architecture_policy(
-        "national_v142",
+        bot_name(STRICT_SOURCE_V),
         prepared_capability_snapshot=snapshot,
     )
 
     def source_resolution_forbidden(version):
-        if int(version) == 142:
-            raise AssertionError("quality resolved stale v142")
-        return bots / f"national_v{version}"
+        if int(version) == STRICT_SOURCE_V:
+            raise AssertionError("quality resolved the stale archived source")
+        return bots / bot_name(version)
 
     monkeypatch.setattr(tool_gates, "get_bot_dir", source_resolution_forbidden)
     assert tool_gates._quality_source_dir(
-        142,
+        STRICT_SOURCE_V,
         numeric_lineage_only=True,
     ) is None
 
@@ -417,12 +423,12 @@ def test_fresh_quality_transition_never_resolves_or_probes_stale_v142(
         None,
         candidate,
         expected_policy=expected_policy,
-        lineage_source_bot="national_v142",
+        lineage_source_bot=bot_name(STRICT_SOURCE_V),
     )
 
     assert transition["conclusive"] is True
     assert transition["source_capabilities"]["lineage_only"] is True
-    assert transition["policy"]["source_bot"] == "national_v142"
+    assert transition["policy"]["source_bot"] == bot_name(STRICT_SOURCE_V)
 
 
 def test_master_source_probe_retries_same_tool_then_abandons(
@@ -439,39 +445,41 @@ def test_master_source_probe_retries_same_tool_then_abandons(
     state_file = tmp_path / "pipeline_state.json"
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
     bots = tmp_path / "bots"
-    source = bots / "national_v143"
-    candidate = bots / "national_v144"
+    source_v = STRICT_TARGET_V
+    next_v = STRICT_TARGET_V + 1
+    source = bots / bot_name(source_v)
+    candidate = bots / bot_name(next_v)
     bots.mkdir(parents=True)
-    materialize_fresh_candidate(source, version=143, final_policy=True)
+    materialize_fresh_candidate(source, version=source_v, final_policy=True)
     shutil.copytree(source, candidate)
-    refresh_policy_identity(candidate, version=144, parent_versions=(143,))
+    refresh_policy_identity(candidate, version=next_v, parent_versions=(source_v,))
     prepared_contract = build_prepared_artifact_contract(
         candidate,
-        source_v=143,
-        next_v=144,
+        source_v=source_v,
+        next_v=next_v,
     )
     import checkpoint_schema
     from bot_namespace import EVALUATION_EPOCH
 
     published_source = SimpleNamespace(
         eligible=True,
-        version=143,
+        version=source_v,
         issues=(),
-        runtime_manifest={"epoch": EVALUATION_EPOCH, "version": 143},
-        epoch_receipt={"epoch": EVALUATION_EPOCH, "version": 143},
+        runtime_manifest={"epoch": EVALUATION_EPOCH, "version": source_v},
+        epoch_receipt={"epoch": EVALUATION_EPOCH, "version": source_v},
         publication_identity={
             "published": True,
-            "tag": "national-bot-v143",
-            "version": 143,
+            "tag": bot_tag(source_v),
+            "version": source_v,
         },
         certificate_digest="b" * 64,
     )
     audit_context = {"prepared_artifact_contract": prepared_contract}
     epoch_binding = checkpoint_schema.build_checkpoint_epoch_binding(
-        next_v=144,
-        source_v=143,
+        next_v=next_v,
+        source_v=source_v,
         audit_context=audit_context,
-        published_high_water=143,
+        published_high_water=source_v,
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
         parent_resolver=lambda *_args, **_kwargs: published_source,
@@ -480,11 +488,11 @@ def test_master_source_probe_retries_same_tool_then_abandons(
         "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
         "evaluation_epoch": EVALUATION_EPOCH,
         "epoch_binding": epoch_binding,
-        "next_v": 144,
-        "source_v": 143,
+        "next_v": next_v,
+        "source_v": source_v,
         "parent2_v": None,
-        "run_id": "144#0",
-        "workflow_run_id": "test-master-probe-144-143",
+        "run_id": f"{next_v}#0",
+        "workflow_run_id": f"test-master-probe-{next_v}-{source_v}",
         "checkpoint_revision": 1,
         "stage": "direction_audited",
         "master_plan": None,
@@ -497,7 +505,7 @@ def test_master_source_probe_retries_same_tool_then_abandons(
     monkeypatch.setattr(
         tool_planning,
         "get_bot_dir",
-        lambda version: bots / f"national_v{version}",
+        lambda version: bots / bot_name(version),
     )
     # This unit test owns the Master infrastructure overlay, not the repository
     # worktree guard.  Keep the guard covered by its dedicated adversarial suite.
@@ -541,7 +549,10 @@ def test_master_source_probe_retries_same_tool_then_abandons(
     actions = []
     for _ in range(3):
         result = asyncio.run(
-            tool_planning.run_master.handler({"source_v": 143, "next_v": 144})
+            tool_planning.run_master.handler({
+                "source_v": source_v,
+                "next_v": next_v,
+            })
         )
         payload = json.loads(result["content"][0]["text"])
         actions.append(payload["action"])

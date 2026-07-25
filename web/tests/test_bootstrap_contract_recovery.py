@@ -9,6 +9,11 @@ from types import SimpleNamespace
 
 import bootstrap_contract_recovery as recovery
 from bot_artifact import canonical_digest
+from bot_namespace import (
+    ARCHIVED_VERSION_HIGH_WATER,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+)
 import checkpoint_schema
 import evaluation_contract
 import evolution_core
@@ -19,20 +24,30 @@ import official_certification_job
 import pytest
 
 
+# Branch-portable first-strict identity.  Production pins the bootstrap
+# checkpoint to next_v=FIRST_STRICT_POLICY_VERSION / source_v=
+# ARCHIVED_VERSION_HIGH_WATER and the candidate label to bot_name of that
+# version (national_v143 on main, national_cloud_v1 on cloud).  Express every
+# fixture value through these so the same claim fixtures exercise both floors.
+TARGET_V = FIRST_STRICT_POLICY_VERSION
+SOURCE_V = ARCHIVED_VERSION_HIGH_WATER
+CANDIDATE_LABEL = bot_name(TARGET_V)
+CANDIDATE_REPO_PATH = f"bots/{CANDIDATE_LABEL}"
+
 OLD_HEAD = "1" * 40
 NEW_HEAD = "2" * 40
 OLD_HASH = "3" * 64
 CANDIDATE_HASH = "4" * 64
 JOB_ID = "5" * 64
-WORKFLOW = "generation:143:workflow-v62"
+WORKFLOW = f"generation:{TARGET_V}:workflow-v62"
 
 
 def _execution_scope():
     return {
         "workflow_run_id": WORKFLOW,
         "checkpoint_revision": 13,
-        "candidate_version": 143,
-        "candidate_label": "national_v143",
+        "candidate_version": TARGET_V,
+        "candidate_label": CANDIDATE_LABEL,
         "candidate_artifact_hash": CANDIDATE_HASH,
         "control_id": "first_strict_control_v1",
         "control_artifact_hash": "a" * 64,
@@ -79,8 +94,8 @@ def _checkpoint():
         "request_digest": canonical_digest(parked_payload),
     }
     return {
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "parent2_v": None,
         "stage": "official_bootstrap_required",
         "workflow_run_id": WORKFLOW,
@@ -438,7 +453,7 @@ def _build_v65_live_archive_diagnosis(monkeypatch):
     )
     status_path = (
         runtime
-        / "web/core/results/official_certification/status/national_v143.json"
+        / f"web/core/results/official_certification/status/{CANDIDATE_LABEL}.json"
     )
     assert job.is_dir() and not job.is_symlink()
     assert status_path.is_file() and not status_path.is_symlink()
@@ -517,8 +532,8 @@ def _called_allin_claim_envelope():
         "old_checkpoint": {
             "digest": "a" * 64,
             "workflow_run_id": incident["workflow_run_id"],
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": TARGET_V,
+            "source_v": SOURCE_V,
             "stage": "official_bootstrap_required",
             "checkpoint_revision": incident["checkpoint_revision"],
         },
@@ -531,7 +546,7 @@ def _called_allin_claim_envelope():
             "contract_paths": ["web/core/official_wire_probe.py"],
         },
         "candidate": {
-            "path": "bots/national_v143",
+            "path": CANDIDATE_REPO_PATH,
             "artifact_hash": incident["candidate_artifact_hash"],
             "files": sorted(recovery._STRICT_FILES),
         },
@@ -586,8 +601,8 @@ def _v65_claim_envelope():
         "old_checkpoint": {
             "digest": "a" * 64,
             "workflow_run_id": incident["workflow_run_id"],
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": TARGET_V,
+            "source_v": SOURCE_V,
             "stage": "official_bootstrap_required",
             "checkpoint_revision": incident["checkpoint_revision"],
         },
@@ -606,7 +621,7 @@ def _v65_claim_envelope():
             ],
         },
         "candidate": {
-            "path": "bots/national_v143",
+            "path": CANDIDATE_REPO_PATH,
             "artifact_hash": incident["candidate_artifact_hash"],
             "files": sorted(recovery._STRICT_FILES),
         },
@@ -2060,9 +2075,9 @@ def test_rehashed_parked_request_cannot_splice_embedded_receipt(
 
 def _configure_claim(monkeypatch, root: Path):
     root.mkdir(parents=True)
-    (root / "bots" / "national_v143").mkdir(parents=True)
+    (root / "bots" / CANDIDATE_LABEL).mkdir(parents=True)
     for name in recovery._STRICT_FILES:
-        (root / "bots" / "national_v143" / name).write_text("x", encoding="utf-8")
+        (root / "bots" / CANDIDATE_LABEL / name).write_text("x", encoding="utf-8")
 
     def git(_root, *args, binary=False):
         if args[:2] == ("rev-parse", "--verify"):
@@ -2094,7 +2109,7 @@ def _configure_claim(monkeypatch, root: Path):
         recovery,
         "_safe_candidate",
         lambda *_a, **_k: {
-            "path": "bots/national_v143",
+            "path": CANDIDATE_REPO_PATH,
             "artifact_hash": CANDIDATE_HASH,
             "files": sorted(recovery._STRICT_FILES),
         },
@@ -2568,11 +2583,11 @@ def test_canonical_reason_reopens_external_proof_and_crossbinds_checkpoint(
         "digest": "b" * 64,
         "workflow_run_id": WORKFLOW,
         "checkpoint_revision": 22,
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "official_bootstrap_required",
     }
-    source = tmp_path / "bots" / "national_v143"
+    source = tmp_path / "bots" / CANDIDATE_LABEL
     source.mkdir(parents=True)
     for name in recovery._STRICT_FILES:
         (source / name).write_text("x", encoding="utf-8")
@@ -2582,7 +2597,7 @@ def test_canonical_reason_reopens_external_proof_and_crossbinds_checkpoint(
         "old_checkpoint": old,
         "git_contract_migration": {"current_head": NEW_HEAD},
         "candidate": {
-            "path": "bots/national_v143",
+            "path": CANDIDATE_REPO_PATH,
             "artifact_hash": artifact_hash,
         },
     }
@@ -2593,7 +2608,7 @@ def test_canonical_reason_reopens_external_proof_and_crossbinds_checkpoint(
         "checkpoint": dict(old),
         "git_head": NEW_HEAD,
         "git_state": {"head": NEW_HEAD},
-        "candidate": {"path": "bots/national_v143", "present": True},
+        "candidate": {"path": CANDIDATE_REPO_PATH, "present": True},
         "transaction_id": "c" * 64,
     }
 
@@ -2624,7 +2639,7 @@ def test_canonical_reason_reopens_external_proof_and_crossbinds_checkpoint(
             "git_head": NEW_HEAD,
             "git_state": {"head": NEW_HEAD},
             "candidate": {
-                "path": "bots/national_v143",
+                "path": CANDIDATE_REPO_PATH,
                 "present": True,
             },
             "transaction_id": "c" * 64,
@@ -2649,11 +2664,11 @@ def test_canonical_external_binding_rejects_head_or_path_splice(
         "digest": "b" * 64,
         "workflow_run_id": WORKFLOW,
         "checkpoint_revision": 22,
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "official_bootstrap_required",
     }
-    source = tmp_path / "bots" / "national_v143"
+    source = tmp_path / "bots" / CANDIDATE_LABEL
     source.mkdir(parents=True)
     for name in recovery._STRICT_FILES:
         (source / name).write_text("x", encoding="utf-8")
@@ -2662,7 +2677,7 @@ def test_canonical_external_binding_rejects_head_or_path_splice(
         "old_checkpoint": old,
         "git_contract_migration": {"current_head": NEW_HEAD},
         "candidate": {
-            "path": "bots/national_v143",
+            "path": CANDIDATE_REPO_PATH,
             "artifact_hash": artifact_hash,
         },
     })
@@ -2672,7 +2687,7 @@ def test_canonical_external_binding_rejects_head_or_path_splice(
         "checkpoint": dict(old),
         "git_head": NEW_HEAD,
         "git_state": {"head": NEW_HEAD},
-        "candidate": {"path": "bots/national_v143", "present": True},
+        "candidate": {"path": CANDIDATE_REPO_PATH, "present": True},
         "transaction_id": "c" * 64,
     }
     mutation(canonical)
@@ -2693,7 +2708,7 @@ def test_canonical_external_binding_rehashes_source_and_quarantine(
 ):
     digest = "a" * 64
     transaction_id = "c" * 64
-    source = tmp_path / "bots" / "national_v143"
+    source = tmp_path / "bots" / CANDIDATE_LABEL
     source.mkdir(parents=True)
     for name in recovery._STRICT_FILES:
         (source / name).write_text("x", encoding="utf-8")
@@ -2702,15 +2717,15 @@ def test_canonical_external_binding_rehashes_source_and_quarantine(
         "digest": "b" * 64,
         "workflow_run_id": WORKFLOW,
         "checkpoint_revision": 22,
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "official_bootstrap_required",
     }
     external = {
         "old_checkpoint": old,
         "git_contract_migration": {"current_head": NEW_HEAD},
         "candidate": {
-            "path": "bots/national_v143",
+            "path": CANDIDATE_REPO_PATH,
             "artifact_hash": artifact_hash,
         },
     }
@@ -2721,7 +2736,7 @@ def test_canonical_external_binding_rehashes_source_and_quarantine(
         "checkpoint": old,
         "git_head": NEW_HEAD,
         "git_state": {"head": NEW_HEAD},
-        "candidate": {"path": "bots/national_v143", "present": True},
+        "candidate": {"path": CANDIDATE_REPO_PATH, "present": True},
         "transaction_id": transaction_id,
     }
 
@@ -2945,8 +2960,8 @@ def test_finalized_bootstrap_scanner_uses_full_external_crossbinding(
         "digest": "b" * 64,
         "workflow_run_id": WORKFLOW,
         "checkpoint_revision": 22,
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "official_bootstrap_required",
     }
     external = {
@@ -2954,7 +2969,7 @@ def test_finalized_bootstrap_scanner_uses_full_external_crossbinding(
         "old_checkpoint": old,
         "git_contract_migration": {"current_head": NEW_HEAD},
         "candidate": {
-            "path": "bots/national_v143",
+            "path": CANDIDATE_REPO_PATH,
             "artifact_hash": artifact_hash,
         },
     }
@@ -2966,7 +2981,7 @@ def test_finalized_bootstrap_scanner_uses_full_external_crossbinding(
         "checkpoint": dict(old),
         "git_head": NEW_HEAD,
         "git_state": {"head": NEW_HEAD},
-        "candidate": {"path": "bots/national_v143", "present": True},
+        "candidate": {"path": CANDIDATE_REPO_PATH, "present": True},
         "transaction_id": transaction_id,
     }
     if mutation is not None:
@@ -3047,8 +3062,8 @@ def test_operator_cli_resumes_clear_before_finalize_crash_prefix(
     monkeypatch.setattr(cli, "_index_lock", nullcontext)
     monkeypatch.setattr(cli, "incomplete_claim_resume_identity", lambda *_a: {
         "workflow_run_id": WORKFLOW,
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": TARGET_V,
+        "source_v": SOURCE_V,
         "stage": "official_bootstrap_required",
         "checkpoint_revision": 22,
     })

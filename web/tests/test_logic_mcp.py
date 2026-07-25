@@ -2,6 +2,18 @@
 
 import pytest
 
+from conftest import STRICT_TARGET_V
+from bot_namespace import bot_name, bot_tag, high_water_tag
+
+
+def _v(offset: int) -> int:
+    """Branch-portable published-bot version: STRICT_TARGET_V + offset."""
+    return STRICT_TARGET_V + int(offset)
+
+
+def _bn(offset: int) -> str:
+    return bot_name(_v(offset))
+
 # ── tool_helpers.py: compute_h2h_avg_winrate() via pure import ──
 
 class TestComputeH2HLogic:
@@ -46,14 +58,14 @@ class TestLoadH2HAvgWinratesFallback:
             tool_helpers,
             "_rating_rows_for_active",
             lambda: [
-                {"name": "national_v143", "h2h_avg_wr": 0.625},
-                {"name": "national_v144", "h2h_avg_wr": None, "win_rate": 0.375},
+                {"name": _bn(0), "h2h_avg_wr": 0.625},
+                {"name": _bn(1), "h2h_avg_wr": None, "win_rate": 0.375},
             ],
         )
 
         assert tool_helpers.load_h2h_avg_winrates() == {
-            "national_v143": 0.625,
-            "national_v144": 0.375,
+            _bn(0): 0.625,
+            _bn(1): 0.375,
         }
 
 
@@ -62,12 +74,12 @@ class TestLoadH2HAvgWinratesFallback:
 class TestSelectPrecommitOpponents:
     @staticmethod
     def _snapshot():
-        active = ["national_v143", "national_v144", "national_v145", "national_v146"]
+        active = [_bn(0), _bn(1), _bn(2), _bn(3)]
         scores = {
-            "national_v143": 0.40,
-            "national_v144": 0.90,
-            "national_v145": 0.80,
-            "national_v146": 0.10,
+            _bn(0): 0.40,
+            _bn(1): 0.90,
+            _bn(2): 0.80,
+            _bn(3): 0.10,
         }
         return {
             "available": True,
@@ -83,13 +95,13 @@ class TestSelectPrecommitOpponents:
                 ],
             },
             "h2h": {
-                "national_v143 vs national_v144": {
+                f"{_bn(0)} vs {_bn(1)}": {
                     "games": 10,
                     "a_wins": 5,
                     "b_wins": 5,
                     "draws": 0,
                 },
-                "national_v143 vs national_v146": {
+                f"{_bn(0)} vs {_bn(3)}": {
                     "games": 10,
                     "a_wins": 2,
                     "b_wins": 8,
@@ -103,11 +115,13 @@ class TestSelectPrecommitOpponents:
     def _singleton_checkpoint():
         from bot_artifact import canonical_digest
 
+        parent_v = STRICT_TARGET_V
+        child_v = STRICT_TARGET_V + 1
         stable_publication = {
             "schema_version": 1,
             "published": True,
-            "version": 143,
-            "tag": "national-bot-v143",
+            "version": parent_v,
+            "tag": bot_tag(parent_v),
             "tag_type": "tag",
             "tag_object": "1" * 40,
             "commit_oid": "2" * 40,
@@ -115,8 +129,8 @@ class TestSelectPrecommitOpponents:
             "tag_artifact_hash": "4" * 64,
         }
         parent_identity = {
-            "version": 143,
-            "bot": "national_v143",
+            "version": parent_v,
+            "bot": bot_name(parent_v),
             "role": "parent_source",
             "epoch": "national_tcp_policy_v1",
             "runtime_manifest_digest": "5" * 64,
@@ -125,9 +139,9 @@ class TestSelectPrecommitOpponents:
                 stable_publication
             ),
             "certificate_digest": "7" * 64,
-            "completion_tag": "national-bot-v143",
+            "completion_tag": bot_tag(parent_v),
             "completion_tag_object_oid": "1" * 40,
-            "high_water_tag": "national-high-water-v143",
+            "high_water_tag": high_water_tag(parent_v),
             "high_water_tag_object_oid": "8" * 40,
             "publication_commit_oid": "2" * 40,
             "completion_tree_oid": "3" * 40,
@@ -138,10 +152,10 @@ class TestSelectPrecommitOpponents:
             "kind": "national-tcp-policy-singleton-bootstrap-v1",
             "mode": "singleton_strict_bootstrap",
             "epoch": "national_tcp_policy_v1",
-            "source_v": 143,
-            "next_v": 144,
+            "source_v": parent_v,
+            "next_v": child_v,
             "source_artifact_inherited": True,
-            "active_bots": ["national_v143"],
+            "active_bots": [bot_name(parent_v)],
             "source_runtime_manifest_digest": "5" * 64,
             "source_epoch_receipt_digest": "6" * 64,
             "source_publication_identity": dict(stable_publication),
@@ -155,28 +169,28 @@ class TestSelectPrecommitOpponents:
             "schema_version": 2,
             "epoch": "national_tcp_policy_v1",
             "mode": "published_strict_parent",
-            "next_v": 144,
-            "source_v": 143,
+            "next_v": child_v,
+            "source_v": parent_v,
             "parent2_v": None,
-            "parent_versions": [143],
+            "parent_versions": [parent_v],
             "source_artifact_inherited": True,
             "parent_authority": "strict_published_parent_resolution",
             "published_parent_identities": [parent_identity],
             "protocol_bootstrap_receipt_digest": receipt["receipt_digest"],
             "policy_epoch_reset_receipt_digest": None,
-            "published_high_water": 143,
+            "published_high_water": parent_v,
             "abandoned_receipt_floor": 0,
             "abandoned_receipt_head_digest": None,
-            "allocation_floor": 143,
+            "allocation_floor": parent_v,
         }
         return {
             "checkpoint_schema_version": 2,
             "evaluation_epoch": "national_tcp_policy_v1",
-            "next_v": 144,
-            "source_v": 143,
+            "next_v": child_v,
+            "source_v": parent_v,
             "parent2_v": None,
             "stage": "critic_checked",
-            "workflow_run_id": "generation:144:singleton-test",
+            "workflow_run_id": f"generation:{child_v}:singleton-test",
             "checkpoint_revision": 9,
             "epoch_binding": {
                 **binding_subject,
@@ -186,7 +200,7 @@ class TestSelectPrecommitOpponents:
                 "protocol_bootstrap": receipt,
                 "selection": {
                     "strategy": "singleton_strict_bootstrap",
-                    "parent_a": 143,
+                    "parent_a": parent_v,
                     "parent_b": None,
                     "bootstrap_without_strength_evidence": True,
                     "protocol_bootstrap_receipt_digest": receipt[
@@ -223,8 +237,8 @@ class TestSelectPrecommitOpponents:
         binding["protocol_bootstrap_receipt_digest"] = receipt[
             "receipt_digest"
         ]
-        if version > 144:
-            binding["published_high_water"] = 143
+        if version > STRICT_TARGET_V + 1:
+            binding["published_high_water"] = STRICT_TARGET_V
             binding["allocation_floor"] = version - 1
             binding["abandoned_receipt_floor"] = version - 1
             binding["abandoned_receipt_head_digest"] = "a" * 64
@@ -234,7 +248,10 @@ class TestSelectPrecommitOpponents:
         })
         return checkpoint
 
-    @pytest.mark.parametrize("version", [144, 147])
+    @pytest.mark.parametrize(
+        "version",
+        [STRICT_TARGET_V + 1, STRICT_TARGET_V + 4],
+    )
     def test_singleton_evidence_identity_accepts_any_bound_successor(self, version):
         from generation_evidence import build_protocol_bootstrap_evidence_identity
 
@@ -246,11 +263,11 @@ class TestSelectPrecommitOpponents:
         identity = build_protocol_bootstrap_evidence_identity(
             checkpoint,
             version=version,
-            source_v=143,
+            source_v=STRICT_TARGET_V,
         )
 
         assert identity["mode"] == "singleton_strict_successor_bootstrap"
-        assert identity["source_v"] == 143
+        assert identity["source_v"] == STRICT_TARGET_V
         assert identity["strength_evidence_admitted"] is False
         assert identity["strength_evidence_weight"] == 0
 
@@ -262,35 +279,38 @@ class TestSelectPrecommitOpponents:
 
         checkpoint = self._retarget_singleton_checkpoint(
             self._singleton_checkpoint(),
-            143,
+            STRICT_TARGET_V,
         )
 
         with pytest.raises(
             GenerationEvidenceError,
             match="singleton_bootstrap_target_not_successor",
         ):
-            _singleton_successor_identity(checkpoint, 143, 143)
+            _singleton_successor_identity(
+                checkpoint, STRICT_TARGET_V, STRICT_TARGET_V
+            )
 
     def test_singleton_live_allocation_reopens_exact_abandon_chain(self):
         from generation_evidence import live_protocol_bootstrap_allocation_errors
 
+        target_v = STRICT_TARGET_V + 4
         checkpoint = self._retarget_singleton_checkpoint(
             self._singleton_checkpoint(),
-            147,
+            target_v,
         )
 
         def live_authority(*, expected_next_v):
-            assert expected_next_v == 147
+            assert expected_next_v == target_v
             return {
-                "published_high_water": 143,
-                "abandoned_receipt_floor": 146,
+                "published_high_water": STRICT_TARGET_V,
+                "abandoned_receipt_floor": target_v - 1,
                 "abandoned_receipt_head_digest": "a" * 64,
-                "allocation_floor": 146,
+                "allocation_floor": target_v - 1,
             }
 
         assert live_protocol_bootstrap_allocation_errors(
             checkpoint,
-            version=147,
+            version=target_v,
             authority_loader=live_authority,
         ) == []
 
@@ -306,10 +326,10 @@ class TestSelectPrecommitOpponents:
             checkpoint,
             version=999,
             authority_loader=lambda **_kwargs: {
-                "published_high_water": 143,
-                "abandoned_receipt_floor": 146,
+                "published_high_water": STRICT_TARGET_V,
+                "abandoned_receipt_floor": STRICT_TARGET_V + 3,
                 "abandoned_receipt_head_digest": "a" * 64,
-                "allocation_floor": 146,
+                "allocation_floor": STRICT_TARGET_V + 3,
             },
         )
 
@@ -331,7 +351,7 @@ class TestSelectPrecommitOpponents:
             lambda _name: (_ for _ in ()).throw(AssertionError("live bot lookup")),
         )
 
-        assert tool_helpers._select_precommit_opponents(147, 143) == []
+        assert tool_helpers._select_precommit_opponents(_v(4), _v(0)) == []
 
     def test_invalid_frozen_pool_fails_closed(self, monkeypatch):
         import evidence_snapshot
@@ -345,7 +365,7 @@ class TestSelectPrecommitOpponents:
             lambda _version: snapshot,
         )
 
-        assert tool_helpers._select_precommit_opponents(147, 143) == []
+        assert tool_helpers._select_precommit_opponents(_v(4), _v(0)) == []
 
     def test_selection_comes_only_from_frozen_snapshot(self, tmp_path, monkeypatch):
         import evidence_snapshot
@@ -370,11 +390,11 @@ class TestSelectPrecommitOpponents:
             lambda: (_ for _ in ()).throw(AssertionError("live active pool reopened")),
         )
 
-        assert tool_helpers._select_precommit_opponents(147, 143) == [
-            {"name": "national_v143", "reason": "parent"},
-            {"name": "national_v144", "reason": "top_strength"},
-            {"name": "national_v145", "reason": "top_strength"},
-            {"name": "national_v146", "reason": "source_h2h_weakness"},
+        assert tool_helpers._select_precommit_opponents(_v(4), _v(0)) == [
+            {"name": _bn(0), "reason": "parent"},
+            {"name": _bn(1), "reason": "top_strength"},
+            {"name": _bn(2), "reason": "top_strength"},
+            {"name": _bn(3), "reason": "source_h2h_weakness"},
         ]
 
     def test_nonexecutable_frozen_parent_fails_closed(self, tmp_path, monkeypatch):
@@ -393,7 +413,7 @@ class TestSelectPrecommitOpponents:
             lambda name: tmp_path / name / "national_bot.py",
         )
 
-        assert tool_helpers._select_precommit_opponents(147, 143) == []
+        assert tool_helpers._select_precommit_opponents(_v(4), _v(0)) == []
 
     def test_singleton_successor_freezes_exact_published_parent_without_snapshot(
         self,
@@ -409,10 +429,10 @@ class TestSelectPrecommitOpponents:
             self._singleton_checkpoint(),
             self._retarget_singleton_checkpoint(
                 self._singleton_checkpoint(),
-                147,
+                STRICT_TARGET_V + 4,
             ),
         ]
-        parent_entry = tmp_path / "national_v143" / "national_bot.py"
+        parent_entry = tmp_path / _bn(0) / "national_bot.py"
         parent_entry.parent.mkdir()
         parent_entry.write_text("# strict published parent\n", encoding="utf-8")
         monkeypatch.setattr(
@@ -433,17 +453,17 @@ class TestSelectPrecommitOpponents:
         monkeypatch.setattr(
             tool_helpers,
             "get_active_bots",
-            lambda: ["national_v143"],
+            lambda: [_bn(0)],
         )
         monkeypatch.setattr(tool_helpers, "_bot_entry", lambda _name: parent_entry)
 
         for checkpoint in checkpoints:
             assert tool_helpers._select_precommit_opponents(
                 checkpoint["next_v"],
-                143,
+                STRICT_TARGET_V,
                 checkpoint=checkpoint,
             ) == [{
-                "name": "national_v143",
+                "name": _bn(0),
                 "reason": "singleton_strict_bootstrap_parent",
             }]
 
@@ -477,7 +497,7 @@ class TestSelectPrecommitOpponents:
             for key, value in binding.items()
             if key != "binding_digest"
         })
-        parent_entry = tmp_path / "national_v143" / "national_bot.py"
+        parent_entry = tmp_path / _bn(0) / "national_bot.py"
         parent_entry.parent.mkdir()
         parent_entry.write_text("# strict published parent\n", encoding="utf-8")
         monkeypatch.setattr(
@@ -493,13 +513,13 @@ class TestSelectPrecommitOpponents:
         monkeypatch.setattr(
             tool_helpers,
             "get_active_bots",
-            lambda: ["national_v143"],
+            lambda: [_bn(0)],
         )
         monkeypatch.setattr(tool_helpers, "_bot_entry", lambda _name: parent_entry)
 
         assert tool_helpers._select_precommit_opponents(
-            144,
-            143,
+            STRICT_TARGET_V + 1,
+            STRICT_TARGET_V,
             checkpoint=checkpoint,
         ) == []
 
@@ -513,7 +533,7 @@ class TestSelectPrecommitOpponents:
         import tool_helpers
 
         checkpoint = self._singleton_checkpoint()
-        parent_entry = tmp_path / "national_v143" / "national_bot.py"
+        parent_entry = tmp_path / _bn(0) / "national_bot.py"
         parent_entry.parent.mkdir()
         parent_entry.write_text("# strict published parent\n", encoding="utf-8")
         monkeypatch.setattr(
@@ -530,21 +550,21 @@ class TestSelectPrecommitOpponents:
         monkeypatch.setattr(
             tool_helpers,
             "get_active_bots",
-            lambda: ["national_v143", "national_v145"],
+            lambda: [_bn(0), _bn(2)],
         )
 
         assert tool_helpers._select_precommit_opponents(
-            144,
-            143,
+            STRICT_TARGET_V + 1,
+            STRICT_TARGET_V,
             checkpoint=checkpoint,
         ) == []
         assert tool_helpers._select_precommit_opponents(
-            143,
-            142,
+            STRICT_TARGET_V,
+            STRICT_TARGET_V - 1,
             checkpoint={
                 **checkpoint,
-                "next_v": 143,
-                "source_v": 142,
+                "next_v": STRICT_TARGET_V,
+                "source_v": STRICT_TARGET_V - 1,
             },
         ) == []
 

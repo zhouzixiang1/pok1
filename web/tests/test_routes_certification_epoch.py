@@ -15,7 +15,9 @@ from bot_namespace import (
     bot_name,
     build_policy_epoch_receipt,
     build_runtime_manifest,
+    parse_bot_version,
 )
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name, strict_bot_tag
 from official_certification import build_spec
 import official_certification_job as jobs
 
@@ -37,7 +39,7 @@ def _write_strict_bot(root: Path, version: int) -> Path:
         json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
-    parents = () if version == 143 else (version - 1,)
+    parents = () if version == STRICT_TARGET_V else (version - 1,)
     receipt = build_policy_epoch_receipt(bot, version, parent_versions=parents)
     (bot / POLICY_EPOCH_RECEIPT).write_text(
         json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
@@ -73,8 +75,8 @@ def test_cancel_uses_the_checkpoint_data_sidecar(monkeypatch):
 
     result = route._cancel_exact_job_sync(
         "job-1",
-        workflow_run_id="generation:143:workflow-v1",
-        candidate_version=143,
+        workflow_run_id=f"generation:{STRICT_TARGET_V}:workflow-v1",
+        candidate_version=STRICT_TARGET_V,
         checkpoint_revision=4,
     )
 
@@ -86,15 +88,15 @@ def test_cancel_uses_the_checkpoint_data_sidecar(monkeypatch):
 
 def _projection(
     *,
-    version: int = 144,
-    workflow: str = "generation:144:strict-http-test",
+    version: int = STRICT_TARGET_V + 1,
+    workflow: str = f"generation:{STRICT_TARGET_V + 1}:strict-http-test",
     stage: str = "official_certifying",
 ) -> dict:
     return {
         "state": "strict_published",
         "initialized": True,
         "reset_receipt_valid": True,
-        "active_bots": ["national_v143"],
+        "active_bots": [strict_bot_name()],
         "active_generation": {
             "next_v": version,
             "source_v": version - 1,
@@ -122,7 +124,7 @@ def _structural_quality_admission(candidate: Path) -> dict:
     from official_platform_harness import FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION
 
     runtime_evidence = runtime_probe_native_template_evidence()
-    next_v = int(candidate.name.removeprefix("national_v") or 0)
+    next_v = int(parse_bot_version(candidate.name) or 0)
     payload = {
         "schema_version": FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION,
         "kind": "official-formal-quality-admission",
@@ -170,8 +172,8 @@ def _job_fixture(
 
     from server.routes import certification as route
 
-    candidate = _write_strict_bot(tmp_path, 144)
-    opponent = _write_strict_bot(tmp_path, 143)
+    candidate = _write_strict_bot(tmp_path, STRICT_TARGET_V + 1)
+    opponent = _write_strict_bot(tmp_path, STRICT_TARGET_V)
     eligibility_receipt = {
         "schema_version": 1,
         "kind": "official_full_certificate",
@@ -191,7 +193,7 @@ def _job_fixture(
             "bot": opponent.name,
             "path": str(opponent.resolve()),
             "artifact_hash": hash_path(opponent),
-            "tag": "national-bot-v143",
+            "tag": strict_bot_tag(),
             "tag_object": "a" * 40,
             "eligible": True,
             "reason": "official_certified",
@@ -209,7 +211,7 @@ def _job_fixture(
     request = jobs._request_payload(
         spec,
         opponent_selection=selection,
-        source_v=143,
+        source_v=STRICT_TARGET_V,
     )
     job_dir = tmp_path / "official-jobs" / request["job_id"]
     job_dir.mkdir(parents=True)
@@ -250,7 +252,7 @@ def _job_fixture(
         "label": opponent.name,
         "path": str(opponent.resolve()),
         "artifact_hash": hash_path(opponent),
-        "tag": "national-bot-v143",
+        "tag": strict_bot_tag(),
         "tag_object": "a" * 40,
         "issues": [],
     })
@@ -277,10 +279,10 @@ def _job_fixture(
         "rounds_completed": 0,
         "rounds_requested": 8,
     }
-    workflow = "generation:144:strict-http-test"
+    workflow = f"generation:{STRICT_TARGET_V + 1}:strict-http-test"
     checkpoint = {
-        "next_v": 144,
-        "source_v": 143,
+        "next_v": STRICT_TARGET_V + 1,
+        "source_v": STRICT_TARGET_V,
         "stage": "official_certifying",
         "workflow_run_id": workflow,
         "checkpoint_revision": 17,
@@ -290,7 +292,7 @@ def _job_fixture(
     context = {
         "projection": _projection(workflow=workflow),
         "checkpoint": checkpoint,
-        "version": 144,
+        "version": STRICT_TARGET_V + 1,
         "workflow_run_id": workflow,
         "candidate": candidate.resolve(),
         "candidate_hash": hash_path(candidate),
@@ -354,20 +356,20 @@ def _bootstrap_job_fixture(tmp_path: Path, monkeypatch) -> tuple[dict, dict, Pat
     from server.routes import certification as route
     import official_bootstrap
 
-    candidate = _write_strict_bot(tmp_path, 143)
+    candidate = _write_strict_bot(tmp_path, STRICT_TARGET_V)
     control = tmp_path / "first_strict_control_v1"
     control.mkdir()
     (control / "national_bot.py").write_text("# system control\n", encoding="utf-8")
-    workflow = "generation:143:first-strict-http-test"
+    workflow = f"generation:{STRICT_TARGET_V}:first-strict-http-test"
     candidate_hash = hash_path(candidate)
     parked = {
         "schema_version": 1,
         "kind": "official-first-strict-control-parked-request",
         "candidate_path": str(candidate.resolve()),
-        "candidate_label": "national_v143",
-        "candidate_version": 143,
+        "candidate_label": strict_bot_name(),
+        "candidate_version": STRICT_TARGET_V,
         "candidate_hash": candidate_hash,
-        "source_v": 142,
+        "source_v": STRICT_SOURCE_V,
         "workflow_run_id": workflow,
         "active_bots": [],
         "strict_published_bots": [],
@@ -381,7 +383,7 @@ def _bootstrap_job_fixture(tmp_path: Path, monkeypatch) -> tuple[dict, dict, Pat
         "parked_request_digest": parked["request_digest"],
         "workflow_run_id": workflow,
         "candidate_path": str(candidate.resolve()),
-        "candidate_version": 143,
+        "candidate_version": STRICT_TARGET_V,
         "candidate_hash": candidate_hash,
     }
     authorization["authorization_digest"] = canonical_digest(authorization)
@@ -422,14 +424,14 @@ def _bootstrap_job_fixture(tmp_path: Path, monkeypatch) -> tuple[dict, dict, Pat
     root = tmp_path / "official-jobs"
     _write_manager_job(root, request)
     projection = _projection(
-        version=143,
+        version=STRICT_TARGET_V,
         workflow=workflow,
         stage="official_bootstrap_required",
     )
     projection["active_bots"] = []
     checkpoint = {
-        "next_v": 143,
-        "source_v": 142,
+        "next_v": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
         "stage": "official_bootstrap_required",
         "workflow_run_id": workflow,
         "checkpoint_revision": 21,
@@ -439,7 +441,7 @@ def _bootstrap_job_fixture(tmp_path: Path, monkeypatch) -> tuple[dict, dict, Pat
     context = {
         "projection": projection,
         "checkpoint": checkpoint,
-        "version": 143,
+        "version": STRICT_TARGET_V,
         "workflow_run_id": workflow,
         "candidate": candidate.resolve(),
         "candidate_hash": candidate_hash,
@@ -528,7 +530,7 @@ def test_uninitialized_epoch_hides_jobs_and_candidate_status(client, monkeypatch
     )
 
     queue = client.get("/api/certification/jobs")
-    status = client.get("/api/certification/143")
+    status = client.get(f"/api/certification/{STRICT_TARGET_V}")
 
     assert queue.status_code == 200
     assert queue.json()["jobs"] == []
@@ -541,7 +543,7 @@ def test_untracked_v155_directory_is_never_a_certification_subject(
 ):
     from server.routes import certification as route
 
-    (tmp_path / "bots" / "national_v155").mkdir(parents=True)
+    (tmp_path / "bots" / bot_name(STRICT_TARGET_V + 12)).mkdir(parents=True)
     monkeypatch.setattr(route, "BOTS_DIR", tmp_path / "bots")
     monkeypatch.setattr(route, "strict_epoch_projection", lambda: {
         "state": "fresh_bootstrap_ready",
@@ -551,7 +553,7 @@ def test_untracked_v155_directory_is_never_a_certification_subject(
         "active_generation": None,
     })
 
-    response = client.get("/api/certification/155")
+    response = client.get(f"/api/certification/{STRICT_TARGET_V + 12}")
 
     assert response.status_code == 404
 
@@ -562,27 +564,27 @@ def test_current_candidate_rejects_wrong_workflow_and_invalid_checkpoint(
     from server.routes import certification as route
     import evolution_infra
 
-    _write_strict_bot(tmp_path, 144)
+    _write_strict_bot(tmp_path, STRICT_TARGET_V + 1)
     monkeypatch.setattr(route, "BOTS_DIR", tmp_path / "bots")
     checkpoint = {
-        "next_v": 144,
-        "source_v": 143,
+        "next_v": STRICT_TARGET_V + 1,
+        "source_v": STRICT_TARGET_V,
         "stage": "official_certifying",
-        "workflow_run_id": "generation:144:current",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V + 1}:current",
     }
     monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
     monkeypatch.setattr(
         route,
         "strict_checkpoint_event_identity",
         lambda *_a, **_k: {
-            "gen": 144,
+            "gen": STRICT_TARGET_V + 1,
             "evaluation_epoch": "national_tcp_policy_v1",
             "workflow_run_id": checkpoint["workflow_run_id"],
         },
     )
 
     assert route._current_candidate_context(
-        _projection(workflow="generation:144:stale")
+        _projection(workflow=f"generation:{STRICT_TARGET_V + 1}:stale")
     ) is None
 
     def invalid(*_args, **_kwargs):
@@ -590,7 +592,7 @@ def test_current_candidate_rejects_wrong_workflow_and_invalid_checkpoint(
 
     monkeypatch.setattr(route, "strict_checkpoint_event_identity", invalid)
     assert route._current_candidate_context(
-        _projection(workflow="generation:144:current")
+        _projection(workflow=f"generation:{STRICT_TARGET_V + 1}:current")
     ) is None
 
 
@@ -663,7 +665,7 @@ def test_smoke_status_is_projected_as_diagnostic_not_formal(
 ):
     from server.routes import certification as route
 
-    candidate = tmp_path / "bots" / "national_v144"
+    candidate = tmp_path / "bots" / bot_name(STRICT_TARGET_V + 1)
     candidate.mkdir(parents=True)
     projection = _projection()
     monkeypatch.setattr(
@@ -673,7 +675,7 @@ def test_smoke_status_is_projected_as_diagnostic_not_formal(
             candidate,
             "active_candidate",
             projection,
-            "generation:144:strict-http-test",
+            f"generation:{STRICT_TARGET_V + 1}:strict-http-test",
         ),
     )
     monkeypatch.setattr(route, "status_payload", lambda _candidate: {
@@ -690,7 +692,7 @@ def test_smoke_status_is_projected_as_diagnostic_not_formal(
         ),
     )
 
-    response = client.get("/api/certification/144")
+    response = client.get(f"/api/certification/{STRICT_TARGET_V + 1}")
 
     assert response.status_code == 200
     payload = response.json()
@@ -713,7 +715,7 @@ def test_certification_route_replaces_self_reported_profile_with_signed_projecti
 ):
     from server.routes import certification as route
 
-    candidate = tmp_path / "bots" / "national_v144"
+    candidate = tmp_path / "bots" / bot_name(STRICT_TARGET_V + 1)
     candidate.mkdir(parents=True)
     monkeypatch.setattr(
         route,
@@ -756,7 +758,7 @@ def test_certification_route_replaces_self_reported_profile_with_signed_projecti
         lambda *_a, **_k: canonical,
     )
 
-    payload = client.get("/api/certification/144").json()
+    payload = client.get(f"/api/certification/{STRICT_TARGET_V + 1}").json()
 
     assert payload["formal_certified"] is True
     assert {key: payload[key] for key in canonical} == canonical
@@ -769,7 +771,7 @@ def test_certification_route_removes_profile_when_signed_projection_is_unavailab
 ):
     from server.routes import certification as route
 
-    candidate = tmp_path / "bots" / "national_v144"
+    candidate = tmp_path / "bots" / bot_name(STRICT_TARGET_V + 1)
     candidate.mkdir(parents=True)
     monkeypatch.setattr(
         route,
@@ -790,7 +792,7 @@ def test_certification_route_removes_profile_when_signed_projection_is_unavailab
         lambda *_a, **_k: {},
     )
 
-    payload = client.get("/api/certification/144").json()
+    payload = client.get(f"/api/certification/{STRICT_TARGET_V + 1}").json()
 
     assert payload["formal_certified"] is False
     assert payload["formal_authority"] == "none"
@@ -819,7 +821,7 @@ def test_exact_full_job_projects_epoch_workflow_and_candidate(
     assert payload["job_id"] == request["job_id"]
     assert payload["evaluation_epoch"] == "national_tcp_policy_v1"
     assert payload["workflow_run_id"] == context["workflow_run_id"]
-    assert payload["candidate_version"] == 144
+    assert payload["candidate_version"] == STRICT_TARGET_V + 1
     assert payload["formal_mode"] == "full"
     assert payload["formal_policy_id"] == "official-full-v5"
     assert payload["certification_profile"] == "official-full-v5"
@@ -866,7 +868,7 @@ def test_certification_get_routes_isolate_complete_read_projections(
     })
     expected_jobs = route._jobs_payload()
     expected_job = route._certification_job_payload(request["job_id"])
-    expected_status = route._certification_payload(144)
+    expected_status = route._certification_payload(STRICT_TARGET_V + 1)
     calls = []
 
     async def isolated(function, *args, thread_name_prefix, **kwargs):
@@ -877,7 +879,7 @@ def test_certification_get_routes_isolate_complete_read_projections(
 
     jobs_response = client.get("/api/certification/jobs")
     job_response = client.get(f"/api/certification/jobs/{request['job_id']}")
-    status_response = client.get("/api/certification/144")
+    status_response = client.get(f"/api/certification/{STRICT_TARGET_V + 1}")
     missing_response = client.get(f"/api/certification/jobs/{'f' * 64}")
     monkeypatch.setattr(
         route,
@@ -901,7 +903,7 @@ def test_certification_get_routes_isolate_complete_read_projections(
             (request["job_id"],),
             "official-certification-job",
         ),
-        ("_certification_payload", (144,), "official-certification-status"),
+        ("_certification_payload", (STRICT_TARGET_V + 1,), "official-certification-status"),
         (
             "_certification_job_payload",
             ("f" * 64,),
@@ -924,10 +926,10 @@ def test_normal_job_requires_live_published_opponent_certificate_and_receipt(
 
     monkeypatch.setattr(route, "published_bot_identity", lambda _path: {
         "published": False,
-        "label": "national_v143",
+        "label": strict_bot_name(),
         "path": request["spec"]["opponent"],
         "artifact_hash": request["identity"]["opponent_hash"],
-        "tag": "national-bot-v143",
+        "tag": strict_bot_tag(),
         "tag_object": "a" * 40,
         "issues": ["missing_annotated_completion_tag"],
     })
@@ -1076,7 +1078,7 @@ def test_normal_attached_job_is_visible_in_all_owning_checkpoint_stages(
     assert payload["checkpoint_stage"] == stage
     assert payload["checkpoint_revision"] == context["checkpoint"]["checkpoint_revision"]
     assert payload["workflow_run_id"] == context["workflow_run_id"]
-    assert payload["run_id"] == "144#0"
+    assert payload["run_id"] == f"{STRICT_TARGET_V + 1}#0"
 
 
 @pytest.mark.parametrize(
@@ -1188,9 +1190,9 @@ def test_cancel_sync_rechecks_workflow_stage_revision_and_job_under_cas_lock(
     job_id = "d" * 64
     candidate_hash = "c" * 64
     checkpoint = {
-        "next_v": 144,
+        "next_v": STRICT_TARGET_V + 1,
         "stage": "official_certifying",
-        "workflow_run_id": "generation:144:current",
+        "workflow_run_id": f"generation:{STRICT_TARGET_V + 1}:current",
         "checkpoint_revision": 9,
         "official_job": {
             "job_id": job_id,
@@ -1207,7 +1209,7 @@ def test_cancel_sync_rechecks_workflow_stage_revision_and_job_under_cas_lock(
         route,
         "_projection",
         lambda: _projection(
-            workflow="generation:144:current",
+            workflow=f"generation:{STRICT_TARGET_V + 1}:current",
             stage="official_certifying",
         ),
     )
@@ -1216,7 +1218,7 @@ def test_cancel_sync_rechecks_workflow_stage_revision_and_job_under_cas_lock(
         route,
         "strict_checkpoint_event_identity",
         lambda *_a, **_k: {
-            "gen": 144,
+            "gen": STRICT_TARGET_V + 1,
             "evaluation_epoch": "national_tcp_policy_v1",
             "workflow_run_id": checkpoint["workflow_run_id"],
         },
@@ -1233,14 +1235,14 @@ def test_cancel_sync_rechecks_workflow_stage_revision_and_job_under_cas_lock(
 
     stale = route._cancel_exact_job_sync(
         job_id,
-        workflow_run_id="generation:144:stale",
-        candidate_version=144,
+        workflow_run_id=f"generation:{STRICT_TARGET_V + 1}:stale",
+        candidate_version=STRICT_TARGET_V + 1,
         checkpoint_revision=9,
     )
     valid = route._cancel_exact_job_sync(
         job_id,
-        workflow_run_id="generation:144:current",
-        candidate_version=144,
+        workflow_run_id=f"generation:{STRICT_TARGET_V + 1}:current",
+        candidate_version=STRICT_TARGET_V + 1,
         checkpoint_revision=9,
     )
 
@@ -1272,7 +1274,7 @@ def test_exact_manual_v143_bootstrap_job_is_read_only_visible(
         request["job_id"]
     ]
     payload = detail.json()
-    assert payload["candidate_version"] == 143
+    assert payload["candidate_version"] == STRICT_TARGET_V
     assert payload["workflow_run_id"] == context["workflow_run_id"]
     assert payload["formal_authority"] == "operator_bootstrap_full_v5_job"
     assert payload["certification_profile"] == "first_strict_control_v1"
@@ -1324,7 +1326,7 @@ def test_new_workflow_excludes_only_exact_finalized_contract_migration_job(
 
     request, context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
     directory = root / request["job_id"]
-    context["workflow_run_id"] = "generation:143:fresh-after-contract-migration"
+    context["workflow_run_id"] = f"generation:{STRICT_TARGET_V}:fresh-after-contract-migration"
     monkeypatch.setattr(route, "_parked_bootstrap_request", lambda _ctx: {
         "request_digest": "f" * 64,
     })
@@ -1522,7 +1524,7 @@ def test_bootstrap_projection_ignores_old_v155_and_non_bootstrap_jobs(
     client, monkeypatch, tmp_path
 ):
     request, _context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
-    stale = _write_strict_bot(tmp_path, 155)
+    stale = _write_strict_bot(tmp_path, STRICT_TARGET_V + 12)
     stale_spec = build_spec(
         "full",
         stale,
@@ -1536,7 +1538,7 @@ def test_bootstrap_projection_ignores_old_v155_and_non_bootstrap_jobs(
             "candidate": str(stale.resolve()),
             "opponent": request["opponent_selection"]["opponent"],
         },
-        source_v=154,
+        source_v=STRICT_TARGET_V + 11,
     )
     _write_manager_job(root, stale_request)
 

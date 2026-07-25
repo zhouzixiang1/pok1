@@ -13,6 +13,9 @@ import re
 
 import pytest
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+from bot_namespace import bot_name
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -25,7 +28,7 @@ BOUND_PROPOSAL = {
     "structural_change": "Replace one reachable parent branch with a deadline-bounded mechanism.",
     "counterfactual": "Hold cards, seed, state, and legality fixed while toggling only the mechanism.",
     "measurement": (
-        "target=national_v143; primary=complete_70_hand_wld; "
+        f"target={bot_name(STRICT_TARGET_V)}; primary=complete_70_hand_wld; "
         "expected_delta=0.03; samples=>=30_complete_matches; "
         "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
     ),
@@ -84,7 +87,8 @@ def _valid_proposal_packet(
     )
     snapshot_binding = {
         "reference": (
-            "snapshot:head_to_head.json#/national_v143 vs national_v144"
+            f"snapshot:head_to_head.json#/{bot_name(STRICT_TARGET_V)} vs "
+            f"{bot_name(STRICT_TARGET_V + 1)}"
         ),
         "node_sha256": hashlib.sha256(
             snapshot_projection.encode("utf-8")
@@ -235,7 +239,7 @@ def _valid_proposal_packet(
     try:
         source_symbol_digests = agent_master._proposal_source_symbol_digests(
             proposals,
-            source_dir if source_dir is not None else agent_master.get_bot_dir(143),
+            source_dir if source_dir is not None else agent_master.get_bot_dir(STRICT_TARGET_V),
         )
     except (OSError, ValueError, KeyError):
         source_symbol_digests = {
@@ -318,7 +322,7 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
         "    return baseline\n"
     )
     def fixture_bot_dir(version):
-        root = fixture_bots / f"national_v{int(version)}"
+        root = fixture_bots / bot_name(int(version))
         root.mkdir(parents=True, exist_ok=True)
         policy_path = root / "policy.py"
         if not policy_path.exists():
@@ -365,7 +369,7 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / "proposal_invocations",
-        source_dir=fixture_bot_dir(143),
+        source_dir=fixture_bot_dir(STRICT_TARGET_V),
     )
     PROPOSAL_ID = frozen_packet_payload["ordered_proposals"][0]["proposal_id"]
     VALID_PLAN["selected_proposal_id"] = PROPOSAL_ID
@@ -396,7 +400,7 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
 
     ui = _MockUI()
     result = await agent_master._run_master_analysis(
-        source_v=143, next_v=144, stagnation_info="declining", ui=ui
+        source_v=STRICT_TARGET_V, next_v=STRICT_TARGET_V + 1, stagnation_info="declining", ui=ui
     )
 
     # 1. A valid plan must be returned (was None before the fix).
@@ -441,7 +445,7 @@ async def test_master_binds_duplicate_selected_metadata_without_retry(
 
     invalid = json.loads(json.dumps(VALID_PLAN))
     invalid["measurement_plan"] = (
-        "target=national_v143; primary=complete_70_hand_wld; "
+        f"target={bot_name(STRICT_TARGET_V)}; primary=complete_70_hand_wld; "
         "expected_delta=0.99; samples=>=30_complete_matches; "
         "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
     )
@@ -467,8 +471,8 @@ async def test_master_binds_duplicate_selected_metadata_without_retry(
 
     ui = _MockUI()
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=144,
+        source_v=STRICT_TARGET_V,
+        next_v=STRICT_TARGET_V + 1,
         stagnation_info="declining",
         ui=ui,
     )
@@ -513,8 +517,8 @@ async def test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_i
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
 
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=144,
+        source_v=STRICT_TARGET_V,
+        next_v=STRICT_TARGET_V + 1,
         stagnation_info="declining",
         ui=_MockUI(),
     )
@@ -548,14 +552,14 @@ async def test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_i
     # compaction threshold after Master acceptance.
     compiled, meta = plan_compiler.compile_master_plan(
         result,
-        next_v=144,
-        target_dir=tmp_path / "national_v144",
+        next_v=STRICT_TARGET_V + 1,
+        target_dir=tmp_path / bot_name(STRICT_TARGET_V + 1),
         project_root=tmp_path,
     )
     assert meta["hard_prompt_chars"] == 12000
     assert meta["compiled"] is False
     assert "plan_compiler" not in compiled
-    assert not (tmp_path / "national_v144" / ".task_context").exists()
+    assert not (tmp_path / bot_name(STRICT_TARGET_V + 1) / ".task_context").exists()
 
 
 def test_strict_projection_rejects_malformed_provider_worker_prompts(
@@ -568,7 +572,7 @@ def test_strict_projection_rejects_malformed_provider_worker_prompts(
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / "strict_prompt_type_invocations",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     selected = packet["ordered_proposals"][0]
     base_plan = json.loads(json.dumps(VALID_PLAN))
@@ -605,7 +609,7 @@ def test_strict_projection_binds_duplicate_selected_metadata(tmp_path):
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / "strict_metadata_binding_invocations",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     selected = packet["ordered_proposals"][0]
     plan = json.loads(json.dumps(VALID_PLAN))
@@ -650,7 +654,7 @@ def test_v51_10017_char_strict_master_prompt_stays_inline_and_replays(
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / "strict_replay_invocations",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     selected = packet["ordered_proposals"][0]
     provider_plan = json.loads(json.dumps(VALID_PLAN))
@@ -694,17 +698,17 @@ def test_v51_10017_char_strict_master_prompt_stays_inline_and_replays(
     assert target_bound_chars <= plan_compiler.HARD_WORKER_PROMPT_CHARS
 
     project_root = tmp_path / "operator"
-    candidate_dir = project_root / "bots" / "national_v143"
+    candidate_dir = project_root / "bots" / bot_name(STRICT_TARGET_V)
     candidate_dir.mkdir(parents=True)
     production_input, _normalization = _normalize_master_plan_paths(
         {**accepted_final, "architecture_policy": architecture_policy},
-        142,
-        143,
+        STRICT_SOURCE_V,
+        STRICT_TARGET_V,
     )
     assert isinstance(production_input, dict)
     production_plan, compiler = plan_compiler.compile_master_plan(
         production_input,
-        next_v=143,
+        next_v=STRICT_TARGET_V,
         target_dir=candidate_dir,
         project_root=project_root,
     )
@@ -772,7 +776,7 @@ def test_strict_projection_rejects_all_provider_reserved_markers(tmp_path):
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / "strict_reserved_marker_invocations",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     selected = packet["ordered_proposals"][0]
     for marker in (
@@ -814,7 +818,7 @@ def test_selected_and_system_blocks_survive_repeated_plan_compilation(tmp_path):
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / "strict_recompile_invocations",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     selected = packet["ordered_proposals"][0]
     plan = json.loads(json.dumps(VALID_PLAN))
@@ -833,13 +837,13 @@ def test_selected_and_system_blocks_survive_repeated_plan_compilation(tmp_path):
 
     first, first_meta = plan_compiler.compile_master_plan(
         projected,
-        next_v=143,
+        next_v=STRICT_TARGET_V,
         target_dir=tmp_path / "candidate",
         project_root=tmp_path,
     )
     second, second_meta = plan_compiler.compile_master_plan(
         first,
-        next_v=143,
+        next_v=STRICT_TARGET_V,
         target_dir=tmp_path / "candidate",
         project_root=tmp_path,
     )
@@ -865,7 +869,7 @@ def test_strict_projection_rejects_malformed_worker_scope(
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / f"strict_scope_{field}_{type(invalid).__name__}",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     selected = packet["ordered_proposals"][0]
     plan = json.loads(json.dumps(VALID_PLAN))
@@ -901,7 +905,7 @@ def test_strict_projection_fails_closed_when_system_block_exceeds_reserve(
         agent_master,
         BOUND_PROPOSAL,
         tmp_path / "strict_system_block_invocations",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     selected = packet["ordered_proposals"][0]
     plan = json.loads(json.dumps(VALID_PLAN))
@@ -951,8 +955,8 @@ async def test_proposal_context_excludes_final_master_tutorial(monkeypatch, tmp_
     monkeypatch.setattr(agent_master, "run_claude_query", final_master)
 
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=144,
+        source_v=STRICT_TARGET_V,
+        next_v=STRICT_TARGET_V + 1,
         stagnation_info="declining frozen selection signal",
         ui=_MockUI(),
     )
@@ -990,7 +994,7 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         BOUND_PROPOSAL,
         tmp_path / "fresh_proposal_invocations",
         evidence_mode="fresh_strict_control_no_strength",
-        source_dir=agent_master.get_bot_dir(143),
+        source_dir=agent_master.get_bot_dir(STRICT_TARGET_V),
     )
     fresh_selected = fresh_packet_payload["ordered_proposals"][0]
     fresh_plan = json.loads(json.dumps(VALID_PLAN))
@@ -1063,8 +1067,8 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     )
     strict_checkpoint = {
         "workflow_run_id": "master-strength-quarantine-test",
-        "source_v": 142,
-        "next_v": 143,
+        "source_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "stage": "direction_audited",
         "checkpoint_revision": 7,
         "audit_context": {
@@ -1112,8 +1116,8 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         "policy_abi": native_policy_runtime_contract()["policy_abi"],
     }
     result = await agent_master._run_master_analysis(
-        source_v=142,
-        next_v=143,
+        source_v=STRICT_SOURCE_V,
+        next_v=STRICT_TARGET_V,
         ui=_MockUI(),
         protocol_bootstrap=bootstrap_receipt,
         architecture_policy=architecture_policy,
@@ -1126,10 +1130,10 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     for forbidden in sentinels.values():
         assert forbidden not in rendered
     assert "Historical official-certification feedback was not loaded" in rendered
-    assert "bots/national_v142/" not in rendered
-    assert "system-owned source is fixed at v142" not in rendered
-    assert "numeric completion high-water v142" in rendered
-    assert "bots/national_v143/" in rendered
+    assert f"bots/{bot_name(STRICT_SOURCE_V)}/" not in rendered
+    assert f"system-owned source is fixed at v{STRICT_SOURCE_V}" not in rendered
+    assert f"numeric completion high-water v{STRICT_SOURCE_V}" in rendered
+    assert f"bots/{bot_name(STRICT_TARGET_V)}/" in rendered
     assert captured_kwargs
     final_calls = [
         call for call in captured_kwargs
@@ -1139,12 +1143,12 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     assert final_calls[0].get("allowed_read_dirs") is None
     assert final_calls[0].get("allowed_evidence_snapshot_dir") is None
     assert all(
-        call.get("allowed_read_dirs") == [agent_master.get_bot_dir(143)]
+        call.get("allowed_read_dirs") == [agent_master.get_bot_dir(STRICT_TARGET_V)]
         for call in captured_kwargs
         if call.get("tools") == ["Read"]
     )
     assert all(
-        agent_master.get_bot_dir(142) not in (call.get("allowed_read_dirs") or [])
+        agent_master.get_bot_dir(STRICT_SOURCE_V) not in (call.get("allowed_read_dirs") or [])
         for call in captured_kwargs
     )
     assert "{planning_code_input_contract}" not in rendered
@@ -1178,7 +1182,7 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
     import bot_namespace
     import official_certification
 
-    baseline = tmp_path / "national_v143"
+    baseline = tmp_path / bot_name(STRICT_TARGET_V)
     baseline.mkdir()
     exact_hash = "a" * 64
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: baseline)
@@ -1189,7 +1193,7 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
         lambda *_args, **_kwargs: SimpleNamespace(eligible=True),
     )
     poisoned = {
-        "bot": "national_v142",
+        "bot": bot_name(STRICT_SOURCE_V),
         "mode": "full",
         "policy_id": official_certification.FULL_POLICY_ID,
         "status": official_certification.STATUS_FAILED,
@@ -1200,13 +1204,13 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
         },
     }
     monkeypatch.setattr(official_certification, "read_status", lambda _path: poisoned)
-    rejected = agent_master._exact_official_compliance_feedback(143)
+    rejected = agent_master._exact_official_compliance_feedback(STRICT_TARGET_V)
     assert "RETIRED_OFFICIAL_SENTINEL" not in rejected
     assert "other epochs, versions, or artifact hashes is excluded" in rejected
 
     exact = {
         **poisoned,
-        "bot": "national_v143",
+        "bot": bot_name(STRICT_TARGET_V),
         "issues": ["MUTABLE_STATUS_POISON"],
         "official_llm_repair_guidance": "UNTRUSTED_ADVISORY_REPAIR",
         "official_deterministic_status_receipt": {
@@ -1228,7 +1232,7 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
         "_deterministic_status_receipt_issues",
         lambda *_args, **_kwargs: [],
     )
-    admitted = agent_master._exact_official_compliance_feedback(143)
+    admitted = agent_master._exact_official_compliance_feedback(STRICT_TARGET_V)
     assert exact_hash in admitted
     assert "exact_protocol_action_format" in admitted
     assert "MUTABLE_STATUS_POISON" not in admitted
@@ -1240,7 +1244,7 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
         "_deterministic_status_receipt_issues",
         lambda *_args, **_kwargs: ["evidence_digest_mismatch"],
     )
-    receipt_rejected = agent_master._exact_official_compliance_feedback(143)
+    receipt_rejected = agent_master._exact_official_compliance_feedback(STRICT_TARGET_V)
     assert "exact_protocol_action_format" not in receipt_rejected
     assert "other epochs, versions, or artifact hashes is excluded" in receipt_rejected
 
@@ -1261,9 +1265,10 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
     from tests.test_logic_mcp import TestSelectPrecommitOpponents
     from workflow_kernel import WorkflowStore
 
+    target_v = STRICT_TARGET_V + 4
     checkpoint = TestSelectPrecommitOpponents._retarget_singleton_checkpoint(
         TestSelectPrecommitOpponents._singleton_checkpoint(),
-        147,
+        target_v,
     )
     checkpoint["stage"] = "direction_audited"
     checkpoint["audit_context"]["prepared_artifact_contract"] = {
@@ -1271,8 +1276,8 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
         "prepared_artifact_hash": "c" * 64,
     }
     receipt = checkpoint["audit_context"]["protocol_bootstrap"]
-    source = tmp_path / "national_v143"
-    target = tmp_path / "national_v147"
+    source = tmp_path / bot_name(STRICT_TARGET_V)
+    target = tmp_path / bot_name(target_v)
     policy = (
         "def get_baseline_decision(context):\n"
         "    return _choose_intent(context)\n\n"
@@ -1308,7 +1313,7 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
     store = WorkflowStore(tmp_path / "singleton-strict-authority.sqlite3")
     monkeypatch.setattr(strict_authority_workflow, "_store", lambda: store)
     results_dir = tmp_path / "results"
-    singleton_logs = results_dir / "v147" / "logs"
+    singleton_logs = results_dir / f"v{target_v}" / "logs"
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
 
     async def final_query(prompt, *_args, **kwargs):
@@ -1353,7 +1358,7 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
         return output, 0.0, {}
 
     def bot_dir(version):
-        return source if int(version) == 143 else target
+        return source if int(version) == STRICT_TARGET_V else target
 
     monkeypatch.setattr(agent_master, "get_bot_dir", bot_dir)
     monkeypatch.setattr(agent_master, "get_logs_dir", lambda _v: singleton_logs)
@@ -1366,7 +1371,7 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
     monkeypatch.setattr(
         agent_master,
         "_exact_official_compliance_feedback",
-        lambda _v: "Published v143 official compliance receipt is valid.",
+        lambda _v: "Published strict official compliance receipt is valid.",
     )
     monkeypatch.setattr(
         evolution_infra,
@@ -1376,7 +1381,7 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
     monkeypatch.setattr(
         evolution_infra,
         "get_active_bots",
-        lambda: ["national_v143"],
+        lambda: [bot_name(STRICT_TARGET_V)],
     )
     monkeypatch.setattr(
         checkpoint_schema,
@@ -1401,8 +1406,8 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
         "policy_abi": native_policy_runtime_contract()["policy_abi"],
     }
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=147,
+        source_v=STRICT_TARGET_V,
+        next_v=target_v,
         stagnation_info="caller strength text must be quarantined",
         ui=_MockUI(),
         protocol_bootstrap=receipt,
@@ -1435,9 +1440,10 @@ async def test_singleton_master_live_allocation_drift_blocks_before_provider(
     import generation_evidence
     from tests.test_logic_mcp import TestSelectPrecommitOpponents
 
+    target_v = STRICT_TARGET_V + 4
     checkpoint = TestSelectPrecommitOpponents._retarget_singleton_checkpoint(
         TestSelectPrecommitOpponents._singleton_checkpoint(),
-        147,
+        target_v,
     )
     checkpoint["stage"] = "direction_audited"
     receipt = checkpoint["audit_context"]["protocol_bootstrap"]
@@ -1449,7 +1455,7 @@ async def test_singleton_master_live_allocation_drift_blocks_before_provider(
     monkeypatch.setattr(
         evolution_infra,
         "get_active_bots",
-        lambda: ["national_v143"],
+        lambda: [bot_name(STRICT_TARGET_V)],
     )
     monkeypatch.setattr(
         checkpoint_schema,
@@ -1473,8 +1479,8 @@ async def test_singleton_master_live_allocation_drift_blocks_before_provider(
 
     with pytest.raises(agent_master.MasterAuthorityError) as caught:
         await agent_master._run_master_analysis(
-            source_v=143,
-            next_v=147,
+            source_v=STRICT_TARGET_V,
+            next_v=target_v,
             stagnation_info="",
             ui=_MockUI(),
             protocol_bootstrap=receipt,
@@ -1503,8 +1509,8 @@ async def test_master_fails_closed_without_generation_evidence(monkeypatch):
     ui = _MockUI()
 
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=144,
+        source_v=STRICT_TARGET_V,
+        next_v=STRICT_TARGET_V + 1,
         stagnation_info="declining",
         ui=ui,
     )
@@ -1548,8 +1554,8 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
         "Do not invent custom worker terms like range_weighted_candidate_batch_v1."
     )
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=146,
+        source_v=STRICT_TARGET_V,
+        next_v=STRICT_TARGET_V + 3,
         stagnation_info=contradictory_context,
         ui=_MockUI(),
     )
@@ -1590,8 +1596,8 @@ async def test_master_does_not_bind_invalid_work_primitive(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
 
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=146,
+        source_v=STRICT_TARGET_V,
+        next_v=STRICT_TARGET_V + 3,
         stagnation_info="stagnant",
         ui=_MockUI(),
     )
@@ -1618,7 +1624,7 @@ async def test_master_retries_on_genuinely_malformed_json(monkeypatch):
 
     ui = _MockUI()
     result = await agent_master._run_master_analysis(
-        source_v=143, next_v=144, stagnation_info="declining", ui=ui
+        source_v=STRICT_TARGET_V, next_v=STRICT_TARGET_V + 1, stagnation_info="declining", ui=ui
     )
 
     assert result is None, "Genuinely malformed output should yield None"
@@ -1645,8 +1651,8 @@ async def test_master_fails_closed_after_structured_schema_errors(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
 
     result = await agent_master._run_master_analysis(
-        source_v=143,
-        next_v=144,
+        source_v=STRICT_TARGET_V,
+        next_v=STRICT_TARGET_V + 1,
         stagnation_info="declining",
         ui=_MockUI(),
     )
@@ -1669,14 +1675,14 @@ async def test_master_transport_failure_is_not_an_invalid_plan(monkeypatch):
 
     with pytest.raises(agent_master.MasterInfrastructureError) as caught:
         await agent_master._run_master_analysis(
-            source_v=143,
-            next_v=144,
+            source_v=STRICT_TARGET_V,
+            next_v=STRICT_TARGET_V + 1,
             stagnation_info="declining",
             ui=_MockUI(),
         )
 
-    assert caught.value.source_v == 143
-    assert caught.value.next_v == 144
+    assert caught.value.source_v == STRICT_TARGET_V
+    assert caught.value.next_v == STRICT_TARGET_V + 1
     assert len(caught.value.prompt_digest) == 64
     assert roles == ["MASTER (Try 1)"]
     assert not any("SCHEMA RETRY" in role for role in roles)
@@ -1698,8 +1704,8 @@ async def test_master_proposal_authority_failure_is_not_wrapped(monkeypatch):
 
     with pytest.raises(StrictAuthorityError, match="proposal authority drift"):
         await agent_master._run_master_analysis(
-            source_v=143,
-            next_v=144,
+            source_v=STRICT_TARGET_V,
+            next_v=STRICT_TARGET_V + 1,
             stagnation_info="declining",
             ui=_MockUI(),
         )
@@ -1717,8 +1723,8 @@ async def test_master_final_authority_failure_is_not_wrapped(monkeypatch):
 
     with pytest.raises(StrictAuthorityError, match="final authority drift"):
         await agent_master._run_master_analysis(
-            source_v=143,
-            next_v=144,
+            source_v=STRICT_TARGET_V,
+            next_v=STRICT_TARGET_V + 1,
             stagnation_info="declining",
             ui=_MockUI(),
         )

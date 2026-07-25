@@ -5,6 +5,23 @@ import time
 
 import pytest
 
+from bot_namespace import (
+    EVOLUTION_BRANCH,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+    high_water_tag,
+)
+from conftest import STRICT_TARGET_V
+
+# Branch-portable publication sequence.  The strict policy epoch's first
+# publication is STRICT_TARGET_V (143 on main, 1 on the cloud branch); every
+# literal version and tag below is expressed relative to it so the same
+# sequence exercises the observer on both branches.  Tag/dir names use the
+# namespace-aware helpers because the active tag prefix differs by branch
+# (national-bot-v on main, national-cloud-bot-v on cloud).
+V0 = STRICT_TARGET_V
+
 
 def _identity(*, boot="boot-a", contract="a" * 64):
     return {
@@ -14,7 +31,10 @@ def _identity(*, boot="boot-a", contract="a" * 64):
         "process_start_ticks": "777",
         "infrastructure_contract_hash": contract,
         "runtime_config_digest": "c" * 64,
-        "repository_head": f"{142:040x}",
+        # Initial head is the pre-strict archived high-water commit (V0 - 1);
+        # the first strict publication (V0) must advance the repository head
+        # past it.  On main this is 142 -> 143; on cloud 0 -> 1.
+        "repository_head": f"{V0 - 1:040x}",
         "repository_branch": "main",
     }
 
@@ -41,10 +61,10 @@ def _publication(version, *, repaired=False):
             "valid": True,
             "remote_main_oid": commit_oid,
             "remote_refs": {
-                f"refs/tags/national-bot-v{version}": "a" * 40,
-                f"refs/tags/national-bot-v{version}^{{}}": f"{version:040x}",
-                f"refs/tags/national-high-water-v{version}": "b" * 40,
-                f"refs/tags/national-high-water-v{version}^{{}}": f"{version:040x}",
+                f"refs/tags/{bot_tag(version)}": "a" * 40,
+                f"refs/tags/{bot_tag(version)}^{{}}": f"{version:040x}",
+                f"refs/tags/{high_water_tag(version)}": "b" * 40,
+                f"refs/tags/{high_water_tag(version)}^{{}}": f"{version:040x}",
             },
         },
     }
@@ -131,11 +151,12 @@ def live_daemon_identity(monkeypatch):
             return "main"
         if args[:2] == ("rev-list", "--count"):
             return "1"
+        published_range = range(V0, V0 + 40)
         requested_versions = [
             version
-            for version in range(143, 180)
+            for version in published_range
             if any(
-                f"national-bot-v{version}" in str(arg)
+                f"{bot_tag(version)}" in str(arg)
                 for arg in args
             )
         ]
@@ -144,14 +165,14 @@ def live_daemon_identity(monkeypatch):
             if requested_versions
             else "f" * 40
         )
-        lines = [f"{remote_main}\trefs/heads/main"]
-        for version in range(143, 180):
+        lines = [f"{remote_main}\trefs/heads/{EVOLUTION_BRANCH}"]
+        for version in published_range:
             commit_oid = f"{version:040x}"
             lines.extend((
-                f"{'a' * 40}\trefs/tags/national-bot-v{version}",
-                f"{commit_oid}\trefs/tags/national-bot-v{version}^{{}}",
-                f"{'b' * 40}\trefs/tags/national-high-water-v{version}",
-                f"{commit_oid}\trefs/tags/national-high-water-v{version}^{{}}",
+                f"{'a' * 40}\trefs/tags/{bot_tag(version)}",
+                f"{commit_oid}\trefs/tags/{bot_tag(version)}^{{}}",
+                f"{'b' * 40}\trefs/tags/{high_water_tag(version)}",
+                f"{commit_oid}\trefs/tags/{high_water_tag(version)}^{{}}",
             ))
         return "\n".join(lines)
 
@@ -174,7 +195,7 @@ def live_daemon_identity(monkeypatch):
                 "strength_evidence_admitted": False,
                 "strength_evidence_weight": 0,
             }
-            if int(version) == 143
+            if int(version) == FIRST_STRICT_POLICY_VERSION
             else {
                 "schema_version": 1,
                 "mode": "singleton_strict_successor_bootstrap",
@@ -183,7 +204,7 @@ def live_daemon_identity(monkeypatch):
                 "strength_evidence_admitted": False,
                 "strength_evidence_weight": 0,
             }
-            if int(version) == 144
+            if int(version) == FIRST_STRICT_POLICY_VERSION + 1
             else {
                 "schema_version": 1,
                 "mode": "frozen_native_evaluation",
@@ -196,7 +217,7 @@ def live_daemon_identity(monkeypatch):
                 "cycle_manifest_digest": "3" * 64,
                 "cycle_save_num": int(version),
                 "cycle_daemon_run_id": "daemon-run",
-                "cycle_active_bots": [f"national_v{source_v}"],
+                "cycle_active_bots": [bot_name(int(source_v))],
                 "selection_sha256": "4" * 64,
                 "match_history_index_sha256": "5" * 64,
                 "replay_spotlight_sha256": "6" * 64,
@@ -659,7 +680,7 @@ def test_runtime_config_digest_is_identity_bearing_and_drift_resets_count(
     current = _identity()
     _install_identity(monkeypatch, observation, current)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
     current["runtime_config_digest"] = "e" * 64
 
     projection = observation.stability_observation_projection()
@@ -674,18 +695,18 @@ def test_repository_head_or_branch_drift_immediately_hides_streak(monkeypatch):
 
     current = _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
-    _record(observation, 144)
+    _record(observation, V0)
+    _record(observation, V0 + 1)
 
     current["repository_head"] = "e" * 40
     projection = observation.stability_observation_projection()
     assert projection["count"] == 0
     assert projection["continuity_valid"] is False
     assert projection["identity_mismatches"] == ["repository_head"]
-    assert projection["recorded_repository_head"] == f"{144:040x}"
+    assert projection["recorded_repository_head"] == f"{V0 + 1:040x}"
     assert projection["current_repository_head"] == "e" * 40
 
-    current["repository_head"] = f"{144:040x}"
+    current["repository_head"] = f"{V0 + 1:040x}"
     current["repository_branch"] = "unexpected-worktree"
     projection = observation.stability_observation_projection()
     assert projection["count"] == 0
@@ -697,8 +718,8 @@ def test_intervening_repository_commits_persist_reset_before_new_row(monkeypatch
 
     _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
-    _record(observation, 144)
+    _record(observation, V0)
+    _record(observation, V0 + 1)
 
     original_git = observation._git
 
@@ -708,10 +729,10 @@ def test_intervening_repository_commits_persist_reset_before_new_row(monkeypatch
         return original_git(*args, **kwargs)
 
     monkeypatch.setattr(observation, "_git", drifted_git)
-    projection = _record(observation, 145)
+    projection = _record(observation, V0 + 2)
 
     assert projection["count"] == 1
-    assert [row["version"] for row in projection["observations"]] == [145]
+    assert [row["version"] for row in projection["observations"]] == [V0 + 2]
     assert projection["last_reset_reason"] == "repository_head_drift"
     assert projection["reset_history"][-1]["previous_count"] == 2
     assert projection["reset_history"][-1]["details"]["issues"] == [
@@ -724,14 +745,14 @@ def test_publication_requires_local_and_remote_main_at_exact_commit(monkeypatch)
 
     current = _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    result, checkpoint = _publication(143)
+    result, checkpoint = _publication(V0)
 
     with pytest.raises(
         observation.StabilityObservationError,
         match="publication_repository_head_mismatch",
     ):
         observation.record_published_generation(
-            version=143,
+            version=V0,
             publication_result=result,
             publishing_checkpoint=checkpoint,
         )
@@ -743,7 +764,7 @@ def test_publication_requires_local_and_remote_main_at_exact_commit(monkeypatch)
         match="publication_remote_main_head_mismatch",
     ):
         observation.record_published_generation(
-            version=143,
+            version=V0,
             publication_result=result,
             publishing_checkpoint=checkpoint,
         )
@@ -791,7 +812,7 @@ def test_ten_consecutive_publications_complete_and_duplicate_is_idempotent(monke
     started = observation.initialize_stability_observation()
     assert started["count"] == 0
 
-    for version in range(143, 153):
+    for version in range(V0, V0 + 10):
         projection = _record(observation, version)
 
     assert projection["count"] == 10
@@ -799,11 +820,11 @@ def test_ten_consecutive_publications_complete_and_duplicate_is_idempotent(monke
     assert projection["complete"] is True
     continuity_id = projection["continuity_id"]
 
-    duplicate = _record(observation, 152)
+    duplicate = _record(observation, V0 + 9)
     assert duplicate["count"] == 10
     assert duplicate["continuity_id"] == continuity_id
     assert [row["version"] for row in duplicate["observations"]] == list(
-        range(143, 153)
+        range(V0, V0 + 10)
     )
 
 
@@ -817,7 +838,7 @@ def test_ten_publications_wait_for_latest_native_strength_cycle(monkeypatch):
         lambda _state: {"ready": False, "reason": "latest_bot_has_no_sample"},
     )
     observation.initialize_stability_observation()
-    for version in range(143, 153):
+    for version in range(V0, V0 + 10):
         _record(observation, version)
 
     projection = observation.stability_observation_projection()
@@ -834,8 +855,8 @@ def test_process_restart_resets_existing_streak(monkeypatch):
     current = _identity()
     _install_identity(monkeypatch, observation, current)
     observation.initialize_stability_observation()
-    _record(observation, 143)
-    _record(observation, 144)
+    _record(observation, V0)
+    _record(observation, V0 + 1)
 
     current["process_boot_id"] = "boot-b"
     monkeypatch.setattr(
@@ -861,13 +882,13 @@ def test_identity_drift_replay_persists_reset_without_recounting_duplicate(
 
     current = _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
-    _record(observation, 144)
+    _record(observation, V0)
+    _record(observation, V0 + 1)
 
     current["repository_branch"] = "unexpected-worktree"
-    result, checkpoint = _publication(144)
+    result, checkpoint = _publication(V0 + 1)
     replay = observation.record_published_generation(
-        version=144,
+        version=V0 + 1,
         publication_result=result,
         publishing_checkpoint=checkpoint,
     )
@@ -889,7 +910,7 @@ def test_foreign_view_only_reader_does_not_replace_live_owner(monkeypatch):
     current = _identity()
     _install_identity(monkeypatch, observation, current)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
 
     current.update({
         "process_boot_id": "view-only-boot",
@@ -909,7 +930,7 @@ def test_second_live_writer_cannot_take_over_observation(monkeypatch):
     current = _identity()
     _install_identity(monkeypatch, observation, current)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
     current.update({
         "process_boot_id": "second-writer",
         "process_pid": "6262",
@@ -930,7 +951,7 @@ def test_second_live_writer_cannot_take_over_observation(monkeypatch):
         observation.StabilityObservationError,
         match="owner_process_still_alive",
     ):
-        _record(observation, 144)
+        _record(observation, V0 + 1)
 
 
 def test_contract_drift_projection_is_read_only_and_fails_closed(monkeypatch):
@@ -939,7 +960,7 @@ def test_contract_drift_projection_is_read_only_and_fails_closed(monkeypatch):
     current = _identity()
     _install_identity(monkeypatch, observation, current)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
     before = observation.STATE_FILE.read_bytes()
 
     current["infrastructure_contract_hash"] = "b" * 64
@@ -959,17 +980,17 @@ def test_version_gap_and_generation_repair_each_restart_count(monkeypatch):
 
     _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
-    _record(observation, 144)
+    _record(observation, V0)
+    _record(observation, V0 + 1)
 
-    gap = _record(observation, 146)
+    gap = _record(observation, V0 + 3)
     assert gap["count"] == 1
-    assert gap["observations"][0]["version"] == 146
+    assert gap["observations"][0]["version"] == V0 + 3
     assert gap["last_reset_reason"] == "publication_version_gap"
 
-    repaired = _record(observation, 147, repaired=True)
+    repaired = _record(observation, V0 + 4, repaired=True)
     assert repaired["count"] == 1
-    assert repaired["observations"][0]["version"] == 147
+    assert repaired["observations"][0]["version"] == V0 + 4
     assert repaired["last_reset_reason"] == "generation_repair_detected"
 
 
@@ -984,14 +1005,14 @@ def test_rating_daemon_identity_change_restarts_count(monkeypatch):
         lambda: current_daemon[0],
     )
     observation.initialize_stability_observation()
-    _record(observation, 143)
-    _record(observation, 144)
+    _record(observation, V0)
+    _record(observation, V0 + 1)
 
     current_daemon[0] = "e" * 64
-    restarted = _record(observation, 145)
+    restarted = _record(observation, V0 + 2)
 
     assert restarted["count"] == 1
-    assert restarted["observations"][0]["version"] == 145
+    assert restarted["observations"][0]["version"] == V0 + 2
     assert restarted["last_reset_reason"] == "rating_daemon_restart_detected"
 
 
@@ -1000,7 +1021,7 @@ def test_live_daemon_or_remote_ref_drift_invalidates_projection(monkeypatch):
 
     _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
 
     monkeypatch.setattr(
         observation,
@@ -1016,7 +1037,7 @@ def test_live_daemon_or_remote_ref_drift_invalidates_projection(monkeypatch):
     monkeypatch.setattr(
         observation,
         "_remote_publication_errors",
-        lambda _state: ["v143:remote_tag_object_mismatch:national-bot-v143"],
+        lambda _state: [f"v{V0}:remote_tag_object_mismatch:{bot_tag(V0)}"],
     )
     remote_drift = observation.stability_observation_projection()
     assert remote_drift["count"] == 0
@@ -1039,11 +1060,11 @@ def test_remote_publication_reopens_exact_annotated_refs_without_fetch(monkeypat
 
     _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
     state = json.loads(observation.STATE_FILE.read_text(encoding="utf-8"))
     row = state["observations"][0]
     remote = row["remote_publication"]
-    lines = [f"{state['repository_head']}\trefs/heads/main"]
+    lines = [f"{state['repository_head']}\trefs/heads/{EVOLUTION_BRANCH}"]
     for name, identity in remote["refs"].items():
         lines.extend((
             f"{identity['object_oid']}\trefs/tags/{name}",
@@ -1058,20 +1079,20 @@ def test_remote_publication_reopens_exact_annotated_refs_without_fetch(monkeypat
 
     assert observation._remote_publication_errors(state) == []
 
-    lines[0] = f"{'f' * 40}\trefs/heads/main"
+    lines[0] = f"{'f' * 40}\trefs/heads/{EVOLUTION_BRANCH}"
     assert "remote_main_head_mismatch" in observation._remote_publication_errors(
         state
     )
-    lines[0] = f"{state['repository_head']}\trefs/heads/main"
+    lines[0] = f"{state['repository_head']}\trefs/heads/{EVOLUTION_BRANCH}"
 
     completion_index = next(
         index
         for index, line in enumerate(lines)
-        if line.endswith("\trefs/tags/national-bot-v143")
+        if line.endswith(f"\trefs/tags/{bot_tag(V0)}")
     )
-    lines[completion_index] = f"{'0' * 40}\trefs/tags/national-bot-v143"
+    lines[completion_index] = f"{'0' * 40}\trefs/tags/{bot_tag(V0)}"
     errors = observation._remote_publication_errors(state)
-    assert "v143:remote_tag_object_mismatch:national-bot-v143" in errors
+    assert f"v{V0}:remote_tag_object_mismatch:{bot_tag(V0)}" in errors
 
 
 def test_tampered_state_is_never_rendered_as_progress(monkeypatch):
@@ -1079,9 +1100,9 @@ def test_tampered_state_is_never_rendered_as_progress(monkeypatch):
 
     _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
     state = json.loads(observation.STATE_FILE.read_text(encoding="utf-8"))
-    state["observations"][0]["version"] = 152
+    state["observations"][0]["version"] = V0 + 50
     observation.STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
 
     projection = observation.stability_observation_projection()
@@ -1097,11 +1118,11 @@ def test_live_tag_or_certificate_drift_is_never_rendered_as_progress(monkeypatch
 
     _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    _record(observation, 143)
+    _record(observation, V0)
     monkeypatch.setattr(
         observation,
         "_live_publication_errors",
-        lambda _state: ["v143:publication_proof:completion_tag_missing"],
+        lambda _state: [f"v{V0}:publication_proof:completion_tag_missing"],
     )
 
     projection = observation.stability_observation_projection()
@@ -1110,7 +1131,7 @@ def test_live_tag_or_certificate_drift_is_never_rendered_as_progress(monkeypatch
     assert projection["count"] == 0
     assert projection["observations"] == []
     assert projection["errors"] == [
-        "v143:publication_proof:completion_tag_missing"
+        f"v{V0}:publication_proof:completion_tag_missing"
     ]
 
 
@@ -1119,7 +1140,7 @@ def test_publication_without_remote_or_checkpoint_proof_is_rejected(monkeypatch)
 
     _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
-    result, checkpoint = _publication(143)
+    result, checkpoint = _publication(V0)
     result["push_ok"] = False
 
     with pytest.raises(
@@ -1127,7 +1148,7 @@ def test_publication_without_remote_or_checkpoint_proof_is_rejected(monkeypatch)
         match="publication_push_ok_not_proven",
     ):
         observation.record_published_generation(
-            version=143,
+            version=V0,
             publication_result=result,
             publishing_checkpoint=checkpoint,
         )
