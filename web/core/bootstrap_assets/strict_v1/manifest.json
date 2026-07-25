@@ -23,7 +23,7 @@
   },
   "official_policy_id": "official-full-v5",
   "output_artifact_hash": "526e6f1847147f68fc7d015237310a4a26946efbe58b20245e6b6bd12ee73103",
-  "prepared_artifact_hash": "90f3f48dafbd4a3fb71884a365c8725102c0a37c51a925f5dbe0f8fb604f3870",
+  "prepared_artifact_hash": "0bfe13b4e7cde97f49566010ce4760d3363e2d2b5dfbbde76b7a0045f755961b",
   "provenance": {
     "history_injected": false,
     "kind": "clean-room-lll-informed-strict-v143-bootstrap",
