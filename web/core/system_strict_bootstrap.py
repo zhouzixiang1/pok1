@@ -1547,6 +1547,34 @@ def _file_map(root: Path) -> dict[str, str]:
     }
 
 
+def _artifact_file_map(root: Path) -> dict[str, str]:
+    """Identity-bearing file map mirroring ``bot_artifact.hash_path`` exclusions.
+
+    ``artifact_manifest`` (and therefore ``hash_path``) deliberately excludes
+    Python bytecode caches, ``.completed``, and the compiler-owned
+    ``.task_context`` tree from artifact identity, while still inspecting them.
+    The change-set audit in :func:`apply_blueprint` must use the same
+    exclusion surface so that a stale ``__pycache__`` carried by a reused
+    workspace cannot widen the observed change set and trip
+    ``system_bootstrap_changed_file_set_mismatch`` once the transient cleanup
+    removes it.  Every regular identity-bearing file contributes its sha256;
+    excluded transients are invisible here exactly as they are to identity.
+    """
+
+    from bot_artifact import artifact_manifest
+
+    manifest = artifact_manifest(root)
+    mapping: dict[str, str] = {}
+    for entry in manifest.get("entries") or []:
+        relative = str(entry.get("path") or "")
+        if not relative or relative == "." or entry.get("type") != "file":
+            continue
+        digest = str(entry.get("sha256") or "")
+        if digest:
+            mapping[relative] = digest
+    return mapping
+
+
 def apply_blueprint(
     workspace: str | Path,
     *,
@@ -1567,7 +1595,7 @@ def apply_blueprint(
     before_hash = hash_path(workspace)
     if before_hash != manifest.get("prepared_artifact_hash"):
         raise SystemStrictBootstrapError(["system_bootstrap_workspace_prepared_hash_mismatch"])
-    before_files = _file_map(workspace)
+    before_files = _artifact_file_map(workspace)
     snapshots: dict[tuple[int, str], str | bytes] = {}
     for relative in sorted(_WORKER_CHANGED_FILES):
         path = workspace / relative
@@ -1576,9 +1604,34 @@ def apply_blueprint(
     temporary = policy_path.with_name(f".{policy_path.name}.{os.getpid()}.tmp")
     temporary.write_bytes((BLUEPRINT_DIR / "policy.py").read_bytes())
     os.replace(temporary, policy_path)
+    # The strict five-file identity validator (strict_artifact_layout_errors)
+    # rejects Python bytecode caches, while artifact_manifest/hash_path
+    # deliberately exclude them from identity.  A workspace reused by
+    # ``workspace_for`` can therefore carry a stale ``__pycache__`` from a
+    # prior run that still hashes-clean.  The LLM Worker path removes these
+    # transients immediately before its identity refresh
+    # (_cleanup_worker_transients_before_identity_refresh); the system-owned
+    # blueprint executor must close the same work-phase boundary, otherwise
+    # refresh_policy_identity_documents fails with
+    # ``artifact_execution_cache_directory_forbidden`` and the generation is
+    # canonically abandoned even though the blueprint itself is correct.
+    # ``.task_context`` is compiler-owned and not produced by this path; keep
+    # it (matching include_task_context=False) so the cleanup stays surgical.
+    try:
+        from candidate_hygiene import cleanup_transient_candidate_artifacts
+
+        cleanup_transient_candidate_artifacts(
+            workspace,
+            include_task_context=False,
+        )
+    except Exception as exc:
+        raise SystemStrictBootstrapError([
+            "system_bootstrap_workspace_transient_cleanup_failed:"
+            f"{type(exc).__name__}:{str(exc)[:300]}"
+        ]) from exc
     refresh_policy_identity(workspace, version=FIRST_STRICT_POLICY_VERSION)
 
-    after_files = _file_map(workspace)
+    after_files = _artifact_file_map(workspace)
     changed = {
         relative for relative in set(before_files) | set(after_files)
         if before_files.get(relative) != after_files.get(relative)
