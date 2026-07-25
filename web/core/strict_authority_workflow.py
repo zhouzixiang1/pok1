@@ -2179,25 +2179,36 @@ def _schema_repair_hints(errors) -> str:
         hints.append(
             "FIX change_symbol/chain: reachable_chain must be a direct "
             "caller->callee path of 2-8 symbols that ENDS exactly at "
-            "change_symbol. Example: change_symbol=\"policy.py:get_baseline_decision\" "
-            "requires reachable_chain=[\"policy.py:iter_decisions\","
-            "\"policy.py:get_baseline_decision\"] (a 2-symbol chain from the "
-            "policy-ABI entrypoint iter_decisions to the change target). "
-            "Do NOT emit a single-element chain like [\"policy.py:get_baseline_decision\"] "
-            "— the validator requires at least 2 symbols. Find the CALLER of "
-            "your change_symbol from the SYSTEM-VERIFIED SOURCE CALL INDEX and "
-            "put it first in reachable_chain."
+            "change_symbol. CRITICAL: look at the FULL VALIDATED EDGE INDEX "
+            "in the prompt — only edges listed there are accepted. If "
+            "get_baseline_decision appears only as a CALLER (left side of ->), "
+            "not as a CALLEE (right side), then you CANNOT end a chain at it. "
+            "Instead, pick a CALLEE of get_baseline_decision as your "
+            "change_symbol. For example, if the index shows "
+            "'policy.py:get_baseline_decision -> policy.py:_hole_ids', then "
+            "change_symbol=\"policy.py:_hole_ids\" with "
+            "reachable_chain=[\"policy.py:get_baseline_decision\","
+            "\"policy.py:_hole_ids\"] is VALID. Do NOT use edges that are "
+            "not in the index (e.g. iter_decisions -> get_baseline_decision "
+            "is NOT in the index even though iter_decisions is an entrypoint)."
         )
     if "reachable_chain_count_invalid" in error_text:
         hints.append(
             "FIX reachable_chain length: reachable_chain MUST contain 2 to 8 "
-            "symbols. A single-element chain like "
-            "[\"policy.py:get_baseline_decision\"] is INVALID. You need at least "
-            "a caller and the change_symbol callee. Use the SYSTEM-VERIFIED "
-            "PREFERRED CURRENT STARTING EDGES from the prompt to find a valid "
-            "2-symbol chain ending at your change_symbol. For example: "
-            "[\"policy.py:iter_decisions\",\"policy.py:get_baseline_decision\"] "
-            "is valid because iter_decisions calls get_baseline_decision."
+            "symbols. A single-element chain is INVALID. Use the FULL "
+            "VALIDATED EDGE INDEX to find a valid 2-symbol edge. Only edges "
+            "EXACTLY as shown in the index are accepted — do NOT invent edges."
+        )
+    if "reachable_chain_edge_not_current" in error_text:
+        hints.append(
+            "FIX reachable_chain edge: the edge you used is NOT in the "
+            "SYSTEM-VERIFIED SOURCE CALL INDEX. Look at the FULL VALIDATED "
+            "EDGE INDEX in the prompt — it lists every accepted caller->callee "
+            "edge. Your reachable_chain must use ONLY edges from that index. "
+            "Common mistake: using 'iter_decisions -> get_baseline_decision' "
+            "which is NOT in the index. Instead use an edge that IS listed, "
+            "such as 'get_baseline_decision -> _hole_ids' or "
+            "'get_baseline_decision -> preflop_equity'."
         )
     if "shared_leaf_requires_full_namespace" in error_text:
         hints.append(
