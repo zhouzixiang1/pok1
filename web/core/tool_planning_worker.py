@@ -4011,6 +4011,28 @@ async def _project_durable_worker_failure(worker_workflow, state):
         )
     else:
         worker_workflow.failure_projected(target_stage)
+    try:
+        import logging
+        _log = logging.getLogger("pok.planning_worker")
+        _log.error(
+            "Worker semantic failure projected: failure_class=%s boundary_errors=%s",
+            "semantic",
+            evidence.get("boundary_errors") or [],
+        )
+        import event_bus
+        event_bus.emit(
+            "pipeline.worker_semantic_failure_projected",
+            "error",
+            "Worker semantic failure projected",
+            failure_class="semantic",
+            boundary_errors=evidence.get("boundary_errors") or [],
+            semantic_attempt=evidence.get("semantic_attempt"),
+            next_v=next_v,
+            source_v=source_v,
+            next_stage=target_stage,
+        )
+    except Exception:
+        pass
     return _json_tool_result({
         "success": False,
         "failure_class": "semantic",

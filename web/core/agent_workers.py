@@ -379,7 +379,8 @@ def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
         log_system_event("pipeline.worker_failed", "error",
                          f"Worker {worker_id} ({role}) failed for v{gen}",
                          {"gen": gen, "worker_id": worker_id, "role": role,
-                          "error": error[:200], "category": "worker"})
+                          "error": error[:200], "error_full": error[:2000],
+                          "failure_type": failure_type, "category": "worker"})
     except Exception as e:
         log.warning("Failed to log worker failure event: %s", e)
 
@@ -819,6 +820,20 @@ def _cot_inconsistency_override_reason(task, task_skipper, worker_id, next_v, so
         reason = task_skipper(task)
     except Exception as e:
         log.warning("Task skipper failed during CoT override for %s: %s", worker_id, e)
+        try:
+            import event_bus
+            event_bus.emit(
+                "pipeline.worker_cot_audit_failed",
+                "warn",
+                f"Worker {worker_id} task skipper failed during CoT override",
+                worker_id=str(worker_id),
+                next_v=next_v,
+                source_v=source_v,
+                phase="cot_override",
+                error=str(e)[:500],
+            )
+        except Exception:
+            pass
         return ""
     if not reason:
         return ""
@@ -1486,6 +1501,20 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 ) from e
             except Exception as e:
                 log.warning("CoT audit failed for worker 0: %s", e)
+                try:
+                    import event_bus
+                    event_bus.emit(
+                        "pipeline.worker_cot_audit_failed",
+                        "warn",
+                        "Worker 0 CoT audit failed",
+                        worker_id=str(tasks[0].get("worker_id", 1)) if tasks else "0",
+                        next_v=next_v,
+                        source_v=source_v,
+                        phase="single_worker",
+                        error=str(e)[:500],
+                    )
+                except Exception:
+                    pass
         return ok, worker_snapshots, audit_focus_areas
 
     # ── Disjointness check: can we safely run workers in parallel? ──
@@ -1627,6 +1656,20 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 ) from e
             except Exception as e:
                 log.warning("CoT audit failed for worker %d: %s", i, e)
+                try:
+                    import event_bus
+                    event_bus.emit(
+                        "pipeline.worker_cot_audit_failed",
+                        "warn",
+                        f"Worker {task.get('worker_id', i + 1)} CoT audit failed",
+                        worker_id=str(task.get("worker_id", i + 1)),
+                        next_v=next_v,
+                        source_v=source_v,
+                        phase="parallel",
+                        error=str(e)[:500],
+                    )
+                except Exception:
+                    pass
 
         if any_failed:
             return False, worker_snapshots, audit_focus_areas
@@ -1653,6 +1696,20 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             except Exception as e:
                 skip_reason = ""
                 log.warning("Task skipper failed for worker %d: %s", i, e)
+                try:
+                    import event_bus
+                    event_bus.emit(
+                        "pipeline.worker_cot_audit_failed",
+                        "warn",
+                        f"Worker {task.get('worker_id', i + 1)} task skipper failed",
+                        worker_id=str(task.get("worker_id", i + 1)),
+                        next_v=next_v,
+                        source_v=source_v,
+                        phase="sequential_skip",
+                        error=str(e)[:500],
+                    )
+                except Exception:
+                    pass
             if skip_reason:
                 ui.log_history(
                     f"Skipping worker {task.get('worker_id', i + 1)}: {skip_reason}",
@@ -1715,4 +1772,18 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             ) from e
         except Exception as e:
             log.warning("CoT audit failed for worker %d (sequential): %s", i, e)
+            try:
+                import event_bus
+                event_bus.emit(
+                    "pipeline.worker_cot_audit_failed",
+                    "warn",
+                    f"Worker {task.get('worker_id', i + 1)} CoT audit failed (sequential)",
+                    worker_id=str(task.get("worker_id", i + 1)),
+                    next_v=next_v,
+                    source_v=source_v,
+                    phase="sequential",
+                    error=str(e)[:500],
+                )
+            except Exception:
+                pass
     return True, worker_snapshots, audit_focus_areas

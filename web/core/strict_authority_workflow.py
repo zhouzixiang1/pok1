@@ -41,6 +41,9 @@ import uuid
 import threading
 from typing import Any, Iterable
 
+import logging
+_log = logging.getLogger("pok.strict_authority")
+
 from claude_agent_sdk import ResultMessage
 from workflow_kernel import WorkflowConflict, WorkflowStore, content_digest
 
@@ -2426,6 +2429,32 @@ def new_call(
         return recovered
     rejections = _schema_rejections(descriptor)
     if len(rejections) >= MAX_SCHEMA_ATTEMPTS_PER_SLOT:
+        _detail_parts = []
+        for i, rej in enumerate(rejections):
+            _errs = rej.get("projection_errors") or []
+            _kind = rej.get("rejection_kind") or "schema_projection"
+            _detail_parts.append(
+                f"  attempt {i+1}: kind={_kind} errors={list(_errs)}"
+            )
+        _detail = "\n".join(_detail_parts)
+        _log.error(
+            "Slot %s exhausted %d schema retries:\n%s",
+            slot, MAX_SCHEMA_ATTEMPTS_PER_SLOT, _detail
+        )
+        try:
+            import event_bus
+            event_bus.emit(
+                "pipeline.strict_authority_schema_retry_exhausted",
+                "error",
+                f"Slot {slot} exhausted {MAX_SCHEMA_ATTEMPTS_PER_SLOT} schema retries",
+                slot=slot,
+                role=expected_role,
+                max_attempts=MAX_SCHEMA_ATTEMPTS_PER_SLOT,
+                rejection_count=len(rejections),
+                rejection_details=_detail,
+            )
+        except Exception:
+            pass
         raise StrictAuthorityError(
             f"strict_authority_schema_retry_exhausted:{slot}"
         )
@@ -2924,6 +2953,24 @@ def complete_provider_call(
             },
             "causation_id": f"strict-role-rejected:{call['invocation_id']}",
         })
+        _log.warning(
+            "Strict role %s rejected (slot=%s): %s",
+            call.get("role"), call.get("slot"), list(projection_errors)
+        )
+        try:
+            import event_bus
+            event_bus.emit(
+                "pipeline.strict_role_rejected",
+                "warn",
+                f"{call.get('role')}: schema projection rejected",
+                slot=call.get("slot"),
+                role=call.get("role"),
+                rejection_kind="schema_projection",
+                projection_errors=list(projection_errors),
+                parse_contract=str(SLOT_PARSE_CONTRACTS.get(call["slot"], "")),
+            )
+        except Exception:
+            pass
     completion = _store().complete_effect(
         call["effect_id"],
         lease_epoch=int(call["lease_epoch"]),
@@ -3053,6 +3100,27 @@ def reject_duplicate_proposal(call: dict[str, Any]) -> dict[str, Any]:
         payload,
         causation_id=f"strict-role-duplicate-rejected:{call['invocation_id']}",
     )
+    _log.warning(
+        "Strict role %s rejected (slot=%s): %s",
+        call.get("role"), slot,
+        ["strict_authority_proposal_identity_collision"]
+    )
+    try:
+        import event_bus
+        event_bus.emit(
+            "pipeline.strict_role_rejected",
+            "warn",
+            f"{call.get('role')}: proposal identity collision",
+            slot=slot,
+            role=call.get("role"),
+            rejection_kind="proposal_identity_collision",
+            projection_errors=["strict_authority_proposal_identity_collision"],
+            parse_contract=str(SLOT_PARSE_CONTRACTS.get(slot, "")),
+            proposal_id=str(proposal_id),
+            conflicting_slots=list(accepted_collisions),
+        )
+    except Exception:
+        pass
     return {
         "schema_version": 1,
         "run_id": call["run_id"],

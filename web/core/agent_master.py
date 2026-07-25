@@ -29,6 +29,9 @@ from output_schema import (
 )
 from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 
+import logging
+_log = logging.getLogger("pok.master")
+
 
 # Keep the rendered strength hypothesis on a validator-known literal.  The
 # former ``<W/L/D interval method>`` placeholder prompted natural-language
@@ -315,6 +318,13 @@ async def _run_master_proposal_ensemble(
                         prior_rejection.get("projection_errors") or ()
                     ),
                 }
+                _log.info(
+                    "Master proposal %s schema retry triggered: "
+                    "rejection_kind=%s, projection_errors=%s",
+                    direction,
+                    prior_rejection.get("rejection_kind"),
+                    list(prior_rejection.get("projection_errors") or ()),
+                )
         else:
             from system_strict_bootstrap import new_llm_invocation_id
 
@@ -453,6 +463,11 @@ async def _run_master_proposal_ensemble(
                 )
                 or ["proposal_contract_invalid"]
             )
+            _log.warning(
+                "Master proposal %s rejected (attempt 1): %s",
+                direction,
+                repair.get("projection_hints", []) if isinstance(repair, dict) else [],
+            )
             invalid_proposal_specs.append(
                 (direction, _directive, repair)
             )
@@ -508,7 +523,7 @@ async def _run_master_proposal_ensemble(
             ),
         )
         retry_provider_errors: list[tuple[str, BaseException]] = []
-        for (direction, _directive, _repair), result in zip(
+        for (direction, _directive, repair), result in zip(
             invalid_proposal_specs, retry_results
         ):
             if isinstance(result, LLMAvailabilityBlocked):
@@ -540,6 +555,27 @@ async def _run_master_proposal_ensemble(
                 actual_role=proposal_actual_role(result),
             )
             if proposal is None:
+                fresh_hints = (
+                    _master_proposal_projection_hints(
+                        output,
+                        source_graph=source_graph,
+                        snapshot_dir=snapshot_dir,
+                        national_policy_only=True,
+                        require_snapshot_evidence=require_snapshot_evidence,
+                        evidence_mode=evidence_mode,
+                        allowed_primaries=allowed_primaries,
+                    )
+                    or ["proposal_contract_invalid"]
+                )
+                _log.warning(
+                    "Master proposal %s rejected (attempt 2): hints=%s; "
+                    "retry_was_based_on=%s",
+                    direction,
+                    fresh_hints,
+                    (repair or {}).get("projection_hints", [])
+                    if isinstance(repair, dict)
+                    else [],
+                )
                 continue
             proposal_id = proposal["proposal_id"]
             if proposal_id in seen_proposal_ids:
@@ -574,6 +610,16 @@ async def _run_master_proposal_ensemble(
                 slot=f"proposal:{direction}",
             )
     if len(proposals) != len(_MASTER_PROPOSAL_DIRECTIONS):
+        _log.error(
+            "Master ensemble insufficient: got %d valid proposals, need %d. "
+            "Rejected directions: %s",
+            len(proposals),
+            len(_MASTER_PROPOSAL_DIRECTIONS),
+            [
+                {"direction": d, "hints": r.get("projection_hints", [])}
+                for d, _, r in invalid_proposal_specs
+            ],
+        )
         return _proposal_packet_error(
             "three_distinct_schema_valid_scout_proposals_required:"
             f"got_{len(proposals)}",
@@ -622,6 +668,10 @@ async def _run_master_proposal_ensemble(
                     )
             elif strict_call.get("schema_retry_required"):
                 schema_retry = True
+                _log.info(
+                    "Master proposal critic %s schema retry triggered",
+                    name,
+                )
         else:
             from system_strict_bootstrap import new_llm_invocation_id
 
