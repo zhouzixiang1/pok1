@@ -36,6 +36,7 @@ from bot_artifact import canonical_digest  # noqa: E402
 from bot_namespace import (  # noqa: E402
     ARCHIVED_VERSION_HIGH_WATER,
     EVALUATION_EPOCH,
+    EVOLUTION_BRANCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
     bot_tag,
@@ -432,12 +433,15 @@ def _runtime_checkout_identity_errors() -> list[str]:
         if Path(_git("rev-parse", "--show-toplevel")).resolve() != root:
             errors.append("reconciliation_git_root_mismatch")
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
-        if branch != "main":
-            errors.append(f"reconciliation_requires_main_branch:{branch}")
+        if branch != EVOLUTION_BRANCH:
+            errors.append(f"reconciliation_requires_evolution_branch:{branch}")
         if _git("status", "--porcelain", "--untracked-files=no"):
             errors.append("reconciliation_tracked_worktree_not_clean")
-        if _git("rev-parse", "HEAD") != _git("rev-parse", "origin/main"):
-            errors.append("reconciliation_runtime_not_synced_to_origin_main")
+        if _git("rev-parse", "HEAD") != _git("rev-parse", f"origin/{EVOLUTION_BRANCH}"):
+            errors.append(
+                "reconciliation_runtime_not_synced_to_origin_branch:"
+                f"{EVOLUTION_BRANCH}"
+            )
     except Exception as exc:
         errors.append(f"reconciliation_git_identity_unavailable:{type(exc).__name__}")
     return list(dict.fromkeys(errors))

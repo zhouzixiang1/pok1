@@ -11,13 +11,15 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_DIR = ROOT / "web" / "core"
-if str(CORE_DIR) not in sys.path:
-    sys.path.insert(0, str(CORE_DIR))
-if str(ROOT) not in sys.path:
-    # ``evaluation_data_identity`` imports the native evaluator identity, which
-    # in turn imports the repository-level ``sever`` package.  Executing this
-    # script by path sets sys.path[0] to ``scripts/``, not the repository root.
-    sys.path.insert(1, str(ROOT))
+# When this script is invoked by path (e.g. `python scripts/foo.py`), Python
+# prepends the script's own directory (`scripts/`) to sys.path[0]. If a parent
+# process also exports PYTHONPATH containing CORE_DIR/ROOT, the idempotency
+# guard below would skip the insert and leave `scripts/` first — causing the
+# subsequent `from evaluation_data_identity import ...` to resolve back to this
+# very file (circular import). Always force CORE_DIR to the front, and ROOT
+# right after it, regardless of whether PYTHONPATH already lists them.
+sys.path.insert(0, str(CORE_DIR))
+sys.path.insert(1, str(ROOT))
 
 from evaluation_data_identity import (  # noqa: E402
     archive_and_initialize,

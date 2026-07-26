@@ -298,9 +298,16 @@ def _issue_literature_rendered_prompt(
 ):
     from llm_query import render_llm_prompt
 
+    # The literature_probe LLM role contract pins producer_file to
+    # ``web/core/tool_planning.py`` (llm_query._producer_binding uses
+    # inspect.getsourcefile(producer) to verify). Route through the
+    # tool_planning-side wrapper — its source file is tool_planning.py and it
+    # delegates back to this module's _render_literature_provider_prompt for
+    # the real rendering, so the contract is satisfied without behaviour
+    # change.
     return render_llm_prompt(
         f"LITERATURE_PROBE (v{int(next_v)})",
-        producer=_render_literature_provider_prompt,
+        producer=_tp._render_literature_provider_prompt,
         renderer_inputs={
             "source_v": int(source_v),
             "next_v": int(next_v),

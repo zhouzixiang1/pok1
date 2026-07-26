@@ -312,7 +312,7 @@ def _literature_checkpoint_identity(
 ) -> str:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._literature_checkpoint_identity(checkpoint, origin_revision)
+    return _lp._literature_checkpoint_identity(checkpoint, origin_revision=origin_revision)
 
 
 def _literature_checkpoint_binding(
@@ -339,7 +339,7 @@ def _expected_literature_dispatch(
 ) -> dict:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._expected_literature_dispatch(next_v, source_v, weakness, stagnation_info)
+    return _lp._expected_literature_dispatch(next_v=next_v, source_v=source_v, weakness=weakness, stagnation_info=stagnation_info)
 
 
 def _issue_literature_rendered_prompt(
@@ -378,7 +378,7 @@ def _expected_literature_candidate_id(
 ) -> str | None:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._expected_literature_candidate_id(proposal, checkpoint_identity, terminal_output_sha256)
+    return _lp._expected_literature_candidate_id(proposal, checkpoint_identity=checkpoint_identity, terminal_output_sha256=terminal_output_sha256)
 
 
 def _literature_translation_receipt(
@@ -391,7 +391,7 @@ def _literature_translation_receipt(
 ) -> dict:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._literature_translation_receipt(proposal, next_v, candidate_id, checkpoint_identity, terminal_output_sha256)
+    return _lp._literature_translation_receipt(proposal, next_v=next_v, candidate_id=candidate_id, checkpoint_identity=checkpoint_identity, terminal_output_sha256=terminal_output_sha256)
 
 
 def _literature_probe_stale_result(next_v: int | str, source_v: int | str | None) -> dict:
@@ -422,7 +422,7 @@ def _build_literature_probe_payload(
 ) -> dict:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._build_literature_probe_payload(payload, checkpoint, receipt_binding, rendered_prompt, terminal_output)
+    return _lp._build_literature_probe_payload(payload, checkpoint=checkpoint, receipt_binding=receipt_binding, rendered_prompt=rendered_prompt, terminal_output=terminal_output)
 
 
 def _literature_probe_payload_errors(
@@ -434,7 +434,7 @@ def _literature_probe_payload_errors(
 ) -> list[str]:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._literature_probe_payload_errors(data, checkpoint, receipt_binding, require_origin_checkpoint)
+    return _lp._literature_probe_payload_errors(data, checkpoint=checkpoint, receipt_binding=receipt_binding, require_origin_checkpoint=require_origin_checkpoint)
 
 
 def _json_without_duplicate_keys(raw: bytes):
@@ -472,7 +472,7 @@ def _read_literature_probe_cache(
 ) -> dict | None:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._read_literature_probe_cache(next_v, source_v, h2h_weakness, stagnation_info, receipt_binding, checkpoint)
+    return _lp._read_literature_probe_cache(next_v, source_v=source_v, h2h_weakness=h2h_weakness, stagnation_info=stagnation_info, receipt_binding=receipt_binding, checkpoint=checkpoint)
 
 
 def _normalize_literature_probe_result(
@@ -485,7 +485,7 @@ def _normalize_literature_probe_result(
 ) -> dict | None:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._normalize_literature_probe_result(data, next_v, checkpoint, receipt_binding, cached)
+    return _lp._normalize_literature_probe_result(data, next_v=next_v, checkpoint=checkpoint, receipt_binding=receipt_binding, cached=cached)
 
 
 def _read_literature_probe_checkpoint(
@@ -498,7 +498,7 @@ def _read_literature_probe_checkpoint(
 ) -> dict | None:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._read_literature_probe_checkpoint(next_v, source_v, h2h_weakness, stagnation_info, receipt_binding)
+    return _lp._read_literature_probe_checkpoint(next_v, source_v=source_v, h2h_weakness=h2h_weakness, stagnation_info=stagnation_info, receipt_binding=receipt_binding)
 
 
 def _persist_literature_probe_result(
@@ -510,7 +510,7 @@ def _persist_literature_probe_result(
 ) -> bool:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._persist_literature_probe_result(next_v, source_v, payload, receipt_binding)
+    return _lp._persist_literature_probe_result(next_v, source_v, payload, receipt_binding=receipt_binding)
 
 
 def _write_literature_probe_cache(
@@ -522,7 +522,7 @@ def _write_literature_probe_cache(
 ) -> dict:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._write_literature_probe_cache(next_v, payload, checkpoint, receipt_binding)
+    return _lp._write_literature_probe_cache(next_v, payload, checkpoint=checkpoint, receipt_binding=receipt_binding)
 
 
 # ──────────────────────────────────────────────
