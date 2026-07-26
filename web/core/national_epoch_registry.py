@@ -160,6 +160,16 @@ class RegistryState:
     history_high_water: int | None
     legacy: LegacyLedgerState
     diagnostics: tuple[str, ...] = ()
+    # High-water versions whose matching completion tag also exists in this
+    # namespace.  A high-water tag without a paired completion tag is an
+    # interrupted effect (per ``resolve_version_namespace_authority``'s pairing
+    # rule), not version authority.  Orphan high-water tags left behind by an
+    # epoch reset (e.g. a stale ``national-cloud-high-water-v143`` whose
+    # completion tag was removed) must never block advancement of a lower
+    # numbered version in the fresh epoch.  This set is exposed so
+    # ``advance_high_water``/``effective_target_version`` can rely on the same
+    # authoritative pairing contract as the namespace resolver.
+    paired_high_water_versions: frozenset[int] = frozenset()
 
     def require_reaped_versions(self) -> frozenset[int]:
         if not self.available:
@@ -339,20 +349,31 @@ def _version_set(records: Iterable[str], pattern: re.Pattern[str]) -> frozenset[
 
 
 def git_history_high_water(git: GitRepository) -> int | None:
-    """Return the largest national bot version visible in reachable Git history."""
+    """Return the largest national bot version currently tracked under ``bots/``.
+
+    Only bot directories that exist in the working tree at HEAD count toward
+    the high-water floor.  A directory that was seeded and then archived/deleted
+    during an epoch reset (e.g. ``bots/national_cloud_v143/`` removed by the
+    cloud-epoch reset) is either a reaped tombstone — already recorded in the
+    durable reaped ledger — or a stale unpublished seed; in neither case does
+    it carry publication authority, so it must not inflate the namespace
+    floor.  Restricting to currently-tracked paths keeps the legitimate
+    "do not re-issue a deleted version" floor (the directory still exists in
+    the tree, only its tags were removed) while ignoring purely historical
+    stale seeds.
+    """
 
     result = git.run(
-        "log",
-        "--all",
+        "ls-tree",
+        "-d",
         "--name-only",
-        "--format=",
-        "--",
-        "bots",
+        "HEAD",
+        "bots/",
         check=False,
     )
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "unknown git log error"
-        raise RegistryError(f"cannot inspect national bot history: {detail}")
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown git ls-tree error"
+        raise RegistryError(f"cannot inspect national bot tree: {detail}")
     versions = {
         int(match.group(1))
         for raw_line in result.stdout.splitlines()
@@ -415,6 +436,22 @@ def load_registry_state(
         source = "legacy_ledger" if available else "unavailable"
         reaped_versions = legacy.versions if available else frozenset()
 
+    paired_high_water = frozenset(high_water_versions & completion_versions)
+    # Surface orphan high-water tags (no matching completion tag) as a
+    # diagnostic.  Such tags are interrupted effects, not version authority;
+    # advancement decisions use ``completion_versions`` and
+    # ``paired_high_water_versions`` rather than the raw ``high_water_versions``.
+    orphan_high_water_versions = sorted(
+        v for v in high_water_versions if v not in completion_versions
+    )
+    if orphan_high_water_versions:
+        diagnostics.append(
+            "orphan_high_water_tags_without_completion_pair:"
+            + ",".join(
+                f"{HIGH_WATER_TAG_PREFIX}{v}" for v in orphan_high_water_versions
+            )
+        )
+
     return RegistryState(
         available=available,
         source=source,
@@ -425,6 +462,7 @@ def load_registry_state(
         history_high_water=history_high_water,
         legacy=legacy,
         diagnostics=tuple(diagnostics),
+        paired_high_water_versions=paired_high_water,
     )
 
 
@@ -450,8 +488,13 @@ def effective_target_version(
     candidates = [requested_version]
     if current.completion_versions:
         candidates.append(max(current.completion_versions) + 1)
-    if current.high_water_versions:
-        candidates.append(max(current.high_water_versions) + 1)
+    # Only paired high-water tags (those with a matching completion tag) carry
+    # authoritative namespace floor semantics; an orphan high-water tag from an
+    # interrupted/epoch-reset publication must never inflate the next allocated
+    # version.  ``current.high_water_versions`` remains available on the state
+    # for diagnostics, but advancement decisions use the paired subset.
+    if current.paired_high_water_versions:
+        candidates.append(max(current.paired_high_water_versions) + 1)
     if current.history_high_water is not None:
         candidates.append(current.history_high_water + 1)
     return max(candidates)
@@ -508,7 +551,12 @@ def build_migration_plan(
     tags = _scan_tags(git)
     diagnostics = list(state.diagnostics)
 
-    observed = set(state.completion_versions) | set(state.high_water_versions)
+    # Effective high-water for migration planning considers only authoritative
+    # observations: completion tags (which the legacy migration proves as
+    # preconditions) and paired high-water tags.  Raw unpaired high-water tags
+    # are interrupted effects and must not seed the effective floor; otherwise
+    # an orphan left by an earlier interrupted reset could re-create itself.
+    observed = set(state.completion_versions) | set(state.paired_high_water_versions)
     if state.history_high_water is not None:
         observed.add(state.history_high_water)
     effective_high_water = max(observed) if observed else None
@@ -794,13 +842,24 @@ def advance_high_water(
     )
     if not state.migration_marker or not state.available:
         raise RegistryUnavailableError("durable reaped registry is not available")
+    # Per ``resolve_version_namespace_authority``'s pairing contract, a
+    # high-water tag without a matching completion tag is an interrupted
+    # effect, not version authority.  Orphan high-water tags left behind by an
+    # epoch reset (e.g. a stale ``national-cloud-high-water-v143`` whose
+    # completion tag was removed when the seed candidate was archived) must
+    # never inflate the desired high-water nor short-circuit advancement of a
+    # lower-numbered version in the fresh epoch.  ``state.high_water_versions``
+    # is preserved on the state for diagnostics; advancement decisions rely on
+    # ``completion_versions`` and the paired high-water subset.
     observed = [parsed_version]
     observed.extend(state.completion_versions)
-    observed.extend(state.high_water_versions)
+    observed.extend(state.paired_high_water_versions)
     if state.history_high_water is not None:
         observed.append(state.history_high_water)
     desired = max(observed)
-    if state.high_water_versions and max(state.high_water_versions) >= desired:
+    if state.paired_high_water_versions and max(
+        state.paired_high_water_versions
+    ) >= desired:
         git = GitRepository(repo_root, runner)
         head = _resolve_commit(git, "HEAD") or ""
         return TagMutationResult((), head, head)

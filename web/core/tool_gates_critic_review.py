@@ -624,7 +624,7 @@ async def run_review(args):
 
         rendered_prompt = render_llm_prompt(
             "LEAD CODE REVIEWER",
-            producer=_render_reviewer_provider_prompt,
+            producer=_tg._render_reviewer_provider_prompt,
             renderer_inputs={
                 "master_plan": authoritative_plan,
                 "source_v": int(source_v),

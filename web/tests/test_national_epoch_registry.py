@@ -305,6 +305,69 @@ def test_runtime_tombstone_and_high_water_apis_create_annotated_monotonic_tags(t
     assert no_regression.created_tags == ()
 
 
+def test_orphan_high_water_tag_from_epoch_reset_does_not_block_lower_advancement(
+    tmp_path,
+):
+    """An orphan high-water tag left by an interrupted epoch reset must not
+    poison the namespace floor for a fresh lower-numbered publication.
+
+    Reproduces the v1 publication blocker caused by a stale
+    ``national-cloud-high-water-v143`` tag (pointing at the "archive stale
+    candidate (reset)" commit) surviving an epoch reset that removed its paired
+    completion tag.  Per ``resolve_version_namespace_authority``'s pairing
+    contract, a high-water tag with no matching completion tag is an
+    interrupted effect and carries no version authority.
+    """
+
+    repo = _repo(tmp_path)
+    # Establish the migrated registry with a real paired v1 publication.
+    _commit_bot(repo, 1)
+    ledger = tmp_path / "reaped.jsonl"
+    _write_ledger(ledger, [1])
+    migration = build_migration_plan(repo, legacy_ledger=ledger)
+    apply_migration_plan(migration, repo_root=repo)
+
+    # Simulate the epoch-reset leftover: a stale bot directory (v143) that is
+    # archived/removed, with an orphan high-water tag left pointing at the
+    # removal commit and NO matching completion tag.
+    stale_dir = repo / "bots" / bot_name(143)
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "national_bot.py").write_text("VERSION = 143\n", encoding="utf-8")
+    _git(repo, "add", str(stale_dir.relative_to(repo)))
+    _git(repo, "commit", "-m", "seed stale v143")
+    # Remove the seed directory (the reset archive step).
+    _git(repo, "rm", "-r", str(stale_dir.relative_to(repo)))
+    _git(repo, "commit", "-m", "archive stale v143 candidate (reset)")
+    reset_commit = _git(repo, "rev-parse", "HEAD")
+    # Orphan high-water tag with NO paired completion tag — the leftover.
+    _git(repo, "tag", "-a", high_water_tag(143), reset_commit, "-m", "stale water")
+
+    state = load_registry_state(repo, legacy_ledger=ledger)
+    assert 143 in state.high_water_versions
+    assert 143 not in state.paired_high_water_versions
+    assert state.paired_high_water_versions == frozenset({1})
+    # The stale v143 seed directory was git-rm'd, so it is no longer tracked at
+    # HEAD; only the still-published v1 directory counts, so the history
+    # high-water floor is 1 (not poisoned by the archived seed).
+    assert state.history_high_water == 1
+    assert any(
+        "orphan_high_water_tags_without_completion_pair" in d for d in state.diagnostics
+    )
+
+    # The real lower-numbered publication (v2) must still advance normally and
+    # create its high-water tag rather than being short-circuited by the orphan.
+    _commit_bot(repo, 2)
+    water = advance_high_water(2, repo_root=repo, legacy_ledger=ledger)
+    assert water.created_tags == (f"{HIGH_WATER_TAG_PREFIX}2",)
+    assert _git(repo, "cat-file", "-t", f"refs/tags/{HIGH_WATER_TAG_PREFIX}2") == "tag"
+
+    # The orphan tag is left in place for audit; only its authority is ignored.
+    assert _git(repo, "cat-file", "-t", f"refs/tags/{HIGH_WATER_TAG_PREFIX}143") == "tag"
+
+    # effective_target_version must also ignore the orphan when allocating.
+    assert effective_target_version(3, repo_root=repo, legacy_ledger=ledger) == 3
+
+
 def test_cli_defaults_to_dry_run_then_applies_without_moving_head(tmp_path):
     repo = _repo(tmp_path)
     _commit_bot(repo, 1)
