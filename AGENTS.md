@@ -838,6 +838,16 @@ and retains the older operator-host epoch-2 narrative as historical context.
 
 ## Working rules
 
+- **The main agent should actively delegate to sub-agents and keep its own
+  context clean.** Long file reads, broad codebase sweeps, mechanical
+  multi-file refactors, and isolated verification loops all pollute the main
+  context with byte-level detail that is rarely needed again. Prefer launching
+  a sub-agent (Explore for read-only audit, general-purpose for
+  read+write+test) with a self-contained prompt, then relay only the
+  conclusion. Keep the main thread for planning, decisions, approvals, and
+  final verification. When a task has independent parts, launch multiple
+  sub-agents in one message so they run concurrently. Do not re-do in the main
+  thread work a sub-agent already finished.
 - Search with `rg`/`rg --files` first.
 - Use `apply_patch` for hand edits; preserve unrelated dirty changes.
 - Never reset, checkout, or delete user work to obtain a clean tree.
