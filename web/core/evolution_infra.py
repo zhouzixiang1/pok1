@@ -141,6 +141,27 @@ _ABANDONED_VERSION_INFRA_FAILURE_MAX_BYTES = 64 * 1024
 # <name>`` sites and ``evolution_infra.<name>`` monkeypatches keep working.
 import abandoned_version_ledger as _ledger  # noqa: E402
 
+# Atomic, crash-safe, sidecar-locked state-file I/O trust layer.  The bodies
+# live in evolution_infra_state_io and are re-exposed below as thin delegate
+# shells so legacy ``from evolution_infra import <name>`` sites and test
+# monkeypatches on the ``evolution_infra`` namespace keep working.  The
+# companion routes its internal cross-references back through this module
+# (``_ei.<NAME>``), so monkeypatching ``evolution_infra._atomic_publish_state_text``
+# / ``_locked_state_sidecar`` / ``_fsync_directory`` still takes effect even
+# when the call originates inside the companion.
+import evolution_infra_state_io as _sio  # noqa: E402
+
+# Archive rotation plan/receipt companion.  Hosts the schema-2 archive-rotation
+# pipeline (build/validate per-generation rotation plan, rotate log files into
+# ARCHIVE_DIR, issue+verify digest-signed rotation receipts).  The companion
+# imports ``evolution_infra`` itself (``import evolution_infra as _rot`` is
+# aliased here as ``_rot``) and resolves cross-references lazily at call time,
+# so this top-level import does not create a load-time cycle.  Every moved
+# symbol is re-exposed below as a thin delegate shell so legacy
+# ``from evolution_infra import <name>`` sites and
+# ``evolution_infra.<name>`` monkeypatches keep working.
+import evolution_infra_archive_rotation as _rot  # noqa: E402
+
 
 class AbandonedVersionLedgerError(RuntimeError):
     """The current-epoch allocation receipt ledger is not trustworthy."""
@@ -248,752 +269,116 @@ _WORKER_SEMAPHORE: "dict[int, asyncio.Semaphore]" = {}
 
 
 def _get_worker_semaphore() -> "asyncio.Semaphore":
-    """Return (creating if needed) the worker semaphore for the current adaptive
-    level. 503/限速时 level 升 → worker 并发自动降(base>>level)。"""
-    try:
-        from api_concurrency import get_adaptive_limit, get_level
-        _lvl = get_level()
-        _limit = get_adaptive_limit(MAX_PARALLEL_WORKERS)
-    except Exception:
-        _lvl, _limit = 0, MAX_PARALLEL_WORKERS
-    sem = _WORKER_SEMAPHORE.get(_lvl)
-    if sem is None:
-        sem = asyncio.Semaphore(_limit)
-        _WORKER_SEMAPHORE[_lvl] = sem
-    return sem
+    """Delegate to evolution_infra_state_io."""
+    return _sio._get_worker_semaphore()
 
 
-_FILE_THREAD_LOCKS: dict[str, threading.RLock] = {}
-_FILE_THREAD_LOCKS_GUARD = threading.Lock()
-_STATE_SIDECAR_LOCAL = threading.local()
+# ──────────────────────────────────────────────
+# Atomic, crash-safe, sidecar-locked state-file I/O trust layer.
+#
+# The real bodies live in evolution_infra_state_io (imported as ``_sio``).
+# Each function below is a thin delegate shell that preserves the original
+# signature so legacy ``from evolution_infra import <name>`` import sites and
+# test monkeypatches on the ``evolution_infra`` namespace continue to work.
+# Internal callers inside this module resolve these names through the module
+# namespace (i.e. the shell), so monkeypatching
+# ``evolution_infra._atomic_publish_state_text`` / ``_locked_state_sidecar`` /
+# ``_fsync_directory`` still takes effect everywhere.  The companion routes its
+# own internal cross-references back here via ``_ei.<NAME>``.
+# ──────────────────────────────────────────────
 
 
 def _thread_lock_for(path) -> threading.RLock:
-    key = str(Path(path).resolve())
-    with _FILE_THREAD_LOCKS_GUARD:
-        return _FILE_THREAD_LOCKS.setdefault(key, threading.RLock())
+    """Delegate to evolution_infra_state_io."""
+    return _sio._thread_lock_for(path)
 
 
 @contextmanager
 def _locked_file_os(path, mode='r', lock_type=None, encoding=None):
-    """Context manager for file operations with fcntl locking.
-
-    For mode='w': opens with 'r+' if file exists (to avoid truncating before
-    the lock is acquired), then truncates after locking. If file doesn't exist,
-    uses 'w' to create it (safe — no data to lose).
-    """
-    if lock_type is None:
-        lock_type = fcntl.LOCK_EX if ('w' in mode or 'a' in mode or '+' in mode) else fcntl.LOCK_SH
-    open_kwargs = {}
-    if encoding is not None:
-        open_kwargs["encoding"] = encoding
-    if any(flag in mode for flag in ("w", "a", "x", "+")):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-    actual_mode = mode
-    truncate_after_lock = False
-    if mode == 'w':
-        if Path(path).exists():
-            actual_mode = 'r+'
-            truncate_after_lock = True
-    try:
-        f = open(path, actual_mode, **open_kwargs)
-    except FileNotFoundError:
-        if mode == 'w':
-            f = open(path, 'w', **open_kwargs)
-        else:
-            raise
-    with f:
-        fcntl.flock(f, lock_type)
-        if truncate_after_lock:
-            f.seek(0)
-            f.truncate()
-        try:
-            yield f
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    """Delegate to evolution_infra_state_io."""
+    with _sio._locked_file_os(path, mode=mode, lock_type=lock_type, encoding=encoding) as v:
+        yield v
 
 
 @contextmanager
 def locked_file(path, mode='r', lock_type=None, encoding=None):
-    """Open data only after acquiring its stable sidecar lock.
-
-    Locking the replaceable data inode is unsafe: a waiter may open the old
-    inode before an atomic writer replaces the path, then later acquire a lock
-    that no longer serializes the live file.  Every reader, writer, appender and
-    archival scanner therefore locks ``<path>.lock`` first and opens the data
-    path only inside that critical section.
-    """
-
-    path = Path(path)
-    if lock_type is None:
-        lock_type = (
-            fcntl.LOCK_EX
-            if any(flag in mode for flag in ("w", "a", "x", "+"))
-            else fcntl.LOCK_SH
-        )
-    normalized = mode.replace("b", "").replace("t", "")
-    flags_by_mode = {
-        "r": os.O_RDONLY,
-        "r+": os.O_RDWR,
-        # Truncating modes are published from a private inode below.  Never
-        # put O_TRUNC on an open of the live path: a path swapped to a
-        # hardlink after lstat() would otherwise damage the linked victim
-        # before descriptor/path authenticity could be checked.
-        "w": os.O_WRONLY | os.O_CREAT,
-        "w+": os.O_RDWR | os.O_CREAT,
-        "a": os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-        "a+": os.O_RDWR | os.O_CREAT | os.O_APPEND,
-        "x": os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-        "x+": os.O_RDWR | os.O_CREAT | os.O_EXCL,
-    }
-    if normalized not in flags_by_mode:
-        raise ValueError(f"unsupported locked_file mode: {mode}")
-    creating = any(flag in normalized for flag in ("w", "a", "x"))
-    if creating:
-        _assert_safe_state_parent(path)
-    with _locked_state_sidecar(path, lock_type=lock_type):
-        existing = None
-        if os.path.lexists(path):
-            existing = os.lstat(path)
-            if (
-                not stat.S_ISREG(existing.st_mode)
-                or stat.S_ISLNK(existing.st_mode)
-                or existing.st_nlink != 1
-            ):
-                raise OSError("locked data path must be a single-link regular file")
-        if normalized in {"w", "w+"}:
-            temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            temp_flags = flags_by_mode[normalized] | os.O_EXCL
-            temp_flags |= getattr(os, "O_CLOEXEC", 0)
-            temp_flags |= getattr(os, "O_NOFOLLOW", 0)
-            descriptor = None
-            temporary_identity = None
-            try:
-                descriptor = os.open(temp, temp_flags, 0o600)
-                binary = "b" in mode
-                open_kwargs = (
-                    {} if binary or encoding is None else {"encoding": encoding}
-                )
-                with os.fdopen(descriptor, mode, **open_kwargs) as handle:
-                    descriptor = None
-                    opened = _assert_open_regular_path(
-                        temp,
-                        handle,
-                        label="locked state temporary data",
-                    )
-                    try:
-                        yield handle
-                    finally:
-                        finished = _assert_open_regular_path(
-                            temp,
-                            handle,
-                            label="locked state temporary data",
-                        )
-                        if (
-                            finished.st_dev,
-                            finished.st_ino,
-                        ) != (
-                            opened.st_dev,
-                            opened.st_ino,
-                        ):
-                            raise OSError(
-                                "locked state temporary data inode changed"
-                            )
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                    temporary_identity = os.fstat(handle.fileno())
-
-                # Fail closed if a writer that ignored the sidecar changed the
-                # destination while the private inode was being populated.
-                # Even a last-moment race after this proof is harmless to an
-                # external hardlink victim: os.replace() only removes the
-                # destination directory entry and never writes its inode.
-                if existing is None:
-                    if os.path.lexists(path):
-                        raise OSError(
-                            "locked state data target appeared during atomic write"
-                        )
-                else:
-                    try:
-                        current = os.lstat(path)
-                    except OSError as exc:
-                        raise OSError(
-                            "locked state data target changed during atomic write"
-                        ) from exc
-                    if (
-                        not stat.S_ISREG(current.st_mode)
-                        or stat.S_ISLNK(current.st_mode)
-                        or current.st_nlink != 1
-                        or (current.st_dev, current.st_ino)
-                        != (existing.st_dev, existing.st_ino)
-                    ):
-                        raise OSError(
-                            "locked state data target changed during atomic write"
-                        )
-
-                os.replace(temp, path)
-                published = os.lstat(path)
-                if (
-                    temporary_identity is None
-                    or not stat.S_ISREG(published.st_mode)
-                    or stat.S_ISLNK(published.st_mode)
-                    or published.st_nlink != 1
-                    or (published.st_dev, published.st_ino)
-                    != (temporary_identity.st_dev, temporary_identity.st_ino)
-                    or published.st_size != temporary_identity.st_size
-                ):
-                    raise OSError(
-                        "locked state publication did not retain the temporary inode"
-                    )
-                _fsync_directory(path.parent)
-            finally:
-                if descriptor is not None:
-                    os.close(descriptor)
-                try:
-                    temp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            return
-        flags = flags_by_mode[normalized] | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags, 0o600)
-        binary = "b" in mode
-        open_kwargs = {} if binary or encoding is None else {"encoding": encoding}
-        with os.fdopen(descriptor, mode, **open_kwargs) as handle:
-            opened = _assert_open_regular_path(
-                path,
-                handle,
-                label="locked state data",
-            )
-            if opened.st_nlink != 1:
-                raise OSError("locked state data must have one link")
-            try:
-                yield handle
-            finally:
-                finished = _assert_open_regular_path(
-                    path,
-                    handle,
-                    label="locked state data",
-                )
-                if finished.st_nlink != 1:
-                    raise OSError("locked state data link count changed")
-                if lock_type == fcntl.LOCK_SH and (
-                    opened.st_size,
-                    opened.st_mtime_ns,
-                    opened.st_ctime_ns,
-                ) != (
-                    finished.st_size,
-                    finished.st_mtime_ns,
-                    finished.st_ctime_ns,
-                ):
-                    raise OSError("locked state data changed during shared read")
+    """Delegate to evolution_infra_state_io."""
+    with _sio.locked_file(path, mode=mode, lock_type=lock_type, encoding=encoding) as v:
+        yield v
 
 
 def _fsync_directory(path):
-    """Durably publish a directory-entry mutation.
-
-    File ``fsync`` plus ``os.replace`` is atomic for readers, but the rename or
-    unlink is not power-loss durable until the containing directory is synced.
-    Publication/checkpoint code deliberately lets an ``OSError`` escape here:
-    claiming a durable state after a failed directory sync would be unsafe.
-    """
-
-    directory = Path(path)
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(directory, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    """Delegate to evolution_infra_state_io."""
+    return _sio._fsync_directory(path)
 
 
 def _fsync_regular_state_file_and_parent(path):
-    """Re-prove a published state inode and its directory durability."""
-
-    path = Path(path)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        opened = os.fstat(descriptor)
-        live = os.lstat(path)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or not stat.S_ISREG(live.st_mode)
-            or opened.st_nlink != 1
-            or live.st_nlink != 1
-            or (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino)
-        ):
-            raise OSError("state durability target is unsafe")
-        os.fsync(descriptor)
-        live_after = os.lstat(path)
-        if (
-            live_after.st_nlink != 1
-            or (live_after.st_dev, live_after.st_ino)
-            != (opened.st_dev, opened.st_ino)
-        ):
-            raise OSError("state durability target changed")
-    finally:
-        os.close(descriptor)
-    _fsync_directory(path.parent)
+    """Delegate to evolution_infra_state_io."""
+    return _sio._fsync_regular_state_file_and_parent(path)
 
 
 def _sidecar_lock_path(path):
-    path = Path(path)
-    return path.with_suffix(path.suffix + ".lock")
+    """Delegate to evolution_infra_state_io."""
+    return _sio._sidecar_lock_path(path)
 
 
 def _assert_safe_state_parent(path):
-    """Reject state publication through a symlink/non-directory parent."""
-
-    parent = Path(path).parent
-    if not os.path.lexists(parent):
-        parent.mkdir(parents=True, exist_ok=True)
-    try:
-        parent_stat = os.lstat(parent)
-    except OSError as exc:
-        raise OSError(
-            f"state parent metadata unavailable: {type(exc).__name__}"
-        ) from exc
-    if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_ISLNK(parent_stat.st_mode):
-        raise OSError("state parent must be a non-symlink directory")
+    """Delegate to evolution_infra_state_io."""
+    return _sio._assert_safe_state_parent(path)
 
 
 def _preflight_state_sidecar(path):
-    _assert_safe_state_parent(path)
-    lock_path = _sidecar_lock_path(path)
-    if os.path.lexists(lock_path):
-        metadata = os.lstat(lock_path)
-        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-            raise OSError("state sidecar lock must be a non-symlink regular file")
+    """Delegate to evolution_infra_state_io."""
+    return _sio._preflight_state_sidecar(path)
 
 
 def _assert_open_regular_path(path, handle, *, label):
-    """Bind an opened descriptor to the still-live regular-file path."""
-
-    try:
-        path_stat = os.lstat(path)
-        file_stat = os.fstat(handle.fileno())
-    except OSError as exc:
-        raise OSError(
-            f"{label} metadata unavailable: {type(exc).__name__}"
-        ) from exc
-    if (
-        not stat.S_ISREG(path_stat.st_mode)
-        or not stat.S_ISREG(file_stat.st_mode)
-        or path_stat.st_nlink != 1
-        or file_stat.st_nlink != 1
-        or path_stat.st_dev != file_stat.st_dev
-        or path_stat.st_ino != file_stat.st_ino
-    ):
-        raise OSError(f"{label} path is not the opened safe regular file")
-    return file_stat
+    """Delegate to evolution_infra_state_io."""
+    return _sio._assert_open_regular_path(path, handle, label=label)
 
 
 @contextmanager
 def _locked_state_sidecar(path, *, lock_type):
-    """Lock a stable, no-follow sidecar inode shared by readers and writers."""
-
-    path = Path(path)
-    lock_path = _sidecar_lock_path(path)
-    _preflight_state_sidecar(path)
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    with _thread_lock_for(lock_path):
-        held_map = getattr(_STATE_SIDECAR_LOCAL, "held", None)
-        if held_map is None:
-            held_map = {}
-            _STATE_SIDECAR_LOCAL.held = held_map
-        lock_key = str(lock_path.resolve())
-        held = held_map.get(lock_key)
-        if held is not None:
-            # Re-entering an exclusive lock as EX or SH is safe and must not
-            # open/flock a second descriptor: several publication transactions
-            # deliberately call checkpoint readers while owning the checkpoint
-            # CAS lock.  A SH -> EX upgrade is rejected instead of deadlocking
-            # or silently weakening the outer reader lease.
-            if held["lock_type"] != fcntl.LOCK_EX and lock_type == fcntl.LOCK_EX:
-                raise OSError("state sidecar shared lock cannot be upgraded")
-            held["depth"] += 1
-            integrity_error = None
-            try:
-                _assert_open_regular_path(
-                    lock_path,
-                    held["handle"],
-                    label="state sidecar lock",
-                )
-                yield held["handle"]
-            finally:
-                try:
-                    _assert_open_regular_path(
-                        lock_path,
-                        held["handle"],
-                        label="state sidecar lock",
-                    )
-                except BaseException as exc:
-                    integrity_error = exc
-                held["depth"] -= 1
-                if integrity_error is not None:
-                    raise integrity_error
-            return
-        descriptor = os.open(lock_path, flags, 0o600)
-        with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
-            fcntl.flock(handle, lock_type)
-            integrity_error = None
-            try:
-                _assert_open_regular_path(
-                    lock_path,
-                    handle,
-                    label="state sidecar lock",
-                )
-                held_map[lock_key] = {
-                    "handle": handle,
-                    "lock_type": lock_type,
-                    "depth": 1,
-                }
-                yield handle
-            finally:
-                # Run the exit proof even when the protected body raises.  A
-                # body failure must not hide that the lock inode was swapped
-                # while the supposedly serialized effect was in flight.
-                try:
-                    _assert_open_regular_path(
-                        lock_path,
-                        handle,
-                        label="state sidecar lock",
-                    )
-                except BaseException as exc:
-                    integrity_error = exc
-                held_map.pop(lock_key, None)
-                fcntl.flock(handle, fcntl.LOCK_UN)
-                if integrity_error is not None:
-                    raise integrity_error
+    """Delegate to evolution_infra_state_io."""
+    with _sio._locked_state_sidecar(path, lock_type=lock_type) as v:
+        yield v
 
 
 @contextmanager
 def bot_publication_lock(*, results_dir=None):
-    """Lock the one stable no-follow publication/cleanup linearization inode."""
-
-    root = Path(results_dir) if results_dir is not None else Path(RESULTS_DIR)
-    lock_path = root / ".bot_publication.lock"
-    _assert_safe_state_parent(lock_path)
-    if os.path.lexists(lock_path):
-        metadata = os.lstat(lock_path)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_nlink != 1
-        ):
-            raise OSError(
-                "bot publication lock must be a single-link regular file"
-            )
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    with _thread_lock_for(lock_path):
-        descriptor = os.open(lock_path, flags, 0o600)
-        with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
-            opened = os.fstat(handle.fileno())
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            integrity_error = None
-            try:
-                live = os.lstat(lock_path)
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or not stat.S_ISREG(live.st_mode)
-                    or opened.st_nlink != 1
-                    or live.st_nlink != 1
-                    or (opened.st_dev, opened.st_ino)
-                    != (live.st_dev, live.st_ino)
-                ):
-                    raise OSError("bot publication lock path is unsafe")
-                yield handle
-            finally:
-                try:
-                    live_after = os.lstat(lock_path)
-                    opened_after = os.fstat(handle.fileno())
-                    if (
-                        opened_after.st_nlink != 1
-                        or live_after.st_nlink != 1
-                        or (opened_after.st_dev, opened_after.st_ino)
-                        != (opened.st_dev, opened.st_ino)
-                        or (live_after.st_dev, live_after.st_ino)
-                        != (opened.st_dev, opened.st_ino)
-                    ):
-                        raise OSError("bot publication lock inode changed")
-                except BaseException as exc:
-                    integrity_error = exc
-                fcntl.flock(handle, fcntl.LOCK_UN)
-                if integrity_error is not None:
-                    raise integrity_error
+    """Delegate to evolution_infra_state_io."""
+    with _sio.bot_publication_lock(results_dir=results_dir) as v:
+        yield v
 
 
 def _read_regular_state_text(path, *, allow_missing):
-    """Read one state file without following links and revalidate after read."""
-
-    path = Path(path)
-    if not os.path.lexists(path):
-        if allow_missing:
-            return ""
-        raise FileNotFoundError(path)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-        _assert_open_regular_path(path, handle, label="state data")
-        raw = handle.read()
-        _assert_open_regular_path(path, handle, label="state data")
-    return raw
+    """Delegate to evolution_infra_state_io."""
+    return _sio._read_regular_state_text(path, allow_missing=allow_missing)
 
 
 def _atomic_publish_state_text(path, raw):
-    """Publish complete UTF-8 state bytes atomically; caller owns sidecar EX."""
-
-    path = Path(path)
-    _assert_safe_state_parent(path)
-    if os.path.lexists(path):
-        path_stat = os.lstat(path)
-        if (
-            not stat.S_ISREG(path_stat.st_mode)
-            or stat.S_ISLNK(path_stat.st_mode)
-            or path_stat.st_nlink != 1
-        ):
-            raise OSError(
-                "state data target must be a single-link non-symlink regular file"
-            )
-    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = None
-    temporary_identity = None
-    try:
-        descriptor = os.open(temp, flags, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = None
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary_identity = os.fstat(handle.fileno())
-        os.replace(temp, path)
-        published_stat = os.lstat(path)
-        if (
-            temporary_identity is None
-            or not stat.S_ISREG(published_stat.st_mode)
-            or stat.S_ISLNK(published_stat.st_mode)
-            or published_stat.st_nlink != 1
-            or (published_stat.st_dev, published_stat.st_ino)
-            != (temporary_identity.st_dev, temporary_identity.st_ino)
-            or published_stat.st_size != temporary_identity.st_size
-        ):
-            raise OSError(
-                "atomic state publication did not retain the temporary inode"
-            )
-        _fsync_directory(path.parent)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        try:
-            temp.unlink(missing_ok=True)
-        except OSError:
-            pass
+    """Delegate to evolution_infra_state_io."""
+    return _sio._atomic_publish_state_text(path, raw)
 
 
 def read_locked_json(path, default=None):
-    """Read a JSON file with shared lock. Returns default on any error."""
-    try:
-        with locked_file(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return default
+    """Delegate to evolution_infra_state_io."""
+    return _sio.read_locked_json(path, default=default)
 
 
 def read_and_maybe_unlink_locked_text(path, should_unlink):
-    """Read and conditionally consume one state inode under its EX sidecar.
-
-    The predicate runs while the stable sidecar is exclusively held.  When it
-    returns true, this function re-proves that the live path is still the exact
-    no-follow, single-link inode that was read before unlinking it and syncing
-    the containing directory.  A cooperating atomic writer therefore runs
-    wholly before the read or wholly after the durable unlink; a later write is
-    never mistaken for the inode selected for consumption.
-
-    Return ``(raw_text, consumed)``.  A missing path is not an error and returns
-    ``(None, False)``.  Predicate, authenticity, unlink, and durability errors
-    are fail-closed and propagate to the caller.
-    """
-
-    if not callable(should_unlink):
-        raise TypeError("state consumption predicate must be callable")
-    path = Path(path)
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(path, flags)
-        except FileNotFoundError:
-            return None, False
-
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            opened = _assert_open_regular_path(
-                path,
-                handle,
-                label="consumable state data",
-            )
-            raw = handle.read()
-            finished = _assert_open_regular_path(
-                path,
-                handle,
-                label="consumable state data",
-            )
-            if (
-                (finished.st_dev, finished.st_ino)
-                != (opened.st_dev, opened.st_ino)
-                or (
-                    finished.st_size,
-                    finished.st_mtime_ns,
-                    finished.st_ctime_ns,
-                )
-                != (
-                    opened.st_size,
-                    opened.st_mtime_ns,
-                    opened.st_ctime_ns,
-                )
-            ):
-                raise OSError("consumable state data changed during read")
-
-            consume = bool(should_unlink(raw))
-            if not consume:
-                return raw, False
-
-            # The decision and this final path/inode proof share one EX
-            # sidecar lease.  In particular, never perform a path-only unlink
-            # after releasing the lock: an atomic writer may have installed a
-            # new inode by then.
-            current = _assert_open_regular_path(
-                path,
-                handle,
-                label="consumable state data",
-            )
-            if (
-                (current.st_dev, current.st_ino)
-                != (opened.st_dev, opened.st_ino)
-                or (
-                    current.st_size,
-                    current.st_mtime_ns,
-                    current.st_ctime_ns,
-                )
-                != (
-                    opened.st_size,
-                    opened.st_mtime_ns,
-                    opened.st_ctime_ns,
-                )
-            ):
-                raise OSError("consumable state data changed before unlink")
-
-            os.unlink(path)
-            post_unlink_error = None
-            try:
-                retired = os.fstat(handle.fileno())
-                if (
-                    not stat.S_ISREG(retired.st_mode)
-                    or (retired.st_dev, retired.st_ino)
-                    != (opened.st_dev, opened.st_ino)
-                    or retired.st_nlink != 0
-                ):
-                    raise OSError("consumed state inode retirement is unsafe")
-
-                # An uncooperative writer may create a later inode without the
-                # sidecar.  Do not remove it: only prove that it is distinct
-                # from the inode selected above.  Cooperating writers cannot
-                # reach this point until the sidecar is released.
-                if os.path.lexists(path):
-                    replacement = os.lstat(path)
-                    if (
-                        not stat.S_ISREG(replacement.st_mode)
-                        or stat.S_ISLNK(replacement.st_mode)
-                        or replacement.st_nlink != 1
-                        or (replacement.st_dev, replacement.st_ino)
-                        == (opened.st_dev, opened.st_ino)
-                    ):
-                        raise OSError(
-                            "replacement state path after consumption is unsafe"
-                        )
-            except BaseException as exc:
-                post_unlink_error = exc
-
-            try:
-                _fsync_directory(path.parent)
-            except BaseException as sync_exc:
-                if post_unlink_error is not None:
-                    raise post_unlink_error from sync_exc
-                raise
-            if post_unlink_error is not None:
-                raise post_unlink_error
-            return raw, True
+    """Delegate to evolution_infra_state_io."""
+    return _sio.read_and_maybe_unlink_locked_text(path, should_unlink)
 
 
 def write_locked_json(path, data, indent=2):
-    """Atomically and durably publish JSON under the stable sidecar lock."""
-    path = Path(path)
-    raw = json.dumps(
-        data,
-        indent=indent,
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
-        _atomic_publish_state_text(path, raw)
+    """Delegate to evolution_infra_state_io."""
+    return _sio.write_locked_json(path, data, indent=indent)
 
 
 def append_locked_jsonl(path, entry):
-    """Durably append one JSON row under the same stable sidecar lock."""
-    path = Path(path)
-    raw = json.dumps(entry, ensure_ascii=False, allow_nan=False) + "\n"
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
-        existed = os.path.lexists(path)
-        if existed:
-            metadata = os.lstat(path)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or stat.S_ISLNK(metadata.st_mode)
-                or metadata.st_nlink != 1
-            ):
-                raise OSError("JSONL append target is unsafe")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags, 0o600)
-        try:
-            opened = os.fstat(descriptor)
-            live = os.lstat(path)
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or live.st_nlink != 1
-                or (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino)
-            ):
-                raise OSError("JSONL append target identity changed")
-            encoded = raw.encode("utf-8")
-            offset = 0
-            while offset < len(encoded):
-                written = os.write(descriptor, encoded[offset:])
-                if written <= 0:
-                    raise OSError("JSONL append made no progress")
-                offset += written
-            os.fsync(descriptor)
-            opened_after = os.fstat(descriptor)
-            live_after = os.lstat(path)
-            if (
-                opened_after.st_nlink != 1
-                or live_after.st_nlink != 1
-                or (opened_after.st_dev, opened_after.st_ino)
-                != (opened.st_dev, opened.st_ino)
-                or (live_after.st_dev, live_after.st_ino)
-                != (opened.st_dev, opened.st_ino)
-            ):
-                raise OSError("JSONL append target changed during write")
-        finally:
-            os.close(descriptor)
-        if not existed:
-            _fsync_directory(path.parent)
+    """Delegate to evolution_infra_state_io."""
+    return _sio.append_locked_jsonl(path, entry)
 
 
 def update_h2h(h2h, bot_a, bot_b, wins_a, wins_b, draws=0):
@@ -5801,54 +5186,28 @@ _ROTATION_SUBJECT_KEYS = frozenset({
 
 
 def _rotation_rules():
-    return (
-        (Path(WORKER_FAILURES_FILE), 200),
-        (Path(MATCH_HISTORY_FILE), 500),
-        (Path(RATING_HISTORY_FILE), 100),
-        (Path(RESULTS_DIR) / "events.jsonl", 1000),
-        (Path(LLM_COSTS_FILE), 200),
-    )
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_rules()
 
 
 def _rotation_digest(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_digest(raw)
 
 
 def _rotation_paths(source_path: Path, version: int):
-    root = Path(ARCHIVE_DIR)
-    return (
-        root / f"{source_path.stem}_v{int(version)}.jsonl",
-        root / f"{source_path.stem}_v{int(version)}.rotation.json",
-        root / f"{source_path.stem}.rotation-watermark.json",
-    )
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_paths(source_path, version)
 
 
 def _rotation_set_plan_path(version: int):
-    return Path(ARCHIVE_DIR) / f"rotation-set-v{int(version)}.plan.json"
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_set_plan_path(version)
 
 
 def _rotation_record(path: Path, *, kind: str, keys: frozenset[str]):
-    from bot_artifact import canonical_digest
-
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_SH):
-        existed = os.path.lexists(path)
-        raw = _read_regular_state_text(path, allow_missing=True)
-    if not existed:
-        return None
-    if not raw.strip():
-        raise RuntimeError(f"archive record empty: {path.name}")
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise RuntimeError(f"archive record invalid JSON: {path.name}") from exc
-    if not isinstance(payload, dict) or set(payload) != set(keys):
-        raise RuntimeError(f"archive record fields mismatch: {path.name}")
-    if payload.get("schema_version") != 2 or payload.get("kind") != kind:
-        raise RuntimeError(f"archive record schema mismatch: {path.name}")
-    unsigned = {key: value for key, value in payload.items() if key != "digest"}
-    if payload.get("digest") != canonical_digest(unsigned):
-        raise RuntimeError(f"archive record digest mismatch: {path.name}")
-    return payload
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_record(path, kind=kind, keys=keys)
 
 
 def _write_rotation_record(
@@ -5858,100 +5217,23 @@ def _write_rotation_record(
     kind: str,
     keys: frozenset[str],
 ):
-    from bot_artifact import canonical_digest
-
-    unsigned = dict(payload)
-    if set(unsigned) != set(keys) - {"digest"}:
-        raise RuntimeError(f"archive record write fields mismatch: {path.name}")
-    if unsigned.get("schema_version") != 2 or unsigned.get("kind") != kind:
-        raise RuntimeError(f"archive record write schema mismatch: {path.name}")
-    final = {**unsigned, "digest": canonical_digest(unsigned)}
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
-        _atomic_publish_state_text(
-            path,
-            json.dumps(final, indent=2, ensure_ascii=False, sort_keys=True),
-        )
-    reopened = _rotation_record(path, kind=kind, keys=keys)
-    if reopened != final:
-        raise RuntimeError(f"archive record publication mismatch: {path.name}")
-    return final
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._write_rotation_record(path, payload, kind=kind, keys=keys)
 
 
 def _read_rotation_archive(path: Path):
-    if not os.path.lexists(path):
-        return None
-    with locked_file(path, "rb", lock_type=fcntl.LOCK_SH) as handle:
-        return handle.read()
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._read_rotation_archive(path)
 
 
 def _publish_rotation_archive(path: Path, raw: bytes):
-    path = Path(path)
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
-        existing = None
-        if os.path.lexists(path):
-            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(path, flags)
-            with os.fdopen(descriptor, "rb") as handle:
-                _assert_open_regular_path(path, handle, label="rotation archive")
-                existing = handle.read()
-                _assert_open_regular_path(path, handle, label="rotation archive")
-        if existing is not None:
-            if existing != raw:
-                raise RuntimeError(f"archive content mismatch: {path.name}")
-            _fsync_regular_state_file_and_parent(path)
-            return
-        _assert_safe_state_parent(path)
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = None
-        temporary_identity = None
-        try:
-            descriptor = os.open(temporary, flags, 0o600)
-            offset = 0
-            while offset < len(raw):
-                written = os.write(descriptor, raw[offset:])
-                if written <= 0:
-                    raise OSError("rotation archive write made no progress")
-                offset += written
-            os.fsync(descriptor)
-            temporary_identity = os.fstat(descriptor)
-            os.close(descriptor)
-            descriptor = None
-            os.replace(temporary, path)
-            live = os.lstat(path)
-            if (
-                temporary_identity is None
-                or not stat.S_ISREG(live.st_mode)
-                or live.st_nlink != 1
-                or (live.st_dev, live.st_ino)
-                != (temporary_identity.st_dev, temporary_identity.st_ino)
-                or live.st_size != len(raw)
-            ):
-                raise OSError("rotation archive publication inode changed")
-            _fsync_directory(path.parent)
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-            temporary.unlink(missing_ok=True)
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._publish_rotation_archive(path, raw)
 
 
 def _base_rotation_watermark(source_path: Path):
-    from bot_artifact import canonical_digest
-
-    unsigned = {
-        "schema_version": 2,
-        "kind": _ROTATION_WATERMARK_KIND,
-        "source": source_path.name,
-        "end_offset": 0,
-        "prefix_sha256": _rotation_digest(b""),
-        "last_version": None,
-        "last_rotation_id": None,
-        "last_plan_digest": None,
-        "previous_watermark_digest": None,
-    }
-    return {**unsigned, "digest": canonical_digest(unsigned)}
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._base_rotation_watermark(source_path)
 
 
 def _validate_rotation_plan(
@@ -5963,168 +5245,40 @@ def _validate_rotation_plan(
     require_completed: bool,
     require_archive: bool,
 ):
-    from bot_artifact import canonical_digest
-
-    archive_path, _plan_path, _watermark_path = _rotation_paths(
-        source_path,
-        version,
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._validate_rotation_plan(
+        plan,
+        version=version,
+        source_path=source_path,
+        raw=raw,
+        require_completed=require_completed,
+        require_archive=require_archive,
     )
-    if (
-        type(plan.get("version")) is not int
-        or plan["version"] != int(version)
-        or plan.get("source") != source_path.name
-        or plan.get("archive") != archive_path.name
-        or plan.get("state") not in {"planned", "completed"}
-        or (require_completed and plan.get("state") != "completed")
-    ):
-        raise RuntimeError(f"archive plan identity invalid: {source_path.name}")
-    start = plan.get("start_offset")
-    end = plan.get("end_offset")
-    if (
-        type(start) is not int
-        or type(end) is not int
-        or not 0 <= start < end <= len(raw)
-    ):
-        raise RuntimeError(f"archive plan offsets invalid: {source_path.name}")
-    for key in (
-        "archive_sha256", "new_prefix_sha256",
-        "previous_watermark_digest", "rotation_id", "digest",
-    ):
-        value = str(plan.get(key) or "")
-        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-            raise RuntimeError(f"archive plan digest invalid:{source_path.name}:{key}")
-    archived = raw[start:end]
-    subject = {
-        "version": int(version),
-        "source": source_path.name,
-        "start_offset": start,
-        "end_offset": end,
-        "archive_sha256": _rotation_digest(archived),
-        "new_prefix_sha256": _rotation_digest(raw[:end]),
-        "previous_watermark_digest": plan["previous_watermark_digest"],
-    }
-    if (
-        plan.get("archive_sha256") != subject["archive_sha256"]
-        or plan.get("new_prefix_sha256") != subject["new_prefix_sha256"]
-        or plan.get("rotation_id") != canonical_digest(subject)
-    ):
-        raise RuntimeError(f"archive plan derivation mismatch: {source_path.name}")
-    archived_live = _read_rotation_archive(archive_path)
-    if archived_live is not None and archived_live != archived:
-        raise RuntimeError(f"archive bytes mismatch: {archive_path.name}")
-    if require_archive and archived_live is None:
-        raise RuntimeError(f"archive bytes missing: {archive_path.name}")
-    return archived
 
 
 def _load_rotation_watermark(source_path: Path, raw: bytes):
-    _archive, _plan, watermark_path = _rotation_paths(source_path, 0)
-    watermark = _rotation_record(
-        watermark_path,
-        kind=_ROTATION_WATERMARK_KIND,
-        keys=_ROTATION_WATERMARK_KEYS,
-    )
-    if watermark is None:
-        return _base_rotation_watermark(source_path)
-    end = watermark.get("end_offset")
-    if (
-        watermark.get("source") != source_path.name
-        or type(end) is not int
-        or not 0 < end <= len(raw)
-        or watermark.get("prefix_sha256") != _rotation_digest(raw[:end])
-        or type(watermark.get("last_version")) is not int
-        or int(watermark["last_version"]) < FIRST_STRICT_POLICY_VERSION
-    ):
-        raise RuntimeError(f"archive watermark identity invalid: {source_path.name}")
-    for key in (
-        "last_rotation_id", "last_plan_digest", "previous_watermark_digest",
-        "digest",
-    ):
-        value = str(watermark.get(key) or "")
-        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-            raise RuntimeError(f"archive watermark digest invalid:{source_path.name}:{key}")
-    prior_version = int(watermark["last_version"])
-    _prior_archive, prior_plan_path, _prior_watermark = _rotation_paths(
-        source_path,
-        prior_version,
-    )
-    prior_plan = _rotation_record(
-        prior_plan_path,
-        kind=_ROTATION_PLAN_KIND,
-        keys=_ROTATION_PLAN_KEYS,
-    )
-    if prior_plan is None:
-        raise RuntimeError(f"archive watermark plan missing: {source_path.name}")
-    _validate_rotation_plan(
-        prior_plan,
-        version=prior_version,
-        source_path=source_path,
-        raw=raw,
-        require_completed=True,
-        require_archive=True,
-    )
-    if (
-        prior_plan["end_offset"] != end
-        or prior_plan["new_prefix_sha256"] != watermark["prefix_sha256"]
-        or prior_plan["rotation_id"] != watermark["last_rotation_id"]
-        or prior_plan["digest"] != watermark["last_plan_digest"]
-        or prior_plan["previous_watermark_digest"]
-        != watermark["previous_watermark_digest"]
-    ):
-        raise RuntimeError(f"archive watermark chain mismatch: {source_path.name}")
-    return watermark
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._load_rotation_watermark(source_path, raw)
 
 
 def _rotation_receipt(plan: dict):
-    return {
-        "source": plan["source"],
-        "rotation_id": plan["rotation_id"],
-        "plan_digest": plan["digest"],
-        "archive_sha256": plan["archive_sha256"],
-        "start_offset": plan["start_offset"],
-        "end_offset": plan["end_offset"],
-        "source_preserved_append_only": True,
-    }
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_receipt(plan)
 
 
 def _rotation_digest_value(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(char in "0123456789abcdef" for char in value)
-    )
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_digest_value(value)
 
 
 def _completed_rotation_plan_digest(subject):
-    from bot_artifact import canonical_digest
-
-    unsigned = {
-        "schema_version": 2,
-        "kind": _ROTATION_PLAN_KIND,
-        "version": subject["version"],
-        "source": subject["source"],
-        "start_offset": subject["start_offset"],
-        "end_offset": subject["end_offset"],
-        "archive": subject["archive"],
-        "archive_sha256": subject["archive_sha256"],
-        "new_prefix_sha256": subject["new_prefix_sha256"],
-        "previous_watermark_digest": subject["previous_watermark_digest"],
-        "rotation_id": subject["rotation_id"],
-        "state": "completed",
-    }
-    return canonical_digest(unsigned)
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._completed_rotation_plan_digest(subject)
 
 
 def _rotation_subject_receipt(subject):
-    return {
-        "source": subject["source"],
-        "rotation_id": subject["rotation_id"],
-        "plan_digest": subject["completed_plan_digest"],
-        "archive_sha256": subject["archive_sha256"],
-        "start_offset": subject["start_offset"],
-        "end_offset": subject["end_offset"],
-        "source_preserved_append_only": True,
-    }
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._rotation_subject_receipt(subject)
 
 
 def _validate_archive_rotation_plan_shape(
@@ -6133,145 +5287,10 @@ def _validate_archive_rotation_plan_shape(
     version,
     publication_id=None,
 ):
-    """Validate the self-contained high-level plan without reading effects."""
-
-    from bot_artifact import canonical_digest
-
-    version = int(version)
-    if (
-        not isinstance(rotation_plan, dict)
-        or set(rotation_plan) != set(_ROTATION_SET_PLAN_KEYS)
-    ):
-        raise RuntimeError("archive rotation set plan fields mismatch")
-    observed_publication_id = rotation_plan.get("publication_id")
-    if (
-        rotation_plan.get("schema_version") != 1
-        or rotation_plan.get("kind") != _ROTATION_SET_PLAN_KIND
-        or type(rotation_plan.get("version")) is not int
-        or rotation_plan["version"] != version
-        or not _rotation_digest_value(observed_publication_id)
-        or (
-            publication_id is not None
-            and observed_publication_id != publication_id
-        )
-        or rotation_plan.get("source_policy") != "append-only-cold-prefix"
-        or rotation_plan.get("source_bytes_must_be_preserved") is not True
-    ):
-        raise RuntimeError("archive rotation set plan identity invalid")
-    snapshots = rotation_plan.get("source_snapshots")
-    rotations = rotation_plan.get("expected_rotations")
-    rules = list(_rotation_rules())
-    if not isinstance(snapshots, list) or len(snapshots) != len(rules):
-        raise RuntimeError("archive rotation source snapshots incomplete")
-    if not isinstance(rotations, list):
-        raise RuntimeError("archive rotation expected subjects invalid")
-
-    derived_rotations = []
-    seen_sources = set()
-    for snapshot, (source_path, keep_lines) in zip(snapshots, rules):
-        if (
-            not isinstance(snapshot, dict)
-            or set(snapshot) != set(_ROTATION_SOURCE_SNAPSHOT_KEYS)
-        ):
-            raise RuntimeError("archive rotation source snapshot fields mismatch")
-        source_name = source_path.name
-        if source_name in seen_sources:
-            raise RuntimeError("archive rotation rule source duplicated")
-        seen_sources.add(source_name)
-        size = snapshot.get("snapshot_size")
-        cold_end = snapshot.get("cold_end_offset")
-        watermark_end = snapshot.get("watermark_end_offset")
-        if (
-            snapshot.get("source") != source_name
-            or snapshot.get("keep_lines") != keep_lines
-            or type(snapshot.get("snapshot_exists")) is not bool
-            or type(size) is not int
-            or type(cold_end) is not int
-            or type(watermark_end) is not int
-            or not 0 <= watermark_end <= cold_end <= size
-            or not _rotation_digest_value(snapshot.get("snapshot_sha256"))
-            or not _rotation_digest_value(snapshot.get("watermark_digest"))
-        ):
-            raise RuntimeError(
-                f"archive rotation source snapshot invalid: {source_name}"
-            )
-        if snapshot["snapshot_exists"] is False:
-            base = _base_rotation_watermark(source_path)
-            if (
-                size != 0
-                or cold_end != 0
-                or watermark_end != 0
-                or snapshot["snapshot_sha256"] != _rotation_digest(b"")
-                or snapshot["watermark_digest"] != base["digest"]
-            ):
-                raise RuntimeError(
-                    f"archive rotation absent snapshot invalid: {source_name}"
-                )
-
-        expected = snapshot.get("expected_rotation")
-        if cold_end <= watermark_end:
-            if expected is not None:
-                raise RuntimeError(
-                    f"archive rotation unexpected subject: {source_name}"
-                )
-            continue
-        if (
-            not isinstance(expected, dict)
-            or set(expected) != set(_ROTATION_SUBJECT_KEYS)
-        ):
-            raise RuntimeError(
-                f"archive rotation expected subject fields mismatch: {source_name}"
-            )
-        archive_path, _plan_path, _watermark_path = _rotation_paths(
-            source_path,
-            version,
-        )
-        subject = {
-            "version": version,
-            "source": source_name,
-            "start_offset": watermark_end,
-            "end_offset": cold_end,
-            "archive_sha256": expected.get("archive_sha256"),
-            "new_prefix_sha256": expected.get("new_prefix_sha256"),
-            "previous_watermark_digest": snapshot["watermark_digest"],
-        }
-        if (
-            expected.get("version") != version
-            or expected.get("source") != source_name
-            or expected.get("archive") != archive_path.name
-            or expected.get("start_offset") != watermark_end
-            or expected.get("end_offset") != cold_end
-            or not _rotation_digest_value(subject["archive_sha256"])
-            or not _rotation_digest_value(subject["new_prefix_sha256"])
-            or expected.get("previous_watermark_digest")
-            != snapshot["watermark_digest"]
-            or expected.get("rotation_id") != canonical_digest(subject)
-            or expected.get("completed_plan_digest")
-            != _completed_rotation_plan_digest(expected)
-        ):
-            raise RuntimeError(
-                f"archive rotation expected subject invalid: {source_name}"
-            )
-        derived_rotations.append(expected)
-
-    if rotations != derived_rotations:
-        raise RuntimeError("archive rotation expected subject set mismatch")
-    if rotation_plan.get("source_snapshot_set_digest") != canonical_digest(
-        snapshots
-    ):
-        raise RuntimeError("archive rotation source snapshot digest mismatch")
-    if rotation_plan.get("expected_rotation_set_digest") != canonical_digest(
-        rotations
-    ):
-        raise RuntimeError("archive rotation expected subject digest mismatch")
-    unsigned = {
-        key: value
-        for key, value in rotation_plan.items()
-        if key != "authority_digest"
-    }
-    if rotation_plan.get("authority_digest") != canonical_digest(unsigned):
-        raise RuntimeError("archive rotation authority digest mismatch")
-    return derived_rotations
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._validate_archive_rotation_plan_shape(
+        rotation_plan, version=version, publication_id=publication_id
+    )
 
 
 def expected_archive_rotation_receipts(
@@ -6280,179 +5299,25 @@ def expected_archive_rotation_receipts(
     version,
     publication_id=None,
 ):
-    """Derive the exact receipt set without relying on low-level plan files."""
-
-    rotations = _validate_archive_rotation_plan_shape(
-        rotation_plan,
-        version=version,
-        publication_id=publication_id,
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot.expected_archive_rotation_receipts(
+        rotation_plan, version=version, publication_id=publication_id
     )
-    return [_rotation_subject_receipt(subject) for subject in rotations]
 
 
 def _read_archive_rotation_plan_authority(version, *, missing_ok=False):
-    path = _rotation_set_plan_path(version)
-    if not os.path.lexists(path):
-        if missing_ok:
-            return None
-        raise RuntimeError("archive rotation set plan authority missing")
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_SH):
-        raw = _read_regular_state_text(path, allow_missing=False)
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise RuntimeError("archive rotation set plan authority invalid JSON") from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError("archive rotation set plan authority not object")
-    return payload
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._read_archive_rotation_plan_authority(version, missing_ok=missing_ok)
 
 
 def _publish_archive_rotation_plan_authority(plan):
-    """Create one immutable plan authority; never replace existing bytes."""
-
-    version = int(plan["version"])
-    path = _rotation_set_plan_path(version)
-    _validate_archive_rotation_plan_shape(
-        plan,
-        version=version,
-        publication_id=plan.get("publication_id"),
-    )
-    Path(ARCHIVE_DIR).mkdir(parents=True, exist_ok=True)
-    _fsync_directory(ARCHIVE_DIR)
-    encoded = json.dumps(
-        plan,
-        indent=2,
-        ensure_ascii=False,
-        sort_keys=True,
-        allow_nan=False,
-    ) + "\n"
-    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
-        if os.path.lexists(path):
-            existing = _read_regular_state_text(path, allow_missing=False)
-            if existing != encoded:
-                raise RuntimeError(
-                    "archive rotation set plan authority already differs"
-                )
-            _fsync_regular_state_file_and_parent(path)
-            return plan
-        # The stable sidecar makes this a create-once publication for every
-        # cooperating producer.  Atomic replace of the private inode has no
-        # link/unlink crash window, unlike a create-only hardlink sequence.
-        _atomic_publish_state_text(path, encoded)
-    reopened = _read_archive_rotation_plan_authority(version)
-    if reopened != plan:
-        raise RuntimeError("archive rotation set plan authority reproof mismatch")
-    return plan
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot._publish_archive_rotation_plan_authority(plan)
 
 
 def build_archive_rotation_plan(version, publication_id):
-    """Freeze every managed source before any archive effect is allowed."""
-
-    from bot_artifact import canonical_digest
-
-    version = int(version)
-    if version < FIRST_STRICT_POLICY_VERSION:
-        raise RuntimeError("pre_epoch_archive_rotation_forbidden")
-    if not _rotation_digest_value(publication_id):
-        raise RuntimeError("archive rotation publication identity invalid")
-    existing_authority = _read_archive_rotation_plan_authority(
-        version,
-        missing_ok=True,
-    )
-    if existing_authority is not None:
-        validate_archive_rotation_plan(
-            existing_authority,
-            version=version,
-            publication_id=publication_id,
-        )
-        return existing_authority
-
-    snapshots = []
-    rotations = []
-    for source_path, keep_lines in _rotation_rules():
-        current_archive, current_plan, watermark_path = _rotation_paths(
-            source_path,
-            version,
-        )
-        if os.path.lexists(current_archive) or os.path.lexists(current_plan):
-            raise RuntimeError(
-                f"archive rotation effect precedes high-level plan: {source_path.name}"
-            )
-        snapshot_exists = os.path.lexists(source_path)
-        if snapshot_exists:
-            with locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
-                raw = source.read()
-                watermark = _load_rotation_watermark(source_path, raw)
-        else:
-            raw = b""
-            watermark = _base_rotation_watermark(source_path)
-            if os.path.lexists(watermark_path):
-                raise RuntimeError(
-                    f"archive rotation source missing with authority: {source_path.name}"
-                )
-        lines = raw.splitlines(keepends=True)
-        cold_end = (
-            sum(len(line) for line in lines[:-keep_lines])
-            if len(lines) > keep_lines
-            else 0
-        )
-        start = int(watermark["end_offset"])
-        if cold_end < start:
-            cold_end = start
-        expected = None
-        if cold_end > start:
-            archive_path, _plan_path, _watermark_path = _rotation_paths(
-                source_path,
-                version,
-            )
-            subject = {
-                "version": version,
-                "source": source_path.name,
-                "start_offset": start,
-                "end_offset": cold_end,
-                "archive_sha256": _rotation_digest(raw[start:cold_end]),
-                "new_prefix_sha256": _rotation_digest(raw[:cold_end]),
-                "previous_watermark_digest": watermark["digest"],
-            }
-            expected = {
-                **subject,
-                "archive": archive_path.name,
-                "rotation_id": canonical_digest(subject),
-            }
-            expected["completed_plan_digest"] = (
-                _completed_rotation_plan_digest(expected)
-            )
-            rotations.append(expected)
-        snapshots.append({
-            "source": source_path.name,
-            "keep_lines": keep_lines,
-            "snapshot_exists": snapshot_exists,
-            "snapshot_size": len(raw),
-            "snapshot_sha256": _rotation_digest(raw),
-            "cold_end_offset": cold_end,
-            "watermark_end_offset": start,
-            "watermark_digest": watermark["digest"],
-            "expected_rotation": expected,
-        })
-    plan = {
-        "schema_version": 1,
-        "kind": _ROTATION_SET_PLAN_KIND,
-        "version": version,
-        "publication_id": publication_id,
-        "source_policy": "append-only-cold-prefix",
-        "source_bytes_must_be_preserved": True,
-        "source_snapshots": snapshots,
-        "expected_rotations": rotations,
-        "source_snapshot_set_digest": canonical_digest(snapshots),
-        "expected_rotation_set_digest": canonical_digest(rotations),
-    }
-    plan["authority_digest"] = canonical_digest(plan)
-    _validate_archive_rotation_plan_shape(
-        plan,
-        version=version,
-        publication_id=publication_id,
-    )
-    return _publish_archive_rotation_plan_authority(plan)
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot.build_archive_rotation_plan(version, publication_id)
 
 
 def validate_archive_rotation_plan(
@@ -6461,348 +5326,27 @@ def validate_archive_rotation_plan(
     version,
     publication_id=None,
 ):
-    """Reprove the frozen source prefixes and current predecessor authority."""
-
-    rotations = _validate_archive_rotation_plan_shape(
-        rotation_plan,
-        version=version,
-        publication_id=publication_id,
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot.validate_archive_rotation_plan(
+        rotation_plan, version=version, publication_id=publication_id
     )
-    authority = _read_archive_rotation_plan_authority(int(version))
-    if authority != rotation_plan:
-        raise RuntimeError("archive rotation set plan authority mismatch")
-    expected_by_source = {item["source"]: item for item in rotations}
-    for snapshot, (source_path, keep_lines) in zip(
-        rotation_plan["source_snapshots"],
-        _rotation_rules(),
-    ):
-        if not os.path.lexists(source_path):
-            if snapshot["snapshot_exists"]:
-                raise RuntimeError(
-                    f"archive rotation snapshot source missing: {source_path.name}"
-                )
-            raw = b""
-            current_watermark = _base_rotation_watermark(source_path)
-        else:
-            with locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
-                raw = source.read()
-                current_watermark = _load_rotation_watermark(source_path, raw)
-        snapshot_size = snapshot["snapshot_size"]
-        if (
-            len(raw) < snapshot_size
-            or _rotation_digest(raw[:snapshot_size])
-            != snapshot["snapshot_sha256"]
-        ):
-            raise RuntimeError(
-                f"archive rotation source prefix changed: {source_path.name}"
-            )
-        frozen = raw[:snapshot_size]
-        lines = frozen.splitlines(keepends=True)
-        cold_end = (
-            sum(len(line) for line in lines[:-keep_lines])
-            if len(lines) > keep_lines
-            else 0
-        )
-        if cold_end < snapshot["watermark_end_offset"]:
-            cold_end = snapshot["watermark_end_offset"]
-        if cold_end != snapshot["cold_end_offset"]:
-            raise RuntimeError(
-                f"archive rotation frozen range changed: {source_path.name}"
-            )
-        expected = expected_by_source.get(source_path.name)
-        _archive_path, low_plan_path, _watermark_path = _rotation_paths(
-            source_path,
-            int(version),
-        )
-        low_plan = None
-        if os.path.lexists(low_plan_path):
-            low_plan = _rotation_record(
-                low_plan_path,
-                kind=_ROTATION_PLAN_KIND,
-                keys=_ROTATION_PLAN_KEYS,
-            )
-        if expected is None:
-            if low_plan is not None:
-                raise RuntimeError(
-                    f"archive rotation unplanned low-level plan: {source_path.name}"
-                )
-            if current_watermark["digest"] != snapshot["watermark_digest"]:
-                raise RuntimeError(
-                    f"archive rotation no-op predecessor changed: {source_path.name}"
-                )
-            continue
-        if low_plan is None:
-            if current_watermark["digest"] != snapshot["watermark_digest"]:
-                raise RuntimeError(
-                    f"archive rotation predecessor changed: {source_path.name}"
-                )
-            continue
-        _validate_rotation_plan(
-            low_plan,
-            version=int(version),
-            source_path=source_path,
-            raw=raw,
-            require_completed=low_plan.get("state") == "completed",
-            require_archive=low_plan.get("state") == "completed",
-        )
-        for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
-            if low_plan.get(key) != expected.get(key):
-                raise RuntimeError(
-                    f"archive rotation low-level plan mismatch: {source_path.name}"
-                )
-        if expected["completed_plan_digest"] != _completed_rotation_plan_digest(
-            expected
-        ):
-            raise RuntimeError(
-                f"archive rotation completion digest mismatch: {source_path.name}"
-            )
-        if (
-            low_plan.get("state") == "completed"
-            and low_plan.get("digest") != expected["completed_plan_digest"]
-        ):
-            raise RuntimeError(
-                f"archive rotation completed plan mismatch: {source_path.name}"
-            )
-    return rotation_plan
 
 
 def archive_rotate_files(version, rotation_plan):
-    """Copy new cold JSONL ranges without truncating their live authority."""
-
-    version = int(version)
-    if version < FIRST_STRICT_POLICY_VERSION:
-        raise RuntimeError("pre_epoch_archive_rotation_forbidden")
-    validate_archive_rotation_plan(
-        rotation_plan,
-        version=version,
-        publication_id=rotation_plan.get("publication_id")
-        if isinstance(rotation_plan, dict)
-        else None,
-    )
-    expected_by_source = {
-        item["source"]: item
-        for item in rotation_plan["expected_rotations"]
-    }
-    Path(ARCHIVE_DIR).mkdir(parents=True, exist_ok=True)
-    _fsync_directory(ARCHIVE_DIR)
-    receipts = []
-    for source_path, _keep_lines in _rotation_rules():
-        expected = expected_by_source.get(source_path.name)
-        if expected is None:
-            continue
-        if not os.path.lexists(source_path):
-            raise RuntimeError(
-                f"archive rotation planned source missing: {source_path.name}"
-            )
-        archive_path, plan_path, watermark_path = _rotation_paths(
-            source_path,
-            version,
-        )
-        with locked_file(source_path, "rb", lock_type=fcntl.LOCK_EX) as source:
-            raw = source.read()
-            watermark = _load_rotation_watermark(source_path, raw)
-            plan = _rotation_record(
-                plan_path,
-                kind=_ROTATION_PLAN_KIND,
-                keys=_ROTATION_PLAN_KEYS,
-            )
-            if plan is None:
-                if os.path.lexists(archive_path):
-                    raise RuntimeError(f"unclaimed archive exists: {archive_path.name}")
-                if watermark["digest"] != expected["previous_watermark_digest"]:
-                    raise RuntimeError(
-                        f"archive rotation planned predecessor mismatch: {source_path.name}"
-                    )
-                plan = _write_rotation_record(
-                    plan_path,
-                    {
-                        "schema_version": 2,
-                        "kind": _ROTATION_PLAN_KIND,
-                        **{
-                            key: value
-                            for key, value in expected.items()
-                            if key != "completed_plan_digest"
-                        },
-                        "state": "planned",
-                    },
-                    kind=_ROTATION_PLAN_KIND,
-                    keys=_ROTATION_PLAN_KEYS,
-                )
-            for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
-                if plan.get(key) != expected.get(key):
-                    raise RuntimeError(
-                        f"archive rotation low-level plan mismatch: {source_path.name}"
-                    )
-            archived = _validate_rotation_plan(
-                plan,
-                version=version,
-                source_path=source_path,
-                raw=raw,
-                require_completed=False,
-                require_archive=False,
-            )
-            start = int(plan["start_offset"])
-            end = int(plan["end_offset"])
-            watermark_end = int(watermark["end_offset"])
-            if watermark_end < start or start < watermark_end < end:
-                raise RuntimeError(f"archive watermark overlaps plan: {source_path.name}")
-            if watermark_end == start:
-                if plan["previous_watermark_digest"] != watermark["digest"]:
-                    raise RuntimeError(f"archive plan predecessor mismatch: {source_path.name}")
-                _publish_rotation_archive(archive_path, archived)
-                if plan["state"] != "completed":
-                    plan = _write_rotation_record(
-                        plan_path,
-                        {key: value for key, value in plan.items() if key != "digest"} | {"state": "completed"},
-                        kind=_ROTATION_PLAN_KIND,
-                        keys=_ROTATION_PLAN_KEYS,
-                    )
-                if plan["digest"] != expected["completed_plan_digest"]:
-                    raise RuntimeError(
-                        f"archive rotation completed plan mismatch: {source_path.name}"
-                    )
-                _write_rotation_record(
-                    watermark_path,
-                    {
-                        "schema_version": 2,
-                        "kind": _ROTATION_WATERMARK_KIND,
-                        "source": source_path.name,
-                        "end_offset": end,
-                        "prefix_sha256": plan["new_prefix_sha256"],
-                        "last_version": version,
-                        "last_rotation_id": plan["rotation_id"],
-                        "last_plan_digest": plan["digest"],
-                        "previous_watermark_digest": plan["previous_watermark_digest"],
-                    },
-                    kind=_ROTATION_WATERMARK_KIND,
-                    keys=_ROTATION_WATERMARK_KEYS,
-                )
-            elif watermark_end >= end:
-                _validate_rotation_plan(
-                    plan,
-                    version=version,
-                    source_path=source_path,
-                    raw=raw,
-                    require_completed=True,
-                    require_archive=True,
-                )
-                if plan["digest"] != expected["completed_plan_digest"]:
-                    raise RuntimeError(
-                        f"archive rotation completed plan mismatch: {source_path.name}"
-                    )
-            receipts.append(_rotation_receipt(plan))
-    validate_archive_rotation_receipts(
-        version,
-        receipts,
-        rotation_plan=rotation_plan,
-    )
-    return receipts
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot.archive_rotate_files(version, rotation_plan)
 
 
 def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
-    """Pure read/reproof of an already planned rotation; creates no files."""
-
-    version = int(version)
-    if not isinstance(receipts, list):
-        raise RuntimeError("archive rotation receipts must be a list")
-    validate_archive_rotation_plan(
-        rotation_plan,
-        version=version,
-        publication_id=rotation_plan.get("publication_id")
-        if isinstance(rotation_plan, dict)
-        else None,
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot.validate_archive_rotation_receipts(
+        version, receipts, rotation_plan=rotation_plan
     )
-    expected_receipts = expected_archive_rotation_receipts(
-        rotation_plan,
-        version=version,
-        publication_id=rotation_plan.get("publication_id")
-        if isinstance(rotation_plan, dict)
-        else None,
-    )
-    by_name = {path.name: path for path, _keep in _rotation_rules()}
-    supplied = {}
-    for receipt in receipts:
-        if not isinstance(receipt, dict) or set(receipt) != set(_ROTATION_RECEIPT_KEYS):
-            raise RuntimeError("archive rotation receipt fields mismatch")
-        source_name = receipt.get("source")
-        if source_name in supplied or source_name not in by_name:
-            raise RuntimeError("archive rotation receipt source invalid")
-        supplied[source_name] = receipt
-
-    # The high-level plan is the authority even before the first low-level
-    # per-source plan exists.  Reject omissions before inspecting effects so a
-    # forged ``rotations=[]`` cannot vacuously certify a cold source.
-    if receipts != expected_receipts:
-        expected_names = {item["source"] for item in expected_receipts}
-        supplied_names = set(supplied)
-        missing = sorted(expected_names - supplied_names)
-        if missing:
-            raise RuntimeError(
-                f"archive rotation receipt missing: {missing[0]}"
-            )
-        unexpected = sorted(supplied_names - expected_names)
-        if unexpected:
-            raise RuntimeError(
-                f"archive rotation receipt unexpected: {unexpected[0]}"
-            )
-        raise RuntimeError("archive rotation receipt set mismatch")
-
-    verified = []
-    expected_by_source = {
-        item["source"]: item for item in expected_receipts
-    }
-    for source_path, _keep_lines in _rotation_rules():
-        source_name = source_path.name
-        if source_name not in expected_by_source:
-            continue
-        _archive_path, plan_path, _watermark_path = _rotation_paths(
-            source_path,
-            version,
-        )
-        if not os.path.lexists(plan_path):
-            raise RuntimeError(f"archive rotation plan missing: {source_name}")
-        if not os.path.lexists(source_path):
-            raise RuntimeError(
-                f"archive rotation source missing: {source_name}"
-            )
-        with locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
-            raw = source.read()
-            watermark = _load_rotation_watermark(source_path, raw)
-            plan = _rotation_record(
-                plan_path,
-                kind=_ROTATION_PLAN_KIND,
-                keys=_ROTATION_PLAN_KEYS,
-            )
-            if plan is None:
-                raise RuntimeError(f"archive rotation plan missing: {source_name}")
-            _validate_rotation_plan(
-                plan,
-                version=version,
-                source_path=source_path,
-                raw=raw,
-                require_completed=True,
-                require_archive=True,
-            )
-            if int(watermark["end_offset"]) < int(plan["end_offset"]):
-                raise RuntimeError(f"archive rotation watermark behind: {source_name}")
-            expected = _rotation_receipt(plan)
-            receipt = supplied.get(source_name)
-            if receipt is None:
-                raise RuntimeError(
-                    f"archive rotation receipt missing: {source_name}"
-                )
-            if receipt != expected:
-                raise RuntimeError(f"archive rotation receipt mismatch: {source_name}")
-            verified.append(expected)
-    return verified
 
 
 def archive_old_logs(keep_generations=5):
-    """Retired unsafe API; strict handoff cleanup owns explicit log paths."""
-
-    raise RuntimeError(
-        "archive_old_logs_retired_use_post_publication_strict_log_cleanup"
-    )
+    """Delegate to evolution_infra_archive_rotation."""
+    return _rot.archive_old_logs(keep_generations=keep_generations)
 
 
 # ──────────────────────────────────────────────

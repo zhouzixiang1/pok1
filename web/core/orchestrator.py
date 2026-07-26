@@ -26,6 +26,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Bounded native-match stream-extension/handoff authority (constants + helper
+# functions extracted from this module).  Imported early because the
+# ``ORCH_NATIVE_MATCH_*`` constants defined just below are assigned from it.
+# The companion references orchestrator-internal helpers via ``_o.<name>``
+# (call-time resolution), so the partial-module state at this point is safe.
+import orchestrator_native_match_extension as _nme  # noqa: E402
+
 from claude_agent_sdk import (
     query as claude_query,
     ClaudeAgentOptions,
@@ -503,16 +510,10 @@ ORCH_EXTERNAL_PROGRESS_TAIL_BYTES = int(os.environ.get("POK_ORCH_EXTERNAL_PROGRE
 # checkpoint-bound match, never a rolling heartbeat lease or a blanket
 # increase to CYCLE_TIMEOUT.  The frozen sidecar phase deadline remains the
 # authoritative lower cap.
-ORCH_NATIVE_MATCH_MAX_EXTENSION_HARD_CAP_SEC = 5_960.0
-ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC = max(
-    0.0,
-    min(
-        ORCH_NATIVE_MATCH_MAX_EXTENSION_HARD_CAP_SEC,
-        float(os.environ.get("POK_ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC", "5960")),
-    ),
-)
-ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC = 90.0
-ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC = 5.0
+ORCH_NATIVE_MATCH_MAX_EXTENSION_HARD_CAP_SEC = _nme.ORCH_NATIVE_MATCH_MAX_EXTENSION_HARD_CAP_SEC
+ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC = _nme.ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC
+ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC = _nme.ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC
+ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC = _nme.ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC
 STABILITY_OBSERVATION_MAINTENANCE_INTERVAL = float(
     os.environ.get("POK_STABILITY_OBSERVATION_MAINTENANCE_INTERVAL", "5")
 )
@@ -1803,169 +1804,25 @@ def _bounded_native_match_extension(
     original_deadline_epoch: float,
     provider_dispatch_nonce: str | None,
 ) -> dict | None:
-    """Return one eligible engine-match extension, or ``None`` fail-closed."""
-
-    try:
-        from pipeline_state import (
-            native_match_dispatch_nonce_is_active,
-            read_pipeline_native_match_progress,
-            validate_native_match_progress,
-        )
-
-        if not native_match_dispatch_nonce_is_active(provider_dispatch_nonce):
-            return None
-        checkpoint = _read_active_pipeline_checkpoint()
-        if not isinstance(checkpoint, dict):
-            return None
-        progress = read_pipeline_native_match_progress(
-            checkpoint,
-            now=time.time(),
-            max_age=ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC,
-            provider_dispatch_nonce=provider_dispatch_nonce,
-        )
-        # Revalidate here as well as at sidecar read time.  The bounded
-        # extension is a privileged liveness exception and must stay closed
-        # even if a caller/test substitutes the read helper's output.
-        progress = validate_native_match_progress(
-            checkpoint,
-            progress,
-            now=time.time(),
-            provider_dispatch_nonce=provider_dispatch_nonce,
-        )
-    except Exception:
-        return None
-    if not isinstance(progress, dict):
-        return None
-    # The sidecar validator already binds owner->stage, PID/revision, frozen
-    # phase budget and this exact provider dispatch nonce.  Timestamp proximity
-    # is intentionally not an identity fence: an old tool can begin within a
-    # few seconds of a new stream, while an exact owned SDK nonce cannot cross
-    # that boundary.
-    phase_deadline = float(progress.get("phase_deadline_epoch") or 0.0)
-    operation_deadline = float(progress.get("operation_deadline_epoch") or 0.0)
-    now = time.time()
-    if (
-        phase_deadline <= now
-        or operation_deadline <= now
-        or progress.get("terminal") is not False
-        or progress.get("provider_dispatch_nonce") != provider_dispatch_nonce
-    ):
-        return None
-    absolute_cap = float(original_deadline_epoch) + ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC
-    deadline = min(
-        phase_deadline,
-        operation_deadline,
-        absolute_cap,
+    """Delegate to orchestrator_native_match_extension."""
+    return _nme._bounded_native_match_extension(
+        stream_started_epoch=stream_started_epoch,
+        original_deadline_epoch=original_deadline_epoch,
+        provider_dispatch_nonce=provider_dispatch_nonce,
     )
-    if deadline <= now:
-        return None
-    return {
-        "deadline_epoch": deadline,
-        "cap_epoch": absolute_cap,
-        "checkpoint": checkpoint,
-        "checkpoint_identity": _checkpoint_actionable_identity(checkpoint),
-        "progress": progress,
-    }
 
 
 def _native_match_extension_reproof(previous: dict, fresh: dict | None) -> bool:
-    """Prove that a granted extension still belongs to one immutable match."""
-
-    if not isinstance(previous, dict) or not isinstance(fresh, dict):
-        return False
-    if previous.get("checkpoint_identity") != fresh.get("checkpoint_identity"):
-        return False
-    if previous.get("cap_epoch") != fresh.get("cap_epoch"):
-        return False
-    old = previous.get("progress") or {}
-    new = fresh.get("progress") or {}
-    immutable_fields = (
-        "owner_tool",
-        "provider_dispatch_nonce",
-        "match_identity_digest",
-        "timing_plan_digest",
-        "hands",
-        "effective_timeout_us",
-        "operation_started_at_epoch",
-        "operation_deadline_epoch",
-        "operation_budget_us",
-    )
-    if any(old.get(field) != new.get(field) for field in immutable_fields):
-        return False
-    try:
-        if int(new.get("event_seq")) < int(old.get("event_seq")):
-            return False
-    except (TypeError, ValueError):
-        return False
-    phase_order = {"launching": 0, "engine_running": 1, "finalizing": 2}
-    old_phase = str(old.get("liveness_phase") or "")
-    new_phase = str(new.get("liveness_phase") or "")
-    if old_phase not in phase_order or new_phase not in phase_order:
-        return False
-    if phase_order[new_phase] < phase_order[old_phase]:
-        return False
-    old_hand = old.get("hand")
-    new_hand = new.get("hand")
-    old_hand_order = 0 if old_hand is None else int(old_hand)
-    new_hand_order = 0 if new_hand is None else int(new_hand)
-    if new_hand_order < old_hand_order:
-        return False
-    if new_phase == old_phase:
-        for field in (
-            "phase_started_at_epoch",
-            "phase_deadline_epoch",
-            "phase_budget_us",
-        ):
-            if old.get(field) != new.get(field):
-                return False
-    return True
+    """Delegate to orchestrator_native_match_extension."""
+    return _nme._native_match_extension_reproof(previous, fresh)
 
 
 def _native_match_terminal_handoff_checkpoint_valid(
     extension: dict,
     receipt: dict,
 ) -> bool:
-    """Require the current checkpoint to be the same owner flow or its result."""
-
-    old_checkpoint = extension.get("checkpoint") or {}
-    current = _read_active_pipeline_checkpoint()
-    if not isinstance(old_checkpoint, dict) or not isinstance(current, dict):
-        return False
-    old_workflow = str(
-        old_checkpoint.get("workflow_run_id")
-        or old_checkpoint.get("run_id")
-        or ""
-    )
-    current_workflow = str(
-        current.get("workflow_run_id") or current.get("run_id") or ""
-    )
-    owner = str(receipt.get("owner_tool") or "")
-    allowed_stages = {
-        "run_quality_gates": {
-            "workers_done",
-            "quality_failed",
-            "quality_passed",
-        },
-        "run_precommit_eval": {
-            "critic_checked",
-            "precommit_failed",
-            "verified",
-            "infra_timed_out",
-        },
-    }.get(owner, set())
-    try:
-        old_revision = int(old_checkpoint.get("checkpoint_revision") or 0)
-        current_revision = int(current.get("checkpoint_revision") or 0)
-    except (TypeError, ValueError):
-        return False
-    return bool(
-        old_workflow
-        and current_workflow == old_workflow
-        and current.get("next_v") == old_checkpoint.get("next_v")
-        and current.get("source_v") == old_checkpoint.get("source_v")
-        and current_revision >= old_revision
-        and str(current.get("stage") or "") in allowed_stages
-    )
+    """Delegate to orchestrator_native_match_extension."""
+    return _nme._native_match_terminal_handoff_checkpoint_valid(extension, receipt)
 
 
 def _consume_native_match_terminal_handoff(
@@ -1973,60 +1830,11 @@ def _consume_native_match_terminal_handoff(
     *,
     observed_at_epoch: float,
 ) -> dict | None:
-    """Consume a runner-return receipt for one immutable granted extension."""
-
-    if not isinstance(extension, dict):
-        return None
-    checkpoint = extension.get("checkpoint")
-    progress = extension.get("progress")
-    if not isinstance(checkpoint, dict) or not isinstance(progress, dict):
-        return None
-    try:
-        from pipeline_state import consume_native_match_terminal_handoff
-
-        receipt = consume_native_match_terminal_handoff(
-            checkpoint,
-            progress,
-            now=observed_at_epoch,
-        )
-    except Exception:
-        return None
-    if not isinstance(receipt, dict):
-        return None
-    try:
-        created_at = float(receipt.get("created_at_epoch"))
-        receipt_expiry = float(receipt.get("expires_at_epoch"))
-        cap_epoch = float(extension.get("cap_epoch"))
-        extension_deadline = float(extension.get("deadline_epoch"))
-        operation_deadline = float(progress.get("operation_deadline_epoch"))
-        handoff_deadline = min(
-            receipt_expiry,
-            cap_epoch,
-            extension_deadline,
-            operation_deadline,
-        )
-        previous_seq = int(progress.get("event_seq"))
-        last_live_seq = int(receipt.get("last_live_event_seq"))
-        terminal_seq = int(receipt.get("terminal_event_seq"))
-    except (TypeError, ValueError):
-        return None
-    if (
-        receipt.get("terminal_outcome") != "runner_returned"
-        or last_live_seq < previous_seq
-        or terminal_seq != last_live_seq + 1
-        or created_at > observed_at_epoch + 1.0
-        or observed_at_epoch > handoff_deadline
-        or not _native_match_terminal_handoff_checkpoint_valid(
-            extension,
-            receipt,
-        )
-    ):
-        return None
-    return {
-        "receipt": receipt,
-        "deadline_epoch": handoff_deadline,
-        "checkpoint_identity": extension.get("checkpoint_identity"),
-    }
+    """Delegate to orchestrator_native_match_extension."""
+    return _nme._consume_native_match_terminal_handoff(
+        extension,
+        observed_at_epoch=observed_at_epoch,
+    )
 
 
 def _native_match_terminal_handoff_reproof(
@@ -2034,28 +1842,10 @@ def _native_match_terminal_handoff_reproof(
     *,
     observed_at_epoch: float,
 ) -> bool:
-    """Validate a consumed handoff without extending its fixed expiry."""
-
-    if not isinstance(state, dict):
-        return False
-    receipt = state.get("receipt") or {}
-    try:
-        deadline = float(state.get("deadline_epoch"))
-    except (TypeError, ValueError):
-        return False
-    extension = {
-        "checkpoint": {
-            "workflow_run_id": receipt.get("workflow_run_id"),
-            "checkpoint_revision": receipt.get("checkpoint_revision"),
-            "stage": receipt.get("stage"),
-            "next_v": receipt.get("next_v"),
-            "source_v": receipt.get("source_v"),
-        },
-    }
-    return bool(
-        receipt.get("terminal_outcome") == "runner_returned"
-        and observed_at_epoch <= deadline
-        and _native_match_terminal_handoff_checkpoint_valid(extension, receipt)
+    """Delegate to orchestrator_native_match_extension."""
+    return _nme._native_match_terminal_handoff_reproof(
+        state,
+        observed_at_epoch=observed_at_epoch,
     )
 
 
@@ -4208,165 +3998,6 @@ def _recovery_route_log_kwargs(recovery):
         "log_level": recovery.get("log_level") or "warn",
         "label": recovery.get("label") or "[Recovery]",
     }
-
-
-def _extract_tool_result_json(result):
-    try:
-        content = result.get("content") if isinstance(result, dict) else None
-        if not content:
-            return {}
-        first = content[0] if isinstance(content, list) else content
-        text = first.get("text") if isinstance(first, dict) else None
-        if not text:
-            return {}
-        return json.loads(text)
-    except Exception:
-        return {}
-
-
-def _is_worker_circuit_breaker_result(data):
-    if not isinstance(data, dict):
-        return False
-    error = str(data.get("error") or "")
-    return "CIRCUIT BREAKER" in error
-
-
-def _is_worker_terminal_abandon_result(data):
-    """Whether execute_workers reached an irreversible durable terminal state."""
-    if not isinstance(data, dict):
-        return False
-    return (
-        data.get("action") == "abandon_generation"
-        and data.get("success") is not True
-    )
-
-
-def _is_worker_operator_shutdown_interrupted(data, checkpoint):
-    """Validate the complete attempt-neutral Worker shutdown projection."""
-
-    if not isinstance(data, dict) or not isinstance(checkpoint, dict):
-        return False
-    if not (
-        data.get("error") == "WORKER_OPERATOR_SHUTDOWN_INTERRUPTED"
-        and data.get("success") is False
-        and data.get("failure_class") == "operator_shutdown"
-        and data.get("action") == "retry_same_tool"
-        and data.get("pending") is True
-        and data.get("shutdown_requested") is True
-        and data.get("checkpoint_preserved") is True
-        and data.get("attempt_consumed") is False
-        and data.get("attempt_neutral_persisted") is True
-        and data.get("workflow_run_id")
-        == checkpoint.get("workflow_run_id")
-    ):
-        return False
-    for field in ("lease_epoch", "claimed_attempt", "restored_attempt", "max_attempts"):
-        value = data.get(field)
-        if isinstance(value, bool) or not isinstance(value, int):
-            return False
-    claimed = int(data["claimed_attempt"])
-    restored = int(data["restored_attempt"])
-    return bool(
-        isinstance(data.get("effect_id"), str)
-        and data.get("effect_id")
-        and int(data["lease_epoch"]) >= 1
-        and claimed >= 1
-        and restored == claimed - 1
-        and int(data["max_attempts"]) >= claimed
-    )
-
-
-def _worker_terminal_abandon_reason(data):
-    error = str(data.get("error") or "")
-    if error == "WORKER_INFRASTRUCTURE_EXHAUSTED":
-        return "worker_infrastructure_exhausted"
-    if error == "WORKER_WORKFLOW_ABANDONED":
-        # Provider/Worker text is diagnostic only and must never select a
-        # control-plane abandon capability.
-        return "worker_workflow_abandoned"
-    return "worker_terminal_abandon"
-
-
-def _is_precommit_rework_circuit_breaker_result(data):
-    if not isinstance(data, dict):
-        return False
-    return str(data.get("error") or "") == "PRECOMMIT_REWORK_CIRCUIT_BREAKER"
-
-
-def _is_official_rework_circuit_breaker_result(data):
-    if not isinstance(data, dict):
-        return False
-    return str(data.get("error") or "") == "OFFICIAL_REWORK_CIRCUIT_BREAKER"
-
-
-def _is_crossover_incompatible_result(data):
-    if not isinstance(data, dict):
-        return False
-    return str(data.get("error") or "") == "CROSSOVER_INCOMPATIBLE"
-
-
-def _is_crossover_llm_exhausted_result(data):
-    if not isinstance(data, dict):
-        return False
-    return str(data.get("error") or "") == "CROSSOVER_LLM_EXHAUSTED"
-
-
-def _is_master_ensemble_pending_retry(data, checkpoint):
-    """Validate the complete journaled-Master join partition before retry."""
-
-    if not isinstance(data, dict) or not isinstance(checkpoint, dict):
-        return False
-    if not (
-        data.get("error") == "MASTER_ENSEMBLE_PROVIDER_PARKED"
-        and data.get("pending") is True
-        and data.get("action") == "retry_same_tool"
-        and data.get("checkpoint_preserved") is True
-        and data.get("abandoned") is False
-        and data.get("needs_attention") is False
-    ):
-        return False
-    master_slots = (
-        "proposal:mechanism",
-        "proposal:counterfactual",
-        "proposal:compute_memory",
-        "ballot:falsification",
-        "ballot:scope",
-    )
-    accepted = data.get("accepted_slots")
-    pending = data.get("pending_slots")
-    slot = data.get("slot")
-    if (
-        not isinstance(accepted, list)
-        or not isinstance(pending, list)
-        or any(not isinstance(item, str) for item in accepted + pending)
-        or len(set(accepted)) != len(accepted)
-        or len(set(pending)) != len(pending)
-        or set(accepted) & set(pending)
-        or set(accepted) | set(pending) != set(master_slots)
-        or slot not in pending
-    ):
-        return False
-    role_attempt = data.get("role_attempt")
-    if (
-        isinstance(role_attempt, bool)
-        or not isinstance(role_attempt, int)
-        or role_attempt < 1
-        or role_attempt >= 3
-    ):
-        return False
-    try:
-        retry_after = float(data.get("retry_after_sec"))
-    except (TypeError, ValueError):
-        return False
-    if not math.isfinite(retry_after) or not 5.0 <= retry_after <= 60.0:
-        return False
-    try:
-        from strict_authority_workflow import authority_run_id
-
-        expected_run_id = authority_run_id(checkpoint.get("workflow_run_id"))
-    except Exception:
-        return False
-    return data.get("authority_run_id") == expected_run_id
 
 
 async def _try_deterministic_checkpoint_route(
@@ -6874,4 +6505,23 @@ from orchestrator_branch_guard import (  # noqa: E402,F401
 from orchestrator_post_generation import (  # noqa: E402,F401
     POST_GENERATION_CLEANUP_TIMEOUT,
     _run_post_generation_cleanup_with_timeout,
+)
+
+# ──────────────────────────────────────────────
+# Re-exports: tool-result classification subsystem
+# (extracted to orchestrator_tool_result_classification.py for the single
+# business responsibility of decoding + classifying SDK tool results into
+# typed recovery capabilities)
+# ──────────────────────────────────────────────
+from orchestrator_tool_result_classification import (  # noqa: E402,F401
+    _extract_tool_result_json,
+    _is_worker_circuit_breaker_result,
+    _is_worker_terminal_abandon_result,
+    _is_worker_operator_shutdown_interrupted,
+    _worker_terminal_abandon_reason,
+    _is_precommit_rework_circuit_breaker_result,
+    _is_official_rework_circuit_breaker_result,
+    _is_crossover_incompatible_result,
+    _is_crossover_llm_exhausted_result,
+    _is_master_ensemble_pending_retry,
 )

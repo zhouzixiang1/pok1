@@ -40,6 +40,7 @@ from claude_agent_sdk import (
 from bot_namespace import ACTIVE_BOT_PREFIX
 from llm_availability import LLMAvailabilityBlocked, LLMAvailabilityTrace
 from llm_failure import is_shutdown_cancel_error, is_success_error_result
+import llm_role_observability as _ro  # role-IO logging/observability helpers
 
 log = logging.getLogger("pok.infra")
 _shutdown_manager = None
@@ -52,11 +53,15 @@ _STRICT_PROVIDER_RESULTS = contextvars.ContextVar(
 _LLM_TOTAL_DEADLINE = contextvars.ContextVar(
     "llm_total_deadline", default=None
 )
-_LLM_PROVIDER_ATTEMPT = contextvars.ContextVar(
-    "llm_provider_attempt", default=None
-)
-_PROVIDER_CLEANUP_LOCK = threading.Lock()
-_UNRESOLVED_PROVIDER_ATTEMPTS = {}
+# Owned provider-attempt lifecycle + terminal-abandon result cache live in
+# llm_provider_attempt (companion module).  These names are re-exported here
+# for backward compatibility so existing imports and monkeypatches on
+# ``llm_query.<name>`` keep working.  The ContextVar object below is the SAME
+# object as ``llm_provider_attempt._LLM_PROVIDER_ATTEMPT`` (identity contract).
+import llm_provider_attempt as _pa  # noqa: E402
+_LLM_PROVIDER_ATTEMPT = _pa._LLM_PROVIDER_ATTEMPT
+_PROVIDER_CLEANUP_LOCK = _pa._PROVIDER_CLEANUP_LOCK
+_UNRESOLVED_PROVIDER_ATTEMPTS = _pa._UNRESOLVED_PROVIDER_ATTEMPTS
 
 
 class LLMRoleContractError(RuntimeError):
@@ -1865,78 +1870,27 @@ from llm_query_guards import (  # noqa: F401
 
 
 
-# Serialize role-IO log rotation across threads/processes. Without this lock, two concurrent
-# appenders can both observe the file over the size cap and race the rename
-# (one wins, the other's rename throws FileNotFoundError — swallowed by the
-# except, benign but loses the backup). The lock makes the rotate-then-append
-# atomic. A threading.Lock suffices within one process; cross-process safety
-# for the append itself is provided by fcntl (locked_file below).
-_ROLE_IO_ROTATION_LOCK = threading.Lock()
+# --- Role-IO observability, timeout policy, and thinking options -----------
+# Extracted to llm_role_observability.py as a single business responsibility.
+# Constants and functions remain reachable through this module for backward
+# compatibility (tests monkeypatch them on llm_query.<name>); the delegate
+# bodies in llm_role_observability read these via ``_lq.<NAME>`` so the test
+# patches take effect.
+_ROLE_IO_ROTATION_LOCK = _ro._ROLE_IO_ROTATION_LOCK
 
 #: Cap a single role-IO log at 20MB before rotating to one backup (``.1``).
 #: Historical role logs grew without an upper bound; this is the structural cap
 #: (lowered here because role-IO files are append-heavy and per-role).
-_ROLE_IO_MAX_BYTES = 20 * 1024 * 1024
+_ROLE_IO_MAX_BYTES = _ro._ROLE_IO_MAX_BYTES
 
 
-_LLM_FIRST_ACTIVITY_WARN_SEC = float(
-    os.environ.get("POK_LLM_FIRST_ACTIVITY_WARN_SEC", "60")
-)
+_LLM_FIRST_ACTIVITY_WARN_SEC = _ro._LLM_FIRST_ACTIVITY_WARN_SEC
 
-_LLM_PROGRESS_INTERVAL_SEC = float(
-    os.environ.get("POK_LLM_PROGRESS_INTERVAL_SEC", "120")
-)
+_LLM_PROGRESS_INTERVAL_SEC = _ro._LLM_PROGRESS_INTERVAL_SEC
 
-_LLM_SILENCE_WARN_SEC = float(
-    os.environ.get("POK_LLM_SILENCE_WARN_SEC", "240")
-)
+_LLM_SILENCE_WARN_SEC = _ro._LLM_SILENCE_WARN_SEC
 
-_ROLE_TIMEOUT_DEFAULTS = {
-    # Fallback for analysis/probe roles such as MATCH ANALYST, COMBINED
-    # ANALYST and literature-probe roles. These can be
-    # slower than gate roles on GLM-backed Claude-compatible endpoints, but must
-    # still have a hard ceiling so the pipeline cannot wait forever.
-    "DEFAULT": (240.0, 360.0, 900.0),
-    # The final Master is a zero-tool selector/compiler over the frozen three-
-    # proposal/two-ballot packet.  Its prompt and output schema are necessarily
-    # large. Live v148 emitted only system/thinking telemetry through the old
-    # 240s first-substantive boundary and was killed at 277.5s including owned
-    # cleanup, even though every Scout/ballot input was already durable. Give
-    # this zero-tool selector/compiler 360s for first activity and later
-    # productive-message silence. This is independent from both proposal
-    # Scouts and ordinary Master roles and remains bounded by the same 900s
-    # total ceiling.
-    "MASTER_FINAL": (360.0, 360.0, 900.0),
-    # Proposal Scouts are Read-capable mechanism designers.  Live strict runs
-    # routinely complete between 155s and 236s after one or more bounded Read
-    # round-trips. Live singleton-successor evidence also showed a valid
-    # counterfactual role still computing at the former 240s boundary. Keep the
-    # pre-output gate at 120s, but give an already productive Scout 360s of
-    # silence. Successful roles are now journaled separately, so this larger
-    # per-role bound no longer multiplies into whole-ensemble redispatch.
-    # System/thinking telemetry remains nonproductive and the 900s total
-    # ceiling is unchanged.
-    "MASTER_PROPOSAL": (120.0, 360.0, 900.0),
-    # Master is the highest leverage failure point: it plans, reads evidence,
-    # and can otherwise burn the whole orchestrator cycle before any code exists.
-    "MASTER": (120.0, 240.0, 900.0),
-    # Review/Critic can be slow on GLM-backed Claude-compatible endpoints.
-    # They still have ceilings, but defaults must be long enough to avoid
-    # repeated 600s retries that keep the generation stuck at quality_passed.
-    "REVIEW": (180.0, 360.0, 1200.0),
-    "CRITIC": (180.0, 360.0, 900.0),
-    # Crossover synthesizes a whole child bot from two parents and routinely
-    # exceeds the generic analysis/probe budget on GLM-backed Claude-compatible
-    # endpoints. Keep the idle ceiling, but give total wall-clock enough room so
-    # a live stream is not killed and restarted at ~15 minutes.
-    "CROSSOVER": (240.0, 420.0, 2400.0),
-    # Workers already have an outer WORKER_TIMEOUT. Live v147 showed legitimate
-    # Read/tool reasoning repeatedly crossing the generic 180s mid-loop stall
-    # ceiling: four provider streams were restarted from the same frozen prompt
-    # before any Edit could land. Give a productive Worker the full 360s idle
-    # window while retaining the 180s no-first-output gate and 1000s total cap.
-    "WORKER": (180.0, 360.0, 1000.0),
-}
+_ROLE_TIMEOUT_DEFAULTS = _ro._ROLE_TIMEOUT_DEFAULTS
 
 
 # --- Extended-thinking configuration ---------------------------------------
@@ -1959,28 +1913,7 @@ _ROLE_TIMEOUT_DEFAULTS = {
 # All three are environment-overridable via POK_LLM_THINKING_MODE,
 # POK_LLM_THINKING_BUDGET, and POK_LLM_EFFORT.
 def _llm_thinking_options() -> dict:
-    mode = os.environ.get("POK_LLM_THINKING_MODE", "enabled").strip().lower()
-    if mode == "disabled":
-        return {"thinking": {"type": "disabled"}}
-    if mode == "adaptive":
-        return {"thinking": {"type": "adaptive"}}
-    # default / "enabled": deep reasoning with strong effort. GLM-5.2 treats
-    # budget_tokens as a soft target (not a hard cap), so a large budget (default
-    # 64000) lets the model reason as deeply as it needs and still converge.
-    # effort=max selects GLM's strongest reasoning depth, producing the highest
-    # quality strategy output. Both are now the defaults after confirming that:
-    # (1) GLM does NOT enter a death-loop at effort=max — thinking tokens grow
-    # linearly and the model eventually emits visible text; it is simply slow,
-    # requiring higher role timeouts (see _ROLE_TIMEOUT_DEFAULTS / env.runtime).
-    # (2) The earlier "infinite loop" diagnosis was a misattribution: the
-    # stream was killed by insufficient timeouts (900s) while GLM was still
-    # productively reasoning at 27k-66k thinking tokens.
-    budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000"))
-    options: dict = {"thinking": {"type": "enabled", "budget_tokens": budget}}
-    effort = os.environ.get("POK_LLM_EFFORT", "max").strip().lower()
-    if effort:
-        options["effort"] = effort
-    return options
+    return _ro._llm_thinking_options()
 
 
 def _role_timeout_policy(role_name: str) -> dict:
@@ -1989,115 +1922,15 @@ def _role_timeout_policy(role_name: str) -> dict:
     Values <=0 disable that timeout. Environment overrides are intentionally
     role-scoped so slow backends can be tuned without changing code.
     """
-    role = str(role_name or "").upper()
-    key = ""
-    if re.fullmatch(r"MASTER(?:\s+\(TRY\s+\d+\))?", role):
-        key = "MASTER_FINAL"
-    elif re.fullmatch(
-        r"MASTER PROPOSAL (?:MECHANISM|COUNTERFACTUAL|COMPUTE_MEMORY)"
-        r"(?: (?:SCHEMA|DISTINCTNESS) RETRY)?",
-        role,
-    ):
-        key = "MASTER_PROPOSAL"
-    elif "MASTER" in role:
-        key = "MASTER"
-    elif "REVIEW" in role:
-        key = "REVIEW"
-    elif "CRITIC" in role:
-        key = "CRITIC"
-    elif "CROSSOVER" in role:
-        key = "CROSSOVER"
-    elif "WORKER" in role:
-        key = "WORKER"
-    defaults = _ROLE_TIMEOUT_DEFAULTS.get(key or "DEFAULT", (0.0, 0.0, 0.0))
-
-    def _env(name, default):
-        names = [name]
-        # Preserve existing operator overrides while giving the zero-tool final
-        # compiler its own more-specific namespace.  MASTER_FINAL wins when
-        # both are present; legacy MASTER remains a safe fallback.
-        if key in {"MASTER_FINAL", "MASTER_PROPOSAL"} and (
-            f"POK_LLM_{key}_" in name
-        ):
-            names.append(name.replace(
-                f"POK_LLM_{key}_", "POK_LLM_MASTER_", 1
-            ))
-        for candidate in names:
-            if candidate not in os.environ:
-                continue
-            try:
-                parsed = float(os.environ[candidate])
-                if math.isfinite(parsed):
-                    return parsed
-            except Exception:
-                pass
-            # A malformed/non-finite role-specific override must not mask a
-            # valid legacy operator override. Continue through the ordered
-            # fallback chain and use the compiled default only if none parses.
-            continue
-        return float(default)
-
-    prefix = f"POK_LLM_{key}_" if key else "POK_LLM_DEFAULT_"
-    first_activity = _env(prefix + "FIRST_ACTIVITY_TIMEOUT", defaults[0])
-    idle = _env(prefix + "IDLE_TIMEOUT", defaults[1])
-    total = _env(prefix + "TOTAL_TIMEOUT", defaults[2])
-    # B3 (2026-07-09): a shorter stall ceiling enforced AFTER the first
-    # substantive model output, i.e. once the stream has entered the
-    # tool/thinking loop. Backends like the deepseek-v4-pro endpoint behind
-    # cc-switch intermittently stall mid-tool-loop (a tool_use is emitted but
-    # its tool_result never returns, or the model stops streaming mid-think).
-    # The full idle_timeout (240-420s) is appropriate for the FIRST real
-    # output but is too long to wait once we are already in the loop: every
-    # mid-loop stall costs the full idle budget before the role retry can
-    # restart. Default to ~55% of idle (clamped to [60, 180]s) so a stall is
-    # caught well before the full idle ceiling while still tolerating legit
-    # slow tool/think deltas. 0 disables (falls back to idle_timeout).
-    stall_default = (
-        360.0
-        if key in {"MASTER_PROPOSAL", "MASTER_FINAL", "WORKER"}
-        else 0.0
-    )
-    if idle > 0 and key not in {
-        "MASTER_FINAL",
-        "MASTER_PROPOSAL",
-        "WORKER",
-    }:
-        stall_default = max(60.0, min(180.0, idle * 0.55))
-    stall = _env(prefix + "STALL_TIMEOUT", stall_default)
-    return {
-        "policy_key": key or "DEFAULT",
-        "first_activity_timeout": first_activity,
-        "idle_timeout": idle,
-        "stall_timeout": stall,
-        "total_timeout": total,
-    }
+    return _ro._role_timeout_policy(role_name)
 
 
-class LLMStreamNextTimeout(asyncio.TimeoutError):
-    """One SDK ``__anext__`` exceeded its deadline.
-
-    ``pending_task`` is retained only when cancellation did not complete during
-    the bounded grace period.  The attempt owner must then close its exact SDK
-    transport and prove both task and child-process exit before another provider
-    call may start.
-    """
-
-    def __init__(self, pending_task=None):
-        self.pending_task = pending_task
-        super().__init__("SDK stream __anext__ timed out")
-
-
-class LLMProviderCleanupError(ConnectionError):
-    """The SDK stream required exceptional transport-level cleanup."""
-
-    def __init__(self, message, *, provider_exit_confirmed=False, attempt_id=None):
-        self.provider_exit_confirmed = bool(provider_exit_confirmed)
-        self.attempt_id = attempt_id
-        super().__init__(str(message))
-
-
-class LLMProviderCleanupBlocked(LLMProviderCleanupError):
-    """A prior provider attempt has not yet proven task/process termination."""
+# These three exception types are defined in llm_provider_attempt and
+# re-exported here as aliases so existing imports, ``isinstance`` checks, and
+# ``pytest.raises`` calls preserve class identity.
+LLMStreamNextTimeout = _pa.LLMStreamNextTimeout
+LLMProviderCleanupError = _pa.LLMProviderCleanupError
+LLMProviderCleanupBlocked = _pa.LLMProviderCleanupBlocked
 
 
 class LLMRoleTimeout(asyncio.TimeoutError):
@@ -2184,68 +2017,29 @@ def is_operator_shutdown_requested() -> bool:
 
 def _emit_llm_event(category, severity, message, **fields):
     """Emit an LLM lifecycle event without letting logging affect execution."""
-    try:
-        import event_bus
-        event_bus.emit(category, severity, message, **fields)
-    except Exception:
-        pass
+    return _ro._emit_llm_event(category, severity, message, **fields)
 
 
 def _role_log_metadata(log_file_path):
-    path = str(log_file_path or "")
-    meta = {"log_file": path}
-    match = re.search(
-        r"/v(\d+)/logs/(?:[^/]+/)*([^/]+)_io\.txt$",
-        path,
-    )
-    if match:
-        meta["version"] = int(match.group(1))
-        meta["role_log"] = match.group(2)
-    return meta
+    return _ro._role_log_metadata(log_file_path)
 
 
 def _role_log_basename(log_file_path):
     """Return a short relative path for metrics logging (e.g. v1/.../master_io.txt)."""
-    path = str(log_file_path or "")
-    match = re.search(r"/(v\d+/logs/.+)$", path)
-    if match:
-        return match.group(1)
-    return path.rsplit("/", 1)[-1] if path else None
+    return _ro._role_log_basename(log_file_path)
 
 
 def _tools_metadata(tools):
-    if tools is None:
-        return {"tools": []}
-    if isinstance(tools, (list, tuple)):
-        return {"tools": [str(t) for t in tools]}
-    return {"tools": [type(tools).__name__]}
+    return _ro._tools_metadata(tools)
 
 
 def _usage_metadata(usage):
-    if not usage:
-        return {}
-    try:
-        data = usage if isinstance(usage, dict) else usage.model_dump()
-    except Exception:
-        try:
-            data = dict(usage)
-        except Exception:
-            data = {}
-    summary = {}
-    for key in (
-        "input_tokens", "output_tokens", "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-    ):
-        if key in data:
-            summary[key] = data.get(key)
-    return summary
+    return _ro._usage_metadata(usage)
 
 
 def _llm_failure_severity(exc: Exception) -> str:
     """Classify known noisy SDK/business failures without hiding hard failures."""
-    if is_success_error_result(exc):
-        return "info"
-    return "error"
+    return _ro._llm_failure_severity(exc)
 
 
 def _append_role_io(log_file_path, text):
@@ -2267,43 +2061,7 @@ def _append_role_io(log_file_path, text):
     Never raises — logging must not crash the pipeline. Returns silently on any
     error (the underlying stream processing / return value is unaffected).
     """
-    try:
-        log_file_path = os.fspath(log_file_path)
-        # Resolve the current run_id for the correlation prefix. event_bus reads
-        # the live checkpoint as fallback, so this works even in long-lived
-        # worker threads that are not pinned to one generation.
-        try:
-            from event_bus import capture_context
-            _ctx = capture_context() or {}
-            _rid = _ctx.get("run_id") or "-"
-        except Exception:
-            _rid = "-"
-        chunk = f"[{_rid}] {text}" if not text.startswith("\n") else f"\n[{_rid}] " + text.lstrip("\n")
-        from evolution_infra import locked_file
-        with _ROLE_IO_ROTATION_LOCK:
-            with locked_file(log_file_path, "a+", encoding="utf-8") as lf:
-                lf.seek(0, os.SEEK_END)
-                strict_log = f"{os.sep}strict_invocations{os.sep}" in (
-                    os.path.abspath(log_file_path)
-                )
-                if lf.tell() > _ROLE_IO_MAX_BYTES and not strict_log:
-                    lf.seek(0)
-                    previous = lf.read()
-                    with locked_file(
-                        log_file_path + ".1",
-                        "w",
-                        encoding="utf-8",
-                    ) as rotated:
-                        rotated.write(previous)
-                        rotated.flush()
-                        os.fsync(rotated.fileno())
-                    lf.seek(0)
-                    lf.truncate()
-                lf.seek(0, os.SEEK_END)
-                lf.write(chunk)
-                lf.flush()
-    except Exception:
-        pass
+    return _ro._append_role_io(log_file_path, text)
 
 
 def extract_result_error(message) -> str:
@@ -2364,60 +2122,23 @@ def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
 
 
 def _new_provider_attempt(transport):
-    return {
-        "attempt_id": uuid.uuid4().hex,
-        "transport": transport,
-        "owned_process": None,
-        "pending_tasks": set(),
-        "cleanup_reasons": [],
-        "cleanup_task": None,
-        "transport_close_attempted": False,
-        "transport_close_confirmed": False,
-    }
+    """Delegate to llm_provider_attempt."""
+    return _pa._new_provider_attempt(transport)
 
 
-_CANONICAL_ABANDON_RESULT_FIELDS = frozenset({
-    "abandoned",
-    "cleared_checkpoint",
-    "workflow_run_id",
-    "abandon_transaction_id",
-    "abandon_receipt_digest",
-    "finalize_receipt_digest",
-    "abandon_checkpoint_identity",
-})
-TERMINAL_ABANDON_RESULT_OWNER_TOOLS = frozenset({
-    "abandon_generation",
-    "prepare_next_gen",
-    "run_crossover",
-    "run_direction_audit",
-    "run_literature_probe",
-    "run_master",
-    "execute_workers",
-    "run_quality_gates",
-    "run_review",
-    "run_critic",
-    "run_precommit_eval",
-    "commit_bot",
-})
-_EVOLUTION_PROVIDER_TOOL_PREFIX = "mcp__evolution__"
+_CANONICAL_ABANDON_RESULT_FIELDS = _pa._CANONICAL_ABANDON_RESULT_FIELDS
+TERMINAL_ABANDON_RESULT_OWNER_TOOLS = _pa.TERMINAL_ABANDON_RESULT_OWNER_TOOLS
+_EVOLUTION_PROVIDER_TOOL_PREFIX = _pa._EVOLUTION_PROVIDER_TOOL_PREFIX
 
 
 def _normalized_provider_tool_name(name: object) -> str:
-    return str(name or "").rsplit("__", 1)[-1]
+    """Delegate to llm_provider_attempt."""
+    return _pa._normalized_provider_tool_name(name)
 
 
 def _canonical_provider_tool_args(args: object) -> str | None:
-    if not isinstance(args, dict):
-        return None
-    try:
-        return json.dumps(
-            args,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    except (TypeError, ValueError):
-        return None
+    """Delegate to llm_provider_attempt."""
+    return _pa._canonical_provider_tool_args(args)
 
 
 def register_current_provider_evolution_tool_use(
@@ -2425,128 +2146,20 @@ def register_current_provider_evolution_tool_use(
     raw_name: object,
     args: object,
 ) -> bool:
-    """Bind one observed Evolution MCP ToolUse to the active SDK attempt.
-
-    An in-process MCP handler receives only name+arguments, not the provider's
-    ToolUse id.  The SDK is allowed to invoke that handler before the outer
-    stream yields its corresponding message, so a handler may have retained a
-    *provisional* same-attempt proof.  It becomes consumable only here, when
-    exactly one un-settled ToolUse has the exact normalized owner and canonical
-    arguments.  A duplicate exact registration makes attribution ambiguous and
-    invalidates the cache.  Other UserMessage content is deliberately not a
-    registration capability.
-    """
-
-    attempt = _LLM_PROVIDER_ATTEMPT.get()
-    name = str(raw_name or "")
-    canonical_args = _canonical_provider_tool_args(args)
-    identifier = str(tool_use_id or "")
-    if (
-        not isinstance(attempt, dict)
-        or not name.startswith(_EVOLUTION_PROVIDER_TOOL_PREFIX)
-        or not identifier
-        or canonical_args is None
-    ):
-        return False
-    entry = {
-        "tool_use_id": identifier,
-        "owner_tool": _normalized_provider_tool_name(name),
-        "arguments": canonical_args,
-        "settled": False,
-    }
-    with _PROVIDER_CLEANUP_LOCK:
-        registrations = attempt.setdefault("registered_evolution_tool_uses", {})
-        if not isinstance(registrations, dict) or identifier in registrations:
-            return False
-        registrations[identifier] = entry
-        provisional = attempt.get("provisional_verified_terminal_abandon")
-        bound = attempt.get("verified_terminal_abandon")
-        if isinstance(provisional, dict):
-            matches = [
-                value
-                for value in registrations.values()
-                if isinstance(value, dict)
-                and value.get("settled") is not True
-                and value.get("owner_tool") == provisional.get("owner_tool")
-                and value.get("arguments") == provisional.get("arguments")
-            ]
-            if len(matches) == 1:
-                candidate_id = str(matches[0].get("tool_use_id") or "")
-                if candidate_id:
-                    record = deepcopy(provisional)
-                    record["tool_use_id"] = candidate_id
-                    attempt.pop("provisional_verified_terminal_abandon", None)
-                    attempt["verified_terminal_abandon"] = record
-                else:
-                    attempt.pop("provisional_verified_terminal_abandon", None)
-                    attempt["verified_terminal_abandon_conflict"] = True
-            elif len(matches) > 1:
-                attempt.pop("provisional_verified_terminal_abandon", None)
-                attempt["verified_terminal_abandon_conflict"] = True
-        elif isinstance(bound, dict):
-            # The handler did not receive a ToolUse id.  A later duplicate
-            # exact owner+arguments registration would make the existing bind
-            # speculative, so retain neither candidate.
-            if (
-                bound.get("owner_tool") == entry["owner_tool"]
-                and bound.get("arguments") == entry["arguments"]
-                and str(bound.get("tool_use_id") or "") != identifier
-            ):
-                attempt.pop("verified_terminal_abandon", None)
-                attempt["verified_terminal_abandon_conflict"] = True
-    return True
+    """Delegate to llm_provider_attempt."""
+    return _pa.register_current_provider_evolution_tool_use(
+        tool_use_id, raw_name, args
+    )
 
 
 def settle_current_provider_evolution_tool_use(tool_use_id: str) -> None:
-    """Mark one stream-observed Evolution ToolUse settled after its SDK result."""
-
-    attempt = _LLM_PROVIDER_ATTEMPT.get()
-    identifier = str(tool_use_id or "")
-    if not isinstance(attempt, dict) or not identifier:
-        return
-    with _PROVIDER_CLEANUP_LOCK:
-        registrations = attempt.get("registered_evolution_tool_uses")
-        entry = registrations.get(identifier) if isinstance(registrations, dict) else None
-        if isinstance(entry, dict):
-            entry["settled"] = True
+    """Delegate to llm_provider_attempt."""
+    _pa.settle_current_provider_evolution_tool_use(tool_use_id)
 
 
 def _single_canonical_abandon_result(value):
-    """Extract exactly one terminal-abandon payload from a tool return shape.
-
-    The SDK can carry a local MCP return as a JSON string, a text content
-    block, or an already-decoded nested mapping.  This helper deliberately
-    accepts only one complete payload: duplicated flattened/nested terminal
-    objects remain ambiguous and are not cacheable.
-    """
-
-    matches = []
-
-    def collect(candidate):
-        if isinstance(candidate, dict):
-            if _CANONICAL_ABANDON_RESULT_FIELDS.issubset(candidate):
-                matches.append(candidate)
-            for key in ("abandon_result", "result", "content", "text"):
-                if key in candidate:
-                    collect(candidate.get(key))
-            return
-        if isinstance(candidate, list):
-            for item in candidate:
-                collect(item)
-            return
-        if isinstance(candidate, str):
-            try:
-                collect(json.loads(candidate))
-            except (TypeError, json.JSONDecodeError):
-                pass
-
-    collect(value)
-    if len(matches) != 1:
-        return None
-    try:
-        return deepcopy(matches[0])
-    except Exception:
-        return None
+    """Delegate to llm_provider_attempt."""
+    return _pa._single_canonical_abandon_result(value)
 
 
 def cache_verified_provider_terminal_abandon(
@@ -2555,251 +2168,50 @@ def cache_verified_provider_terminal_abandon(
     raw_result,
     args: object,
 ):
-    """Cache one already-reproved terminal result for the active SDK attempt.
-
-    This is a narrow transport-loss bridge, not durable recovery authority.
-    A guarded mutating MCP handler calls it only after returning its actual
-    result.  The cache exists solely in the active provider-attempt mapping.
-    If the SDK handler runs before the stream exposes its ToolUse, this
-    function retains an unconsumable provisional record; only a later unique
-    exact registration can attach the provider ToolUse id.  A process restart,
-    a different attempt, a missing registration, or a second candidate all
-    remain fail-closed in the Orchestrator.
-    """
-
-    attempt = _LLM_PROVIDER_ATTEMPT.get()
-    owner = str(owner_tool or "")
-    canonical_args = _canonical_provider_tool_args(args)
-    if (
-        not isinstance(attempt, dict)
-        or not isinstance(baseline_checkpoint, dict)
-        or owner not in TERMINAL_ABANDON_RESULT_OWNER_TOOLS
-        or canonical_args is None
-    ):
-        return None
-    terminal_result = _single_canonical_abandon_result(raw_result)
-    if terminal_result is None:
-        return None
-    try:
-        from tool_bot_management import validate_completed_abandon_handoff
-
-        terminal_proof = validate_completed_abandon_handoff(
-            deepcopy(baseline_checkpoint),
-            terminal_result,
-        )
-        record = {
-            "owner_tool": owner,
-            "arguments": canonical_args,
-            "terminal_result": terminal_result,
-            "terminal_proof": deepcopy(terminal_proof),
-        }
-        # Canonical JSON makes later SDK/cache equality checks independent of
-        # dictionary insertion order and prevents a caller from mutating our
-        # retained object after this function returns.
-        json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    except Exception:
-        return None
-    with _PROVIDER_CLEANUP_LOCK:
-        if (
-            attempt.get("verified_terminal_abandon") is not None
-            or attempt.get("provisional_verified_terminal_abandon") is not None
-            or attempt.get("verified_terminal_abandon_conflict") is True
-        ):
-            # Two terminal results in one provider attempt are ambiguous even
-            # when their fields happen to look similar.  Do not retain either.
-            attempt.pop("verified_terminal_abandon", None)
-            attempt.pop("provisional_verified_terminal_abandon", None)
-            attempt["verified_terminal_abandon_conflict"] = True
-            return None
-        registrations = attempt.get("registered_evolution_tool_uses")
-        all_matches = (
-            [
-                value
-                for value in registrations.values()
-                if isinstance(value, dict)
-                and value.get("owner_tool") == owner
-                and value.get("arguments") == canonical_args
-            ]
-            if isinstance(registrations, dict)
-            else []
-        )
-        candidates = [
-            value for value in all_matches if value.get("settled") is not True
-        ]
-        # Same-name or same-argument concurrent calls cannot be inferred from
-        # the handler alone.  Preserve normal SDK delivery, but never cache
-        # ambiguity.  Zero matches is the documented handler-before-stream
-        # race: keep an unconsumable record until one exact registration binds.
-        # A settled historical exact registration is also ambiguous: the
-        # handler lacks a provider id, so it must not speculate that a later
-        # same-name/same-argument ToolUse is its owner.
-        if len(candidates) > 1 or len(all_matches) != len(candidates):
-            attempt["verified_terminal_abandon_conflict"] = True
-            return None
-        if len(candidates) == 1:
-            tool_use_id = str(candidates[0].get("tool_use_id") or "")
-            if not tool_use_id:
-                attempt["verified_terminal_abandon_conflict"] = True
-                return None
-            record["tool_use_id"] = tool_use_id
-            attempt["verified_terminal_abandon"] = record
-            return deepcopy(record)
-        attempt["provisional_verified_terminal_abandon"] = record
-    # A provisional record intentionally has no ToolUse id and is neither a
-    # successful cache return nor visible through
-    # ``current_provider_verified_terminal_abandon``.  It can become authority
-    # only through a later unique exact registration above.
-    return None
+    """Delegate to llm_provider_attempt."""
+    return _pa.cache_verified_provider_terminal_abandon(
+        owner_tool, baseline_checkpoint, raw_result, args
+    )
 
 
 def current_provider_verified_terminal_abandon():
-    """Return the active attempt's one in-memory verified terminal record.
-
-    Callers must still bind it to a pending SDK ToolUse and revalidate it
-    against their own immutable pre-call checkpoint snapshot.
-    """
-
-    attempt = _LLM_PROVIDER_ATTEMPT.get()
-    if not isinstance(attempt, dict):
-        return None
-    with _PROVIDER_CLEANUP_LOCK:
-        if attempt.get("verified_terminal_abandon_conflict") is True:
-            return None
-        record = attempt.get("verified_terminal_abandon")
-        if not isinstance(record, dict):
-            return None
-        try:
-            return deepcopy(record)
-        except Exception:
-            return None
+    """Delegate to llm_provider_attempt."""
+    return _pa.current_provider_verified_terminal_abandon()
 
 
 def _capture_owned_provider_process(attempt):
-    if not isinstance(attempt, dict):
-        return None
-    transport = attempt.get("transport")
-    process = getattr(transport, "_process", None)
-    if process is not None and attempt.get("owned_process") is None:
-        attempt["owned_process"] = process
-    return attempt.get("owned_process")
+    """Delegate to llm_provider_attempt."""
+    return _pa._capture_owned_provider_process(attempt)
 
 
 def _register_unresolved_provider_attempt(attempt, reason, *tasks):
-    if not isinstance(attempt, dict):
-        return
-    _capture_owned_provider_process(attempt)
-    for task in tasks:
-        if isinstance(task, asyncio.Task):
-            attempt.setdefault("pending_tasks", set()).add(task)
-            task.add_done_callback(_consume_task_result)
-    reasons = attempt.setdefault("cleanup_reasons", [])
-    reason = str(reason or "provider_cleanup_unresolved")
-    if reason not in reasons:
-        reasons.append(reason)
-    with _PROVIDER_CLEANUP_LOCK:
-        _UNRESOLVED_PROVIDER_ATTEMPTS[attempt["attempt_id"]] = attempt
+    """Delegate to llm_provider_attempt."""
+    return _pa._register_unresolved_provider_attempt(attempt, reason, *tasks)
 
 
 def _provider_attempt_exit_confirmed(attempt):
-    if (
-        not isinstance(attempt, dict)
-        or not attempt.get("transport_close_attempted")
-        or not attempt.get("transport_close_confirmed")
-    ):
-        return False
-    if any(
-        isinstance(task, asyncio.Task) and not task.done()
-        for task in attempt.get("pending_tasks") or ()
-    ):
-        return False
-    cleanup_task = attempt.get("cleanup_task")
-    if isinstance(cleanup_task, asyncio.Task) and not cleanup_task.done():
-        try:
-            current_task = asyncio.current_task()
-        except RuntimeError:
-            current_task = None
-        if cleanup_task is not current_task:
-            return False
-    owned_process = _capture_owned_provider_process(attempt)
-    if owned_process is not None and getattr(owned_process, "returncode", None) is None:
-        return False
-    transport_process = getattr(attempt.get("transport"), "_process", None)
-    if (
-        transport_process is not None
-        and getattr(transport_process, "returncode", None) is None
-    ):
-        return False
-    return True
+    """Delegate to llm_provider_attempt."""
+    return _pa._provider_attempt_exit_confirmed(attempt)
 
 
 def _resolve_provider_attempt_if_stopped(attempt):
-    if isinstance(attempt, dict) and attempt.get("transport_close_attempted"):
-        owned_process = _capture_owned_provider_process(attempt)
-        transport_process = getattr(attempt.get("transport"), "_process", None)
-        if (
-            (owned_process is None or getattr(owned_process, "returncode", None) is not None)
-            and (
-                transport_process is None
-                or getattr(transport_process, "returncode", None) is not None
-            )
-        ):
-            attempt["transport_close_confirmed"] = True
-    if not _provider_attempt_exit_confirmed(attempt):
-        return False
-    with _PROVIDER_CLEANUP_LOCK:
-        _UNRESOLVED_PROVIDER_ATTEMPTS.pop(attempt.get("attempt_id"), None)
-    return True
+    """Delegate to llm_provider_attempt."""
+    return _pa._resolve_provider_attempt_if_stopped(attempt)
 
 
 def _assert_no_unresolved_provider_attempts():
-    blocked = []
-    with _PROVIDER_CLEANUP_LOCK:
-        attempts = list(_UNRESOLVED_PROVIDER_ATTEMPTS.values())
-    for attempt in attempts:
-        if _resolve_provider_attempt_if_stopped(attempt):
-            continue
-        blocked.append(attempt)
-    if blocked:
-        details = ", ".join(
-            f"{item.get('attempt_id')}:{'|'.join(item.get('cleanup_reasons') or [])}"
-            for item in blocked[:3]
-        )
-        raise LLMProviderCleanupBlocked(
-            "prior SDK provider cleanup is unresolved; refusing a new provider "
-            f"dispatch ({details})",
-            provider_exit_confirmed=False,
-            attempt_id=blocked[0].get("attempt_id"),
-        )
+    """Delegate to llm_provider_attempt."""
+    return _pa._assert_no_unresolved_provider_attempts()
 
 
 def _track_pending_stream_task(task, reason):
-    attempt = _LLM_PROVIDER_ATTEMPT.get()
-    if isinstance(attempt, dict):
-        _register_unresolved_provider_attempt(attempt, reason, task)
-    else:
-        task.add_done_callback(_consume_task_result)
+    """Delegate to llm_provider_attempt."""
+    return _pa._track_pending_stream_task(task, reason)
 
 
 def _provider_stream_cancel_grace():
-    try:
-        grace = max(
-            0.0,
-            min(
-                5.0,
-                float(os.environ.get("POK_LLM_NEXT_CANCEL_GRACE", "1")),
-            ),
-        )
-    except (TypeError, ValueError):
-        grace = 1.0
-    total_scope = _LLM_TOTAL_DEADLINE.get()
-    total_deadline = (
-        (total_scope or {}).get("deadline")
-        if isinstance(total_scope, dict)
-        else None
-    )
-    if total_deadline is not None:
-        grace = min(grace, max(0.0, float(total_deadline) - time.time()))
-    return grace
+    """Delegate to llm_provider_attempt."""
+    return _pa._provider_stream_cancel_grace()
 
 
 async def cancel_provider_stream_task_bounded(
@@ -2809,83 +2221,20 @@ async def cancel_provider_stream_task_bounded(
     attempt=None,
     grace=None,
 ):
-    """Cancel one owned stream task without waiting beyond a fixed grace.
-
-    A task which ignores cancellation is retained by its exact provider
-    attempt.  The transport-level cleanup boundary then owns termination and
-    future provider dispatch remains blocked until task and process exit are
-    both proven.
-    """
-
-    if not isinstance(task, asyncio.Task):
-        raise TypeError("provider stream cancellation requires an asyncio.Task")
-    if task.done():
-        _consume_task_result(task)
-        return True
-    task.cancel()
-    if grace is None:
-        grace = _provider_stream_cancel_grace()
-    else:
-        try:
-            grace = max(0.0, min(30.0, float(grace)))
-        except (TypeError, ValueError):
-            grace = _provider_stream_cancel_grace()
-    try:
-        if grace > 0:
-            await asyncio.wait({task}, timeout=grace)
-    except BaseException:
-        if not task.done():
-            if isinstance(attempt, dict):
-                _register_unresolved_provider_attempt(attempt, reason, task)
-            else:
-                _track_pending_stream_task(task, reason)
-        raise
-    if task.done():
-        _consume_task_result(task)
-        return True
-    if isinstance(attempt, dict):
-        _register_unresolved_provider_attempt(attempt, reason, task)
-    else:
-        _track_pending_stream_task(task, reason)
-    return False
+    """Delegate to llm_provider_attempt."""
+    return await _pa.cancel_provider_stream_task_bounded(
+        task, reason, attempt=attempt, grace=grace
+    )
 
 
 async def _await_stream_next_bounded(stream_iter, timeout):
-    """Await one SDK message without unbounded ``wait_for`` cancellation.
-
-    ``asyncio.wait_for`` waits for a cancellation-resistant awaitable to finish
-    cancelling, so its wall-clock can exceed the timeout indefinitely.  Race a
-    task against the timeout, give SDK cleanup a small bounded grace, then let
-    the caller raise its typed role timeout.
-    """
-
-    task = asyncio.create_task(stream_iter.__anext__())
-    try:
-        done, _pending = await asyncio.wait({task}, timeout=timeout)
-        if task in done:
-            return task.result()
-        cancelled = await cancel_provider_stream_task_bounded(
-            task,
-            "stream_next_cancellation_unconfirmed",
-        )
-        if not cancelled:
-            raise LLMStreamNextTimeout(task)
-        raise LLMStreamNextTimeout()
-    except LLMStreamNextTimeout:
-        raise
-    except BaseException:
-        if not task.done():
-            await cancel_provider_stream_task_bounded(
-                task,
-                "stream_next_parent_cancellation_unconfirmed",
-            )
-        raise
+    """Delegate to llm_provider_attempt."""
+    return await _pa._await_stream_next_bounded(stream_iter, timeout)
 
 
 async def await_provider_stream_next_bounded(stream_iter, timeout):
-    """Public owned-provider boundary used by both role stream runtimes."""
-
-    return await _await_stream_next_bounded(stream_iter, timeout)
+    """Delegate to llm_provider_attempt."""
+    return await _pa.await_provider_stream_next_bounded(stream_iter, timeout)
 
 
 async def _process_stream(query_gen, log_file_path, ui, role_name):
@@ -3748,241 +3097,78 @@ async def _signature_retry_sleep(delay, role_name, log_file_path):
 
 
 def _consume_task_result(task):
-    with contextlib.suppress(BaseException):
-        task.result()
+    """Delegate to llm_provider_attempt."""
+    return _pa._consume_task_result(task)
 
 
 async def _bounded_aclose(query_gen, role_name, log_file_path):
-    """Close one SDK generator or raise a typed infrastructure failure.
-
-    A completed close task is not automatically success: async generators raise
-    ``RuntimeError`` when ``aclose()`` races an active ``__anext__``.  Suppressing
-    that exception previously reported cleanup success while the CLI subprocess
-    and billed provider request could continue in the background.
-    """
-
-    try:
-        close_timeout = max(
-            0.1,
-            min(30.0, float(os.environ.get("POK_LLM_ACLOSE_TIMEOUT", "15"))),
-        )
-    except (TypeError, ValueError):
-        close_timeout = 15.0
-    close_task = asyncio.create_task(query_gen.aclose())
-    done, _pending = await asyncio.wait({close_task}, timeout=close_timeout)
-    if close_task in done:
-        try:
-            close_task.result()
-        except BaseException as exc:
-            raise LLMProviderCleanupError(
-                "SDK stream aclose failed: "
-                f"{type(exc).__name__}: {str(exc)[:300]}"
-            ) from exc
-        return True
-    close_task.cancel()
-    done, _pending = await asyncio.wait({close_task}, timeout=1.0)
-    pending_task = close_task if close_task not in done else None
-    if pending_task is not None:
-        _track_pending_stream_task(
-            pending_task,
-            "stream_aclose_cancellation_unconfirmed",
-        )
-    else:
-        _consume_task_result(close_task)
-    _emit_llm_event(
-        "pipeline.llm_role_stream_close_timeout",
-        "error",
-        f"{role_name}: SDK stream cleanup exceeded {close_timeout:.1f}s",
-        role=role_name,
-        timeout_sec=round(close_timeout, 2),
-        **_role_log_metadata(log_file_path),
-    )
-    raise LLMProviderCleanupError(
-        f"SDK stream aclose exceeded {close_timeout:.1f}s",
-        provider_exit_confirmed=False,
-    )
+    """Delegate to llm_provider_attempt."""
+    return await _pa._bounded_aclose(query_gen, role_name, log_file_path)
 
 
 def _new_owned_sdk_transport(full_prompt, options):
-    """Create the exact SDK subprocess transport owned by one query attempt."""
+    """Delegate to llm_provider_attempt.
 
-    try:
-        from claude_agent_sdk._internal.transport.subprocess_cli import (
-            SubprocessCLITransport,
-        )
-    except Exception as exc:
-        raise LLMProviderCleanupError(
-            "SDK owned subprocess transport is unavailable: "
-            f"{type(exc).__name__}: {str(exc)[:300]}"
-        ) from exc
-    return SubprocessCLITransport(prompt=full_prompt, options=options)
+    Kept as a thin shell so tests that monkeypatch
+    ``llm_query._new_owned_sdk_transport`` continue to drive transport
+    construction through this module boundary.
+    """
+
+    return _pa._new_owned_sdk_transport(full_prompt, options)
 
 
 def create_owned_provider_attempt(full_prompt, options):
-    """Create one dispatch-ready provider attempt with exact transport ownership."""
-
-    _assert_no_unresolved_provider_attempts()
-    return _new_provider_attempt(_new_owned_sdk_transport(full_prompt, options))
+    """Delegate to llm_provider_attempt."""
+    return _pa.create_owned_provider_attempt(full_prompt, options)
 
 
 def owned_provider_attempt_transport(attempt):
-    """Return only the transport bound to ``attempt``."""
-
-    if not isinstance(attempt, dict) or attempt.get("transport") is None:
-        raise LLMProviderCleanupError("owned provider attempt has no transport")
-    return attempt["transport"]
+    """Delegate to llm_provider_attempt."""
+    return _pa.owned_provider_attempt_transport(attempt)
 
 
 @contextlib.contextmanager
 def owned_provider_attempt_scope(attempt):
-    """Bind pending SDK tasks to one provider attempt for this async context."""
-
-    token = activate_owned_provider_attempt(attempt)
-    try:
-        yield attempt
-    finally:
-        reset_owned_provider_attempt(token)
+    """Delegate to llm_provider_attempt."""
+    with _pa.owned_provider_attempt_scope(attempt) as value:
+        yield value
 
 
 def activate_owned_provider_attempt(attempt):
-    """Activate one attempt and return the exact ContextVar reset token."""
-
-    if not isinstance(attempt, dict):
-        raise TypeError("owned provider attempt must be a mapping")
-    return _LLM_PROVIDER_ATTEMPT.set(attempt)
+    """Delegate to llm_provider_attempt."""
+    return _pa.activate_owned_provider_attempt(attempt)
 
 
 def reset_owned_provider_attempt(token):
-    """Reset a token produced by :func:`activate_owned_provider_attempt`."""
-
-    _LLM_PROVIDER_ATTEMPT.reset(token)
+    """Delegate to llm_provider_attempt."""
+    return _pa.reset_owned_provider_attempt(token)
 
 
 def mark_owned_provider_attempt_unresolved(attempt, reason, task=None):
-    """Mark an anomalous attempt and optionally retain its unfinished task."""
-
-    tasks = (task,) if isinstance(task, asyncio.Task) else ()
-    _register_unresolved_provider_attempt(attempt, reason, *tasks)
+    """Delegate to llm_provider_attempt."""
+    return _pa.mark_owned_provider_attempt_unresolved(attempt, reason, task)
 
 
 def owned_provider_attempt_exit_confirmed(attempt):
-    """Return true only after this attempt's exact process and tasks exited."""
-
-    return _resolve_provider_attempt_if_stopped(attempt)
+    """Delegate to llm_provider_attempt."""
+    return _pa.owned_provider_attempt_exit_confirmed(attempt)
 
 
 def _refresh_transport_exit_confirmation(attempt):
-    if not isinstance(attempt, dict) or not attempt.get("transport_close_attempted"):
-        return False
-    owned_process = _capture_owned_provider_process(attempt)
-    transport_process = getattr(attempt.get("transport"), "_process", None)
-    owned_stopped = (
-        owned_process is None
-        or getattr(owned_process, "returncode", None) is not None
-    )
-    transport_stopped = (
-        transport_process is None
-        or getattr(transport_process, "returncode", None) is not None
-    )
-    if owned_stopped and transport_stopped:
-        attempt["transport_close_confirmed"] = True
-    return bool(attempt.get("transport_close_confirmed"))
+    """Delegate to llm_provider_attempt."""
+    return _pa._refresh_transport_exit_confirmation(attempt)
 
 
 async def _bounded_owned_transport_close(attempt, role_name, log_file_path):
-    """Close only this attempt's SDK-owned transport and prove process exit."""
-
-    transport = attempt.get("transport") if isinstance(attempt, dict) else None
-    if transport is None or not callable(getattr(transport, "close", None)):
-        raise LLMProviderCleanupError(
-            "SDK provider transport has no owned close API",
-            attempt_id=(attempt or {}).get("attempt_id"),
-        )
-    _capture_owned_provider_process(attempt)
-    attempt["transport_close_attempted"] = True
-    try:
-        close_timeout = max(
-            0.1,
-            min(
-                30.0,
-                float(os.environ.get("POK_LLM_TRANSPORT_CLOSE_TIMEOUT", "15")),
-            ),
-        )
-    except (TypeError, ValueError):
-        close_timeout = 15.0
-    close_task = asyncio.create_task(transport.close())
-    done, _pending = await asyncio.wait({close_task}, timeout=close_timeout)
-    if close_task not in done:
-        close_task.cancel()
-        done, _pending = await asyncio.wait({close_task}, timeout=1.0)
-    if close_task not in done:
-        _register_unresolved_provider_attempt(
-            attempt,
-            "owned_transport_close_cancellation_unconfirmed",
-            close_task,
-        )
-        raise LLMProviderCleanupError(
-            f"owned SDK transport close exceeded {close_timeout:.1f}s",
-            provider_exit_confirmed=False,
-            attempt_id=attempt.get("attempt_id"),
-        )
-    try:
-        close_task.result()
-    except BaseException as exc:
-        _register_unresolved_provider_attempt(
-            attempt,
-            f"owned_transport_close_failed:{type(exc).__name__}",
-        )
-        _refresh_transport_exit_confirmation(attempt)
-        raise LLMProviderCleanupError(
-            "owned SDK transport close failed: "
-            f"{type(exc).__name__}: {str(exc)[:300]}",
-            provider_exit_confirmed=_provider_attempt_exit_confirmed(attempt),
-            attempt_id=attempt.get("attempt_id"),
-        ) from exc
-    _refresh_transport_exit_confirmation(attempt)
-    if not attempt.get("transport_close_confirmed"):
-        _register_unresolved_provider_attempt(
-            attempt,
-            "owned_transport_process_exit_unconfirmed",
-        )
-        raise LLMProviderCleanupError(
-            "owned SDK transport returned from close without process-exit proof",
-            provider_exit_confirmed=False,
-            attempt_id=attempt.get("attempt_id"),
-        )
-    return True
+    """Delegate to llm_provider_attempt."""
+    return await _pa._bounded_owned_transport_close(
+        attempt, role_name, log_file_path
+    )
 
 
 async def _await_provider_attempt_tasks(attempt):
-    tasks = {
-        task
-        for task in (attempt.get("pending_tasks") or ())
-        if isinstance(task, asyncio.Task) and not task.done()
-    }
-    if not tasks:
-        return True
-    try:
-        timeout = max(
-            0.1,
-            min(
-                10.0,
-                float(os.environ.get("POK_LLM_STREAM_TASK_EXIT_TIMEOUT", "5")),
-            ),
-        )
-    except (TypeError, ValueError):
-        timeout = 5.0
-    done, pending = await asyncio.wait(tasks, timeout=timeout)
-    for task in done:
-        _consume_task_result(task)
-    if pending:
-        _register_unresolved_provider_attempt(
-            attempt,
-            "stream_tasks_remain_after_transport_close",
-            *pending,
-        )
-        return False
-    return True
+    """Delegate to llm_provider_attempt."""
+    return await _pa._await_provider_attempt_tasks(attempt)
 
 
 async def _perform_owned_provider_attempt_cleanup(
@@ -3991,118 +3177,9 @@ async def _perform_owned_provider_attempt_cleanup(
     role_name,
     log_file_path,
 ):
-    """Close a query and fail explicitly if exceptional cleanup was required."""
-
-    # Preserve the exact process object before ``aclose`` can clear the
-    # transport's pointer.  Exceptional cleanup must prove that this same
-    # child exited; a later ``None`` transport pointer is not, by itself,
-    # process-exit evidence.
-    _capture_owned_provider_process(attempt)
-    exceptional = bool(attempt.get("cleanup_reasons"))
-    cleanup_errors = []
-    if exceptional:
-        try:
-            await _bounded_owned_transport_close(
-                attempt,
-                role_name,
-                log_file_path,
-            )
-        except LLMProviderCleanupError as exc:
-            cleanup_errors.append(str(exc))
-        if not await _await_provider_attempt_tasks(attempt):
-            cleanup_errors.append("SDK stream task exit remains unconfirmed")
-        if not any(
-            isinstance(task, asyncio.Task) and not task.done()
-            for task in attempt.get("pending_tasks") or ()
-        ):
-            try:
-                await _bounded_aclose(query_gen, role_name, log_file_path)
-            except LLMProviderCleanupError as exc:
-                cleanup_errors.append(str(exc))
-    else:
-        try:
-            await _bounded_aclose(query_gen, role_name, log_file_path)
-        except LLMProviderCleanupError as exc:
-            exceptional = True
-            cleanup_errors.append(str(exc))
-            _register_unresolved_provider_attempt(
-                attempt,
-                "stream_aclose_failed",
-            )
-            try:
-                await _bounded_owned_transport_close(
-                    attempt,
-                    role_name,
-                    log_file_path,
-                )
-            except LLMProviderCleanupError as transport_exc:
-                cleanup_errors.append(str(transport_exc))
-            await _await_provider_attempt_tasks(attempt)
-        else:
-            # Another owner (for example the cycle-level timeout boundary) may
-            # mark the attempt while this normal ``aclose`` is in flight.  A
-            # successful generator close then counts as the transport close,
-            # but only the captured original process can prove termination.
-            if attempt.get("cleanup_reasons"):
-                exceptional = True
-                attempt["transport_close_attempted"] = True
-                _refresh_transport_exit_confirmation(attempt)
-
-    if not exceptional:
-        return True
-    _refresh_transport_exit_confirmation(attempt)
-    confirmed = _resolve_provider_attempt_if_stopped(attempt)
-    cleanup_reasons = set(attempt.get("cleanup_reasons") or ())
-    pending_tasks = [
-        task
-        for task in attempt.get("pending_tasks") or ()
-        if isinstance(task, asyncio.Task) and not task.done()
-    ]
-    # A parent cancellation is not a provider failure once cleanup has proven
-    # that the exact child and every owned SDK task exited.  Preserve the
-    # original CancelledError so the existing shutdown/control path can classify
-    # it as a clean stop.  Every timeout reason, mixed reason, cleanup error, or
-    # unconfirmed exit remains fail-closed below.
-    if (
-        cleanup_reasons
-        == {"stream_next_parent_cancellation_unconfirmed"}
-        and confirmed
-        and not pending_tasks
-        and not cleanup_errors
-    ):
-        _emit_llm_event(
-            "pipeline.llm_role_provider_cleanup_completed_after_parent_cancel",
-            "info",
-            f"{role_name}: provider cleanup completed after parent cancellation",
-            role=role_name,
-            attempt_id=attempt.get("attempt_id"),
-            provider_exit_confirmed=True,
-            cleanup_reasons=sorted(cleanup_reasons),
-            **_role_log_metadata(log_file_path),
-        )
-        return True
-    message = (
-        "SDK provider stream required exceptional cleanup; "
-        f"process_exit_confirmed={confirmed}; reasons="
-        + "|".join(attempt.get("cleanup_reasons") or [])
-    )
-    if cleanup_errors:
-        message += "; errors=" + "; ".join(cleanup_errors[:4])
-    _emit_llm_event(
-        "pipeline.llm_role_provider_cleanup_failure",
-        "error",
-        f"{role_name}: {message}",
-        role=role_name,
-        attempt_id=attempt.get("attempt_id"),
-        provider_exit_confirmed=confirmed,
-        cleanup_reasons=list(attempt.get("cleanup_reasons") or []),
-        cleanup_errors=cleanup_errors[:4],
-        **_role_log_metadata(log_file_path),
-    )
-    raise LLMProviderCleanupError(
-        message,
-        provider_exit_confirmed=confirmed,
-        attempt_id=attempt.get("attempt_id"),
+    """Delegate to llm_provider_attempt."""
+    return await _pa._perform_owned_provider_attempt_cleanup(
+        query_gen, attempt, role_name, log_file_path
     )
 
 
@@ -4112,23 +3189,10 @@ async def _cleanup_owned_provider_attempt(
     role_name,
     log_file_path,
 ):
-    """Run the exact attempt cleanup once, even with multiple timeout owners."""
-
-    if not isinstance(attempt, dict):
-        raise LLMProviderCleanupError("invalid owned provider cleanup attempt")
-    cleanup_task = attempt.get("cleanup_task")
-    if not isinstance(cleanup_task, asyncio.Task):
-        cleanup_task = asyncio.create_task(
-            _perform_owned_provider_attempt_cleanup(
-                query_gen,
-                attempt,
-                role_name,
-                log_file_path,
-            )
-        )
-        attempt["cleanup_task"] = cleanup_task
-        cleanup_task.add_done_callback(_consume_task_result)
-    return await asyncio.shield(cleanup_task)
+    """Delegate to llm_provider_attempt."""
+    return await _pa._cleanup_owned_provider_attempt(
+        query_gen, attempt, role_name, log_file_path
+    )
 
 
 async def cleanup_owned_provider_attempt(
@@ -4137,13 +3201,9 @@ async def cleanup_owned_provider_attempt(
     role_name,
     log_file_path,
 ):
-    """Public idempotent cleanup boundary for an owned provider attempt."""
-
-    return await _cleanup_owned_provider_attempt(
-        query_gen,
-        attempt,
-        role_name,
-        log_file_path,
+    """Delegate to llm_provider_attempt."""
+    return await _pa.cleanup_owned_provider_attempt(
+        query_gen, attempt, role_name, log_file_path
     )
 
 
