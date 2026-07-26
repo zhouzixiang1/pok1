@@ -1613,37 +1613,52 @@ def record_published_generation(
         rows = list(state.get("observations") or [])
         if not state_reinitialized:
             current_head = str(identity.get("repository_head") or "")
-            if previous_head == current_head:
+            # The head-advance guard prevents a replay of an already-recorded
+            # publication from silently re-incrementing the streak.  It applies
+            # only when at least one observation exists in this continuity
+            # streak (``rows`` non-empty): the first publication of a streak may
+            # legitimately record against a head that already equals the
+            # publication commit, because a process/daemon restart can reset the
+            # observer after the publication commit exists but before it is
+            # recorded.  The preflight above already proved current_head and
+            # remote_main both equal the publication commit, so a same-head
+            # first row is the correct content-bound anchor, not a replay.
+            if rows and previous_head == current_head:
                 raise StabilityObservationError(
                     "publication_repository_head_not_advanced"
                 )
-            head_transition_issues = _publication_head_transition_issues(
-                previous_head=previous_head,
-                current_head=current_head,
-                publication_commit=commit_oid,
-                remote_main=str(remote_binding.get("remote_main_oid") or ""),
-            )
-            drift_issues = [
-                item
-                for item in head_transition_issues
-                if item not in {
-                    "publication_repository_head_mismatch",
-                    "publication_remote_main_head_mismatch",
-                }
-            ]
-            if drift_issues:
-                state = _new_state(
-                    identity,
-                    reason="repository_head_drift",
-                    details={
-                        "previous_repository_head": previous_head,
-                        "current_repository_head": current_head,
-                        "issues": drift_issues,
-                    },
-                    previous=state,
+            if rows:
+                head_transition_issues = _publication_head_transition_issues(
+                    previous_head=previous_head,
+                    current_head=current_head,
+                    publication_commit=commit_oid,
+                    remote_main=str(remote_binding.get("remote_main_oid") or ""),
                 )
-                rows = []
+                drift_issues = [
+                    item
+                    for item in head_transition_issues
+                    if item not in {
+                        "publication_repository_head_mismatch",
+                        "publication_remote_main_head_mismatch",
+                    }
+                ]
+                if drift_issues:
+                    state = _new_state(
+                        identity,
+                        reason="repository_head_drift",
+                        details={
+                            "previous_repository_head": previous_head,
+                            "current_repository_head": current_head,
+                            "issues": drift_issues,
+                        },
+                        previous=state,
+                    )
+                    rows = []
+                else:
+                    state["repository_head"] = current_head
             else:
+                # First publication of the streak: anchor the head at the
+                # content-bound publication commit without a drift reset.
                 state["repository_head"] = current_head
         if repair_fields:
             state = _new_state(

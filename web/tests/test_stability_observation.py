@@ -770,6 +770,32 @@ def test_publication_requires_local_and_remote_main_at_exact_commit(monkeypatch)
         )
 
 
+def test_first_publication_after_restart_with_head_already_at_commit(monkeypatch):
+    """A process/daemon restart after the publication commit exists but before
+    it is recorded must not block the first observation row.
+
+    The observer resets on restart and captures repository_head = current HEAD.
+    If the publication commit already is HEAD (committed during the prior
+    process), the head-advance guard must not reject the first row: there is no
+    prior observation in this streak whose head could have "advanced".  The
+    preflight already proved current_head == publication_commit, so the same-
+    head first row is the correct content-bound anchor.
+    """
+
+    import stability_observation as observation
+
+    current = _install_identity(monkeypatch, observation)
+    observation.initialize_stability_observation()
+    # Simulate the publication commit already being HEAD (as happens when a
+    # restart occurs after commit but before stability observation records it).
+    current["repository_head"] = f"{V0:040x}"
+    projection = _record(observation, V0)
+    assert projection["count"] == 1
+    assert [row["version"] for row in projection["observations"]] == [V0]
+    # The streak is anchored at the publication commit and remains valid.
+    assert projection["continuity_valid"] is True
+
+
 def test_runtime_configuration_binding_hashes_exact_effective_values():
     import stability_observation as observation
 
