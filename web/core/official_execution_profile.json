@@ -29,7 +29,7 @@
     "python": {
       "command_path": "/usr/bin/python3.12",
       "resolved_path": "/usr/bin/python3.12",
-      "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
+      "sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7"
     },
     "prlimit": {
       "command_path": "/usr/bin/prlimit",
@@ -42,11 +42,21 @@
     "authority": "web/core/managed_bot_executor.py",
     "network": "isolated-netns-loopback-exact-peer-inherited-stream-only",
     "filesystem": "minimal-runtime-content-bound-five-file-sealed-memfd-bot-readonly-named-fd-outputs",
-    "namespaces": ["user", "ipc", "pid", "net", "uts", "cgroup"],
+    "namespaces": [
+      "user",
+      "ipc",
+      "pid",
+      "net",
+      "uts",
+      "cgroup"
+    ],
     "nested_userns": "disabled-and-asserted",
     "capabilities": "drop-all",
     "seccomp": "argument-aware-libseccomp-bpf-v2",
-    "python_flags": ["-I", "-B"],
+    "python_flags": [
+      "-I",
+      "-B"
+    ],
     "bot_timing": {
       "action_delay_sec": 0.3,
       "hard_deadline_sec": 55.0,
@@ -55,9 +65,44 @@
     }
   },
   "managed_executor": {
+    "schema": "pok-managed-executor-identity-v3",
+    "source": {
+      "path": "web/core/managed_bot_executor.py",
+      "sha256": "629a1654121236f4aa28a39e31ba07d0595dccf65bc9e38d3bc90c8422d6055b"
+    },
+    "sandbox_bootstrap_sha256": "e16fd65d9dc90888972b97afe3db7e5124330fee3484318e5fc88a6c3e17a33a",
+    "seccomp": {
+      "policy_sha256": "a6822783714c338bc648aa3f6121e8ef8d6758b43dead1b40d481a5641607fb8",
+      "bpf_sha256": "868cffd79ca7486a876c3f67b8ebf1f36893f8f0f95b77253be058b5498ffecc",
+      "bpf_size": 672,
+      "library": {
+        "path": "/usr/lib/x86_64-linux-gnu/libseccomp.so.2.5.5",
+        "sha256": "b4d9140a7797ccf3ac14f5d9d579b64f157111662940cb8330c632b11a8cea8e"
+      }
+    },
+    "tools": {
+      "bwrap": {
+        "path": "/usr/bin/bwrap",
+        "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+      },
+      "python": {
+        "path": "/usr/bin/python3.12",
+        "sha256": "e1efa562c2cc2e35521a5c9c9b9939921001ff8ca9708a13ef15ace68cc2ccd7"
+      },
+      "prlimit": {
+        "path": "/usr/bin/prlimit",
+        "sha256": "f27cfd8c1512a4cc6541b59b80cb4cdfd6ef28c34aa21db4299b48264cd0d128"
+      }
+    },
     "contract": {
-      "capabilities": "drop-all",
-      "environment": "clear-and-allowlist",
+      "namespaces": [
+        "user",
+        "ipc",
+        "pid",
+        "net",
+        "uts",
+        "cgroup"
+      ],
       "explicit_namespace_flags": [
         "--unshare-user",
         "--unshare-ipc",
@@ -66,55 +111,34 @@
         "--unshare-uts",
         "--unshare-cgroup"
       ],
-      "host_process_environment": "optional-owner-marker-block-fd-verified-before-release",
-      "host_root_mounted": false,
-      "managed_bot_python_flags": ["-I", "-B"],
-      "managed_bot_source_mount": "sealed-memfd-ro-bind-data-only",
-      "managed_bot_sources": "content-bound-top-level-files-sealed-before-spawn",
-      "max_output_files": 4,
-      "namespaces": ["user", "ipc", "pid", "net", "uts", "cgroup"],
       "nested_userns": "disabled-and-asserted",
+      "capabilities": "drop-all",
+      "environment": "clear-and-allowlist",
+      "host_process_environment": "optional-owner-marker-block-fd-verified-before-release",
       "network": "loopback-exact-peer-inherited-stream-only",
+      "managed_bot_sources": "content-bound-top-level-files-sealed-before-spawn",
+      "managed_bot_source_mount": "sealed-memfd-ro-bind-data-only",
+      "managed_bot_python_flags": [
+        "-I",
+        "-B"
+      ],
       "readonly_inputs": "named-ro-bind-only",
-      "resource_limits": {
-        "RLIMIT_AS": 4294967296,
-        "RLIMIT_CORE": 0,
-        "RLIMIT_FSIZE": 16777216,
-        "RLIMIT_NOFILE": 64,
-        "RLIMIT_NPROC": 64
-      },
-      "runtime_mounts": ["/usr", "/lib", "/lib64"],
+      "writable_outputs": "named-new-file-bind-fd-only",
+      "max_output_files": 4,
       "tmpfs_bytes": 67108864,
-      "writable_outputs": "named-new-file-bind-fd-only"
-    },
-    "sandbox_bootstrap_sha256": "e16fd65d9dc90888972b97afe3db7e5124330fee3484318e5fc88a6c3e17a33a",
-    "schema": "pok-managed-executor-identity-v3",
-    "seccomp": {
-      "bpf_sha256": "868cffd79ca7486a876c3f67b8ebf1f36893f8f0f95b77253be058b5498ffecc",
-      "bpf_size": 672,
-      "library": {
-        "path": "/usr/lib/x86_64-linux-gnu/libseccomp.so.2.5.5",
-        "sha256": "b4d9140a7797ccf3ac14f5d9d579b64f157111662940cb8330c632b11a8cea8e"
+      "resource_limits": {
+        "RLIMIT_NOFILE": 64,
+        "RLIMIT_NPROC": 64,
+        "RLIMIT_AS": 4294967296,
+        "RLIMIT_FSIZE": 16777216,
+        "RLIMIT_CORE": 0
       },
-      "policy_sha256": "a6822783714c338bc648aa3f6121e8ef8d6758b43dead1b40d481a5641607fb8"
-    },
-    "source": {
-      "path": "web/core/managed_bot_executor.py",
-      "sha256": "629a1654121236f4aa28a39e31ba07d0595dccf65bc9e38d3bc90c8422d6055b"
-    },
-    "tools": {
-      "bwrap": {
-        "path": "/usr/bin/bwrap",
-        "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
-      },
-      "prlimit": {
-        "path": "/usr/bin/prlimit",
-        "sha256": "f27cfd8c1512a4cc6541b59b80cb4cdfd6ef28c34aa21db4299b48264cd0d128"
-      },
-      "python": {
-        "path": "/usr/bin/python3.12",
-        "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
-      }
+      "runtime_mounts": [
+        "/usr",
+        "/lib",
+        "/lib64"
+      ],
+      "host_root_mounted": false
     }
   }
 }
