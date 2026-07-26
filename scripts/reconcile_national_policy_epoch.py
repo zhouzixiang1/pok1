@@ -523,7 +523,12 @@ def _runtime_process_errors() -> list[str]:
                 b"sever/main.py",
                 b"wine",
             ))
-            if in_checkout or (names_checkout and runtime_command):
+            # A live runtime process must BOTH look like one of the known
+            # runtime commands AND run inside (or reference) the autonomous
+            # checkout. Requiring cwd-in-checkout alone produced false
+            # positives on shell helpers (head/cat/grep) that happened to
+            # inherit the runtime checkout as their working directory.
+            if runtime_command and (in_checkout or names_checkout):
                 errors.append(f"reconciliation_runtime_process_alive:pid={child.name}")
     return list(dict.fromkeys(errors))
 
