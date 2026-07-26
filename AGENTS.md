@@ -847,7 +847,23 @@ and retains the older operator-host epoch-2 narrative as historical context.
   conclusion. Keep the main thread for planning, decisions, approvals, and
   final verification. When a task has independent parts, launch multiple
   sub-agents in one message so they run concurrently. Do not re-do in the main
-  thread work a sub-agent already finished.
+  thread work a sub-agent already finished. Sub-agents do the editing; the
+  main agent does the verification; the two must not block each other (do not
+  hand long/expensive test runs to sub-agents — they edit and import-smoke,
+  the main agent runs the test shard).
+- **Every test failure must be root-caused and fixed, including pre-existing
+  failures not caused by the current change.** A red test is never "someone
+  else's problem" and never acceptable to leave behind. When you encounter a
+  failure: (1) reproduce it in isolation, (2) determine the true root cause
+  (test isolation hole, stale fixture, missing environment, real production
+  bug, or genuine test contract drift), (3) fix the cause at the right layer
+  — never paper over a symptom by skipping, weakening, `xfail`-ing, or
+  reclassifying the test. If the failure is a real production bug, fix the
+  code; if it is a test-isolation or fixture hole, fix the test/fixture; if
+  the contract genuinely moved, update the assertion with a documented
+  reason. Verify the fix on the parent commit when claiming "pre-existing" —
+  and then fix it anyway. A green suite is the deliverable, not an
+  aspiration.
 - Search with `rg`/`rg --files` first.
 - Use `apply_patch` for hand edits; preserve unrelated dirty changes.
 - Never reset, checkout, or delete user work to obtain a clean tree.
