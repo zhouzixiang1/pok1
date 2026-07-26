@@ -1,10 +1,22 @@
-"""Disposable provider-session helpers for the Orchestrator.
+"""Legacy provider-session sidecar abandonment for the Orchestrator.
 
-Pipeline recovery is deliberately not implemented here.  The canonical
-checkpoint/handoff recovery reader lives in :mod:`orchestrator`, where it can
-distinguish an absent checkpoint from invalid on-disk bytes and route every
-stage through the active state machine.  Keeping session cleanup separate
-prevents an old provider-history helper from mutating pipeline authority.
+The orchestrator never persists opaque provider-session identity across
+cycles.  These helpers enforce that policy by deleting any leftover
+``orchestrator_session.json`` sidecar that older code might have written
+and emitting a system-log event for observability.
+
+This module is NOT a session manager:
+
+* Pipeline checkpoint/handoff recovery lives in :mod:`orchestrator`,
+  where it can distinguish an absent checkpoint from invalid on-disk
+  bytes and route every stage through the active state machine.
+* Orchestrator log rotation lives next to ``LOGS_DIR`` in
+  :mod:`orchestrator` (``_rotate_orchestrator_logs``).
+* Rate-limit detection for stream output lives in :mod:`llm_query`
+  (``_is_rate_limited``).
+
+Keeping these abandonment helpers separate prevents the old
+provider-history sidecar from mutating pipeline authority.
 """
 
 import logging
@@ -14,29 +26,6 @@ log = logging.getLogger("pok.orchestrator")
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 ORCHESTRATOR_SESSION_FILE = RESULTS_DIR / "orchestrator_session.json"
-
-
-def _rotate_orchestrator_logs(logs_dir, keep=20):
-    """Keep only the most recent N orchestrator log files."""
-    if not logs_dir.exists():
-        return
-    files = sorted(
-        (
-            file
-            for file in logs_dir.iterdir()
-            if file.name.startswith("orchestrator_")
-            and file.name.endswith(".txt")
-        ),
-        key=lambda file: file.stat().st_mtime,
-    )
-    for old_file in files[:-keep]:
-        try:
-            old_file.unlink()
-        except OSError:
-            pass
-
-
-from llm_query import _is_rate_limited  # noqa: E402
 
 
 def _save_orchestrator_session(session_id: str):

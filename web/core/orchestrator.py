@@ -513,13 +513,31 @@ ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC = max(
 )
 ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC = 90.0
 ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC = 5.0
-POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
-RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
 STABILITY_OBSERVATION_MAINTENANCE_INTERVAL = float(
     os.environ.get("POK_STABILITY_OBSERVATION_MAINTENANCE_INTERVAL", "5")
 )
 
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
+def _rotate_orchestrator_logs(logs_dir, keep=20):
+    """Keep only the most recent N orchestrator log files."""
+    if not logs_dir.exists():
+        return
+    files = sorted(
+        (
+            file
+            for file in logs_dir.iterdir()
+            if file.name.startswith("orchestrator_")
+            and file.name.endswith(".txt")
+        ),
+        key=lambda file: file.stat().st_mtime,
+    )
+    for old_file in files[:-keep]:
+        try:
+            old_file.unlink()
+        except OSError:
+            pass
 
 
 def _render_orchestrator_provider_prompt(inputs):
@@ -577,12 +595,12 @@ _ORCH_EXTERNAL_PROGRESS_EVENT_TYPES = frozenset({
 
 from orchestrator_context import _build_context, _make_precompact_hook, _make_bot_dir_guard_hook, set_cycle_start_time  # noqa: E402
 from orchestrator_session import (  # noqa: E402
-    _rotate_orchestrator_logs, _is_rate_limited,
     _save_orchestrator_session, _load_orchestrator_session, _clear_orchestrator_session,
 )
 from evolution_infra import find_current_v  # noqa: E402
 from llm_query import (  # noqa: E402
     LLMProviderCleanupError,
+    _is_rate_limited,
     activate_owned_provider_attempt,
     await_provider_stream_next_bounded,
     bind_llm_role_provider_prompt,
@@ -5052,116 +5070,6 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
             log.debug("Watchdog check error (non-fatal): %s", e)
 
 
-def _runtime_branch_guard_enabled() -> bool:
-    if os.environ.get("POK_DISABLE_RUNTIME_BRANCH_GUARD") == "1":
-        return False
-    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("POK_FORCE_RUNTIME_BRANCH_GUARD") != "1":
-        return False
-    return True
-
-
-def _branch_name(branch_status: str | None) -> str:
-    parts = (branch_status or "").split("...", 1)[0].split()
-    return parts[0] if parts else ""
-
-
-def _runtime_git_identity() -> dict:
-    """Read the current branch and HEAD without mutating the worktree."""
-    branch_status = ""
-    head = ""
-    try:
-        status = subprocess.run(
-            ["git", "status", "--short", "--branch", "--untracked-files=no"],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if status.returncode == 0:
-            lines = [line for line in (status.stdout or "").splitlines() if line.strip()]
-            if lines and lines[0].startswith("## "):
-                branch_status = lines[0].replace("## ", "", 1)
-    except Exception:
-        branch_status = ""
-    if not branch_status:
-        try:
-            branch = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(PROJECT_ROOT),
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if branch.returncode == 0:
-                branch_status = (branch.stdout or "").strip()
-        except Exception:
-            branch_status = ""
-    try:
-        rev = subprocess.run(
-            ["git", "rev-parse", "--short=12", "HEAD"],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if rev.returncode == 0:
-            head = (rev.stdout or "").strip()
-    except Exception:
-        head = ""
-    return {
-        "branch": _branch_name(branch_status),
-        "branch_status": branch_status,
-        "head": head,
-    }
-
-
-def _runtime_head_drift_unrelated_allowed(expected_head: str, current_head: str) -> tuple[bool, dict]:
-    if not expected_head or not current_head or expected_head == current_head:
-        return False, {}
-    try:
-        from evolution_core import read_pipeline_checkpoint
-        checkpoint = read_pipeline_checkpoint()
-    except Exception:
-        checkpoint = None
-    candidate_v = None
-    if isinstance(checkpoint, dict):
-        try:
-            candidate_v = int(checkpoint.get("next_v"))
-        except Exception:
-            candidate_v = None
-    allowed, payload = evaluate_head_drift(
-        PROJECT_ROOT,
-        expected_head,
-        current_head,
-        candidate_v=candidate_v,
-        checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
-    )
-    contract_paths = list(payload.get("head_contract_paths") or [])
-    candidate_prefix = bot_relpath(candidate_v) + "/" if candidate_v is not None else ""
-    payload.update({
-        "candidate_v": candidate_v,
-        "head_candidate_entries": [
-            f"?? {path}" for path in contract_paths
-            if candidate_prefix and path.startswith(candidate_prefix)
-        ][:40],
-        "head_blocking_entries": [
-            f"?? {path}" for path in contract_paths
-            if not candidate_prefix or not path.startswith(candidate_prefix)
-        ][:40],
-    })
-    return allowed, payload
-
-
-def _set_runtime_expected_head(head: str) -> str:
-    """Publish the current safe runtime HEAD for tool-level guards."""
-    clean_head = (head or "").strip()
-    if clean_head:
-        os.environ["POK_RUNTIME_EXPECTED_HEAD"] = clean_head
-    else:
-        os.environ.pop("POK_RUNTIME_EXPECTED_HEAD", None)
-    return clean_head
-
-
 def _stability_projection_maintenance_tick() -> None:
     """Request a proactive, still-fail-closed stability-cache refresh.
 
@@ -6917,29 +6825,53 @@ if __name__ == "__main__":
 
 
 # ──────────────────────────────────────────────
-# Background-coroutine re-export
+# Background-coroutine re-exports (split by business concern)
 # ──────────────────────────────────────────────
-# Two long-running background coroutines live in ``orchestrator_background``:
+# Two business clusters that started life inline in this module now live in
+# dedicated companions, split by *what they do* rather than by accident of
+# history:
 #
-#   * ``_run_post_generation_cleanup_with_timeout``
-#   * ``_runtime_branch_guard_coroutine``
+#   * ``orchestrator_branch_guard``     -- runtime git integrity guard.
+#     Exposes the ``_runtime_branch_guard_coroutine`` watchdog plus its five
+#     helpers (``_runtime_branch_guard_enabled``, ``_branch_name``,
+#     ``_runtime_git_identity``, ``_runtime_head_drift_unrelated_allowed``,
+#     ``_set_runtime_expected_head``) and the ``RUNTIME_BRANCH_GUARD_INTERVAL``
+#     constant.  The whole cluster is co-located so the branch/HEAD-drift
+#     concern reads as one unit.
 #
-# They are re-exported here so the rest of the orchestrator (``orchestrator_loop``
-# LOAD_GLOBALs them as bare names) and the test suite continue to resolve them as
-# ``orchestrator.<name>``.  This import must stay at the very bottom of the file:
-# the companion module imports ``orchestrator`` itself (``import orchestrator as
-# _o``), so importing it earlier would create a circular import.  At this point
-# every ``def`` in this module has executed, so the companion's ``import
-# orchestrator as _o`` binds a fully-populated module object.
+#   * ``orchestrator_post_generation``  -- generation wrap-up housekeeping.
+#     Exposes ``_run_post_generation_cleanup_with_timeout`` plus the
+#     ``POST_GENERATION_CLEANUP_TIMEOUT`` constant.
 #
-# The companion reads every shared symbol off the live ``orchestrator``
-# attribute (``_o.<name>``), so monkeypatches applied to ``orchestrator`` by the
-# test suite (e.g. ``_runtime_git_identity``, ``_clear_orchestrator_session``,
-# ``log_system_event``, ``log``) are observed by the moved coroutines exactly as
-# they were when the bodies lived here.  ``orchestrator_loop`` still calls these
-# names as bare globals, so ``monkeypatch.setattr(orchestrator,
-# "_run_post_generation_cleanup_with_timeout", ...)`` keeps working.
-from orchestrator_background import (  # noqa: E402,F401
-    _run_post_generation_cleanup_with_timeout,
+# Both companions ``import orchestrator as _o`` and read every shared symbol
+# off the live ``orchestrator`` attribute (``_o.<name>``), so monkeypatches
+# applied to ``orchestrator`` by the test suite (e.g.
+# ``_runtime_git_identity``, ``_runtime_head_drift_unrelated_allowed``,
+# ``_set_runtime_expected_head``, ``_clear_orchestrator_session``,
+# ``log_system_event``, ``log``) are observed by the moved bodies exactly as
+# they were when the bodies lived here.
+#
+# These imports must stay at the very bottom of the file: each companion
+# imports ``orchestrator`` itself (``import orchestrator as _o``), so importing
+# them earlier would create a circular import.  At this point every ``def`` in
+# this module has executed, so the companions' ``import orchestrator as _o``
+# binds a fully-populated module object.
+#
+# ``orchestrator_loop`` still LOAD_GLOBALs these names as bare globals, and the
+# test suite patches them on the ``orchestrator`` module object
+# (``monkeypatch.setattr(orchestrator, "_runtime_branch_guard_enabled", ...)``
+# etc.), so the re-export keeps both the bare-global call sites and the
+# monkeypatch surface working unchanged.
+from orchestrator_branch_guard import (  # noqa: E402,F401
+    RUNTIME_BRANCH_GUARD_INTERVAL,
+    _branch_name,
     _runtime_branch_guard_coroutine,
+    _runtime_branch_guard_enabled,
+    _runtime_git_identity,
+    _runtime_head_drift_unrelated_allowed,
+    _set_runtime_expected_head,
+)
+from orchestrator_post_generation import (  # noqa: E402,F401
+    POST_GENERATION_CLEANUP_TIMEOUT,
+    _run_post_generation_cleanup_with_timeout,
 )

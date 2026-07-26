@@ -202,7 +202,7 @@ def _prompts(*roles: tuple[str, str, str, tuple[str, ...]]) -> tuple[PromptBindi
 _CORE_PROMPTS = _prompts(
     (
         "Master",
-        "web/core/agent_master_validation.py",
+        "web/core/agent_master_prompts.py",
         "_render_master_final_provider_prompt",
         ("web/core/prompts/master_prompt.md",),
     ),
@@ -854,7 +854,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         production_owners=(
             _ref("web/core/llm_query.py", "ACTIVE_LLM_ROLE_CONTRACTS"),
-            _ref("web/core/agent_master_validation.py", "_render_master_final_provider_prompt"),
+            _ref("web/core/agent_master_prompts.py", "_render_master_final_provider_prompt"),
             _ref("web/core/agent_workers.py", "_render_worker_provider_prompt"),
             _ref("web/core/tool_gates.py", "_render_reviewer_provider_prompt"),
             _ref("web/core/reviewer_retry.py", "build_review_attempt_receipt"),
@@ -1687,7 +1687,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         production_owners=(
             _ref(
-                "web/core/agent_master_validation.py",
+                "web/core/agent_master_prompts.py",
                 "_render_master_proposal_provider_prompt",
             ),
             _ref("web/core/agent_master_validation.py", "_proposal_closed_json_shape"),
@@ -1766,7 +1766,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/agent_master.py", "_PROPOSAL_UNCERTAINTY_PROMPT_VALUE"),
         ),
         production_owners=(
-            _ref("web/core/agent_master_validation.py", "_render_master_proposal_provider_prompt"),
+            _ref("web/core/agent_master_prompts.py", "_render_master_proposal_provider_prompt"),
             _ref("web/core/agent_master_validation.py", "_validated_master_proposal"),
             _ref("web/core/agent_master_validation.py", "_canonicalize_selected_proposal_metadata"),
             _ref("web/core/agent_master_validation.py", "_master_final_emission_guard"),

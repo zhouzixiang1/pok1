@@ -55,14 +55,28 @@ _PROSE_PRONE_ALIASES = frozenset({
 
 
 
-# --- Schema validation (extracted to agent_master_validation.py) ---
-from agent_master_validation import (  # noqa: F401
+# --- Errors + sentinels (extracted to agent_master_errors.py) ---
+from agent_master_errors import (  # noqa: F401
     LLM_INFRA_SENTINEL,
     LLM_INFRA_SENTINEL_MSG,
     MasterAuthorityError,
     MasterEnsembleInfrastructureParked,
     MasterInfrastructureError,
+)
+
+
+# --- Prompt rendering (extracted to agent_master_prompts.py) ---
+from agent_master_prompts import (  # noqa: F401
     PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER,
+    _render_analysis_section,
+    _render_master_final_provider_prompt,
+    _render_master_proposal_critic_provider_prompt,
+    _render_master_proposal_provider_prompt,
+)
+
+
+# --- Schema validation (extracted to agent_master_validation.py) ---
+from agent_master_validation import (  # noqa: F401
     _DECISION_RELEVANT_SYMBOL_TERMS,
     _FRESH_STRICT_CONTROL_MEASUREMENT,
     _MASTER_PROPOSAL_DIRECTIONS,
@@ -110,9 +124,6 @@ from agent_master_validation import (  # noqa: F401
     _proposal_worker_bindability_error,
     _provider_prompt_reserved_markers,
     _record_master_invocation_evidence,
-    _render_master_final_provider_prompt,
-    _render_master_proposal_critic_provider_prompt,
-    _render_master_proposal_provider_prompt,
     _resolve_allowed_selected_proposal,
     _safe_relative_python_path,
     _selected_proposal_binding,
@@ -924,21 +935,6 @@ async def _run_master_proposal_ensemble(
         sort_keys=True,
         separators=(",", ":"),
     )
-
-
-def _render_analysis_section(text: str, default_msg: str) -> str:
-    """Map an analyst's raw return into the text injected into the Master prompt.
-
-    - Empty/None -> default "no data" message (unchanged behaviour).
-    - LLM_INFRA_SENTINEL -> explicit "LLM crashed" warning (so the Master does
-      not misread a missing analysis as a negative business signal).
-    - Anything else -> the actual analysis text.
-    """
-    if not text or not text.strip():
-        return default_msg
-    if text.strip() == LLM_INFRA_SENTINEL:
-        return LLM_INFRA_SENTINEL_MSG
-    return text
 
 
 def _line_budget_summary(bot_v: int, *, baseline_label: str = "source") -> str:

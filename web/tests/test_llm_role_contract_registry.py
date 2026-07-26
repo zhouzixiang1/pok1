@@ -46,9 +46,9 @@ class _UI:
 # Independent expectations: these values are deliberately not derived from the
 # production registry under test.
 CASES = (
-    ("MASTER PROPOSAL mechanism", "master_proposal", ["Read"], "agent_master", "_render_master_proposal_provider_prompt", "web/core/agent_master_validation.py", "master_planning_context", "agent_master.py::_run_master_proposal_ensemble/proposal_renderer"),
-    ("MASTER PROPOSAL CRITIC mechanism", "master_proposal_critic", [], "agent_master", "_render_master_proposal_critic_provider_prompt", "web/core/agent_master_validation.py", "frozen_proposal_packet", "agent_master.py::_run_master_proposal_ensemble/critic_renderer"),
-    ("MASTER (Try 1)", "master_final", [], "agent_master", "_render_master_final_provider_prompt", "web/core/agent_master_validation.py", "compiled_master_context", "prompts/master_prompt.md+master_context_contract.py"),
+    ("MASTER PROPOSAL mechanism", "master_proposal", ["Read"], "agent_master", "_render_master_proposal_provider_prompt", "web/core/agent_master_prompts.py", "master_planning_context", "agent_master.py::_run_master_proposal_ensemble/proposal_renderer"),
+    ("MASTER PROPOSAL CRITIC mechanism", "master_proposal_critic", [], "agent_master", "_render_master_proposal_critic_provider_prompt", "web/core/agent_master_prompts.py", "frozen_proposal_packet", "agent_master.py::_run_master_proposal_ensemble/critic_renderer"),
+    ("MASTER (Try 1)", "master_final", [], "agent_master", "_render_master_final_provider_prompt", "web/core/agent_master_prompts.py", "compiled_master_context", "prompts/master_prompt.md+master_context_contract.py"),
     ("WORKER_COT_CHECK_W1", "worker_cot_audit", [], "audit_agents", "_render_worker_cot_provider_prompt", "web/core/audit_agents.py", "worker_output_diff", "prompts/worker_cot_check.md::_run_worker_cot_check"),
     ("WORKER W1 (logic)", "worker", ["Bash", "Read", "Edit"], "agent_workers", "_render_worker_provider_prompt", "web/core/agent_workers.py", "compiled_worker_task", "prompts/worker_prompt.md+prompts/worker_profile_national_native.md"),
     ("DEBUG AGENT (v150)", "debug_agent", ["Read"], "agent_workers", "_render_debug_provider_prompt", "web/core/agent_workers.py", "worker_gate_failure", "prompts/debug_worker_prompt.md::_run_debug_agent"),

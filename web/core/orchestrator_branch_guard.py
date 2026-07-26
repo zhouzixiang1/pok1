@@ -1,134 +1,168 @@
-"""Background-coroutine helpers extracted from ``orchestrator``.
+"""Runtime git integrity guard -- branch / HEAD drift coroutine and helpers.
 
-This companion module hosts two background coroutines that were originally
-inline in ``web/core/orchestrator.py``:
+This module hosts the *complete* branch-guard business cluster that was
+originally split between ``orchestrator.py`` (the helpers / identity probes)
+and the old catch-all ``orchestrator_background.py`` companion (the
+long-running coroutine).  They are co-located here so the whole business
+concern -- "stop in-place evolution if another actor mutates this worktree's
+branch or HEAD" -- reads as a single cohesive unit.
 
-* ``_run_post_generation_cleanup_with_timeout``
-* ``_runtime_branch_guard_coroutine``
+Members moved here:
 
-They are split out purely to keep the main entry module small; the main module
-re-exports both names at the very bottom of the file for backward
-compatibility, covering tests and external importers that still reach them as
-``orchestrator.<name>``.
+* ``RUNTIME_BRANCH_GUARD_INTERVAL``  -- default polling cadence (seconds).
+* ``_runtime_branch_guard_coroutine``  -- the asyncio watchdog loop.
+* ``_runtime_branch_guard_enabled``    -- gate (env / pytest aware).
+* ``_branch_name``                     -- parse ``git status -b`` first cell.
+* ``_runtime_git_identity``            -- read-only branch+HEAD probe.
+* ``_runtime_head_drift_unrelated_allowed``  -- classify HEAD delta as benign.
+* ``_set_runtime_expected_head``       -- publish the validated baseline HEAD.
 
-IMPORTANT -- shared-symbol access model:
+IMPORTANT -- shared-symbol access model
+---------------------------------------
+Many names referenced by these bodies remain in ``orchestrator`` because they
+are part of the module's monkeypatch surface (``log``, ``log_system_event``,
+``_clear_orchestrator_session``, ``evaluate_head_drift``, ``bot_relpath``,
+``PROJECT_ROOT``, etc.).  The test suite patches some of these *and* patches
+members of this very module (``_runtime_git_identity``,
+``_runtime_head_drift_unrelated_allowed``, ``_set_runtime_expected_head``,
+``_runtime_branch_guard_enabled``) on the ``orchestrator`` module object.
 
-Many names referenced by these coroutines remain in ``orchestrator`` because
-they are part of the module's monkeypatch surface (e.g.
-``_runtime_git_identity``, ``_runtime_head_drift_unrelated_allowed``,
-``_set_runtime_expected_head``, ``_clear_orchestrator_session``,
-``log_system_event``, ``log``).  The test suite patches these on the
-``orchestrator`` module object and expects the running coroutine to observe the
-patched values.  Binding them at import time would freeze the pre-patch value
-and silently break the audit.
+To keep both patch surfaces live:
 
-All such references in this file are written ``_o.<name>`` so they resolve
-against the *live* ``orchestrator`` module attribute at call time, matching the
-proven pattern used by ``tool_commit_archivist`` (``import tool_commit as _tc``,
-``_tc.<name>``).
-
-Constants used as default-argument values (``RUNTIME_BRANCH_GUARD_INTERVAL``,
-``POST_GENERATION_CLEANUP_TIMEOUT``) and the
-``OperatorGenerationCostLimitExceeded`` exception class are read via
-``_o.<name>`` / direct import respectively; none of these are monkeypatched by
-the test suite, and reading them off the live module keeps a single source of
-truth.
+* References to symbols that live in ``orchestrator`` are written
+  ``_o.<name>`` (live attribute access; reflects any monkeypatch on
+  ``orchestrator``).
+* References between members of *this* module: helper functions that the
+  test suite patches on ``orchestrator`` (``_runtime_git_identity``,
+  ``_runtime_head_drift_unrelated_allowed``, ``_set_runtime_expected_head``)
+  are also reached via ``_o.<name>`` from inside the coroutine, so the
+  patches stay effective.  Pure-internal helpers that are never patched
+  (``_branch_name``) are called directly.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import time
+import subprocess
 
 import orchestrator as _o
-from orchestrator_cost_policy import OperatorGenerationCostLimitExceeded
 
 
-async def _run_post_generation_cleanup_with_timeout(shutdown_mgr, ui, gen_ctx, gen_count=None):
-    """Run post-generation housekeeping without letting it block evolution forever."""
-    from generation_scheduler import post_generation_cleanup
+# Default polling cadence for the branch-guard coroutine (seconds).  Read once
+# at import time; the coroutine accepts an explicit ``check_interval`` kwarg so
+# tests can override per-task without mutating this constant.
+RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
 
-    version = getattr(gen_ctx, "next_v", None)
-    source_v = getattr(gen_ctx, "source_v", None)
-    started = time.time()
-    _o.log_system_event(
-        "orchestrator.post_cleanup_start",
-        "info",
-        f"Post-generation cleanup starting for v{version}",
-        {
-            "version": version,
-            "source_v": source_v,
-            "gen_count": gen_count,
-            "timeout_s": _o.POST_GENERATION_CLEANUP_TIMEOUT,
-        },
-    )
-    try:
-        await asyncio.wait_for(
-            post_generation_cleanup(shutdown_mgr, ui, gen_ctx),
-            timeout=_o.POST_GENERATION_CLEANUP_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        elapsed = time.time() - started
-        msg = (
-            f"Post-generation cleanup timed out for v{version} after "
-            f"{_o.POST_GENERATION_CLEANUP_TIMEOUT}s; stopping before successor "
-            "scheduling because the checkpoint-free boundary remains blocked."
-        )
-        _o.log.warning(msg)
-        if ui:
-            ui.log_history(msg, "warn")
-        _o.log_system_event(
-            "orchestrator.post_cleanup_timeout",
-            "warn",
-            msg,
-            {
-                "version": version,
-                "source_v": source_v,
-                "gen_count": gen_count,
-                "elapsed_sec": round(elapsed, 2),
-                "timeout_s": _o.POST_GENERATION_CLEANUP_TIMEOUT,
-            },
-        )
+
+def _runtime_branch_guard_enabled() -> bool:
+    if os.environ.get("POK_DISABLE_RUNTIME_BRANCH_GUARD") == "1":
         return False
-    except OperatorGenerationCostLimitExceeded:
-        # Archivist/consolidation calls are part of the same generation.  Do not
-        # translate an operator stop into best-effort cleanup and then start a
-        # fresh generation with a reset scope.
-        raise
-    except Exception as e:
-        elapsed = time.time() - started
-        msg = f"Post-generation cleanup failed for v{version}: {str(e)[:180]}"
-        _o.log.exception(msg)
-        if ui:
-            ui.log_history(msg, "warn")
-        _o.log_system_event(
-            "orchestrator.post_cleanup_failed",
-            "error",
-            msg,
-            {
-                "version": version,
-                "source_v": source_v,
-                "gen_count": gen_count,
-                "elapsed_sec": round(elapsed, 2),
-                "error": str(e)[:500],
-            },
-        )
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("POK_FORCE_RUNTIME_BRANCH_GUARD") != "1":
         return False
-
-    elapsed = time.time() - started
-    _o.log_system_event(
-        "orchestrator.post_cleanup_done",
-        "info",
-        f"Post-generation cleanup finished for v{version} in {elapsed:.1f}s",
-        {
-            "version": version,
-            "source_v": source_v,
-            "gen_count": gen_count,
-            "elapsed_sec": round(elapsed, 2),
-        },
-    )
     return True
+
+
+def _branch_name(branch_status: str | None) -> str:
+    parts = (branch_status or "").split("...", 1)[0].split()
+    return parts[0] if parts else ""
+
+
+def _runtime_git_identity() -> dict:
+    """Read the current branch and HEAD without mutating the worktree."""
+    branch_status = ""
+    head = ""
+    try:
+        status = subprocess.run(
+            ["git", "status", "--short", "--branch", "--untracked-files=no"],
+            cwd=str(_o.PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if status.returncode == 0:
+            lines = [line for line in (status.stdout or "").splitlines() if line.strip()]
+            if lines and lines[0].startswith("## "):
+                branch_status = lines[0].replace("## ", "", 1)
+    except Exception:
+        branch_status = ""
+    if not branch_status:
+        try:
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(_o.PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if branch.returncode == 0:
+                branch_status = (branch.stdout or "").strip()
+        except Exception:
+            branch_status = ""
+    try:
+        rev = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=str(_o.PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if rev.returncode == 0:
+            head = (rev.stdout or "").strip()
+    except Exception:
+        head = ""
+    return {
+        "branch": _branch_name(branch_status),
+        "branch_status": branch_status,
+        "head": head,
+    }
+
+
+def _runtime_head_drift_unrelated_allowed(expected_head: str, current_head: str) -> tuple[bool, dict]:
+    if not expected_head or not current_head or expected_head == current_head:
+        return False, {}
+    try:
+        from evolution_core import read_pipeline_checkpoint
+        checkpoint = read_pipeline_checkpoint()
+    except Exception:
+        checkpoint = None
+    candidate_v = None
+    if isinstance(checkpoint, dict):
+        try:
+            candidate_v = int(checkpoint.get("next_v"))
+        except Exception:
+            candidate_v = None
+    allowed, payload = _o.evaluate_head_drift(
+        _o.PROJECT_ROOT,
+        expected_head,
+        current_head,
+        candidate_v=candidate_v,
+        checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
+    )
+    contract_paths = list(payload.get("head_contract_paths") or [])
+    candidate_prefix = _o.bot_relpath(candidate_v) + "/" if candidate_v is not None else ""
+    payload.update({
+        "candidate_v": candidate_v,
+        "head_candidate_entries": [
+            f"?? {path}" for path in contract_paths
+            if candidate_prefix and path.startswith(candidate_prefix)
+        ][:40],
+        "head_blocking_entries": [
+            f"?? {path}" for path in contract_paths
+            if not candidate_prefix or not path.startswith(candidate_prefix)
+        ][:40],
+    })
+    return allowed, payload
+
+
+def _set_runtime_expected_head(head: str) -> str:
+    """Publish the current safe runtime HEAD for tool-level guards."""
+    clean_head = (head or "").strip()
+    if clean_head:
+        os.environ["POK_RUNTIME_EXPECTED_HEAD"] = clean_head
+    else:
+        os.environ.pop("POK_RUNTIME_EXPECTED_HEAD", None)
+    return clean_head
 
 
 async def _runtime_branch_guard_coroutine(
@@ -139,7 +173,7 @@ async def _runtime_branch_guard_coroutine(
     expected_head: str,
     owner_task=None,
     hard_stop_event=None,
-    check_interval: float = _o.RUNTIME_BRANCH_GUARD_INTERVAL,
+    check_interval: float = RUNTIME_BRANCH_GUARD_INTERVAL,
 ):
     """Stop in-place evolution if another actor changes this worktree's branch.
 
