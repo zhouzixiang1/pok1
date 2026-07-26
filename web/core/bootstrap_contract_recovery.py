@@ -50,6 +50,11 @@ CLAIM_DIRNAME = "official_bootstrap_contract_change_abandon"
 ABANDON_REASON_PREFIX = "official_bootstrap_contract_change:"
 PARKED_EVALUATION_CONTRACT_VERSION = 40
 SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS = frozenset({40, 41, 42})
+# Sentinel ``expected_terminal_job_id`` for a fresh-bootstrap parked checkpoint
+# that has no official terminal job yet (the bootstrap parked before any job
+# was created). Passing this short-circuits the terminal-job validation in
+# ``_terminal_job_facts`` and yields an empty recovery profile.
+_NO_TERMINAL_JOB_SENTINEL = "fresh-bootstrap-no-terminal-job"
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _STRICT_FILES = frozenset({
@@ -1065,6 +1070,13 @@ def _terminal_job_facts(
     )
 
     issues: list[str] = []
+    if job_id == _NO_TERMINAL_JOB_SENTINEL:
+        # Fresh-bootstrap parked checkpoint: no official terminal job has run
+        # yet (the bootstrap parked before any job was created). The terminal-
+        # job facts are empty by construction; downstream profile checks
+        # (called-allin / v65) treat an empty profile as "neither", which is
+        # the correct verdict for a fresh-bootstrap abandon.
+        return {"recovery_profile": None, "issues": []}
     if not _HEX64.fullmatch(job_id):
         raise BootstrapContractRecoveryError(["bootstrap_contract_job_id_invalid"])
     issues.extend(_parked_request_issues(parked_request, None))
