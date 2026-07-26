@@ -113,6 +113,21 @@ _MONKEYPATCHED_TP_SYMBOLS_QC = (
 for _name in _MONKEYPATCHED_TP_SYMBOLS_QC:
     globals()[_name] = _TPCallableProxy(_name)
 
+# Worker-execution identity helpers that physically live in
+# tool_planning_worker (their rightful business home) but were historically
+# importable from this companion. Bound as lazy proxies that resolve through
+# tool_planning (which re-exports them from tool_planning_worker), so the
+# ``from tool_planning_quality_contracts import (...)`` / ``tool_planning_
+# quality_contracts.<name>`` surface keeps resolving without forcing a
+# circular top-level import of tool_planning_worker into this leaf module.
+_QC_LAZY_WORKER_IDENTITY_SYMBOLS = (
+    "_worker_execution_task_digest",
+    "_worker_backend_contract",
+    "_expected_worker_backend_contract",
+)
+for _name in _QC_LAZY_WORKER_IDENTITY_SYMBOLS:
+    globals()[_name] = _TPCallableProxy(_name)
+
 # Immutable parent-module data constants Group E reads. Snapshotted once at
 # bootstrap (after tool_planning has imported this companion). The companion's
 # __getattr__ fills them lazily on the first LOAD_GLOBAL miss as a safety net.
@@ -698,51 +713,6 @@ def _canonical_tasks_digest(tasks):
             default=str,
         ).encode("utf-8")
     ).hexdigest()
-
-
-def _worker_execution_task_digest(
-    tasks,
-    reviewer_feedback,
-    worker_template,
-):
-    """Identity of every frozen input supplied to one outer Worker batch."""
-    return hashlib.sha256(json.dumps({
-        "tasks": tasks,
-        "reviewer_feedback": reviewer_feedback,
-        "worker_template": worker_template,
-    }, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-
-def _worker_backend_contract():
-    return {
-        key: os.environ.get(key, "")
-        for key in (
-            "ANTHROPIC_MODEL",
-            "CLAUDE_MODEL",
-            "POK_LLM_MODEL",
-            "ANTHROPIC_BASE_URL",
-        )
-    }
-
-
-def _expected_worker_backend_contract(checkpoint, envelope=None):
-    """Return the backend identity selected by the frozen execution policy."""
-    policy = (
-        (envelope or {}).get("execution_policy")
-        if isinstance(envelope, dict)
-        else None
-    ) or {}
-    if policy.get("executor") == "system_policy_bootstrap_v1":
-        from system_strict_bootstrap import system_worker_backend_contract
-
-        master_receipt = (
-            ((checkpoint or {}).get("audit_context") or {}).get(
-                "system_strict_bootstrap"
-            )
-            or {}
-        )
-        return system_worker_backend_contract(master_receipt)
-    return _worker_backend_contract()
 
 
 def _frozen_rework_task_authority_errors(ckpt, tasks):

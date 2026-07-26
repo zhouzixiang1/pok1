@@ -11,7 +11,6 @@ All symbols are re-exported by llm_query.py via __all__, so existing
 """
 
 import contextlib
-import contextvars
 import fnmatch
 import os
 import re
@@ -19,11 +18,12 @@ import shlex
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+import llm_trace_context as _tc
 from bot_namespace import ACTIVE_BOT_PREFIX
 
 
-_LLM_CANCEL_CONTEXT = contextvars.ContextVar("llm_cancel_context", default=None)
-_LLM_TOOL_TRACE = contextvars.ContextVar("llm_tool_trace", default=None)
+_LLM_CANCEL_CONTEXT = _tc._LLM_CANCEL_CONTEXT
+_LLM_TOOL_TRACE = _tc._LLM_TOOL_TRACE
 
 
 def _patched_llm_query_helper(name, local_impl):
@@ -54,60 +54,33 @@ def _patched_llm_query_helper(name, local_impl):
 
 @contextlib.contextmanager
 def capture_llm_tool_trace():
-    """Capture typed SDK tool-use/result events for the current async context.
-
-    Normal role callers pay no tracing cost beyond one context lookup.  The
-    operator SDK probe uses this scope to prove that the production streaming
-    path really executed its required tools; parsing the human role log is not
-    an execution receipt.
-    """
-
-    events = []
-    token = _LLM_TOOL_TRACE.set(events)
-    try:
+    """Delegate to llm_trace_context."""
+    with _tc.capture_llm_tool_trace() as events:
         yield events
-    finally:
-        _LLM_TOOL_TRACE.reset(token)
 
 
 def _record_llm_tool_trace_event(event):
-    trace = _LLM_TOOL_TRACE.get()
-    if not isinstance(trace, list):
-        return
-    payload = dict(event or {})
-    payload["sequence"] = len(trace) + 1
-    trace.append(payload)
+    """Delegate to llm_trace_context."""
+    return _tc._record_llm_tool_trace_event(event)
 
 
 @contextlib.contextmanager
 def llm_cancel_scope(scope, reason="parent_timeout", timeout_sec=None):
-    """Attach structured context to intentional parent-driven LLM cancellation."""
-    payload = {
-        "cancel_scope": str(scope),
-        "cancel_reason": str(reason),
-    }
-    if timeout_sec is not None:
-        try:
-            payload["timeout_sec"] = float(timeout_sec)
-        except (TypeError, ValueError):
-            payload["timeout_sec"] = timeout_sec
-    token = _LLM_CANCEL_CONTEXT.set(payload)
-    try:
+    """Delegate to llm_trace_context."""
+    with _tc.llm_cancel_scope(scope, reason=reason, timeout_sec=timeout_sec):
         yield
-    finally:
-        _LLM_CANCEL_CONTEXT.reset(token)
 
 
 def _current_llm_cancel_context():
-    context = _LLM_CANCEL_CONTEXT.get()
-    return dict(context) if isinstance(context, dict) else {}
+    """Delegate to llm_trace_context."""
+    return _tc._current_llm_cancel_context()
 
 
 def _cancelled_event(base_category, parent_category, default_severity="warn"):
-    context = _current_llm_cancel_context()
-    if context.get("cancel_reason") == "parent_timeout":
-        return parent_category, "info", context
-    return base_category, default_severity, context
+    """Delegate to llm_trace_context."""
+    return _tc._cancelled_event(
+        base_category, parent_category, default_severity=default_severity
+    )
 
 
 _SUBAGENT_BASH_MUTATION_PATTERNS = (

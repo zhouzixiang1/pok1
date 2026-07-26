@@ -112,7 +112,6 @@ from tool_planning_quality_contracts import (  # noqa: F401
     _default_state_learning_contract,
     _detected_artifact_consumer,
     _docstring_line_ranges,
-    _expected_worker_backend_contract,
     _extract_quality_failure_files,
     _feedback_quality_contracts,
     _flatten_text_items,
@@ -187,8 +186,6 @@ from tool_planning_quality_contracts import (  # noqa: F401
     _text_line_count,
     _tokenized_comment_and_string_lines,
     _transport_equivalent_feedback,
-    _worker_backend_contract,
-    _worker_execution_task_digest,
 )
 
 
@@ -1621,6 +1618,65 @@ async def _run_durable_worker_effect(
                 worker_workflow.artifacts.discard_workspace(workspace)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Worker-execution identity contract.
+#
+# These three helpers define the durable Worker execution identity: the digest
+# of every frozen input supplied to one outer Worker batch, and the backend
+# (provider/model/endpoint) contract that the frozen execution policy bound the
+# batch to. They were previously housed in tool_planning_quality_contracts (the
+# Group E quality-contract companion) but they belong to the Worker durable-
+# execution business, so they live here as first-class members of the Worker
+# module. tool_planning.py re-exports them via its
+# ``from tool_planning_worker import (...)`` block, and the existing
+# ``from tool_planning_quality_contracts import (...)`` companion surface no
+# longer needs to carry them.
+# ---------------------------------------------------------------------------
+def _worker_execution_task_digest(
+    tasks,
+    reviewer_feedback,
+    worker_template,
+):
+    """Identity of every frozen input supplied to one outer Worker batch."""
+    return hashlib.sha256(json.dumps({
+        "tasks": tasks,
+        "reviewer_feedback": reviewer_feedback,
+        "worker_template": worker_template,
+    }, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _worker_backend_contract():
+    return {
+        key: os.environ.get(key, "")
+        for key in (
+            "ANTHROPIC_MODEL",
+            "CLAUDE_MODEL",
+            "POK_LLM_MODEL",
+            "ANTHROPIC_BASE_URL",
+        )
+    }
+
+
+def _expected_worker_backend_contract(checkpoint, envelope=None):
+    """Return the backend identity selected by the frozen execution policy."""
+    policy = (
+        (envelope or {}).get("execution_policy")
+        if isinstance(envelope, dict)
+        else None
+    ) or {}
+    if policy.get("executor") == "system_policy_bootstrap_v1":
+        from system_strict_bootstrap import system_worker_backend_contract
+
+        master_receipt = (
+            ((checkpoint or {}).get("audit_context") or {}).get(
+                "system_strict_bootstrap"
+            )
+            or {}
+        )
+        return system_worker_backend_contract(master_receipt)
+    return _worker_backend_contract()
 
 
 def _worker_availability_resume_receipt_errors(deferred, pause_audit):

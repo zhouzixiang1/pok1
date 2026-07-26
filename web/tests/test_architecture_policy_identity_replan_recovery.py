@@ -10,7 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from bot_namespace import bot_name
+from bot_namespace import (
+    NATIONAL_ENTRYPOINT,
+    NATIONAL_RUNTIME_MANIFEST,
+    POLICY_ENTRYPOINT,
+    POLICY_EPOCH_RECEIPT,
+    PRECOMPUTE_ENTRYPOINT,
+    bot_name,
+)
 from conftest import STRICT_TARGET_V
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +29,71 @@ pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 # both branches.
 SOURCE_V = STRICT_TARGET_V
 NEXT_V = STRICT_TARGET_V + 5
+
+
+def _ensure_seed_source_bot(seed_root: Path, version: int) -> Path:
+    """Materialize a minimal five-file source bot if none is present.
+
+    In the cloud epoch the source bot lives in .evolution_pok/bots/, not in
+    the operator checkout's bots/. Tests that copy a source bot by path need
+    a synthetic seed here so they don't depend on a particular checkout's
+    bots/ contents.
+
+    When the real published source bot exists under .evolution_pok/bots/ we
+    mirror it verbatim so the strict runtime-manifest/epoch-receipt
+    validators accept the seed. Otherwise we fall back to a tiny synthetic
+    five-file bot (only meaningful where validators are not exercised).
+    """
+    target = seed_root / bot_name(version)
+    manifest_file = target / NATIONAL_RUNTIME_MANIFEST
+
+    published_root = ROOT / ".evolution_pok" / "bots"
+    published = published_root / bot_name(version)
+
+    def _seed_from_published() -> None:
+        target.mkdir(parents=True, exist_ok=True)
+        for filename in (
+            NATIONAL_ENTRYPOINT,
+            POLICY_ENTRYPOINT,
+            PRECOMPUTE_ENTRYPOINT,
+            NATIONAL_RUNTIME_MANIFEST,
+            POLICY_EPOCH_RECEIPT,
+        ):
+            (target / filename).write_bytes((published / filename).read_bytes())
+
+    def _seed_synthetic() -> None:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / NATIONAL_ENTRYPOINT).write_text(
+            "def main():\n    return 0\n", encoding="utf-8",
+        )
+        (target / POLICY_ENTRYPOINT).write_text(
+            "def get_baseline_decision(context):\n"
+            "    return {'kind': 'pass'}\n\n"
+            "def iter_decisions(context, baseline, deadline):\n"
+            "    return ()\n",
+            encoding="utf-8",
+        )
+        (target / PRECOMPUTE_ENTRYPOINT).write_text("TABLE = ()\n", encoding="utf-8")
+        (target / NATIONAL_RUNTIME_MANIFEST).write_text(
+            '{"kind":"synthetic-source-manifest","schema_version":1}\n',
+            encoding="utf-8",
+        )
+        (target / POLICY_EPOCH_RECEIPT).write_text(
+            '{"kind":"synthetic-source-receipt","schema_version":1}\n',
+            encoding="utf-8",
+        )
+
+    if published.is_dir():
+        # Always re-mirror the authoritative published source so the seed
+        # never goes stale across branch checkouts or prior failed runs.
+        _seed_from_published()
+        return target
+
+    if not target.exists() or not manifest_file.exists():
+        _seed_synthetic()
+        return target
+
+    return target
 
 
 def _payload(result: dict) -> dict:
@@ -40,7 +112,7 @@ def _legacy_replan_fixture(tmp_path: Path) -> tuple[dict, Path, Path, dict]:
     source = tmp_path / "bots" / bot_name(SOURCE_V)
     candidate = tmp_path / "bots" / bot_name(NEXT_V)
     source.parent.mkdir(parents=True)
-    copy_bot_tree_for_candidate(ROOT / "bots" / bot_name(SOURCE_V), source)
+    copy_bot_tree_for_candidate(_ensure_seed_source_bot(ROOT / "bots", SOURCE_V), source)
 
     expected = tmp_path / "expected" / bot_name(NEXT_V)
     expected.parent.mkdir(parents=True)
