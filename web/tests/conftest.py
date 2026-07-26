@@ -18,17 +18,25 @@ import subprocess
 # operator always wins (setdefault).
 os.environ.setdefault("POK_CLOUD_RUNTIME", "1")
 
+# Ensure imports work BEFORE the third-party imports below, so that
+# `from testclient_compat import ...` (which lives in web/core/) resolves.
+# Previously this block ran AFTER the imports, causing
+# `ModuleNotFoundError: No module named 'testclient_compat'` at conftest load.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "web" / "core"))
+sys.path.insert(0, str(PROJECT_ROOT / "web" / "server"))
+# Several test modules do `from conftest import STRICT_SOURCE_V, ...` — a bare
+# import that requires this directory (`web/tests/`) on sys.path. The documented
+# invocation `cd web && python -m pytest tests` only adds `web/` to sys.path, so
+# add `web/tests/` explicitly here to make those bare imports resolve.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import pytest
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.testclient import TestClient
 from testclient_compat import backend_options_for_testclient
-
-# Ensure imports work
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "web" / "core"))
-sys.path.insert(0, str(PROJECT_ROOT / "web" / "server"))
 
 # Import server.app to create module-level broadcaster and web_ui
 # (some endpoints do `from server.app import web_ui` inside handlers)
