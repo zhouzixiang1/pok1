@@ -49,7 +49,7 @@ CLAIM_KIND = "official-bootstrap-contract-change-abandon-claim"
 CLAIM_DIRNAME = "official_bootstrap_contract_change_abandon"
 ABANDON_REASON_PREFIX = "official_bootstrap_contract_change:"
 PARKED_EVALUATION_CONTRACT_VERSION = 40
-SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS = frozenset({40, 41})
+SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS = frozenset({40, 41, 42})
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _STRICT_FILES = frozenset({
@@ -1665,7 +1665,7 @@ def build_claim(
     ):
         issues.append("bootstrap_contract_called_allin_contract_41_required")
     if (
-        old_contract.get("version") != PARKED_EVALUATION_CONTRACT_VERSION
+        old_contract.get("version") not in SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS
         and job_facts.get("recovery_profile") != _V65_PROFILE_ID
     ):
         issues.append("bootstrap_contract_non_v65_baseline_contract_invalid")
