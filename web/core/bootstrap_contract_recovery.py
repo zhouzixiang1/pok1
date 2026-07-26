@@ -1072,11 +1072,20 @@ def _terminal_job_facts(
     issues: list[str] = []
     if job_id == _NO_TERMINAL_JOB_SENTINEL:
         # Fresh-bootstrap parked checkpoint: no official terminal job has run
-        # yet (the bootstrap parked before any job was created). The terminal-
-        # job facts are empty by construction; downstream profile checks
-        # (called-allin / v65) treat an empty profile as "neither", which is
-        # the correct verdict for a fresh-bootstrap abandon.
-        return {"recovery_profile": None, "issues": []}
+        # yet (the bootstrap parked before any job was created). Return a
+        # minimal terminal_job envelope that satisfies the claim-envelope
+        # validator's "no diagnosis, no profile, zero rounds" branch
+        # (rounds_requested=8, rounds_completed=0, rounds_run=0, no diagnosis,
+        # recovery_profile=None) — the canonical "abandon before any official
+        # work" verdict for a fresh-bootstrap parked checkpoint.
+        return {
+            "job_id": _NO_TERMINAL_JOB_SENTINEL,
+            "recovery_profile": None,
+            "rounds_requested": 8,
+            "rounds_completed": 0,
+            "rounds_run": 0,
+            "issues": [],
+        }
     if not _HEX64.fullmatch(job_id):
         raise BootstrapContractRecoveryError(["bootstrap_contract_job_id_invalid"])
     issues.extend(_parked_request_issues(parked_request, None))
