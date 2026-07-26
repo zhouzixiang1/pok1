@@ -3,7 +3,7 @@
 
 Run without ``--execute`` first.  Review the complete claim and then repeat the
 same command with ``--execute --acknowledge-runtime-checkout --claim-digest``.
-This command is available only in a stopped, clean, origin/main-synchronized
+This command is available only in a stopped, clean, origin/<EVOLUTION_BRANCH>-synchronized
 ``.evolution_pok`` checkout.  It never edits the checkpoint or deletes state;
 it durably publishes an external proof and invokes the existing canonical
 workflow fence/quarantine/abandon transaction.

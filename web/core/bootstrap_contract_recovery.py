@@ -36,6 +36,7 @@ from bot_namespace import (
     ARCHIVED_VERSION_HIGH_WATER,
     ACTIVE_BOT_PREFIX,
     EVALUATION_EPOCH,
+    EVOLUTION_BRANCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
     bot_tag,
@@ -1543,10 +1544,10 @@ def build_claim(
     if old_contract.get("hash") != expected_baseline_contract_hash:
         issues.append("bootstrap_contract_baseline_hash_mismatch")
     current_head = str(_git(root, "rev-parse", "HEAD")).strip()
-    origin_head = str(_git(root, "rev-parse", "origin/main")).strip()
+    origin_head = str(_git(root, "rev-parse", f"origin/{EVOLUTION_BRANCH}")).strip()
     current_branch = str(_git(root, "rev-parse", "--abbrev-ref", "HEAD")).strip()
-    if current_branch != "main":
-        issues.append("bootstrap_contract_runtime_branch_not_main")
+    if current_branch != EVOLUTION_BRANCH:
+        issues.append("bootstrap_contract_runtime_branch_not_evolution")
     if (
         not _HEX40.fullmatch(expected_current_head)
         or current_head != expected_current_head
