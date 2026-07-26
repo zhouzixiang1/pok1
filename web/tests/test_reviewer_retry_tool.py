@@ -13,6 +13,16 @@ def test_first_reject_retries_same_stage_then_conflict_routes_repair(
     import llm_query
     import system_strict_bootstrap
     import tool_gates
+    import tool_gates_critic_review
+    import tool_runtime_guard
+
+    # This unit test owns the reviewer retry authority, not the repository
+    # worktree guard. Keep the guard covered by its dedicated adversarial suite.
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "ensure_runtime_git_guard",
+        lambda *_args, **_kwargs: (True, {"guard": "unit_test"}),
+    )
 
     candidate = tmp_path / "national_v143"
     candidate.mkdir()
@@ -106,6 +116,15 @@ def test_first_reject_retries_same_stage_then_conflict_routes_repair(
     )
     monkeypatch.setattr(
         tool_gates,
+        "_review_semantic_contract",
+        lambda *_args, **_kwargs: {"contract_digest": "a" * 64},
+    )
+    # run_review lives in tool_gates_critic_review (extracted in wave 1) and
+    # calls the bare module-global _review_semantic_contract, so the patch
+    # must target tool_gates_critic_review too — otherwise the real contract
+    # runs and rejects the mock quality gate's missing evidence.
+    monkeypatch.setattr(
+        tool_gates_critic_review,
         "_review_semantic_contract",
         lambda *_args, **_kwargs: {"contract_digest": "a" * 64},
     )
@@ -396,6 +415,16 @@ def test_valid_approval_consumes_timeout_overlay_in_reviewed_cas(
     import llm_query
     import system_strict_bootstrap
     import tool_gates
+    import tool_gates_critic_review
+    import tool_runtime_guard
+
+    # This unit test owns the reviewer timeout/overlay CAS, not the repository
+    # worktree guard. Keep the guard covered by its dedicated adversarial suite.
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "ensure_runtime_git_guard",
+        lambda *_args, **_kwargs: (True, {"guard": "unit_test"}),
+    )
 
     candidate = tmp_path / "national_v143"
     candidate.mkdir()
@@ -467,6 +496,14 @@ def test_valid_approval_consumes_timeout_overlay_in_reviewed_cas(
     )
     monkeypatch.setattr(
         tool_gates,
+        "_review_semantic_contract",
+        lambda *_args, **_kwargs: {"contract_digest": "a" * 64},
+    )
+    # run_review lives in tool_gates_critic_review (extracted in wave 1) and
+    # calls the bare module-global _review_semantic_contract, so the patch
+    # must target tool_gates_critic_review too.
+    monkeypatch.setattr(
+        tool_gates_critic_review,
         "_review_semantic_contract",
         lambda *_args, **_kwargs: {"contract_digest": "a" * 64},
     )

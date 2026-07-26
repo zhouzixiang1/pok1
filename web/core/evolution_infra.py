@@ -175,6 +175,17 @@ import evolution_infra_archive_rotation as _rot  # noqa: E402
 # ``evolution_infra.<name>`` monkeypatches keep working.
 import evolution_infra_git_publication as _gp  # noqa: E402
 
+# Active-bots discovery and version namespace authority companion.  Hosts the
+# canonical active bot pool resolution, protocol-fingerprinting, the published
+# high-water and the version namespace authority.  The companion imports
+# ``evolution_infra`` itself (``import evolution_infra_active_bots as _ab`` is
+# aliased here as ``_ab``) and resolves cross-references lazily at call time,
+# so this top-level import does not create a load-time cycle.  Every moved
+# symbol is re-exposed below as a thin delegate shell so legacy
+# ``from evolution_infra import <name>`` sites and
+# ``evolution_infra.<name>`` monkeypatches keep working.
+import evolution_infra_active_bots as _ab  # noqa: E402
+
 
 class AbandonedVersionLedgerError(RuntimeError):
     """The current-epoch allocation receipt ledger is not trustworthy."""
@@ -2602,41 +2613,13 @@ def _incomplete_checkpoint_publication_versions(tag_versions) -> set[int]:
 
 
 def active_native_contract_filter_enabled() -> bool:
-    # The policy epoch has no compatibility escape hatch.  An environment flag
-    # cannot reintroduce archived Botzone/strategy artifacts into active roles.
-    if EVALUATION_EPOCH == "national_tcp_policy_v1":
-        return True
-    raw = os.environ.get("POK_ACTIVE_NATIVE_CONTRACT_FILTER")
-    if raw is None:
-        return False
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-_ACTIVE_BOT_PROTOCOL_CACHE: dict[tuple, tuple[str, ...]] = {}
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.active_native_contract_filter_enabled()
 
 
 def _bot_protocol_fingerprint(bot_dir: Path) -> tuple[tuple, ...]:
-    files: list[tuple] = []
-    if not bot_dir.exists():
-        return (("<missing>", 0, 0),)
-    for path in sorted(bot_dir.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        try:
-            st = path.stat()
-            rel = str(path.relative_to(bot_dir)).replace(os.sep, "/")
-            files.append(
-                (
-                    rel,
-                    int(st.st_mtime_ns),
-                    int(st.st_ctime_ns),
-                    int(st.st_size),
-                    int(st.st_ino),
-                )
-            )
-        except OSError:
-            continue
-    return tuple(files)
+    """Delegate to evolution_infra_active_bots."""
+    return _ab._bot_protocol_fingerprint(bot_dir)
 
 
 def active_bot_protocol_errors(
@@ -2644,55 +2627,11 @@ def active_bot_protocol_errors(
     *,
     quarantine_health: dict | None = None,
 ) -> list[str]:
-    """Return active-pool protocol errors for a tagged bot version.
-
-    The strict namespace resolver is the first authority.  It never searches
-    the archive and requires the raw-TCP runtime manifest, typed policy ABI and
-    epoch receipt before the implementation-level native checks run.
-    """
-
-    if not active_native_contract_filter_enabled():
-        return []
-    bot_dir = BOTS_DIR / bot_name(version)
-    fingerprint = _bot_protocol_fingerprint(bot_dir)
-    cache_key = (
-        int(version),
-        str(bot_dir.resolve()),
-        fingerprint,
-        EVALUATION_EPOCH,
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.active_bot_protocol_errors(
+        version,
+        quarantine_health=quarantine_health,
     )
-    cached = _ACTIVE_BOT_PROTOCOL_CACHE.get(cache_key)
-    if cached is not None:
-        return list(cached)
-
-    spec = resolve_national_bot_spec(
-        bot_dir,
-        ROLE_CANDIDATE,
-        repo_root=BOTS_DIR.parent,
-        require_completion=False,
-        require_certificate=False,
-    )
-    errors = list(spec.issues)
-    if not errors:
-        try:
-            from national_native import check_native_contract
-            errors.extend(
-                check_native_contract(
-                    bot_dir,
-                    require_current_stream_decoder=True,
-                    require_current_decision_runtime=True,
-                )
-            )
-        except Exception as exc:
-            errors.append(f"native_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
-    stale_keys = [
-        key for key in _ACTIVE_BOT_PROTOCOL_CACHE
-        if key[0] == int(version) and key[1] == str(bot_dir.resolve())
-    ]
-    for key in stale_keys:
-        _ACTIVE_BOT_PROTOCOL_CACHE.pop(key, None)
-    _ACTIVE_BOT_PROTOCOL_CACHE[cache_key] = tuple(errors)
-    return errors
 
 
 def is_active_bot_protocol_eligible(
@@ -2700,7 +2639,8 @@ def is_active_bot_protocol_eligible(
     *,
     quarantine_health: dict | None = None,
 ) -> bool:
-    return not active_bot_protocol_errors(
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.is_active_bot_protocol_eligible(
         version,
         quarantine_health=quarantine_health,
     )
@@ -2710,32 +2650,13 @@ _ORIGINAL_IS_ACTIVE_BOT_PROTOCOL_ELIGIBLE = is_active_bot_protocol_eligible
 
 
 def _protocol_eligible_for_discovery(version: int, quarantine_health: dict | None) -> bool:
-    """Reuse one verified policy report while preserving test/plugin overrides."""
-
-    if is_active_bot_protocol_eligible is _ORIGINAL_IS_ACTIVE_BOT_PROTOCOL_ELIGIBLE:
-        return is_active_bot_protocol_eligible(
-            version,
-            quarantine_health=quarantine_health,
-        )
-    return bool(is_active_bot_protocol_eligible(version))
+    """Delegate to evolution_infra_active_bots."""
+    return _ab._protocol_eligible_for_discovery(version, quarantine_health)
 
 
 def _target_rel(path, version):
-    raw = str(path).strip()
-    if not raw:
-        return ""
-    raw = raw.replace("\\", "/")
-    raw = _TARGET_ANNOTATION_RE.sub("", raw).strip()
-    # 循环剥离任意层 bots/{active_bot}{N}/ 前缀（含 source_v + 双重嵌套）。
-    # root-cause-audit 2026-06-21: Master context (agent_master.py:100) 注入
-    # bots/{bot}{source_v}/ 路径，worker 非确定性地把它写进 target_files，甚至双重嵌套。
-    # 循环剥离直到无版本前缀。
-    while True:
-        stripped = strip_bot_path_prefix(raw)
-        if stripped == raw:
-            break
-        raw = stripped
-    return raw
+    """Delegate to evolution_infra_active_bots."""
+    return _ab._target_rel(path, version)
 
 
 def _discover_active_bots(
@@ -2744,120 +2665,27 @@ def _discover_active_bots(
     require_completed_sentinel: bool = True,
     ledger_fresh: bool = True,
 ) -> list[str]:
-    """Active bots = tagged, completed, and protocol-eligible bots.
-
-    Trust model mirrors find_current_v(): the git tag for the active epoch is the single
-    authoritative completion proof. A bare .completed file (written by prepare
-    or left behind by a crashed/never-committed generation) is NOT trusted —
-    it is exactly how a "ghost bot" like v107 (completed-but-untagged) leaked
-    into find_latest_active_v() and was used as an evolution source.
-
-    In the national TCP policy epoch, the typed manifest/receipt ABI and a full
-    signed official certificate are also mandatory.  Archived bot directories
-    are never traversed.
-
-    Collecting all tags once here (instead of calling git_has_tag per bot)
-    keeps this O(1 git call) regardless of bot count, plus local file checks for
-    protocol eligibility.
-    """
-    tag_versions = _tagged_bot_versions()
-    if evolution_git_push_required():
-        # Never allow a local-only recovery tag to manufacture lifecycle
-        # completion while required origin publication is still pending.
-        tag_versions = set(tag_versions).intersection(
-            _remote_published_completion_versions(tag_versions)
-        )
-    tag_versions = set(tag_versions).difference(
-        _incomplete_checkpoint_publication_versions(tag_versions)
+    """Delegate to evolution_infra_active_bots."""
+    return _ab._discover_active_bots(
+        repair_completed_sentinels=repair_completed_sentinels,
+        require_completed_sentinel=require_completed_sentinel,
+        ledger_fresh=ledger_fresh,
     )
-    try:
-        reaped_versions = load_reaped_bot_versions()
-    except Exception as exc:
-        if _registry_may_be_virgin():
-            # Fresh cloud bootstrap: no completion tags + no migration marker =>
-            # nothing has ever been reaped. The empty set is the correct value;
-            # do not log an ERROR for the expected empty state.
-            reaped_versions = set()
-        else:
-            log.error("National reaped registry unavailable; active pool fails closed: %s", exc)
-            try:
-                from system_log import log_system_event
-
-                log_system_event(
-                    "pipeline.national_epoch_registry_unavailable",
-                    "error",
-                    "National epoch lifecycle registry unavailable; active pool disabled",
-                    {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
-                )
-            except Exception:
-                pass
-            return []
-    if repair_completed_sentinels:
-        _ensure_completed_sentinels_for_tagged_bots(tag_versions, reaped_versions)
-
-    bots = []
-    if BOTS_DIR.exists():
-        for d in os.listdir(BOTS_DIR):
-            v = parse_bot_version(d)
-            if v is None or not d.startswith(ACTIVE_BOT_PREFIX):
-                continue
-            completed = (BOTS_DIR / d / ".completed").exists()
-            if os.path.isdir(BOTS_DIR / d) and (
-                completed or not require_completed_sentinel
-            ):
-                if (
-                    v in tag_versions
-                    and v not in reaped_versions
-                    and _protocol_eligible_for_discovery(v, None)
-                    and (
-                        _official_parent_eligible(
-                            BOTS_DIR / d,
-                            ledger_fresh=False,
-                        )
-                        if (
-                            not ledger_fresh
-                            and _official_parent_eligible
-                            is _ORIGINAL_OFFICIAL_PARENT_ELIGIBLE
-                        )
-                        else _official_parent_eligible(BOTS_DIR / d)
-                    )
-                ):
-                    bots.append(d)
-    return sorted(bots, key=version_sort_key)
 
 
 def get_active_bots():
-    """Return active bots and repair missing sentinels for trusted tagged bots."""
-
-    return _discover_active_bots(repair_completed_sentinels=True)
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.get_active_bots()
 
 
 def get_active_bots_read_only(*, ledger_fresh: bool = True):
-    """Return active bots without performing any filesystem repair.
-
-    Read-only HTTP/catalog code must use this API so a GET request cannot create
-    completion sentinels or otherwise mutate the evolution checkout.
-    """
-
-    return _discover_active_bots(
-        repair_completed_sentinels=False,
-        ledger_fresh=ledger_fresh,
-    )
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.get_active_bots_read_only(ledger_fresh=ledger_fresh)
 
 
 def get_published_active_bots_read_only(*, ledger_fresh: bool = True):
-    """Return tagged active artifacts without requiring a local sentinel.
-
-    View-only clones do not carry the gitignored ``.completed`` cache. Git tag,
-    artifact, protocol, lifecycle, and official eligibility checks remain
-    mandatory, so omitting that cache does not weaken completion authority.
-    """
-
-    return _discover_active_bots(
-        repair_completed_sentinels=False,
-        require_completed_sentinel=False,
-        ledger_fresh=ledger_fresh,
-    )
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.get_published_active_bots_read_only(ledger_fresh=ledger_fresh)
 
 
 def _official_parent_eligible(
@@ -2865,85 +2693,26 @@ def _official_parent_eligible(
     *,
     ledger_fresh: bool = True,
 ) -> bool:
-    try:
-        spec = resolve_national_bot_spec(
-            bot_dir,
-            ROLE_PARENT_SOURCE,
-            repo_root=BOTS_DIR.parent,
-            ledger_fresh=ledger_fresh,
-        )
-        if not spec.eligible:
-            log.warning(
-                "Strict parent eligibility rejected %s: %s",
-                bot_dir.name,
-                list(spec.issues),
-            )
-        return spec.eligible
-    except Exception as exc:
-        log.error(
-            "Official active-pool eligibility failed closed for %s: %s",
-            bot_dir.name,
-            exc,
-        )
-        return False
+    """Delegate to evolution_infra_active_bots."""
+    return _ab._official_parent_eligible(bot_dir, ledger_fresh=ledger_fresh)
 
 
 _ORIGINAL_OFFICIAL_PARENT_ELIGIBLE = _official_parent_eligible
 
 
 def version_namespace_authority():
-    """Return the canonical paired/unpaired annotated publication-ref snapshot.
-
-    A deployment namespace with no paired tags yet (e.g. a fresh national_cloud_v
-    namespace before its first strict publication) resolves to an empty authority
-    sitting at the archived high-water floor, rather than raising. Default/main
-    behavior (paired tags present) is unchanged.
-    """
-
-    from bot_namespace import VersionNamespaceAuthority
-
-    try:
-        return resolve_version_namespace_authority(
-            lambda *args: _git(*args, check=False)
-        )
-    except RuntimeError:
-        return VersionNamespaceAuthority(
-            high_water=ARCHIVED_VERSION_HIGH_WATER,
-            paired_versions=(),
-            paired_commits=(),
-            unpaired_completion_versions=(),
-            unpaired_high_water_versions=(),
-        )
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.version_namespace_authority()
 
 
 def find_current_v():
-    """Return the immutable version-authority high-water.
-
-    Only annotated completion/high-water tags which peel to commits advance the
-    published namespace.  Directory names, sentinels, bare commits, checkpoint
-    counters and runtime ledgers are deliberately absent from this read.
-    """
-
-    try:
-        authority = version_namespace_authority()
-    except RuntimeError:
-        # An empty namespace (no paired completion/high-water tags yet) is the
-        # legitimate bootstrap floor for an isolated deployment namespace such
-        # as national_cloud_v: it has no strict versions, so it sits at the
-        # archived high-water. This keeps version allocation and epoch state
-        # well-defined before the first strict bot is published there.
-        return ARCHIVED_VERSION_HIGH_WATER
-    return int(authority.high_water)
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.find_current_v()
 
 
 def find_latest_active_v():
-    """Find the highest version in the strict published active pool.
-    Returns 0 if no active bots exist.
-    """
-    active = get_active_bots()
-    if not active:
-        return 0
-    return max(version_sort_key(b) for b in active)
+    """Delegate to evolution_infra_active_bots."""
+    return _ab.find_latest_active_v()
 
 
 # ──────────────────────────────────────────────
