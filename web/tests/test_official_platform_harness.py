@@ -693,6 +693,11 @@ def test_low_authority_bot_launch_still_uses_central_executor(
 def test_official_round_rejects_non_symmetric_formal_launch_contract(
     tmp_path, monkeypatch, sealed_a, sealed_b, job_envelope, expected_issue
 ):
+    # The 70-hand default path (formal full certification) requires a sealed
+    # sandbox on both bots when a job_envelope is present. See the companion
+    # test_official_round_smoke_mode_does_not_require_formal_sandbox for the
+    # sub-70-hand smoke/compliance path, which passes a job_envelope for
+    # certification identity but must NOT be required to seal.
     bot_a_path = tmp_path / "bot_a"
     bot_b_path = tmp_path / "bot_b"
     bot_a_path.mkdir()
@@ -750,6 +755,74 @@ def test_official_round_rejects_non_symmetric_formal_launch_contract(
     assert receipt["passed"] is False
     assert expected_issue in receipt["issues"]
     assert receipt["formal_execution"]["sandboxed"] is False
+
+
+def test_official_round_smoke_mode_does_not_require_formal_sandbox(
+    tmp_path, monkeypatch
+):
+    """Smoke (10-hand) and compliance rounds pass a job_envelope for
+    certification identity, but the suite runner correctly skips bot sealing
+    for them (formal_requested = job_envelope is not None and target_hands ==
+    70, and smoke/compliance use target_hands=10). Requiring a formal sandbox
+    for those sub-70-hand modes would deadlock every smoke/compliance round:
+    the runner never seals, so the gate would always fire.
+
+    This test pins the 70-hand gating of ``official_formal_sandbox_required``
+    so a regression that re-broadens the check to any job_envelope is caught.
+    """
+    bot_a_path = tmp_path / "bot_a"
+    bot_b_path = tmp_path / "bot_b"
+    bot_a_path.mkdir()
+    bot_b_path.mkdir()
+    (bot_a_path / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    (bot_b_path / "national_bot.py").write_text("pass\n", encoding="utf-8")
+
+    config = OfficialPlatformConfig(
+        exe_path=tmp_path / "platform.exe",
+        wineprefix=tmp_path / "wine",
+        results_dir=tmp_path / "results",
+        lock_path=tmp_path / "lock",
+    )
+    monkeypatch.setattr(
+        harness,
+        "check_environment",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "issues": [],
+            "warnings": [],
+            "execution_profile": None,
+        },
+    )
+    # The round must reach the actual platform launch (no formal-sandbox gate
+    # fires), so provide a popen stub rather than asserting no process starts.
+    class _StubProc:
+        poll = lambda *a, **k: 0
+        wait = lambda *a, **k: 0
+        returncode = 0
+        stdout = iter([])
+        stderr = iter([])
+        pid = 12345
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(harness, "_popen", lambda *a, **k: _StubProc())
+
+    receipt = harness.run_official_round(
+        BotLaunchConfig(bot_a_path, name="BotA"),
+        BotLaunchConfig(bot_b_path, name="BotB"),
+        target_hands=10,
+        config=config,
+        out_dir=tmp_path / "round",
+        job_envelope={"schema_version": 1, "certification_mode": "smoke"},
+    )
+
+    # The formal-sandbox gate must NOT fire for the smoke path.
+    assert "official_formal_sandbox_required" not in receipt["issues"]
+    assert "official_formal_sandbox_asymmetric" not in receipt["issues"]
 
 
 def _bootstrap_authorization_case(tmp_path):

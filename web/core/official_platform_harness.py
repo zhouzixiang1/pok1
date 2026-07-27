@@ -2291,7 +2291,18 @@ def run_official_round(
     launch_contract_issues: list[str] = []
     if sealed_a != sealed_b:
         launch_contract_issues.append("official_formal_sandbox_asymmetric")
-    if job_envelope is not None and not formal_sandbox:
+    # The formal-sandbox requirement is a property of the 70-hand full
+    # certification path (which seals both bots before any hand is played and
+    # passes a job_envelope to bind the receipt to the durable certifier job).
+    # Smoke (10 hands) and compliance (10 hands) modes also pass a
+    # job_envelope for certification identity, but the suite runner correctly
+    # skips sealing for them (formal_requested = job_envelope is not None and
+    # target_hands == 70, ~120 lines below). Requiring a formal sandbox here
+    # for those sub-70-hand modes would deadlock every smoke/compliance round:
+    # the runner never seals, so this gate would always fire. Gate the
+    # requirement on the same target_hands == 70 condition the runner uses to
+    # decide whether sealing is requested at all.
+    if job_envelope is not None and target_hands == 70 and not formal_sandbox:
         launch_contract_issues.append("official_formal_sandbox_required")
     for label, bot in (("bot_a", bot_a), ("bot_b", bot_b)):
         subject = (
