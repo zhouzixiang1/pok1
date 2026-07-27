@@ -6,7 +6,57 @@ symbols stay single-dispatch even when invoked from the main module.
 
 from __future__ import annotations
 
+import sys as _sys
+
 import tool_planning_quality_contracts as _qc
+
+
+class _TPCallableProxy:
+    """Callable proxy that re-reads ``tool_planning.<name>`` on every call.
+
+    Duplicated from tool_planning_quality_contracts.py (which imports this
+    module at its top level) to avoid a circular import. Mirrors the same
+    class in tool_planning_worker.py. Static analysis confirms every reference
+    to these names in the rework group is a plain call, so __call__ plus
+    attribute forwarding is sufficient.
+    """
+
+    __slots__ = ("_name",)
+
+    def __init__(self, name):
+        object.__setattr__(self, "_name", name)
+
+    def _resolve(self):
+        tp = _sys.modules.get("tool_planning")
+        if tp is None:
+            raise RuntimeError(
+                "tool_planning is not initialized; _TPCallableProxy cannot resolve "
+                + object.__getattribute__(self, "_name")
+            )
+        return getattr(tp, object.__getattribute__(self, "_name"))
+
+    def __call__(self, *args, **kwargs):
+        return object.__getattribute__(self, "_resolve")()(*args, **kwargs)
+
+    def __getattr__(self, attr):
+        return getattr(object.__getattribute__(self, "_resolve")(), attr)
+
+    def __repr__(self):
+        try:
+            return repr(object.__getattribute__(self, "_resolve")())
+        except Exception:
+            return f"<_TPCallableProxy name={object.__getattribute__(self, '_name')!r}>"
+
+
+# Parent-module callable symbols this companion calls bare. Resolved live
+# through tool_planning so test monkeypatches keep working, mirroring the
+# _MONKEYPATCHED_TP_SYMBOLS_QC binding in tool_planning_quality_contracts.py.
+_REWORK_MONKEYPATCHED_TP_SYMBOLS = (
+    "get_bot_dir",
+    "log_system_event",
+)
+for _name in _REWORK_MONKEYPATCHED_TP_SYMBOLS:
+    globals()[_name] = _TPCallableProxy(_name)
 
 
 def _text_line_count(text):

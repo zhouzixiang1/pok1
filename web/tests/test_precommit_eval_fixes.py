@@ -126,10 +126,19 @@ class TestP0ReapSignalOrder:
         return "\n".join(body_lines)
 
     def _get_archivist_body(self):
-        source = self._get_commit_bot_source()
+        # _run_durable_post_publication_archivist was extracted into the
+        # tool_commit_archivist_orchestrator companion (parent keeps a thin
+        # async delegate). The signal-before-effects ordering invariant still
+        # holds; this helper now reads the body from its real home.
+        p = Path(__file__).resolve().parent.parent / "core" / "tool_commit_archivist_orchestrator.py"
+        source = p.read_text()
         start = source.find("async def _run_durable_post_publication_archivist(")
-        assert start >= 0
-        end = source.find("\n\n@tool(\"run_archivist\"", start)
+        assert start >= 0, "async def _run_durable_post_publication_archivist not found in tool_commit_archivist_orchestrator.py"
+        end = source.find("\nasync def ", start + 1)
+        if end < 0:
+            end = source.find("\ndef ", start + 1)
+        if end < 0:
+            end = len(source)  # last top-level def in the companion
         assert end > start
         return source[start:end]
 
@@ -146,10 +155,10 @@ class TestP0ReapSignalOrder:
         signal_pos = source.find('plan_handoff_step(\n                    v, source_v, claim_id, "reap_signal"')
         priority_pos = source.find('"priority_eval",\n                    {')
         rotation_effect_pos = source.find(
-            'rotations = archive_rotate_files(v, row["plan"])'
+            'rotations = _tc.archive_rotate_files(v, row["plan"])'
         )
         cleanup_effect_pos = source.find(
-            "log_archives = _execute_strict_log_cleanup"
+            "log_archives = _tc._execute_strict_log_cleanup"
         )
         assert -1 not in {
             signal_pos, priority_pos, rotation_effect_pos, cleanup_effect_pos,
