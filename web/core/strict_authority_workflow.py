@@ -537,9 +537,18 @@ def expected_master_invocation_evidence(
 # Critic contract from the call-context companion so legacy
 # ``strict_authority_workflow._GATE_RENDER_INVOCATION_SENTINEL`` /
 # ``strict_authority_workflow._STRICT_CRITIC_NO_STRENGTH_CONTRACT`` references
-# keep resolving.
-_GATE_RENDER_INVOCATION_SENTINEL = _cc._GATE_RENDER_INVOCATION_SENTINEL
-_STRICT_CRITIC_NO_STRENGTH_CONTRACT = _cc._STRICT_CRITIC_NO_STRENGTH_CONTRACT
+# keep resolving.  These are resolved lazily via __getattr__ below to avoid a
+# circular-import crash when strict_authority_call_context is imported first
+# (it imports strict_authority_workflow at its own module-init, and these
+# constants are not yet defined on the companion at that point).
+
+
+def __getattr__(name: str):
+    if name == "_GATE_RENDER_INVOCATION_SENTINEL":
+        return _cc._GATE_RENDER_INVOCATION_SENTINEL
+    if name == "_STRICT_CRITIC_NO_STRENGTH_CONTRACT":
+        return _cc._STRICT_CRITIC_NO_STRENGTH_CONTRACT
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _normalized_reviewer_focus_areas(

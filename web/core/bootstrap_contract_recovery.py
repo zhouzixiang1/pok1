@@ -1686,7 +1686,10 @@ def build_claim(
     ):
         issues.append("bootstrap_contract_called_allin_contract_41_required")
     if (
-        old_contract.get("version") not in SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS
+        (
+            old_contract.get("version") not in SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS
+            or old_contract.get("version") == _V65_BASELINE_CONTRACT_VERSION
+        )
         and job_facts.get("recovery_profile") != _V65_PROFILE_ID
     ):
         issues.append("bootstrap_contract_non_v65_baseline_contract_invalid")

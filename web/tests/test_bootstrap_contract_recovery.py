@@ -11,6 +11,7 @@ import bootstrap_contract_recovery as recovery
 from bot_artifact import canonical_digest
 from bot_namespace import (
     ARCHIVED_VERSION_HIGH_WATER,
+    EVOLUTION_BRANCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
 )
@@ -2083,10 +2084,10 @@ def _configure_claim(monkeypatch, root: Path):
         if args[:2] == ("rev-parse", "--verify"):
             value = args[2].split("^", 1)[0]
             return OLD_HEAD if value in {OLD_HEAD, OLD_HEAD[:12]} else NEW_HEAD
-        if args == ("rev-parse", "HEAD") or args == ("rev-parse", "origin/main"):
+        if args == ("rev-parse", "HEAD") or args == ("rev-parse", f"origin/{EVOLUTION_BRANCH}"):
             return NEW_HEAD
         if args == ("rev-parse", "--abbrev-ref", "HEAD"):
-            return "main"
+            return EVOLUTION_BRANCH
         if args == ("status", "--porcelain", "--untracked-files=no"):
             return ""
         raise AssertionError(args)

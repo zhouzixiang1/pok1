@@ -217,7 +217,7 @@ _CORE_PROMPTS = _prompts(
     ),
     (
         "Reviewer",
-        "web/core/tool_gates.py",
+        "web/core/tool_gates_critic_review.py",
         "_render_reviewer_provider_prompt",
         ("web/core/prompts/reviewer_prompt.md",),
     ),
@@ -1861,7 +1861,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             ),
             _ref("web/core/workflow_kernel.py", "interrupt_effect"),
             _ref(
-                "web/core/orchestrator.py",
+                "web/core/orchestrator_tool_result_classification.py",
                 "_is_worker_operator_shutdown_interrupted",
             ),
         ),
@@ -1873,7 +1873,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             ),
             _ref("web/core/workflow_kernel.py", "interrupt_effect"),
             _ref(
-                "web/core/orchestrator.py",
+                "web/core/orchestrator_tool_result_classification.py",
                 "_is_worker_operator_shutdown_interrupted",
             ),
         ),
