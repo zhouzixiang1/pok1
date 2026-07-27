@@ -2334,6 +2334,17 @@ def record_reaped_bot(bot_name, *, reason="", data=None):
     return entry
 
 
+# TTL for the remote publication proof cache. Read-only observer requests
+# (/api/bots, control status/health) re-resolve the published pool frequently;
+# a short TTL amplifies a slow origin into an ASGI outage by re-running
+# ``git ls-remote origin`` on every poll. Default 60s keeps the read path
+# off the network during a burst. Effect/launch boundaries still call
+# ``_clear_remote_publication_cache()`` to force a fresh remote proof, so a
+# longer TTL never weakens publication validation.
+_REMOTE_PUBLICATION_CACHE_TTL_SEC = float(
+    os.environ.get("POK_REMOTE_PUBLICATION_CACHE_TTL", "60.0")
+)
+
 _REMOTE_PUBLICATION_CACHE_LOCK = threading.RLock()
 _REMOTE_PUBLICATION_CACHE_CONDITION = threading.Condition(
     _REMOTE_PUBLICATION_CACHE_LOCK
@@ -2394,9 +2405,9 @@ def _remote_published_completion_versions(tag_versions) -> set[int]:
         ))
     cache_key = tuple(local_rows)
     # A Dashboard can ask for status, health, evolution state and strength at
-    # the same time.  Once the five-second proof cache expires those callers
-    # must share one remote transaction; otherwise each observer launches its
-    # own ``git ls-remote``/fetch and a slow origin amplifies into an ASGI
+    # the same time.  Once the proof cache expires those callers must share
+    # one remote transaction; otherwise each observer launches its own
+    # ``git ls-remote``/fetch and a slow origin amplifies into an ASGI
     # outage.  Mutation/launch callers still wait for this exact fresh proof --
     # no stale remote result is accepted at an effect boundary.
     while True:
@@ -2406,7 +2417,7 @@ def _remote_published_completion_versions(tag_versions) -> set[int]:
                 _REMOTE_PUBLICATION_CACHE.get("key") == cache_key
                 and now
                 - float(_REMOTE_PUBLICATION_CACHE.get("checked_at") or 0.0)
-                <= 5.0
+                <= _REMOTE_PUBLICATION_CACHE_TTL_SEC
             ):
                 return set(_REMOTE_PUBLICATION_CACHE.get("versions") or ())
             inflight_key = _REMOTE_PUBLICATION_CACHE.get("inflight_key")

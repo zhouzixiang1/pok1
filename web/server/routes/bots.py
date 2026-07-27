@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 
+from blocking_runtime import run_blocking_isolated
 from server.routes._helpers import build_bot_summary, load_strict_strength_snapshot
 from bot_namespace import (
     ROLE_PARENT_SOURCE,
@@ -188,11 +189,14 @@ def build_bot_listing(
     return result
 
 
-@router.get("")
-async def list_bots(
-    include_history: bool = False,
-):
-    """List only bots in the current strict published evaluation pool."""
+def _list_bots_blocking(include_history: bool) -> dict:
+    """Synchronous read of the strict published evaluation pool.
+
+    Runs on an isolated worker thread (see ``list_bots``) so the blocking
+    git/file reads it transitively performs never freeze the uvicorn event
+    loop. Mirrors the ``_run_control_observer_http_snapshot`` pattern in
+    ``control.py``.
+    """
     active_names, generation_identities = _strict_published_authority()
     snapshot = _inventory_strength_snapshot(active_names)
     return build_bot_listing(
@@ -204,6 +208,25 @@ async def list_bots(
         generation_identities=generation_identities,
         strength_rows_data=snapshot.get("selection_rows") or [],
         strength_evidence_available=bool(snapshot),
+    )
+
+
+@router.get("")
+async def list_bots(
+    include_history: bool = False,
+):
+    """List only bots in the current strict published evaluation pool.
+
+    Offloaded to an isolated worker thread: the pool read transitively
+    performs blocking git/file operations (including ``git ls-remote origin``
+    when ``POK_REQUIRE_EVOLUTION_PUSH=1``) which must not stall the shared
+    uvicorn event loop and starve every other HTTP handler (notably
+    ``/api/control/health``).
+    """
+    return await run_blocking_isolated(
+        _list_bots_blocking,
+        include_history,
+        thread_name_prefix="list-bots",
     )
 
 

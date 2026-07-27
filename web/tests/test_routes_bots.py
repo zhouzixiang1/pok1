@@ -287,6 +287,82 @@ class TestListBots:
         )
         assert all(bot["name"].startswith(ACTIVE_BOT_PREFIX) for bot in data["active"])
 
+    def test_list_bots_offloads_blocking_work(self, monkeypatch, client):
+        """list_bots must run its body via run_blocking_isolated.
+
+        The pool read transitively performs blocking git/file operations
+        (including ``git ls-remote origin`` under POK_REQUIRE_EVOLUTION_PUSH=1).
+        Running that inline in the async handler freezes the shared uvicorn
+        event loop and starves every other endpoint (notably health). This
+        test asserts the offload boundary is in place by spying on
+        ``run_blocking_isolated``.
+        """
+        from server.routes import bots as bots_mod
+
+        calls = {"count": 0, "prefix": None}
+
+        real_offload = bots_mod.run_blocking_isolated
+
+        async def spy_offload(func, *args, thread_name_prefix=None, **kwargs):
+            calls["count"] += 1
+            calls["prefix"] = thread_name_prefix
+            return await real_offload(
+                func, *args, thread_name_prefix=thread_name_prefix, **kwargs
+            )
+
+        monkeypatch.setattr(bots_mod, "run_blocking_isolated", spy_offload)
+
+        resp = client.get("/api/bots")
+        assert resp.status_code == 200
+        assert calls["count"] == 1, "list_bots must offload exactly once"
+        assert calls["prefix"] == "list-bots"
+
+    def test_list_bots_blocking_runs_without_event_loop(self):
+        """The extracted synchronous helper is pure and needs no running loop.
+
+        This guards against a regression where blocking logic leaks back into
+        the async handler body.
+        """
+        from server.routes.bots import _list_bots_blocking
+
+        # With an uninitialized epoch, the helper must return a fail-closed
+        # listing rather than raise — proving it is safe to run on a worker.
+        result = _list_bots_blocking(include_history=False)
+        assert isinstance(result, dict)
+        assert "active" in result
+
+
+class TestRemotePublicationCacheTtl:
+    def test_ttl_constant_reads_env_override(self, monkeypatch):
+        """The remote-publication proof cache TTL must be env-overridable.
+
+        Default 60s keeps read-only observer requests off the network during a
+        poll burst; the previous hardcoded 5s caused a slow origin (GitHub
+        ls-remote ~30-60s on a constrained link) to stall the API.
+        """
+        import importlib
+
+        monkeypatch.setenv("POK_REMOTE_PUBLICATION_CACHE_TTL", "42")
+        import evolution_infra
+
+        importlib.reload(evolution_infra)
+        try:
+            assert evolution_infra._REMOTE_PUBLICATION_CACHE_TTL_SEC == 42.0
+        finally:
+            monkeypatch.delenv("POK_REMOTE_PUBLICATION_CACHE_TTL", raising=False)
+            importlib.reload(evolution_infra)
+
+    def test_ttl_default_is_60_seconds(self):
+        """Without an env override the TTL defaults to 60s (not the old 5s)."""
+        import evolution_infra
+
+        # Only assert when the env is genuinely unset, so a developer's local
+        # POK_REMOTE_PUBLICATION_CACHE_TTL doesn't make this test flaky.
+        import os
+
+        if "POK_REMOTE_PUBLICATION_CACHE_TTL" not in os.environ:
+            assert evolution_infra._REMOTE_PUBLICATION_CACHE_TTL_SEC == 60.0
+
 
 class TestBotDetail:
     def test_found(self, client, synthetic_published_bot_authority):
