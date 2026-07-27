@@ -265,7 +265,7 @@ def resolve_published_parent_tag_authority(
     return {
         "completion_tag": completion_tag,
         "completion_tag_object_oid": completion_object,
-        "high_water_tag": high_water_tag,
+        "high_water_tag": high_water,
         "high_water_tag_object_oid": high_water_object,
         "publication_commit_oid": completion_commit,
         "completion_tree_oid": completion_tree,
