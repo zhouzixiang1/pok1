@@ -1170,6 +1170,14 @@ _ARCHITECTURE_CHECK_FILES = {
     "donk_line_reachability": ["policy.py"],
     "delayed_probe_line_reachability": ["policy.py"],
     "semantic_line_reachability": ["policy.py"],
+    # policy.py-deadline-miss and precompute-influence failures ARE worker-
+    # repairable policy.py edits (their own evidence locations and guidance
+    # text both point at policy.py). Without these entries the
+    # `_architecture_contracts` `worker_repairable` guard returns [] and the
+    # generation terminal-abandons with `system_repair_task_synthesis_empty`
+    # instead of entering a rework cycle. See v12/v13 abandon ledger entries.
+    "typed_runtime_probe": ["policy.py"],
+    "precompute_runtime_influence": ["policy.py"],
 }
 
 def _architecture_transition_failure_ids(transition):
