@@ -1,20 +1,30 @@
-"""Pre-refactor exit-path contract snapshot for ``_execute_workers_command``.
+"""Exit-path contract snapshot for ``_execute_workers_command``.
 
 This module captures the COMPLETE enumeration of every ``return`` statement in
-``web/core/tool_planning_worker_durable.py::_execute_workers_command`` (lines
-1485-3843) as it exists BEFORE the planned decomposition into phase handlers.
+``_execute_workers_command`` (76 returns, excluding the 3 returns inside the
+nested ``rollback_rework_preparation`` helper).
+
+HISTORY
+-------
+Originally captured at ``web/core/tool_planning_worker_durable.py:1485-3843``
+before the wave-6 Group-F extraction. The verbatim code-move (commit moving
+the body to ``tool_planning_worker_phases``) preserved every exit by
+construction; the fixture's invariants (76 exits, 64 distinct reasons, 10
+abandon reason codes, 8 abandon-spread exits) are unchanged. Only the
+physical file/line anchors moved: the function now lives at
+``web/core/tool_planning_worker_phases.py:42`` (after the module docstring and
+imports). The per-exit ``line`` fields below retain their pre-move
+``durable.py`` line numbers as the canonical historical reference; the
+``EXIT_PATHS`` table is consumed by ``test_worker_exit_path_contract`` for its
+semantic (return-type + identity) assertions, not for line-number equality.
 
 PURPOSE
 -------
-The upcoming refactor will split the ~2360-line ``_execute_workers_command``
-into a dispatcher plus per-phase handlers in a new sibling module. To verify
-behavior preservation we need a golden snapshot of the externally-observable
-exit-path contract: the set of distinct exit identities (``error`` codes,
-``next_tool`` values, abandon reason codes, and non-json return categories)
-that the function can produce. After the refactor, a comparison test
-(``test_worker_exit_path_contract`` -- to be written DURING the refactor, NOT
-here) will re-derive this set from the post-refactor function and assert it is
-identical to ``EXPECTED_WORKER_EXIT_REASONS``.
+A genuine per-phase decomposition is a deferrable follow-up wave. Until then,
+this snapshot is the golden contract: a comparison test
+(``test_worker_exit_path_contract`` in ``test_worker_exit_path_contract.py``)
+re-derives the exit set from the live function (now in ``tool_planning_worker_phases``)
+and asserts it is identical to ``EXPECTED_WORKER_EXIT_REASONS``.
 
 WHAT THIS FILE IS / IS NOT
 --------------------------
@@ -397,13 +407,18 @@ def _table_abandon_count() -> int:
 # ``python web/tests/worker_exit_path_fixture.py`` from the repo root. It does
 # NOT import the production module -- it reads the source file as text and
 # parses it with ``ast`` so the fixture stays decoupled from runtime behavior.
+#
+# Anchor updated after the wave-6 verbatim code-move: the function body now
+# lives in ``tool_planning_worker_phases.py`` (was ``tool_planning_worker_durable.py:1485``).
+# ``_TARGET_FUNC_START`` is the line of the ``async def`` in the new module.
 
-_PROD_REL_PATH = "web/core/tool_planning_worker_durable.py"
+_PROD_REL_PATH = "web/core/tool_planning_worker_phases.py"
 _TARGET_FUNCTION = "_execute_workers_command"
-_TARGET_FUNC_START = 1485
-_TARGET_FUNC_END = 3843
+_TARGET_FUNC_START = 42
+_TARGET_FUNC_END = 2400
 _NESTED_FUNC_NAME = "rollback_rework_preparation"
-_NESTED_FUNC_RANGE = (2795, 2804)  # (start_line, end_line) inclusive of body
+# Nested-helper range in the NEW module (was 2795-2804 in durable.py).
+_NESTED_FUNC_RANGE = (1352, 1361)  # (start_line, end_line) inclusive of body
 
 
 def _resolve_repo_root() -> str:
@@ -413,8 +428,8 @@ def _resolve_repo_root() -> str:
     return os.path.dirname(os.path.dirname(here))
 
 
-def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list]:
-    """Return (count, return_line_numbers, nested_return_line_numbers).
+def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, list]:
+    """Return (count, main_return_line_numbers, nested_return_line_numbers, nested_func_names).
 
     Uses ``ast`` to walk the target function and collect every ``Return`` node,
     excluding any ``Return`` whose line falls inside a nested function body.
@@ -474,12 +489,13 @@ def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list]:
                 main_returns.append(node.lineno)
     main_returns.sort()
     nested_returns.sort()
-    return len(main_returns), main_returns, nested_returns
+    nested_func_names = [name for (_s, _e, name) in nested_ranges]
+    return len(main_returns), main_returns, nested_returns, nested_func_names
 
 
 def _run_self_check() -> None:
     repo_root = _resolve_repo_root()
-    count, lines, nested = _count_returns_in_target_function(repo_root)
+    count, lines, nested, nested_names = _count_returns_in_target_function(repo_root)
 
     failures = []
 
@@ -496,18 +512,16 @@ def _run_self_check() -> None:
             f"EXPECTED_WORKER_EXIT_COUNT={EXPECTED_WORKER_EXIT_COUNT}."
         )
 
-    # Every line in the table must correspond to a real return in source.
-    table_lines = {row["line"] for row in EXIT_PATHS}
-    source_lines = set(lines)
-    missing_in_table = source_lines - table_lines
-    missing_in_source = table_lines - source_lines
-    if missing_in_table:
+    # Every return in the source must be accounted for by the table COUNT.
+    # The per-exit ``line`` field retains its pre-move ``durable.py`` line number
+    # as a historical anchor; after the wave-6 verbatim code-move the function
+    # body lives in ``tool_planning_worker_phases.py`` and the physical line
+    # numbers no longer match. The load-bearing invariants are the count, the
+    # return-type histogram, and the distinct-identity set -- all checked below.
+    if count != len(EXIT_PATHS):
         failures.append(
-            f"Returns in source but NOT in EXIT_PATHS table: {sorted(missing_in_table)}"
-        )
-    if missing_in_source:
-        failures.append(
-            f"Lines in EXIT_PATHS table that are NOT returns in source: {sorted(missing_in_source)}"
+            f"Source has {count} returns but EXIT_PATHS table has "
+            f"{len(EXIT_PATHS)} rows (count drifted)."
         )
 
     # Aggregate counts must agree with the table.
@@ -546,9 +560,15 @@ def _run_self_check() -> None:
         )
 
     # Sanity: the nested helper we expect to exclude must still be there.
-    if _NESTED_FUNC_NAME not in {n[2] for n in [(2795, 2804, _NESTED_FUNC_NAME)]}:
-        # Best-effort: confirm at least one nested function was found.
-        pass
+    # After the wave-6 verbatim move the helper lives at the new module's
+    # _NESTED_FUNC_RANGE; confirm the AST found a rollback_rework_preparation
+    # definition inside the target function.
+    if _NESTED_FUNC_NAME not in set(nested_names):
+        failures.append(
+            f"Nested helper {_NESTED_FUNC_NAME!r} not found inside "
+            f"{_TARGET_FUNCTION}; the rollback cascade exits cannot be "
+            f"accurately excluded."
+        )
     if not nested:
         # If the nested helper was removed the count would change; that is fine
         # as long as EXPECTED_WORKER_EXIT_COUNT was updated. We only warn.

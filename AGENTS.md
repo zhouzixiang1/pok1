@@ -351,20 +351,26 @@ fail retry during a multi-hour quota window.
 
 ### Global LLM concurrency (producer-consumer model)
 
-All sub-agent LLM calls are capped at **2 simultaneous in-flight streams**
+All sub-agent LLM calls are capped at **3 simultaneous in-flight streams**
 via a process-wide `asyncio.Semaphore` in
-`web/core/llm_concurrency.py` (`GLOBAL_LLM_CONCURRENCY=2`, env-overridable via
-`POK_GLOBAL_LLM_CONCURRENCY`). The semaphore is acquired inside
-`run_claude_query` (the single chokepoint for all 17+ LLM call sites:
-Master Scouts/Critics/final, Workers, Review, Critic, direction_audit,
-crossover, etc.) just before the actual provider dispatch.
+`web/core/llm_concurrency.py` (`GLOBAL_LLM_CONCURRENCY=2` default in code,
+env-overridable via `POK_GLOBAL_LLM_CONCURRENCY`; production
+`deploy/tencent-cloud/env.runtime` sets it to `3` as of 2026-07-27 per
+`docs/llm-utilization-investigation-2026-07-27.md` Tier A.1, so the 3 Master
+Scouts and 2 Master critics each run in a single concurrent round instead of
+queueing 2-wide). The semaphore is acquired inside `run_claude_query` (the
+single chokepoint for all 17+ LLM call sites: Master Scouts/Critics/final,
+Workers, Review, Critic, direction_audit, crossover, etc.) just before the
+actual provider dispatch.
 
 FIFO ordering (`asyncio.Semaphore` is deque-backed) prevents starvation: no
 role is permanently blocked. Master and Worker roles execute in different
 pipeline stages (temporally separated by the linear stage machine), so they
 rarely contend for permits simultaneously. The former per-role
 `_WORKER_SEMAPHORE` adaptive backoff has been removed — Workers now use the
-same global semaphore as all other roles.
+same global semaphore as all other roles. The `api_concurrency` adaptive
+backoff still halves the cap per 429, so a too-aggressive steady-state
+ceiling self-corrects downward if GLM rate-limits.
 
 ### CLAUDE.md / AGENTS.md memory injection
 

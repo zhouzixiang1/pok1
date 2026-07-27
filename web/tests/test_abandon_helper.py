@@ -2856,14 +2856,17 @@ def test_rework_authority_failure_paths_abandon_in_tool_source():
     # After the Group-E quality-contract extraction (commit af4187a5), the
     # worker-execution body that emits these reasons lives in tool_planning_worker
     # (re-exported by tool_planning). The F-group durable projection/effect
-    # extraction (wave 6) then moved that body into tool_planning_worker_durable.
-    # Inspect all three modules so the regression guard tracks the reasons
-    # wherever the extraction placed them.
+    # extraction (wave 6) then moved that body into tool_planning_worker_durable,
+    # and the second F-cut moved the _execute_workers_command dispatcher body
+    # into tool_planning_worker_phases. Inspect all four modules so the
+    # regression guard tracks the reasons wherever the extraction placed them.
     import tool_planning_worker_durable
+    import tool_planning_worker_phases
     source = (
         inspect.getsource(tool_planning)
         + inspect.getsource(tool_planning_worker)
         + inspect.getsource(tool_planning_worker_durable)
+        + inspect.getsource(tool_planning_worker_phases)
     )
     for reason in [
         "worker_terminal_abandon_rework_task_authority_invalid",

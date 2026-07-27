@@ -384,7 +384,8 @@ _DeferredWorkerActivity = _dur._DeferredWorkerActivity
 
 
 async def _execute_workers_command(args, *, actor_lock_owned=False):
-    return await _dur._execute_workers_command(args, actor_lock_owned=actor_lock_owned)
+    from tool_planning_worker_phases import _execute_workers_command as _impl
+    return await _impl(args, actor_lock_owned=actor_lock_owned)
 
 
 @tool("execute_workers", "Execute worker tasks to modify bot code. Each task has worker_id, role, target_files, worker_prompt.", {"tasks": list, "next_v": int, "source_v": int, "reviewer_feedback": str})
