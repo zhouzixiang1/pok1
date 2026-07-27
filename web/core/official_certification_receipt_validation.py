@@ -34,6 +34,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot_artifact import canonical_digest
+
 import official_certification as _oc  # for cross-refs
 
 
