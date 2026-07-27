@@ -45,6 +45,7 @@ from pipeline_state import generic_abandon_block
 from bot_artifact import canonical_digest
 from bot_namespace import EVALUATION_EPOCH
 import tool_bot_management_abandon_fences as _tbm
+import tool_bot_management_reap as _tbmr  # noqa: E402,F401  (reap cluster)
 from epoch_authority import (
     schema2_abandon_quarantine_contract,
     schema2_abandon_receipt_identity,
@@ -984,7 +985,7 @@ def expected_abandon_identity(checkpoint: dict) -> dict:
     }
 
 
-class ReapWeakestInput(TypedDict):
+class ReapWeakestInput(_tbmr.ReapWeakestInput):
     pass
 
 
@@ -1012,102 +1013,23 @@ _REAP_BOT_INPUT_KEYS = {
 
 
 def _finite_float_hex(value, *, field: str) -> str:
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"reap_selection_{field}_invalid") from exc
-    if not math.isfinite(normalized):
-        raise RuntimeError(f"reap_selection_{field}_non_finite")
-    return normalized.hex()
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._finite_float_hex(value, field=field)
 
 
 def _decode_finite_float_hex(value, *, field: str) -> float:
-    if not isinstance(value, str):
-        raise RuntimeError(f"reap_selection_{field}_not_hex")
-    try:
-        normalized = float.fromhex(value)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"reap_selection_{field}_not_hex") from exc
-    if not math.isfinite(normalized) or normalized.hex() != value:
-        raise RuntimeError(f"reap_selection_{field}_not_canonical")
-    return normalized
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._decode_finite_float_hex(value, field=field)
 
 
 def _is_strict_canonical_bot_name(value) -> bool:
-    if not isinstance(value, str):
-        return False
-    version = parse_bot_version(value)
-    return (
-        version is not None
-        and version >= FIRST_STRICT_POLICY_VERSION
-        and value == bot_name(version)
-    )
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._is_strict_canonical_bot_name(value)
 
 
 def _validate_reap_selection_snapshot(snapshot: dict) -> dict[str, dict]:
-    """Validate and decode one immutable conservative-Glicko preimage."""
-
-    if not isinstance(snapshot, dict) or set(snapshot) != _REAP_SNAPSHOT_KEYS:
-        raise RuntimeError("reap_selection_snapshot_keys_invalid")
-    if (
-        type(snapshot.get("schema_version")) is not int
-        or snapshot["schema_version"] != 1
-        or snapshot.get("kind") != "strict-active-pool-selection-snapshot"
-        or snapshot.get("selection_policy") != REAP_SELECTION_POLICY
-        or type(snapshot.get("max_active_bots")) is not int
-        or snapshot["max_active_bots"] < 1
-        or not isinstance(snapshot.get("active_bots"), list)
-        or not isinstance(snapshot.get("bot_inputs"), list)
-    ):
-        raise RuntimeError("reap_selection_snapshot_contract_invalid")
-    active_bots = snapshot["active_bots"]
-    if (
-        active_bots != sorted(active_bots)
-        or len(active_bots) != len(set(active_bots))
-        or any(not _is_strict_canonical_bot_name(name) for name in active_bots)
-        or snapshot.get("active_pool_digest") != canonical_digest(active_bots)
-    ):
-        raise RuntimeError("reap_selection_snapshot_pool_invalid")
-    priority_bot = snapshot.get("priority_bot")
-    if priority_bot is not None and (
-        not isinstance(priority_bot, str) or priority_bot not in active_bots
-    ):
-        raise RuntimeError("reap_selection_snapshot_priority_invalid")
-    rows = snapshot["bot_inputs"]
-    if (
-        len(rows) != len(active_bots)
-        or snapshot.get("bot_inputs_digest") != canonical_digest(rows)
-    ):
-        raise RuntimeError("reap_selection_snapshot_inputs_invalid")
-    decoded: dict[str, dict] = {}
-    for expected_name, row in zip(active_bots, rows):
-        if not isinstance(row, dict) or set(row) != _REAP_BOT_INPUT_KEYS:
-            raise RuntimeError("reap_selection_snapshot_input_keys_invalid")
-        if row.get("bot") != expected_name:
-            raise RuntimeError("reap_selection_snapshot_input_order_invalid")
-        if type(row.get("games")) is not int or row["games"] < 0:
-            raise RuntimeError("reap_selection_snapshot_games_invalid")
-        decoded[expected_name] = {
-            "r": _decode_finite_float_hex(
-                row.get("rating_r_hex"), field="rating_r"
-            ),
-            "rd": _decode_finite_float_hex(
-                row.get("rating_rd_hex"), field="rating_rd"
-            ),
-            "games": row["games"],
-            "leaderboard_score": _decode_finite_float_hex(
-                row.get("leaderboard_score_hex"), field="leaderboard_score"
-            ),
-            "h2h_avg_wr": _decode_finite_float_hex(
-                row.get("h2h_avg_wr_hex"), field="h2h_avg_wr"
-            ),
-        }
-    unsigned = {
-        key: value for key, value in snapshot.items() if key != "snapshot_digest"
-    }
-    if snapshot.get("snapshot_digest") != canonical_digest(unsigned):
-        raise RuntimeError("reap_selection_snapshot_digest_invalid")
-    return decoded
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._validate_reap_selection_snapshot(snapshot)
 
 
 def _capture_reap_selection_snapshot(
@@ -1115,171 +1037,24 @@ def _capture_reap_selection_snapshot(
     *,
     max_active_bots: int | None = None,
 ) -> dict:
-    """Freeze every input used by the active conservative-Glicko policy."""
-
-    from evaluation_bundle import evaluation_cycle_lock
-    from tool_helpers import _read_json
-
-    cap = MAX_ACTIVE_BOTS if max_active_bots is None else max_active_bots
-    if type(cap) is not int or cap < 1:
-        raise RuntimeError("reap_selection_max_active_bots_invalid")
-    with evaluation_cycle_lock(RESULTS_DIR, exclusive=False):
-        names = sorted(
-            get_active_bots() if active_bots is None else list(active_bots)
-        )
-        if (
-            len(names) != len(set(names))
-            or any(not _is_strict_canonical_bot_name(name) for name in names)
-        ):
-            raise RuntimeError("reap_selection_active_pool_invalid")
-        ratings = load_ratings()
-        h2h_winrates = load_h2h_avg_winrates()
-        strength_scores = load_strength_scores()
-        bot_stats = _read_json(RESULTS_DIR / "bot_stats.json", {})
-        priority_data = _read_json(RESULTS_DIR / "priority_eval.json", {})
-        priority_bot = (
-            priority_data.get("bot")
-            if isinstance(priority_data, dict)
-            else None
-        )
-        if priority_bot not in names:
-            priority_bot = None
-        rows = []
-        for name in names:
-            rating = ratings.get(name, Glicko2Player())
-            try:
-                games = int((bot_stats.get(name) or {}).get("games", 0) or 0)
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise RuntimeError("reap_selection_games_invalid") from exc
-            if games < 0:
-                raise RuntimeError("reap_selection_games_invalid")
-            rows.append({
-                "bot": name,
-                "rating_r_hex": _finite_float_hex(
-                    getattr(rating, "r", None), field="rating_r"
-                ),
-                "rating_rd_hex": _finite_float_hex(
-                    getattr(rating, "rd", None), field="rating_rd"
-                ),
-                "games": games,
-                "leaderboard_score_hex": _finite_float_hex(
-                    strength_scores.get(name, 0.0), field="leaderboard_score"
-                ),
-                "h2h_avg_wr_hex": _finite_float_hex(
-                    h2h_winrates.get(name, 0.0), field="h2h_avg_wr"
-                ),
-            })
-    snapshot = {
-        "schema_version": 1,
-        "kind": "strict-active-pool-selection-snapshot",
-        "selection_policy": REAP_SELECTION_POLICY,
-        "max_active_bots": cap,
-        "active_bots": names,
-        "active_pool_digest": canonical_digest(names),
-        "priority_bot": priority_bot,
-        "bot_inputs": rows,
-        "bot_inputs_digest": canonical_digest(rows),
-    }
-    snapshot["snapshot_digest"] = canonical_digest(snapshot)
-    _validate_reap_selection_snapshot(snapshot)
-    return snapshot
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._capture_reap_selection_snapshot(
+        active_bots,
+        max_active_bots=max_active_bots,
+    )
 
 
 def _select_reap_candidate_from_snapshot(
     snapshot: dict,
     active_bots=None,
 ) -> dict:
-    """Purely select the next target from one validated frozen preimage."""
-
-    inputs = _validate_reap_selection_snapshot(snapshot)
-    active_bots = list(
-        snapshot["active_bots"] if active_bots is None else active_bots
-    )
-    if (
-        len(active_bots) != len(set(active_bots))
-        or not set(active_bots).issubset(inputs)
-    ):
-        raise RuntimeError("reap_selection_runtime_pool_invalid")
-    cap = snapshot["max_active_bots"]
-    if len(active_bots) <= cap:
-        return {"candidate": None, "pool_size": len(active_bots)}
-
-    current_bot = max(
-        active_bots,
-        key=lambda name: parse_bot_version(name) or -1,
-    )
-
-    # Exclude the current/latest source and the newest few active bots; they are
-    # either being evolved from or still need fresh evaluation.
-    protected_recent = set()
-    if len(active_bots) > cap + 3:
-        protected_recent = set(sorted(
-            active_bots,
-            key=lambda name: parse_bot_version(name) or -1,
-        )[-3:])
-    protected_names = {current_bot, *protected_recent}
-    if snapshot["priority_bot"] in active_bots:
-        protected_names.add(snapshot["priority_bot"])
-
-    evaluated_candidates = []
-    zero_game_candidates = []
-    for name in active_bots:
-        if name in protected_names:
-            continue
-        row = inputs[name]
-        candidate = (name, row["r"], row["rd"], row["games"])
-        if row["games"] == 0:
-            zero_game_candidates.append(candidate)
-            continue
-        evaluated_candidates.append(candidate)
-
-    # Soft overflow avoids untested candidates; hard overflow selects old
-    # zero-game candidates before allowing the pool to grow without bound.
-    if len(active_bots) <= cap + 3:
-        candidates = evaluated_candidates
-    else:
-        candidates = evaluated_candidates + zero_game_candidates
-    if not candidates:
-        return {
-            "candidate": None,
-            "reason": "All remaining bots are current, recent, priority, or protected untested",
-            "protected": sorted(protected_names),
-        }
-
-    protected = {name for name, _r, _rd, games in candidates if games < 600}
-    if len(active_bots) <= cap + 3:
-        candidates = [row for row in candidates if row[0] not in protected]
-        if not candidates:
-            return {
-                "candidate": None,
-                "reason": "all_protected",
-                "remaining": len(active_bots),
-                "protected_count": len(protected),
-            }
-
-    candidates.sort(key=lambda row: (
-        row[1] - 2 * row[2],
-        row[3],
-        parse_bot_version(row[0]) or 0,
-    ))
-    name, rating_r, rating_rd, _games = candidates[0]
-    frozen = inputs[name]
-    return {
-        "candidate": name,
-        "selection_key": "conservative_glicko",
-        "conservative_rating": round(rating_r - 2 * rating_rd, 1),
-        "leaderboard_score": round(frozen["leaderboard_score"], 4),
-        "h2h_avg_wr": round(frozen["h2h_avg_wr"], 4),
-        "rating": {"r": round(rating_r, 1), "rd": round(rating_rd, 1)},
-        "active_pool": sorted(active_bots),
-    }
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._select_reap_candidate_from_snapshot(snapshot, active_bots)
 
 
 def _select_reap_candidate(active_bots=None) -> dict:
-    """Return the exact next reap target without performing a side effect."""
-
-    snapshot = _capture_reap_selection_snapshot(active_bots)
-    return _select_reap_candidate_from_snapshot(snapshot, active_bots)
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._select_reap_candidate(active_bots)
 
 
 async def _do_reap_weakest(
@@ -1288,278 +1063,28 @@ async def _do_reap_weakest(
     expected_culled: str | None = None,
     selection_snapshot: dict | None = None,
 ) -> dict:
-    """Core reaping logic, optionally fenced to a preplanned target."""
-
-    active_bots = get_active_bots()
-    snapshot = (
-        _capture_reap_selection_snapshot(active_bots)
-        if selection_snapshot is None
-        else selection_snapshot
+    """Delegate to tool_bot_management_reap."""
+    return await _tbmr._do_reap_weakest(
+        quiet,
+        expected_culled=expected_culled,
+        selection_snapshot=selection_snapshot,
     )
-    selection = _select_reap_candidate_from_snapshot(snapshot, active_bots)
-    culled_name = selection.get("candidate")
-    if not culled_name:
-        return {
-            "reaped": False,
-            **{key: value for key, value in selection.items() if key != "candidate"},
-        }
-    if expected_culled is not None and culled_name != expected_culled:
-        return {
-            "reaped": False,
-            "reason": "planned_reap_target_mismatch",
-            "expected_culled": expected_culled,
-            "actual_culled": culled_name,
-        }
-    conservative = float(selection["conservative_rating"])
-
-    # Serialize concurrent reaps on a stable sidecar; a mutable data inode is
-    # not a valid lock authority when atomic replacement is allowed elsewhere.
-    from evolution_infra import _locked_state_sidecar
-
-    with _locked_state_sidecar(
-        RESULTS_DIR / ".reap-transaction",
-        lock_type=fcntl.LOCK_EX,
-    ):
-        locked_active = get_active_bots()
-        locked_selection = _select_reap_candidate_from_snapshot(
-            snapshot, locked_active
-        )
-        locked_culled = locked_selection.get("candidate")
-        if locked_culled != culled_name or (
-            expected_culled is not None and locked_culled != expected_culled
-        ):
-            return {
-                "reaped": False,
-                "reason": "planned_reap_target_changed_under_lock",
-                "expected_culled": expected_culled or culled_name,
-                "actual_culled": locked_culled,
-            }
-        try:
-            bot_src = PROJECT_ROOT / "bots" / culled_name
-            if not bot_src.exists():
-                return {"reaped": False, "reason": f"{culled_name} already moved"}
-            # Publish the durable tombstone before mutating runtime metadata.
-            # A failed tag/push must leave the sentinel intact so the operator
-            # can retry without an ambiguous half-reaped state.
-            record_reaped_bot(
-                culled_name,
-                reason="max_active_bots",
-                data={
-                    "selection_key": "conservative_glicko",
-                    "conservative_rating": selection["conservative_rating"],
-                    "leaderboard_score": selection["leaderboard_score"],
-                    "h2h_avg_wr": selection["h2h_avg_wr"],
-                    "quiet": quiet,
-                },
-            )
-            sentinel = bot_src / ".completed"
-            if os.path.lexists(sentinel):
-                metadata = os.lstat(sentinel)
-                if (
-                    not stat.S_ISREG(metadata.st_mode)
-                    or stat.S_ISLNK(metadata.st_mode)
-                    or metadata.st_nlink != 1
-                ):
-                    raise RuntimeError("reap_completed_sentinel_unsafe")
-                sentinel.unlink()
-                from evolution_infra import _fsync_directory
-
-                _fsync_directory(sentinel.parent)
-        finally:
-            pass
-
-    reap_signal = RESULTS_DIR / ".reap_signal"
-    from evolution_infra import _atomic_publish_state_text
-
-    with _locked_state_sidecar(reap_signal, lock_type=fcntl.LOCK_EX):
-        _atomic_publish_state_text(reap_signal, f"{time.time():.6f}\n")
-
-    log_system_event(
-        "bot.reaped",
-        "info" if quiet else "warn",
-        (
-            f"{'Auto-reaped' if quiet else 'Reaped'} {culled_name} by conservative Glicko "
-            f"(r-2rd={conservative:.1f}, leaderboard={selection['leaderboard_score']:.4f}, "
-            f"h2h_wr={selection['h2h_avg_wr']:.2%})"
-        ),
-        {
-            "culled": culled_name,
-            "remaining": len(active_bots) - 1,
-            "selection_key": "conservative_glicko",
-            "conservative_rating": round(conservative, 1),
-            "leaderboard_score": selection["leaderboard_score"],
-            "h2h_avg_wr": selection["h2h_avg_wr"],
-            "quiet": quiet,
-        },
-    )
-
-    return {
-        "reaped": True,
-        "culled": culled_name,
-        "selection_key": "conservative_glicko",
-        "conservative_rating": selection["conservative_rating"],
-        "leaderboard_score": selection["leaderboard_score"],
-        "h2h_avg_wr": selection["h2h_avg_wr"],
-        "rating": selection["rating"],
-        "remaining": len(active_bots) - 1,
-        "reap_mode": "deactivate_completed_sentinel",
-    }
 
 
 def _mcp_result(data: dict) -> dict:
-    return {"content": [{"type": "text", "text": json.dumps(data)}]}
+    """Delegate to tool_bot_management_reap."""
+    return _tbmr._mcp_result(data)
 
 
 @tool("reap_weakest", "Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by conservative rating, reporting unified strength.", {})
 async def reap_weakest(args):
-    result = await _do_reap_weakest(quiet=args.get("quiet", False) if isinstance(args, dict) else False)
-    return _mcp_result(result)
+    """Delegate to tool_bot_management_reap."""
+    return await _tbmr.reap_weakest(args)
 
 
 async def cleanup_incomplete(args: dict | None = None):
-    """Fail closed instead of scanning arbitrary incomplete bot directories.
-
-    The old helper enumerated ``bots/`` and inferred deletion authority from a
-    raw checkpoint.  That made retired v155 debris actionable.  The only safe
-    cleanup is now the normal fenced abandon transaction for an explicitly
-    named, currently validated strict workflow.  The helper is deliberately
-    not registered in either the MCP or HTTP tool catalogs; these checks remain
-    as defence in depth for direct/internal calls.
-    """
-
-    try:
-        from epoch_authority import require_policy_epoch_initialized
-
-        epoch = require_policy_epoch_initialized("cleanup_incomplete")
-    except Exception as exc:
-        state = getattr(exc, "state", None)
-        return _mcp_result({
-            "cleaned": False,
-            "error": "policy_epoch_not_initialized",
-            "epoch": state if isinstance(state, dict) else None,
-        })
-
-    checkpoint = read_pipeline_checkpoint()
-    if not isinstance(checkpoint, dict):
-        return _mcp_result({
-            "cleaned": False,
-            "error": "strict_checkpoint_required",
-        })
-    next_v = checkpoint.get("next_v")
-    revision = checkpoint.get("checkpoint_revision")
-    workflow_run_id = checkpoint.get("workflow_run_id")
-    if (
-        type(next_v) is not int
-        or type(revision) is not int
-        or not isinstance(workflow_run_id, str)
-        or not workflow_run_id.strip()
-    ):
-        return _mcp_result({
-            "cleaned": False,
-            "error": "strict_checkpoint_identity_missing",
-        })
-
-    try:
-        from checkpoint_schema import strict_checkpoint_event_identity
-
-        strict_checkpoint_event_identity(
-            checkpoint,
-            expected_gen=next_v,
-            project_root=PROJECT_ROOT,
-        )
-    except Exception as exc:
-        return _mcp_result({
-            "cleaned": False,
-            "error": "strict_checkpoint_invalid",
-            "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
-        })
-
-    request = args if isinstance(args, dict) else {}
-    requested_identity = (
-        request.get("workflow_run_id"),
-        request.get("next_v"),
-        request.get("checkpoint_revision"),
-    )
-    current_identity = (workflow_run_id, next_v, revision)
-    if requested_identity != current_identity:
-        return _mcp_result({
-            "cleaned": False,
-            "error": "explicit_cleanup_identity_mismatch",
-            "requested": {
-                "workflow_run_id": request.get("workflow_run_id"),
-                "next_v": request.get("next_v"),
-                "checkpoint_revision": request.get("checkpoint_revision"),
-            },
-            "current": {
-                "workflow_run_id": workflow_run_id,
-                "next_v": next_v,
-                "checkpoint_revision": revision,
-            },
-        })
-
-    candidate = get_bot_dir(next_v)
-    bot_root = BOTS_DIR
-    expected_candidate = bot_root / bot_name(next_v)
-    try:
-        candidate_parent = candidate.parent.resolve(strict=True)
-        bot_root_resolved = bot_root.resolve(strict=True)
-    except OSError as exc:
-        return _mcp_result({
-            "cleaned": False,
-            "error": "candidate_scope_unavailable",
-            "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
-        })
-    if (
-        candidate != expected_candidate
-        or candidate_parent != bot_root_resolved
-        or candidate.name != bot_name(next_v)
-    ):
-        return _mcp_result({
-            "cleaned": False,
-            "error": "candidate_outside_current_workflow_scope",
-        })
-    if not candidate.exists():
-        return _mcp_result({
-            "cleaned": False,
-            "reason": "current_candidate_absent",
-            "candidate": candidate.name,
-            "workflow_run_id": workflow_run_id,
-            "epoch": epoch.get("evaluation_epoch"),
-        })
-    if candidate.is_symlink() or not candidate.is_dir():
-        return _mcp_result({
-            "cleaned": False,
-            "error": "current_candidate_path_unsafe",
-        })
-    if (candidate / ".completed").exists() or git_has_tag(next_v):
-        return _mcp_result({
-            "cleaned": False,
-            "error": "current_candidate_is_published_or_completed",
-        })
-    if git_dir_is_committed(next_v):
-        return _mcp_result({
-            "cleaned": False,
-            "error": "current_candidate_is_git_tracked",
-        })
-
-    result = await _do_abandon_generation(
-        reason="cleanup_incomplete_exact_workflow",
-        expected_workflow_run_id=workflow_run_id,
-        expected_next_v=next_v,
-        expected_source_v=checkpoint.get("source_v"),
-        expected_checkpoint_revision=revision,
-        expected_checkpoint_stage=checkpoint.get("stage"),
-    )
-    return _mcp_result({
-        "cleaned": bool(
-            result.get("abandoned") is True
-            and result.get("removed_directory") == candidate.name
-        ),
-        "candidate": candidate.name,
-        "workflow_run_id": workflow_run_id,
-        "epoch": epoch.get("evaluation_epoch"),
-        "abandon_result": result,
-    })
+    """Delegate to tool_bot_management_reap."""
+    return await _tbmr.cleanup_incomplete(args)
 
 
 class AbandonGenerationInput(TypedDict):
