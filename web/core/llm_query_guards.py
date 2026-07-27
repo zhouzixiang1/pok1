@@ -413,7 +413,7 @@ def _local_path_from_file_uri(path):
 
 def _path_inside_allowed_scope(path, allowed_scope, base_dir=None):
     """Delegate to llm_query_guards_shell_parse."""
-    return _lgs._path_inside_allowed_scope(path, allowed_scope, base_dir)
+    return _lgs._path_inside_allowed_scope(path, allowed_scope, base_dir=base_dir)
 
 
 def _normalize_allowed_read_scope(allowed_read_dirs):
@@ -541,7 +541,7 @@ def _resolved_within(path, root):
 
 def _read_path_violation(raw_path, allowed_scope, *, base_dir=None):
     """Delegate to llm_query_guards_shell_parse."""
-    return _lgs._read_path_violation(raw_path, allowed_scope, base_dir)
+    return _lgs._read_path_violation(raw_path, allowed_scope, base_dir=base_dir)
 
 
 def _shell_has_dynamic_expansion(command):
@@ -736,7 +736,7 @@ def _git_no_index_diff_targets(args):
 
 def _bash_segment_read_targets(segment, *, current_dir, depth):
     """Delegate to llm_query_guards_shell_parse."""
-    return _lgs._bash_segment_read_targets(segment, current_dir, depth)
+    return _lgs._bash_segment_read_targets(segment, current_dir=current_dir, depth=depth)
 
 
 def _subagent_bash_read_scope_violation(
@@ -748,7 +748,9 @@ def _subagent_bash_read_scope_violation(
     return_targets=False,
 ):
     """Delegate to llm_query_guards_shell_parse."""
-    return _lgs._subagent_bash_read_scope_violation(command, allowed_scope, initial_dir, depth, return_targets)
+    return _lgs._subagent_bash_read_scope_violation(
+        command, allowed_scope, initial_dir=initial_dir, depth=depth, return_targets=return_targets
+    )
 
 
 def _subagent_read_scope_violation(tool_name, tool_input, allowed_scope):

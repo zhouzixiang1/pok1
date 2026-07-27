@@ -1197,6 +1197,8 @@ def _architecture_transition_failure_ids(transition):
 
 
 def _architecture_transition_repair_files(transition, candidate_dir=None):
+    from tool_planning import _ACTIVE_CANDIDATE_WRITABLE_FILES
+
     candidate = transition.get("candidate_capabilities") or {}
     checks_by_id = candidate.get("checks_by_id") or {}
     policy = transition.get("policy") or {}
@@ -1235,6 +1237,8 @@ def _format_position_details(details):
 
 
 def _quality_contract_task(contract, ckpt, preservation, task_kind):
+    from tool_planning import _ACTIVE_CANDIDATE_WRITABLE_FILES
+
     next_v = ckpt.get("next_v")
     filename = contract["file"]
     if Path(str(filename)).name not in _ACTIVE_CANDIDATE_WRITABLE_FILES:

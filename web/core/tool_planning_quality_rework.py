@@ -134,6 +134,8 @@ def _apply_mechanical_file_size_trims(tasks, next_dir, source_dir, next_v, sourc
 
 
 def _precommit_repair_task(filename, ckpt, feedback):
+    from tool_planning import _ACTIVE_CANDIDATE_WRITABLE_FILES
+
     if _qc.Path(str(filename)).name not in _ACTIVE_CANDIDATE_WRITABLE_FILES:
         raise ValueError(f'precommit repair cannot write system/extra artifact {filename!r}')
     next_v = ckpt.get('next_v')

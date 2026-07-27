@@ -32,8 +32,10 @@ this companion.
 """
 from __future__ import annotations
 
+import os
 import re
 import shlex
+from pathlib import Path
 
 import llm_query_guards as _lg  # for cross-refs
 

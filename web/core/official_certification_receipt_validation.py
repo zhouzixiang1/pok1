@@ -32,9 +32,13 @@ in this companion.
 """
 from __future__ import annotations
 
+import hashlib
+import re
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
-from bot_artifact import canonical_digest
+from bot_artifact import canonical_digest, hash_path
 
 import official_certification as _oc  # for cross-refs
 
@@ -301,7 +305,7 @@ def _full_v5_completion_issues(receipt: dict[str, Any]) -> list[str]:
     completion = receipt.get("completion_evidence")
     if not isinstance(completion, dict) or completion.get("kind") != "official-thp-terminal-settlement":
         return ["official_full_v5_terminal_completion_evidence_required"]
-    return round_completion_issues(receipt, 70, natural_terminal_only=True)
+    return _oc.round_completion_issues(receipt, 70, natural_terminal_only=True)
 
 
 
@@ -358,7 +362,7 @@ def _full_evidence_artifact_issues(receipt: dict[str, Any]) -> list[str]:
 
 def receipt_validation_issues(
     receipt: Any,
-    spec: CertificationSpec,
+    spec: "_oc.CertificationSpec",
     *,
     expected_kind: str | None = None,
     expected_index: int | None = None,
@@ -402,7 +406,7 @@ def receipt_validation_issues(
         if not _oc._same_resolved_path(bot_b.get("path"), spec.candidate):
             issues.append("self_play_bot_b_candidate_identity_mismatch")
     elif expected_kind == "opponent":
-        topology = round_topology(receipt)
+        topology = _oc.round_topology(receipt)
         launches = {"A": bot_a, "B": bot_b}
         candidate_launches = [
             launches[label]
@@ -430,7 +434,7 @@ def receipt_validation_issues(
         completion_issues = (
             _oc._full_v5_completion_issues(receipt)
             if spec.policy_id == _oc.FULL_POLICY_ID
-            else round_completion_issues(receipt, spec.target_hands)
+            else _oc.round_completion_issues(receipt, spec.target_hands)
         )
         if completion_issues:
             issues.extend(completion_issues)
@@ -479,12 +483,12 @@ def receipt_validation_issues(
 
 
 
-def receipt_valid_for_spec(receipt: dict[str, Any], spec: CertificationSpec) -> bool:
+def receipt_valid_for_spec(receipt: dict[str, Any], spec: "_oc.CertificationSpec") -> bool:
     return not _oc.receipt_validation_issues(receipt, spec)
 
 
 
-def report_validation_issues(report: Any, spec: CertificationSpec) -> list[str]:
+def report_validation_issues(report: Any, spec: "_oc.CertificationSpec") -> list[str]:
     try:
         _oc.validate_spec(spec)
     except Exception as exc:
@@ -546,7 +550,7 @@ def report_validation_issues(report: Any, spec: CertificationSpec) -> list[str]:
 
 
 
-def report_valid_for_spec(report: dict[str, Any], spec: CertificationSpec) -> bool:
+def report_valid_for_spec(report: dict[str, Any], spec: "_oc.CertificationSpec") -> bool:
     return not _oc.report_validation_issues(report, spec)
 
 
@@ -648,7 +652,7 @@ def _deterministic_status_receipt_issues(
     if receipt.get("archive_manifest_digest") != str(archive.get("manifest_digest") or ""):
         issues.append("official_deterministic_status_archive_manifest_mismatch")
     if receipt.get("mode") == "full" and isinstance(verdict, dict) and verdict.get("blocking"):
-        archive_validation = validate_evidence_archive(
+        archive_validation = _oc.validate_evidence_archive(
             archive,
             expected_evidence_sha256=str(receipt.get("evidence_sha256") or ""),
         )
@@ -817,7 +821,7 @@ def official_failure_blocks_parent(status: dict[str, Any]) -> bool:
 
 def _deterministic_receipt_issues(
     receipt: Any,
-    spec: CertificationSpec,
+    spec: "_oc.CertificationSpec",
     *,
     evidence_manifest: dict[str, Any],
     archive_receipt: dict[str, Any],

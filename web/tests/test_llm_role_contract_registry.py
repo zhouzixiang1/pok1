@@ -1243,7 +1243,10 @@ class _ProviderVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node):
         for item in node.names:
-            if item.name in {"llm_query", "core.llm_query"}:
+            # ``llm_query`` exposes ``run_claude_query`` directly; ``agent_master``
+            # re-exports it (``import llm_query``) so companions that route via
+            # ``_am.run_claude_query`` are still covered by the registry.
+            if item.name in {"llm_query", "core.llm_query", "agent_master"}:
                 self.module_aliases.add(item.asname or item.name.split(".")[-1])
         self.generic_visit(node)
 
@@ -1268,7 +1271,11 @@ class _ProviderVisitor(ast.NodeVisitor):
                 name = "sdk"
         elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             if node.func.value.id in self.module_aliases and node.func.attr == "run_claude_query":
-                name = "run_attribute"
+                # Attribute access on a module that re-exports ``run_claude_query``
+                # (e.g. ``_am.run_claude_query`` in agent_master_ensemble) is the
+                # same provider call as a bare ``run_claude_query`` — classify it
+                # as ``run`` so the registry-coverage contract stays uniform.
+                name = "run"
         if name:
             self.calls.add((self.relative, self.stack[-1] if self.stack else "<module>", name))
         self.generic_visit(node)
@@ -1289,8 +1296,8 @@ def test_active_tree_provider_scan_covers_aliases_attributes_subpackages_scripts
         ("web/core/direction_auditor.py", "_run_direction_audit", "run"),
         ("web/core/agent_review.py", "_run_critic", "run"),
         ("web/core/agent_review.py", "_run_crossover", "run"),
-        ("web/core/agent_master.py", "propose", "run"),
-        ("web/core/agent_master.py", "critique", "run"),
+        ("web/core/agent_master_ensemble.py", "propose", "run"),
+        ("web/core/agent_master_ensemble.py", "critique", "run"),
         ("web/core/agent_master.py", "_run_master_analysis", "run"),
         ("web/core/agent_workers.py", "_run_debug_agent", "run"),
         ("web/core/agent_workers.py", "_run_single_worker", "run"),

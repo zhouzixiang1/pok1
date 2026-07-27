@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 import time
 import uuid
 from copy import deepcopy
@@ -257,7 +258,7 @@ def _materialize_identity_replan_candidate(
                 prepared_contract=prepared_contract,
             )
             if legacy_errors:
-                return _json_tool_result({
+                return _tp._json_tool_result({
                     "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_RECOVERY_INVALID",
                     "failure_class": "state_migration",
                     "action": "operator_reconcile",
@@ -397,7 +398,7 @@ def _materialize_identity_replan_candidate(
                 "architecture_policy_identity_replan"
             ),
         }
-    written = write_pipeline_checkpoint(
+    written = _tp.write_pipeline_checkpoint(
         next_v,
         source_v,
         "direction_audited",
@@ -423,7 +424,7 @@ def _materialize_identity_replan_candidate(
         **write_kwargs,
     )
     if not written:
-        current = _matching_checkpoint(next_v, source_v) or {}
+        current = _tp._matching_checkpoint(next_v, source_v) or {}
         current_prepared = (
             (current.get("audit_context") or {}).get("prepared_artifact_contract")
         )
@@ -458,7 +459,7 @@ def _materialize_identity_replan_candidate(
             == str(ckpt.get("workflow_run_id") or "")
             and hash_path(next_dir) == prepared_hash
         ):
-            return _json_tool_result({
+            return _tp._json_tool_result({
                 "success": True,
                 "recovered": True,
                 "idempotent_checkpoint_projection": True,
@@ -475,7 +476,7 @@ def _materialize_identity_replan_candidate(
         # direction_audited idempotency shape would corrupt the successor.
         checkpoint_preimage_unchanged = current == ckpt
         if not checkpoint_preimage_unchanged:
-            return _json_tool_result({
+            return _tp._json_tool_result({
                 "error": (
                     "ARCHITECTURE_POLICY_IDENTITY_REPLAN_"
                     "CHECKPOINT_CONCURRENTLY_ADVANCED"
@@ -517,7 +518,7 @@ def _materialize_identity_replan_candidate(
                 expected_destination_digest=prepared_hash,
                 operation_id=rollback_id,
             )
-        return _json_tool_result({
+        return _tp._json_tool_result({
             "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_CHECKPOINT_CAS_FAILED",
             "failure_class": "control_plane",
             "action": "operator_reconcile",
@@ -526,7 +527,7 @@ def _materialize_identity_replan_candidate(
             "candidate_preimage_restored": hash_path(next_dir) == current_hash,
         })
 
-    log_system_event(
+    _tp.log_system_event(
         "pipeline.architecture_policy_identity_replan",
         "error",
         (
@@ -545,7 +546,7 @@ def _materialize_identity_replan_candidate(
             "legacy_recovery": recover_persisted_reset,
         },
     )
-    return _json_tool_result({
+    return _tp._json_tool_result({
         "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN",
         "recovered": True,
         "next_v": next_v,
@@ -670,7 +671,7 @@ def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
         # crossover metadata fabricates a two-parent lineage.  The prepared
         # child is itself the authoritative baseline; once its policy identity
         # is stale there is no trusted single-parent reconstruction path.
-        log_system_event(
+        _tp.log_system_event(
             "pipeline.crossover_policy_identity_fail_closed",
             "error",
             f"Crossover v{next_v} policy identity is stale; refusing Parent-A reset",
@@ -682,7 +683,7 @@ def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
                 "identity_errors": errors,
             },
         )
-        return _json_tool_result({
+        return _tp._json_tool_result({
             "error": "CROSSOVER_ARCHITECTURE_POLICY_IDENTITY_STALE",
             "next_v": next_v,
             "source_v": source_v,
@@ -767,7 +768,7 @@ def _recover_persisted_architecture_policy_identity_replan(
             )
         if not prepared_errors and not replan_errors:
             return None
-        return _json_tool_result({
+        return _tp._json_tool_result({
             "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_RECOVERY_INVALID",
             "failure_class": "state_migration",
             "action": "operator_reconcile",

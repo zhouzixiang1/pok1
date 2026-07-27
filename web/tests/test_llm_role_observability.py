@@ -1097,7 +1097,12 @@ def test_system_bookkeeping_cannot_refresh_mid_loop_stall_or_parent_progress(
     monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT", "1")
     monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT", "0.04")
     monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT", "2")
-    monkeypatch.setattr(llm_query, "_LLM_PROGRESS_INTERVAL_SEC", 0.001)
+    # Use a large progress interval so no progress events fire during this
+    # short stall-window test (the assertion verifies SystemMessage flooding
+    # cannot refresh the stall watchdog, not progress emission timing).
+    # The previous 0.001s value made the first AssistantMessage race the
+    # interval gate and flake under load.
+    monkeypatch.setattr(llm_query, "_LLM_PROGRESS_INTERVAL_SEC", 999)
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
         llm_query,

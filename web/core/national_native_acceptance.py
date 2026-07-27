@@ -435,7 +435,7 @@ def _first_strict_batch_progress(
 
     if state not in {"pending_next_sample", "waiting_live_lease", "completed"}:
         raise RuntimeError("first_strict_batch_progress_state_invalid")
-    scope = _nn.normalize_execution_scope(control_execution_scope)
+    scope = normalize_execution_scope(control_execution_scope)
     expected_digest = str(batch_plan.get("batch_plan_digest") or "")
     if (
         batch_plan.get("schema_version") != 1
@@ -513,7 +513,7 @@ def _first_strict_batch_progress(
         if repeat in completed_by_repeat or not 1 <= repeat <= len(planned_rows):
             raise RuntimeError("first_strict_batch_completed_repeat_invalid")
         receipt = entry.get("execution_receipt")
-        evidence, issues = _nn.read_control_execution_receipt(
+        evidence, issues = read_control_execution_receipt(
             receipt,
             expected_scope=scope,
         )
@@ -585,6 +585,16 @@ async def run_native_precommit(
     progress_callback: Any = None,
 ) -> dict[str, Any]:
     from bot_artifact import canonical_digest, hash_path
+    from first_strict_control import validate_control_receipt
+    from first_strict_execution_journal import (
+        normalize_execution_scope,
+        read_control_execution_receipt,
+    )
+    from national_native_timing import (
+        _resolve_native_match_timing_plan,
+        validate_native_match_timing_evidence,
+    )
+    from precommit_eval_contract import build_native_precommit_batch_plan
 
     candidate = _nn.resolve_bot(candidate_token)
     hands = int(hands)
@@ -592,7 +602,7 @@ async def run_native_precommit(
         raise ValueError(
             f"native precommit strength samples must contain exactly 70 hands; got {hands}"
         )
-    precommit_timing_plan = _nn._resolve_native_match_timing_plan(
+    precommit_timing_plan = _resolve_native_match_timing_plan(
         timing_plan,
         hands=hands,
         requested_timeout_sec=_nn.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
@@ -632,7 +642,7 @@ async def run_native_precommit(
         try:
             from precommit_eval_contract import build_native_precommit_batch_plan
 
-            expected_batch_plan = _nn.build_native_precommit_batch_plan(
+            expected_batch_plan = build_native_precommit_batch_plan(
                 list(sample_plan),
                 native_timing_plan=precommit_timing_plan,
                 first_strict_control=True,
@@ -697,7 +707,7 @@ async def run_native_precommit(
             strength_authoritative = False
             rating_eligible = False
 
-            control_issues = _nn.validate_control_receipt(
+            control_issues = validate_control_receipt(
                 control_receipt,
                 candidate_version=control_receipt.get(
                     "candidate_version"
@@ -718,7 +728,7 @@ async def run_native_precommit(
                     + ";".join(control_issues[:8])
                 )
             try:
-                normalized_control_execution_scope = _nn.normalize_execution_scope(
+                normalized_control_execution_scope = normalize_execution_scope(
                     control_execution_scope
                 )
             except Exception as exc:
@@ -827,7 +837,7 @@ async def run_native_precommit(
             if system_control:
                 from first_strict_control import validate_control_receipt
 
-                control_issues = _nn.validate_control_receipt(
+                control_issues = validate_control_receipt(
                     control_receipt,
                     candidate_version=control_receipt.get(
                         "candidate_version"
@@ -930,7 +940,7 @@ async def run_native_precommit(
                     ),
                 )
                 execution_receipt = None
-            timing_issues = _nn.validate_native_match_timing_evidence(
+            timing_issues = validate_native_match_timing_evidence(
                 result,
                 timing_plan=precommit_timing_plan,
             )
@@ -971,7 +981,7 @@ async def run_native_precommit(
                 # concurrently published strict bot, altered system asset, or
                 # runtime-template drift revokes the empty-pool authority and
                 # must force replanning before this sample is admitted.
-                control_issues = _nn.validate_control_receipt(
+                control_issues = validate_control_receipt(
                     control_receipt,
                     candidate_version=control_receipt.get(
                         "candidate_version"
@@ -1114,7 +1124,7 @@ async def run_native_precommit(
         if system_control:
             # Close the cached per-match guard with a full Git/artifact refresh
             # before any samples can leave this function as admitted evidence.
-            control_issues = _nn.validate_control_receipt(
+            control_issues = validate_control_receipt(
                 control_receipt,
                 candidate_version=control_receipt.get("candidate_version"),
                 source_version=control_receipt.get("source_version"),

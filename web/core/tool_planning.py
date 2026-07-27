@@ -357,7 +357,9 @@ def _issue_literature_rendered_prompt(
 ):
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._issue_literature_rendered_prompt(next_v, source_v, weakness, stagnation_info)
+    return _lp._issue_literature_rendered_prompt(
+        next_v=next_v, source_v=source_v, weakness=weakness, stagnation_info=stagnation_info
+    )
 
 
 def _normalize_literature_proposal(proposal) -> dict | None:
@@ -3333,7 +3335,9 @@ def _materialize_identity_replan_candidate(
     recover_persisted_reset: bool,
 ):
     """Delegate to tool_planning_identity_replan."""
-    return _tpi._materialize_identity_replan_candidate(ckpt, next_dir, source_dir, recover_persisted_reset)
+    return _tpi._materialize_identity_replan_candidate(
+        ckpt, next_dir, source_dir, recover_persisted_reset=recover_persisted_reset
+    )
 
 
 def _checkpoint_architecture_policy_identity_errors(ckpt):

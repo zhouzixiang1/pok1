@@ -28,8 +28,11 @@ this companion.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
+from datetime import datetime
 from pathlib import Path
 
 import elo_daemon as _ed  # for cross-refs
@@ -302,7 +305,7 @@ def _save_match_replay_under_cycle_lock(
 
     try:
         os.makedirs(_ed.RESULTS_DIR, exist_ok=True)
-        append_locked_jsonl(_ed.MATCH_HISTORY_FILE, summary)
+        _ed.append_locked_jsonl(_ed.MATCH_HISTORY_FILE, summary)
     except Exception as e:
         _ed.log.warning("Match history write failed: %s", e)
         try:
