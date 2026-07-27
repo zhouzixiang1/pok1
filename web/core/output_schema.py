@@ -146,10 +146,6 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
         "opponent.rates.fold_to_raise",
         "opponent.rates.fold_to_allin",
         "action_profile",
-        "fold_rate",
-        "call_rate",
-        "raise_rate",
-        "allin_rate",
     ),
     "opponent.terminal_response": (
         "opponent.terminal_response",
