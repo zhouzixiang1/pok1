@@ -851,6 +851,23 @@ and retains the older operator-host epoch-2 narrative as historical context.
   main agent does the verification; the two must not block each other (do not
   hand long/expensive test runs to sub-agents — they edit and import-smoke,
   the main agent runs the test shard).
+- **Before modifying any production state, runtime file, or system behavior,
+  the agent MUST first understand the system through sub-agent investigation,
+  NOT by guessing.** This includes: pipeline checkpoints, post-publication
+  handoff records, evaluation identity manifests, rating daemon state, git
+  tags/refs, abandon ledgers, or any CAS-protected durable state. The correct
+  sequence is always: (1) launch a sub-agent (Explore or general-purpose) to
+  read the relevant code, understand the contract (what fields are
+  content-bound, what digests must be consistent, what CAS identities are
+  checked), and report the exact invariants; (2) based on that understanding,
+  determine the correct action; (3) execute the action through the documented
+  API or script, never by manually editing serialized state files. Manually
+  editing a JSON state file (e.g. a handoff record's `local_publication_proof`
+  or `commit_oid`) without understanding its internal digest chain will
+  corrupt the CAS and create a worse block than the original problem. If a
+  sub-agent investigation reveals the correct recovery path, delegate the
+  execution too. If no documented recovery path exists after investigation,
+  surface the finding rather than guessing.
 - **Every test failure must be root-caused and fixed, including pre-existing
   failures not caused by the current change.** A red test is never "someone
   else's problem" and never acceptable to leave behind. When you encounter a
