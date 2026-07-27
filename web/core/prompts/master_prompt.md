@@ -21,11 +21,7 @@ architecture policy, or local strategy reference registry. In particular, an
 outer orchestrator's paraphrase of a prior validation error is not a planning
 rule.
 
-CRITICAL for fresh bootstrap: the selected proposal's change_symbol MUST be
-"policy.py:get_baseline_decision". Do NOT select any proposal whose
-change_symbol is "policy.py:iter_decisions" — its dispatch edge to
-get_baseline_decision is system-preserved and cannot be modified. Selecting
-such a proposal will cause an immediate do-not-touch contract rejection.
+{change_symbol_authority_contract}
 </authority_boundary>
 
 <data_files>

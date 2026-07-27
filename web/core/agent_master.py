@@ -756,6 +756,31 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "planning_code_input_contract": planning_code_input_contract,
         "source_selection_contract": source_selection_contract,
         "target_path_contract": target_path_contract,
+        # Final Master authority contract for change_symbol. The
+        # fresh-bootstrap path (no published parent) really must force
+        # get_baseline_decision as the only Worker-modifiable body. The
+        # singleton-parent path (v2+: has published v1 parent) must NOT —
+        # get_baseline_decision is a root of the policy.py call graph with
+        # no in-edge, so the validator's 2-8 length reachable_chain ending
+        # at change_symbol is mathematically unsatisfiable for it. Guide the
+        # final Master to accept Scout proposals that pick a valid callee.
+        "change_symbol_authority_contract": (
+            "CRITICAL for fresh bootstrap: the selected proposal's change_symbol MUST be "
+            "\"policy.py:get_baseline_decision\". Do NOT select any proposal whose "
+            "change_symbol is \"policy.py:iter_decisions\" — its dispatch edge to "
+            "get_baseline_decision is system-preserved and cannot be modified. Selecting "
+            "such a proposal will cause an immediate do-not-touch contract rejection."
+            if fresh_bootstrap
+            else "The selected proposal's change_symbol must be an existing "
+            "policy-ABI-reachable symbol in policy.py that is the CALLEE of a verified "
+            "direct call (so a 2-8 length reachable_chain ending exactly at change_symbol "
+            "is possible). get_baseline_decision itself has no in-edge within policy.py, "
+            "so it cannot serve as change_symbol — accept a proposal that picks one of its "
+            "callees instead. Do NOT select any proposal whose change_symbol is "
+            "\"policy.py:iter_decisions\" (its dispatch edge to get_baseline_decision is "
+            "system-preserved) or \"policy.py:_hole_ids\" (its call sites are "
+            "system-preserved)."
+        ),
     }
     master_prompt = substitute_template(master_prompt, master_template_values)
     evidence_context = (
