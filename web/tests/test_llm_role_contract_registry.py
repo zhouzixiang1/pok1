@@ -1370,16 +1370,17 @@ def test_durable_worker_effect_supplies_no_external_context_files():
     import llm_query
 
     assert llm_query.resolve_llm_role_contract("WORKER 1 (logic)").allows_context_files is False
-    # The Worker execution path was extracted into the tool_planning_worker
-    # companion module; the _execute_workers call site lives there now.
-    path = ROOT / "web/core/tool_planning_worker.py"
+    # The Worker execution path was extracted into the tool_planning_worker_durable
+    # companion module (F-group durable projection/effect cluster); the
+    # _execute_workers call site lives there now.
+    path = ROOT / "web/core/tool_planning_worker_durable.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     calls = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_execute_workers"
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_execute_workers"
     ]
     assert len(calls) == 1
     # Positional ABI: tasks, template, workspace, version, context_files, UI.

@@ -142,6 +142,23 @@ class TestP0ReapSignalOrder:
         assert end > start
         return source[start:end]
 
+    def _get_publication_resume_body(self):
+        # _resume_publication_transaction lives in the tool_commit_publication
+        # companion. inspect.getsource(tool_commit_publication._resume_publication_transaction)
+        # intermittently fails under full-suite load (linecache pollution);
+        # read the body directly, mirroring _get_archivist_body.
+        p = Path(__file__).resolve().parent.parent / "core" / "tool_commit_publication.py"
+        source = p.read_text()
+        start = source.find("def _resume_publication_transaction(")
+        assert start >= 0, "def _resume_publication_transaction not found in tool_commit_publication.py"
+        end = source.find("\ndef ", start + 1)
+        if end < 0:
+            end = source.find("\nasync def ", start + 1)
+        if end < 0:
+            end = len(source)  # last top-level def in the companion
+        assert end > start
+        return source[start:end]
+
     def test_commit_bot_does_not_start_post_publication_effects(self):
         source = self._get_commit_bot_body()
         assert ".reap_signal" not in source
@@ -168,6 +185,7 @@ class TestP0ReapSignalOrder:
 
     def test_publication_completes_before_durable_handoff(self):
         import tool_commit
+        import tool_commit_publication
 
         source = self._get_commit_bot_body()
         publication_pos = source.find("_resume_publication_transaction")
@@ -175,7 +193,14 @@ class TestP0ReapSignalOrder:
         assert publication_pos >= 0, "publication transaction not found in commit_bot source"
         assert handoff_pos >= 0, "durable Archivist handoff not found"
         assert publication_pos < handoff_pos
-        resume_source = inspect.getsource(tool_commit._resume_publication_transaction)
+        # _resume_publication_transaction was extracted into the
+        # tool_commit_publication companion (parent keeps a thin delegate).
+        # The invariant ("publication writes the durable sentinel") still
+        # holds; inspect the real body in its new home. Read the body
+        # directly from the companion .py instead of inspect.getsource --
+        # the latter intermittently fails under full-suite load (linecache
+        # pollution for the companion module).
+        resume_source = self._get_publication_resume_body()
         assert "_write_completed_sentinel_durable" in resume_source
 
 

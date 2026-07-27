@@ -286,7 +286,7 @@ def test_journaled_master_role_park_is_attempt_neutral(monkeypatch):
     )
 
 
-def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
+def test_fresh_strict_architecture_policy_uses_live_prepared_baseline(
     tmp_path,
     monkeypatch,
 ):
