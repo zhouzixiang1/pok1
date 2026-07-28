@@ -9,6 +9,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import hashlib
 import json
@@ -63,6 +64,13 @@ from evolution_infra import (
     read_and_maybe_unlink_locked_text,
     update_h2h, update_bot_stats,
 )
+# ACTIVE_BOT_PREFIX resolves the configured bot namespace (national_v by
+# default; national_cloud_v when POK_CLOUD_RUNTIME=1). A daemon started under
+# the wrong namespace silently validates zero replays and then fails closed in
+# save_cycle with an indirect "stored_h2h_raw_history_mismatch" crash (see
+# docs/observer-cache-availability-2026-07-28.md). The startup guard below turns
+# that into an immediate, actionable error naming the missing env var.
+from bot_namespace import ACTIVE_BOT_PREFIX
 from bot_action_stats import (
     MAX_ACTION_STATS_CYCLE_LAG,
     compute_all_bot_stats,
@@ -1328,6 +1336,67 @@ def _internal_match_job(bot_a, bot_b, path_a, path_b, n_pairs):
             "evaluation_identity_digest": daemon_evaluation_identity_digest,
         },
     )
+
+
+# A bot directory name in either known namespace (national_v* or
+# national_cloud_v*).  Used by the startup guard to detect a namespace/env
+# mismatch without depending on the prefix-filtered get_active_bots() (which
+# silently returns [] under a wrong prefix and would hide the mismatch).
+_KNOWN_BOT_DIR_RE = re.compile(r"^national(?:_cloud)?_v[1-9][0-9]*$")
+
+
+def _assert_bot_namespace_matches_env() -> None:
+    """Fail fast at startup if on-disk bots belong to the wrong namespace.
+
+    A daemon launched without POK_CLOUD_RUNTIME=1 resolves ACTIVE_BOT_PREFIX to
+    the default ``national_v`` while the cloud checkout's bot directories are
+    ``national_cloud_v*``.  In that state every replay fails strict label
+    validation and save_cycle fails closed with an indirect
+    ``stored_h2h_raw_history_mismatch`` crash, which is confusing and makes the
+    observer/authority projection churn.  This guard turns that into an
+    immediate, actionable startup error naming the missing env var, before any
+    results state is created.
+
+    An empty bot pool (the legitimate first-strict state) is allowed through.
+    Only a non-empty pool whose directory names do not match the configured
+    prefix fails.
+    """
+    try:
+        entries = [p.name for p in BOTS_DIR.iterdir() if p.is_dir()]
+    except (FileNotFoundError, OSError):
+        # No bots/ directory yet: nothing to validate (fresh checkout).
+        return
+    expected = ACTIVE_BOT_PREFIX
+    wrong_namespace_dirs = sorted(
+        name
+        for name in entries
+        if _KNOWN_BOT_DIR_RE.match(name) and not name.startswith(expected)
+    )
+    if not wrong_namespace_dirs:
+        return
+    sample = wrong_namespace_dirs[0]
+    hint = ""
+    if expected == "national_v":
+        hint = (
+            "  Active bots use the national_cloud_v namespace but this process "
+            "did not set POK_CLOUD_RUNTIME=1 (so the prefix defaulted to "
+            "national_v).  Launch the daemon through the cloud-runtime launcher "
+            "or export POK_CLOUD_RUNTIME=1 (and POK_BOT_PREFIX=national_cloud_v) "
+            "before starting it."
+        )
+    elif sample.startswith("national_v") and expected.startswith("national_cloud"):
+        hint = (
+            "  Active bots use the national_v namespace but this process is "
+            "configured for national_cloud_v.  Start it from the matching "
+            "checkout/environment."
+        )
+    message = (
+        f"daemon namespace mismatch: configured ACTIVE_BOT_PREFIX={expected!r} "
+        f"but on-disk bot directories use a different namespace "
+        f"(e.g. {sample!r}).{hint}"
+    )
+    log.critical("FATAL: %s", message)
+    raise RuntimeError(message)
 
 
 @_single_writer_daemon

@@ -253,6 +253,71 @@ def test_daemon_cli_denies_before_creating_results_or_writer_lease(
     assert not results.exists()
 
 
+def test_daemon_startup_rejects_namespace_prefix_mismatch(tmp_path, monkeypatch):
+    """A daemon launched under the wrong namespace fails fast at startup.
+
+    Without POK_CLOUD_RUNTIME=1 the bot prefix defaults to national_v, so the
+    daemon cannot validate national_cloud_v* replays and would crash inside
+    save_cycle with an indirect stored_h2h_raw_history_mismatch.  The startup
+    guard turns that into an immediate, actionable error before any results
+    state is created.
+    """
+    import elo_daemon
+
+    # Simulate the cloud checkout (national_cloud_v1 bot on disk) launched
+    # under the default (national_v) namespace: this is the exact misconfigured
+    # state that produced the recurring H2H-mismatch crash.
+    bots_dir = tmp_path / "bots"
+    bots_dir.mkdir()
+    (bots_dir / "national_cloud_v1").mkdir()
+    monkeypatch.setattr(elo_daemon, "BOTS_DIR", bots_dir)
+    monkeypatch.setattr(elo_daemon, "ACTIVE_BOT_PREFIX", "national_v")
+
+    results = tmp_path / "not-created"
+    monkeypatch.setattr(elo_daemon, "RESULTS_DIR", results)
+    monkeypatch.setattr(sys, "argv", ["elo_daemon.py", "--once"])
+
+    with pytest.raises(RuntimeError, match="namespace mismatch"):
+        elo_daemon.main()
+
+    # The guard runs before RESULTS_DIR is created, so no state is left behind.
+    assert not results.exists()
+    # The actionable hint names the missing env var.
+    import elo_daemon as ed
+
+    try:
+        ed._assert_bot_namespace_matches_env()
+    except RuntimeError as exc:
+        assert "POK_CLOUD_RUNTIME" in str(exc)
+
+
+def test_daemon_startup_allows_empty_bot_pool(tmp_path, monkeypatch):
+    """An empty bot pool (the legitimate first-strict state) is not rejected."""
+    import elo_daemon
+
+    bots_dir = tmp_path / "bots"
+    bots_dir.mkdir()  # empty
+    monkeypatch.setattr(elo_daemon, "BOTS_DIR", bots_dir)
+    monkeypatch.setattr(elo_daemon, "ACTIVE_BOT_PREFIX", "national_cloud_v")
+
+    # No exception for an empty pool.
+    elo_daemon._assert_bot_namespace_matches_env()
+
+
+def test_daemon_startup_allows_matching_namespace(tmp_path, monkeypatch):
+    """A pool whose directories match the configured prefix is allowed."""
+    import elo_daemon
+
+    bots_dir = tmp_path / "bots"
+    bots_dir.mkdir()
+    (bots_dir / "national_cloud_v1").mkdir()
+    (bots_dir / "national_cloud_v11").mkdir()
+    monkeypatch.setattr(elo_daemon, "BOTS_DIR", bots_dir)
+    monkeypatch.setattr(elo_daemon, "ACTIVE_BOT_PREFIX", "national_cloud_v")
+
+    elo_daemon._assert_bot_namespace_matches_env()
+
+
 def test_orchestrator_cli_and_direct_loop_fail_closed(monkeypatch):
     import epoch_authority
     import orchestrator

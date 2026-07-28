@@ -135,6 +135,13 @@ def _single_writer_daemon(func):
         # aliases, or publishing an empty baseline.  The subprocess repeats
         # the parent-side daemon_management guard so a direct CLI invocation
         # and a reset/Popen race are both closed.
+        #
+        # The namespace guard runs first: a daemon launched under the wrong
+        # namespace (e.g. without POK_CLOUD_RUNTIME=1) would silently validate
+        # zero replays and fail closed inside save_cycle with an indirect
+        # stored_h2h_raw_history_mismatch crash.  Surface that as an immediate,
+        # actionable startup error instead.
+        _ed._assert_bot_namespace_matches_env()
         from epoch_authority import require_policy_epoch_initialized
 
         require_policy_epoch_initialized("elo_daemon.cli")
