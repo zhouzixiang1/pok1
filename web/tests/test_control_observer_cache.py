@@ -7,9 +7,8 @@ import time
 import pytest
 
 
-def test_observer_cache_keeps_one_builder_and_same_key_followers_fail_fast():
+def test_observer_cache_cooperative_await_same_key_follower_single_builder():
     from server.routes.control import (
-        _ObserverProjectionUnavailable,
         _ObserverSingleflightCache,
     )
 
@@ -25,21 +24,114 @@ def test_observer_cache_keeps_one_builder_and_same_key_followers_fail_fast():
         assert release.wait(timeout=2)
         return {"nested": {"value": 1}}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    # The owner starts the build on its own worker thread and blocks inside the
+    # builder.  A same-key follower that arrives while the build is in flight no
+    # longer fails fast: it cooperatively awaits the single in-flight build and
+    # receives the same frozen snapshot, instead of returning 503 to every poll
+    # during a long (multi-second) projection build.
+    follower_result: dict = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         owner = pool.submit(cache.get, builder, key="same-authority")
+        # Wait until the owner is confirmed in flight, then submit a follower.
+        # The follower cooperatively awaits the in-flight build; it must NOT
+        # start a second builder and must NOT fail fast with 503.
         assert entered.wait(timeout=1)
-        started = time.monotonic()
-        with pytest.raises(_ObserverProjectionUnavailable) as follower:
-            cache.get(builder, key="same-authority")
-        assert "refresh_in_progress" in str(follower.value)
-        assert time.monotonic() - started < 0.1
+        follower = pool.submit(
+            _same_key_follower, cache, builder, "same-authority",
+            None, follower_result, ready_immediately=True,
+        )
+        # While the owner is still blocked, give the follower time to enter and
+        # park on the condition.  It cannot have returned: the build has not
+        # completed (release is still unset), so a non-cooperative follower would
+        # have raised _ObserverProjectionUnavailable here.
+        time.sleep(0.1)
+        assert "error" not in follower_result
+        assert follower_result.get("value") is None
+        # Completing the owner build resolves the cooperative follower too.
         release.set()
         first = owner.result(timeout=2)
+        follower.result(timeout=2)
 
     assert calls == 1
-    second = cache.get(builder, key="same-authority")
+    second = follower_result.get("value")
+    assert second == {"nested": {"value": 1}}
+    # Each caller receives an independent deepcopy; mutating one never mutates
+    # the other, and the follower does not invoke the builder itself.
     first["nested"]["value"] = 99
     assert second["nested"]["value"] == 1
+    # After the build, the cache serves the frozen value without rebuilding.
+    third = cache.get(builder, key="same-authority")
+    assert third == {"nested": {"value": 1}}
+    assert calls == 1
+
+
+def _same_key_follower(
+    cache, builder, key, started, out, *, ready_immediately=False
+):
+    """Run cache.get on a worker thread and stash its result/exception."""
+    if not ready_immediately and started is not None:
+        started.wait(timeout=2)
+    try:
+        out["value"] = cache.get(builder, key=key)
+    except BaseException as exc:  # pragma: no cover - assert path
+        out["error"] = exc
+
+
+def test_observer_cache_same_key_follower_timeout_falls_back_to_retryable_503(
+    monkeypatch,
+):
+    from server.routes.control import (
+        _ObserverProjectionUnavailable,
+        _ObserverSingleflightCache,
+    )
+    import server.routes.control as control
+
+    # A same-key follower waits up to _OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC for
+    # the in-flight build.  If the build cannot complete within that window, the
+    # follower still surfaces a retryable 503 (never blocks the request forever
+    # and never returns stale bytes for the wrong authority).
+    monkeypatch.setattr(control, "_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC", 0.1)
+
+    cache = _ObserverSingleflightCache(ttl_sec=1.0)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def builder():
+        entered.set()
+        # The owner build blocks on `release` so it stays in flight well beyond
+        # the shrunken 0.1s follower window.
+        release.wait(timeout=10)
+        return {"revision": 1}
+
+    # Owner runs on its own daemon thread and blocks inside the builder.
+    owner = threading.Thread(
+        target=cache.get, args=(builder,), kwargs={"key": "same-authority"},
+        name="owner", daemon=True,
+    )
+    owner.start()
+    assert entered.wait(timeout=1)
+    assert cache._inflight is True
+
+    # The same-key follower parks on the condition and, after the 0.1s window
+    # with the owner still in flight, raises a retryable refresh_in_progress.
+    follower_error: dict = {}
+    follower = threading.Thread(
+        target=_same_key_follower,
+        args=(cache, builder, "same-authority", None, follower_error),
+        kwargs={"ready_immediately": True},
+        name="follower", daemon=True,
+    )
+    follower.start()
+    follower.join(timeout=2)
+    assert not follower.is_alive()
+
+    assert isinstance(follower_error.get("error"), _ObserverProjectionUnavailable)
+    assert "refresh_in_progress" in str(follower_error["error"])
+
+    # Let the owner build complete so the daemon thread can exit cleanly.
+    release.set()
+    owner.join(timeout=2)
+    assert not owner.is_alive()
 
 
 def test_zero_stale_cache_changed_key_never_waits_for_old_builder():
@@ -239,23 +331,36 @@ def test_observer_cache_hands_drift_to_one_latest_background_refresh():
 
     assert cache.get(old_refresh, key="content-a") == {"revision": 1}
     assert old_entered.wait(timeout=1)
+    # A follower for a *different* (superseding) key still fails closed: the
+    # in-flight build belongs to the old authority and the new build has not
+    # started yet, so the new authority's bytes must never be served here.
     with pytest.raises(_ObserverProjectionUnavailable) as changed:
         cache.get(latest_refresh, key="content-b")
     assert "authority_changed_during_refresh" in str(changed.value)
 
     old_release.set()
     assert latest_entered.wait(timeout=1)
-    started = time.monotonic()
-    with pytest.raises(_ObserverProjectionUnavailable) as refreshing:
-        cache.get(latest_refresh, key="content-b")
-    assert "refresh_in_progress" in str(refreshing.value)
-    assert time.monotonic() - started < 0.1
+    # Now the superseding (content-b) build is in flight.  A follower for the
+    # *same* (new) key cooperatively awaits it and receives revision 3 once it
+    # completes, instead of returning refresh_in_progress.
+    follower_result: dict = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        follower = pool.submit(
+            _same_key_follower, cache, latest_refresh, "content-b",
+            None, follower_result, ready_immediately=True,
+        )
+        # The superseding (content-b) build is still in flight (latest_release is
+        # unset), so the same-key follower parks and awaits it instead of either
+        # failing fast or starting a second build.
+        time.sleep(0.1)
+        assert "error" not in follower_result
+        assert follower_result.get("value") is None
+        latest_release.set()
+        follower.result(timeout=2)
 
-    latest_release.set()
-    deadline = time.monotonic() + 2
-    while cache._inflight and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert cache.get(latest_refresh, key="content-b") == {"revision": 3}
+    assert follower_result.get("value") == {"revision": 3}
+    # The superseding build ran exactly once; the cooperative follower did not
+    # invoke it again.
     assert latest_calls == 1
 
 

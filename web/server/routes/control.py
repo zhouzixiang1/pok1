@@ -31,12 +31,23 @@ _log = logging.getLogger("pok.control")
 _RUNTIME_LIFECYCLE_LOCK = asyncio.Lock()
 _LifecycleResult = TypeVar("_LifecycleResult")
 
-_OBSERVER_CACHE_TTL_SEC = 1.0
+_OBSERVER_CACHE_TTL_SEC = 15.0
 _OBSERVER_ERROR_TTL_SEC = 0.2
-# The observer builder (strict_epoch_projection + git scans) takes 30-80ms.
-# The retry must wait long enough for a concurrent background refresh to
-# complete, otherwise every poll during active generation returns 503.
+# The observer builder (strict_epoch_projection + git scans, with the
+# content-coherence bracket in _sync_evolution_fields that samples the strict
+# projection up to three times to prove epoch/handoff/transition identity did
+# not move) takes ~76s.  A same-key follower therefore cannot absorb that build
+# inside the short HTTP retry window; instead it cooperatively awaits the
+# in-flight build's shared result (see _OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC).
+# _OBSERVER_HTTP_RETRY_DELAY_SEC only needs to cover the narrow changed-key
+# handoff race, where the in-flight build belongs to a superseded authority.
 _OBSERVER_HTTP_RETRY_DELAY_SEC = 0.15
+# A same-key follower waits up to this long for the single in-flight build to
+# resolve, instead of failing fast with 503.  It is bounded comfortably above
+# the measured ~76s build but well under the 300s nginx proxy_read_timeout, so a
+# legitimate build finishes and populates the cache while a genuinely stuck one
+# still surfaces as a retryable 503.
+_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC = 90.0
 
 
 class _ObserverProjectionUnavailable(RuntimeError):
@@ -218,16 +229,49 @@ class _ObserverSingleflightCache:
                 if self._error is not None and now < self._error_expires_at:
                     raise RuntimeError(self._error)
                 if self._inflight:
-                    # A same-key follower receives retryable unavailability;
-                    # it never starts a duplicate builder and never waits on a
-                    # worker thread which HTTP cancellation cannot stop.
+                    inflight_generation = self._inflight_generation
+                    if inflight_generation != self._generation:
+                        # The in-flight build belongs to a superseded authority
+                        # (the key moved and the superseding build has not yet
+                        # started).  Fail closed rather than await the wrong
+                        # authority's bytes.
+                        self._pending_builder = builder
+                        raise _ObserverProjectionUnavailable(
+                            "observer_projection_authority_changed_during_refresh"
+                        )
+                    # Same-key follower: cooperatively await the single in-flight
+                    # build instead of failing fast.  This runs on the follower's
+                    # own off-loop worker thread (one isolated
+                    # ThreadPoolExecutor(max_workers=1) per HTTP request), so the
+                    # ASGI event loop is never blocked.  The wait is bounded: a
+                    # build that cannot complete within the follower window still
+                    # surfaces as a retryable 503.
                     self._pending_builder = builder
-                    reason = (
-                        "observer_projection_authority_changed_during_refresh"
-                        if self._inflight_generation != self._generation
-                        else "observer_projection_refresh_in_progress"
+                    self._condition.wait(
+                        timeout=_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC
                     )
-                    raise _ObserverProjectionUnavailable(reason)
+                    now = time.monotonic()
+                    if self._inflight:
+                        # The build never resolved within the follower window.
+                        raise _ObserverProjectionUnavailable(
+                            "observer_projection_refresh_in_progress"
+                        )
+                    if (
+                        inflight_generation == self._generation
+                        and self._value is not None
+                        and now < self._expires_at
+                    ):
+                        # The awaited build completed and is still fresh under
+                        # the same authority (generation unchanged).  Serve it.
+                        cached_value = self._value
+                        break
+                    # The authority moved (key/generation changed) before this
+                    # follower observed the result, or the result was evicted.
+                    # Fail closed: never serve a value that does not match the
+                    # caller's requested key/generation.
+                    raise _ObserverProjectionUnavailable(
+                        "observer_projection_authority_changed_during_refresh"
+                    )
                 self._inflight = True
                 generation = self._generation
                 self._inflight_generation = generation
