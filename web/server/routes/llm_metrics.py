@@ -12,6 +12,7 @@ from fastapi.responses import PlainTextResponse
 
 from blocking_runtime import run_blocking_isolated
 from evolution_infra import RESULTS_DIR, locked_file
+from server.cache import cached_by_mtime
 
 METRICS_FILE = RESULTS_DIR / "llm_call_metrics.jsonl"
 
@@ -89,6 +90,18 @@ async def get_metrics(
 
 
 def _get_metrics_summary_blocking() -> dict:
+    # mtime-keyed cache: the summary rereads + re-aggregates the whole JSONL on
+    # every poll, and the file only changes when the daemon appends a new LLM
+    # call record. Keying on the metrics file mtime auto-invalidates the moment
+    # new data lands; the 2s TTL caps staleness within a poll burst.
+    return cached_by_mtime(
+        "llm_metrics:summary",
+        METRICS_FILE,
+        _compute_metrics_summary,
+    )
+
+
+def _compute_metrics_summary() -> dict:
     rows = _read_metrics_lines()
     if not rows:
         return {"roles": {}, "total": {}}

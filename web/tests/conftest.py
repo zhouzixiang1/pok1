@@ -643,8 +643,9 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_pr, "PROMPTS_DIR", prompts_dst)
 
     # --- 5. Clear server cache ---
-    from server.cache import _CACHE
+    from server.cache import _CACHE, clear_mtime_cache
     _CACHE.clear()
+    clear_mtime_cache()
 
     # --- 6. Suppress pok logger ---
     pok_logger = logging.getLogger("pok")

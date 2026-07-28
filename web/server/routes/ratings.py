@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from blocking_runtime import run_blocking_isolated
+from server.cache import cached_by_mtime
 from server.routes._helpers import (
     load_strict_strength_snapshot,
 )
@@ -18,12 +19,26 @@ H2H_FILE = RESULTS_DIR / "head_to_head.json"
 BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
+# The daemon republishes this manifest atomically when a new evaluation cycle's
+# ratings/h2h/history land; its mtime is the single invalidation signal for the
+# whole strength snapshot family (ratings, history, h2h, bot-stats).
+CYCLE_MANIFEST_FILE = RESULTS_DIR / "evaluation_cycle_manifest.json"
 
 router = APIRouter(prefix="/api", tags=["ratings"])
 
 
 def _snapshot() -> dict:
-    return load_strict_strength_snapshot(RESULTS_DIR)
+    # mtime-keyed cache: the snapshot reopens multiple JSON/JSONL files on every
+    # call and the frontend polls several ratings endpoints in one burst. The
+    # manifest mtime changes the instant a new cycle is published, so the cache
+    # auto-invalidates exactly when the data does; the 2s TTL only bounds
+    # staleness during a long quiet period. Tests monkeypatch this function, so
+    # the cache never affects test isolation.
+    return cached_by_mtime(
+        "ratings:strict_strength_snapshot",
+        CYCLE_MANIFEST_FILE,
+        lambda: load_strict_strength_snapshot(RESULTS_DIR),
+    )
 
 
 def strict_daemon_status(

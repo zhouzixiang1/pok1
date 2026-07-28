@@ -157,6 +157,62 @@ class TestCachedRead:
         assert cached_read("missing", Path("/nonexistent")) is None
 
 
+class TestCachedByMtime:
+    def test_reuses_within_same_mtime(self, tmp_path):
+        from server.cache import cached_by_mtime, clear_mtime_cache
+        src = tmp_path / "src.json"
+        src.write_text("{}")
+        clear_mtime_cache()
+        calls = {"n": 0}
+
+        def producer():
+            calls["n"] += 1
+            return {"v": calls["n"]}
+
+        a = cached_by_mtime("k", src, producer)
+        b = cached_by_mtime("k", src, producer)
+        assert a == {"v": 1}
+        assert b == {"v": 1}  # cached, producer not re-run
+        assert calls["n"] == 1
+
+    def test_invalidates_when_mtime_changes(self, tmp_path):
+        import os
+
+        from server.cache import cached_by_mtime, clear_mtime_cache
+        src = tmp_path / "src.json"
+        src.write_text("{}")
+        clear_mtime_cache()
+        calls = {"n": 0}
+
+        def producer():
+            calls["n"] += 1
+            return {"v": calls["n"]}
+
+        cached_by_mtime("k", src, producer)
+        # Force a distinct mtime (write + bump mtime past filesystem granularity).
+        src.write_text('{"x": 1}')
+        future = src.stat().st_mtime_ns + 5_000_000_000
+        os.utime(src, ns=(future, future))
+        b = cached_by_mtime("k", src, producer)
+        assert b == {"v": 2}  # re-computed because mtime changed
+        assert calls["n"] == 2
+
+    def test_missing_source_is_cache_miss(self, tmp_path):
+        from server.cache import cached_by_mtime, clear_mtime_cache, _MTIME_CACHE
+        clear_mtime_cache()
+        missing = tmp_path / "absent.json"
+        calls = {"n": 0}
+
+        def producer():
+            calls["n"] += 1
+            return {"empty": True}
+
+        result = cached_by_mtime("k", missing, producer)
+        assert result == {"empty": True}
+        # Must not cache the missing-source result, so the next poll re-checks.
+        assert "k" not in _MTIME_CACHE
+
+
 class TestReadLocked:
     def test_basic(self, tmp_path):
         from server.cache import read_locked
