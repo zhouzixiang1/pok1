@@ -40,6 +40,8 @@ from official_evidence_archive import (
 from official_attribution import round_topology
 from official_platform_resource import official_platform_busy
 import official_certification_receipt_validation as _ocrv  # noqa: E402,F401  (receipt-validation cluster)
+import official_certification_authority as _oca  # noqa: E402,F401  (authority/opponent-selection cluster)
+import official_certification_runner as _ocr  # noqa: E402,F401  (runner/job-lifecycle cluster)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1147,12 +1149,9 @@ def official_failure_blocks_parent(status: dict[str, Any]) -> bool:
 
 
 def _certificate_payload_digest(record: dict[str, Any]) -> str:
-    payload = {
-        key: value
-        for key, value in record.items()
-        if key not in {"certificate_digest", "certificate_path"}
-    }
-    return canonical_digest(payload)
+    """Delegate to official_certification_authority."""
+    return _oca._certificate_payload_digest(record)
+
 
 
 def _build_deterministic_receipt(
@@ -1161,77 +1160,9 @@ def _build_deterministic_receipt(
     evidence_path: Path,
     archive: dict[str, Any],
 ) -> dict[str, Any]:
-    deterministic = evidence.get("deterministic") or {}
-    rounds: list[dict[str, Any]] = []
-    for item in evidence.get("rounds") or []:
-        if not isinstance(item, dict):
-            continue
-        attribution = item.get("attribution") or {}
-        log_summary = item.get("log_summary") or {}
-        thp_summaries = item.get("thp_summaries") or []
-        canonical_thp = item.get("canonical_thp") if isinstance(item.get("canonical_thp"), dict) else {}
-        completion = (
-            item.get("completion_evidence")
-            if isinstance(item.get("completion_evidence"), dict)
-            else {}
-        )
-        rounds.append({
-            "round_kind": item.get("round_kind"),
-            "round_index": item.get("round_index"),
-            "target_hands": item.get("target_hands"),
-            "passed": bool(item.get("passed")),
-            "classification": item.get("classification"),
-            "candidate_verdict": attribution.get("candidate_verdict"),
-            "candidate_blocking": bool(attribution.get("candidate_blocking")),
-            "countable": bool(attribution.get("countable")),
-            "hands_started": int(log_summary.get("hands_started_min", 0) or 0),
-            "settlements": int(log_summary.get("settlements_min", 0) or 0),
-            "completed_hands": int(
-                completion.get("completed_hands")
-                or min(
-                    int(log_summary.get("hands_started_min", 0) or 0),
-                    int(log_summary.get("settlements_min", 0) or 0),
-                )
-            ),
-            "thp_hands": int(canonical_thp.get("hand_records", 0) or 0),
-            "thp_sha256": str(canonical_thp.get("sha256") or ""),
-            "completion_kind": str(completion.get("kind") or "paired-tcp-settlements"),
-            "completion_evidence_digest": str(completion.get("evidence_digest") or ""),
-            "issue_count": len(item.get("issues") or []),
-        })
-    payload = {
-        "schema_version": DETERMINISTIC_RECEIPT_SCHEMA_VERSION,
-        "policy_id": spec.policy_id,
-        "spec": {
-            "self_play_rounds": spec.self_play_rounds,
-            "opponent_rounds": spec.opponent_rounds,
-            "target_hands": spec.target_hands,
-        },
-        "verdict": {
-            "passed": bool(deterministic.get("passed")),
-            "classification": deterministic.get("classification"),
-            "blocking": bool(deterministic.get("blocking")),
-            "inconclusive": bool(deterministic.get("inconclusive")),
-            "candidate_verdict": deterministic.get("candidate_verdict"),
-            "rounds_requested": (
-                deterministic.get("rounds_requested")
-                or spec.self_play_rounds + spec.opponent_rounds
-            ),
-            "rounds_run": (
-                deterministic.get("rounds_run")
-                or len(evidence.get("rounds") or [])
-            ),
-            "target_hands": deterministic.get("target_hands") or spec.target_hands,
-            "issue_count": len(deterministic.get("issues") or []),
-        },
-        "rounds": rounds,
-        "evidence_sha256": _file_sha256(evidence_path),
-        "archive_sha256": archive.get("archive_sha256"),
-        "archive_manifest_digest": archive.get("manifest_digest"),
-        "strength_evaluation": "not_applicable",
-    }
-    payload["receipt_digest"] = canonical_digest(payload)
-    return payload
+    """Delegate to official_certification_authority."""
+    return _oca._build_deterministic_receipt(spec, evidence, evidence_path, archive)
+
 
 
 def _deterministic_receipt_issues(
@@ -1241,79 +1172,30 @@ def _deterministic_receipt_issues(
     evidence_manifest: dict[str, Any],
     archive_receipt: dict[str, Any],
 ) -> list[str]:
-    """Delegate to official_certification_receipt_validation."""
-    return _ocrv._deterministic_receipt_issues(receipt, spec, evidence_manifest=evidence_manifest, archive_receipt=archive_receipt)
+    """Delegate to official_certification_authority."""
+    return _oca._deterministic_receipt_issues(receipt, spec, evidence_manifest=evidence_manifest, archive_receipt=archive_receipt)
+
 
 
 def _spec_from_mapping(data: dict[str, Any]) -> CertificationSpec:
-    retired = sorted(RETIRED_BOOTSTRAP_SPEC_FIELDS.intersection(data))
-    if retired:
-        raise ValueError(
-            "retired signed-ledger bootstrap spec fields are forbidden: "
-            + ", ".join(retired)
-        )
-    mode = str(data.get("mode") or "")
-    spec = CertificationSpec(
-        mode=mode,
-        policy_id=str(
-            data.get("policy_id")
-            or (FULL_POLICY_ID if mode == "full" else f"official-{mode}-v1")
-        ),
-        candidate=str(data.get("candidate") or ""),
-        opponent=str(data.get("opponent")) if data.get("opponent") else None,
-        self_play_rounds=int(data.get("self_play_rounds", 0) or 0),
-        opponent_rounds=int(data.get("opponent_rounds", 0) or 0),
-        target_hands=int(data.get("target_hands", 0) or 0),
-        round_timeout_sec=float(data.get("round_timeout_sec", 0.0) or 0.0),
-        no_progress_timeout_sec=float(data.get("no_progress_timeout_sec", 0.0) or 0.0),
-        bootstrap_control_id=(
-            str(data.get("bootstrap_control_id")).strip()
-            if data.get("bootstrap_control_id") is not None
-            else None
-        ),
-        quality_admission=(
-            dict(data.get("quality_admission"))
-            if isinstance(data.get("quality_admission"), dict)
-            else None
-        ),
-    )
-    validate_spec(spec)
-    return spec
+    """Delegate to official_certification_authority."""
+    return _oca._spec_from_mapping(data)
+
 
 
 def _config_for_spec(
     spec: CertificationSpec,
     config: OfficialPlatformConfig | None = None,
 ) -> OfficialPlatformConfig:
-    return _copy_config(
-        config or OfficialPlatformConfig(),
-        round_timeout_sec=spec.round_timeout_sec,
-        no_progress_timeout_sec=spec.no_progress_timeout_sec,
-        results_dir=certification_root() / spec.mode,
-    )
+    """Delegate to official_certification_authority."""
+    return _oca._config_for_spec(spec, config)
+
 
 
 def _identity_integrity_issues(identity: Any, spec: CertificationSpec) -> list[str]:
-    if not isinstance(identity, dict):
-        return ["certificate_identity_missing"]
-    issues: list[str] = []
-    identity_payload = {
-        key: value
-        for key, value in identity.items()
-        if key != "identity_digest"
-    }
-    if identity.get("identity_digest") != canonical_digest(identity_payload):
-        issues.append("certificate_identity_digest_mismatch")
-    platform = identity.get("platform")
-    if not isinstance(platform, dict):
-        issues.append("certificate_platform_identity_missing")
-    elif identity.get("platform_fingerprint") != canonical_digest(platform):
-        issues.append("certificate_platform_fingerprint_mismatch")
-    if identity.get("policy_id") != spec.policy_id:
-        issues.append("certificate_identity_policy_mismatch")
-    if identity.get("spec") != spec_record(spec):
-        issues.append("certificate_identity_spec_mismatch")
-    return issues
+    """Delegate to official_certification_authority."""
+    return _oca._identity_integrity_issues(identity, spec)
+
 
 
 def _opponent_selection_issues(
@@ -1325,112 +1207,9 @@ def _opponent_selection_issues(
     candidate_path: str | Path | None = None,
     _validated_ledger_entries: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    if spec.mode != "full":
-        return []
-    if not isinstance(selection, dict) or selection.get("selected") is not True:
-        return ["certificate_official_opponent_selection_missing"]
-    opponent = selection.get("opponent")
-    if not isinstance(opponent, dict) or opponent.get("eligible") is not True:
-        return ["certificate_official_opponent_selection_invalid"]
-    issues: list[str] = []
-    try:
-        selected_path = Path(str(opponent.get("path") or "")).resolve()
-        expected_path = Path(str(spec.opponent or "")).resolve()
-        if selected_path != expected_path:
-            issues.append("certificate_official_opponent_path_mismatch")
-    except Exception:
-        issues.append("certificate_official_opponent_path_invalid")
-    if str(opponent.get("artifact_hash") or "") != str(identity.get("opponent_hash") or ""):
-        issues.append("certificate_official_opponent_hash_mismatch")
-    reason = opponent.get("reason")
-    if spec.bootstrap_control_id is not None:
-        # The first strict run uses current system-owned typed-policy bytes,
-        # never an archived bot.  Every selection/receipt field is revalidated.
-        if selection.get("bootstrap_control_id") != spec.bootstrap_control_id:
-            issues.append("certificate_bootstrap_control_id_mismatch")
-        if reason != "first_strict_control_bootstrap":
-            issues.append("certificate_bootstrap_control_reason_invalid")
-        try:
-            if _validated_ledger_entries is None:
-                from official_bootstrap import (
-                    validate_first_strict_control_selection,
-                )
+    """Delegate to official_certification_authority."""
+    return _oca._opponent_selection_issues(selection, spec, identity, allow_consumed_bootstrap=allow_consumed_bootstrap, candidate_path=candidate_path, _validated_ledger_entries=_validated_ledger_entries)
 
-                validation = validate_first_strict_control_selection(
-                    selection,
-                    spec.bootstrap_control_id,
-                    candidate_path or spec.candidate,
-                    allow_consumed=allow_consumed_bootstrap,
-                    allow_published=allow_consumed_bootstrap,
-                )
-            else:
-                from official_bootstrap import (
-                    validate_first_strict_control_selection_from_entries,
-                )
-
-                validation = (
-                    validate_first_strict_control_selection_from_entries(
-                        selection,
-                        spec.bootstrap_control_id,
-                        candidate_path or spec.candidate,
-                        _validated_ledger_entries,
-                        allow_consumed=allow_consumed_bootstrap,
-                        allow_published=allow_consumed_bootstrap,
-                    )
-                )
-            if not validation.get("valid"):
-                issues.extend(
-                    f"certificate_{item}"
-                    for item in (
-                        validation.get("issues")
-                        or ["bootstrap_control_selection_invalid"]
-                    )
-                )
-        except Exception as exc:
-            issues.append(
-                "certificate_bootstrap_control_validation_error:"
-                f"{type(exc).__name__}:{str(exc)[:160]}"
-            )
-        return list(dict.fromkeys(issues))
-
-    if selection.get("bootstrap_control_id") is not None:
-        issues.append("certificate_bootstrap_control_unexpected")
-    # A full EXE certificate is the only production authorization for an
-    # official opponent.  Content-bound migration grants remain available for
-    # parent/rating-pool history, but must never validate a formal opponent
-    # receipt (including a resumed durable job).
-    if reason != "official_certified":
-        issues.append("certificate_official_opponent_reason_invalid")
-    receipt = opponent.get("eligibility_receipt")
-    if not isinstance(receipt, dict):
-        issues.append("certificate_official_opponent_eligibility_receipt_missing")
-        return issues
-    receipt_payload = {
-        key: value
-        for key, value in receipt.items()
-        if key != "receipt_digest"
-    }
-    if receipt.get("receipt_digest") != canonical_digest(receipt_payload):
-        issues.append("certificate_official_opponent_eligibility_receipt_digest_mismatch")
-    if receipt.get("schema_version") != OPPONENT_ELIGIBILITY_RECEIPT_SCHEMA_VERSION:
-        issues.append("certificate_official_opponent_eligibility_receipt_schema_mismatch")
-    if receipt.get("role") != "official_opponent":
-        issues.append("certificate_official_opponent_eligibility_receipt_role_mismatch")
-    if str(receipt.get("bot") or "") != str(opponent.get("bot") or ""):
-        issues.append("certificate_official_opponent_eligibility_receipt_bot_mismatch")
-    if str(receipt.get("artifact_hash") or "") != str(opponent.get("artifact_hash") or ""):
-        issues.append("certificate_official_opponent_eligibility_receipt_hash_mismatch")
-    expected_kind = "official_full_certificate"
-    if receipt.get("kind") != expected_kind:
-        issues.append("certificate_official_opponent_eligibility_receipt_kind_mismatch")
-    if receipt.get("policy_id") != FULL_POLICY_ID:
-        issues.append("certificate_official_opponent_certificate_policy_mismatch")
-    certificate_digest = str(receipt.get("certificate_digest") or "")
-    if len(certificate_digest) != 64 or any(
-        ch not in "0123456789abcdef" for ch in certificate_digest.lower()
-    ):
-        issues.append("certificate_official_opponent_certificate_digest_invalid")
-    return issues
 
 
 def _validate_portable_file_manifest(
@@ -1438,23 +1217,9 @@ def _validate_portable_file_manifest(
     *,
     label: str,
 ) -> tuple[Path | None, list[str], bool]:
-    """Validate retained bytes when present, otherwise validate the hash receipt."""
-    path, issues = _validate_certificate_file_manifest(manifest, label=label)
-    if not issues:
-        return path, [], True
-    if not isinstance(manifest, dict):
-        return None, issues, False
-    only_unretained = issues == [f"certificate_{label}_missing"]
-    digest = str(manifest.get("sha256") or "")
-    size = manifest.get("size_bytes")
-    digest_ok = len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest.lower())
-    try:
-        size_ok = int(size) >= 0
-    except (TypeError, ValueError):
-        size_ok = False
-    if only_unretained and digest_ok and size_ok:
-        return None, [], False
-    return None, issues, False
+    """Delegate to official_certification_authority."""
+    return _oca._validate_portable_file_manifest(manifest, label=label)
+
 
 
 def _validate_published_attestation_at_tag(
@@ -1462,47 +1227,9 @@ def _validate_published_attestation_at_tag(
     published_identity: dict[str, Any],
     expected_certificate_digest: str,
 ) -> list[str]:
-    path = published_certificate_path(candidate_path)
-    record, attestation, issues = _load_certificate_container(path)
-    if not isinstance(record, dict) or not isinstance(attestation, dict):
-        return [*issues, "published_attestation_missing"]
-    if attestation.get("bot") != candidate_path.name:
-        issues.append("published_attestation_bot_mismatch")
-    if record.get("certificate_digest") != expected_certificate_digest:
-        issues.append("published_attestation_certificate_mismatch")
-    try:
-        relative = path.relative_to(ROOT).as_posix()
-    except ValueError:
-        return [*issues, "published_attestation_outside_repository"]
-    tag = str(published_identity.get("tag") or "")
-    if not tag:
-        return [*issues, "published_attestation_tag_missing"]
-    try:
-        result = subprocess.run(
-            ["git", "show", f"{tag}:{relative}"],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except Exception as exc:
-        return [
-            *issues,
-            f"published_attestation_git_read_error:{type(exc).__name__}:{str(exc)[:160]}",
-        ]
-    if result.returncode != 0:
-        return [*issues, "completion_tag_missing_published_attestation"]
-    try:
-        tagged = json.loads(result.stdout)
-    except Exception as exc:
-        return [
-            *issues,
-            f"completion_tag_attestation_invalid_json:{type(exc).__name__}:{str(exc)[:120]}",
-        ]
-    if tagged != attestation:
-        issues.append("working_attestation_differs_from_completion_tag")
-    return issues
+    """Delegate to official_certification_authority."""
+    return _oca._validate_published_attestation_at_tag(candidate_path, published_identity, expected_certificate_digest)
+
 
 
 def certificate_validation(
@@ -1515,235 +1242,9 @@ def certificate_validation(
     _skip_ledger_check: bool = False,
     _validated_ledger_entries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    issues: list[str] = []
-    path_value = status.get("certificate_path")
-    record_path = Path(str(path_value)) if path_value else Path()
-    record, attestation, container_issues = (
-        _load_certificate_container(record_path)
-        if path_value
-        else (None, None, ["content_bound_certificate_missing"])
-    )
-    issues.extend(container_issues)
-    if not isinstance(record, dict):
-        return {"valid": False, "issues": list(dict.fromkeys(issues))}
-    portable = isinstance(attestation, dict)
-    if record.get("schema_version") != CERTIFICATE_SCHEMA_VERSION:
-        issues.append("certificate_schema_version_mismatch")
-    if record.get("kind") != "official-exe-compliance-certificate":
-        issues.append("certificate_kind_mismatch")
-    digest = str(record.get("certificate_digest") or "")
-    if not digest or digest != _certificate_payload_digest(record):
-        issues.append("certificate_digest_mismatch")
-    if digest != str(status.get("certificate_digest") or ""):
-        issues.append("status_certificate_digest_mismatch")
-    issuer = record.get("issuer") if isinstance(record.get("issuer"), dict) else {}
-    from official_certificate_signing import (
-        SIGNATURE_NAMESPACE,
-        SIGNER_PRINCIPAL,
-        verify_certificate_signature,
-    )
+    """Delegate to official_certification_authority."""
+    return _oca.certificate_validation(status, candidate=candidate, config=config, require_published=require_published, ledger_fresh=ledger_fresh, _skip_ledger_check=_skip_ledger_check, _validated_ledger_entries=_validated_ledger_entries)
 
-    if issuer.get("principal") != SIGNER_PRINCIPAL:
-        issues.append("official_certificate_issuer_principal_mismatch")
-    if issuer.get("namespace") != SIGNATURE_NAMESPACE:
-        issues.append("official_certificate_issuer_namespace_mismatch")
-    signature = ""
-    if portable:
-        signature = str((attestation or {}).get("signature") or "")
-    else:
-        signature_path_value = status.get("certificate_signature_path")
-        signature_path = (
-            Path(str(signature_path_value))
-            if signature_path_value
-            else record_path.with_suffix(".sig")
-        )
-        try:
-            if signature_path.is_symlink() or not signature_path.is_file():
-                issues.append("official_certificate_signature_missing")
-            else:
-                signature = signature_path.read_text(encoding="utf-8")
-                expected_signature_sha = str(status.get("certificate_signature_sha256") or "")
-                if expected_signature_sha and _file_sha256(signature_path) != expected_signature_sha:
-                    issues.append("official_certificate_signature_sha256_mismatch")
-        except OSError as exc:
-            issues.append(f"official_certificate_signature_read_error:{type(exc).__name__}")
-    signature_validation = verify_certificate_signature(record, signature)
-    issues.extend(signature_validation.get("issues") or [])
-    if (
-        signature_validation.get("valid")
-        and issuer.get("key_fingerprint")
-        != signature_validation.get("key_fingerprint")
-    ):
-        issues.append("official_certificate_issuer_fingerprint_mismatch")
-    try:
-        spec = _spec_from_mapping(record.get("spec") or {})
-    except Exception as exc:
-        return {
-            "valid": False,
-            "issues": list(dict.fromkeys([
-                *issues,
-                f"certificate_spec_invalid:{type(exc).__name__}:{str(exc)[:200]}",
-            ])),
-        }
-    spec_candidate_label = _safe_label(spec.candidate)
-    requested_candidate_label = _safe_label(candidate) if candidate is not None else spec_candidate_label
-    candidate_path = (
-        Path(candidate).expanduser().resolve()
-        if candidate is not None
-        else Path(spec.candidate).expanduser().resolve()
-    )
-    if record.get("candidate_label") != spec_candidate_label:
-        issues.append("certificate_candidate_label_missing_or_mismatch")
-    if requested_candidate_label != spec_candidate_label:
-        issues.append("certificate_candidate_version_mismatch")
-    if portable and (attestation or {}).get("bot") != requested_candidate_label:
-        issues.append("published_attestation_bot_mismatch")
-    record_identity = record.get("identity") or {}
-    if record_identity.get("runner_provenance") != PRODUCTION_RUNNER_PROVENANCE:
-        issues.append("certificate_runner_provenance_not_production_official_exe")
-    if record_identity.get("authority_scope") != "production":
-        issues.append("certificate_authority_scope_not_production")
-    if record_identity.get("test_only") is not False:
-        issues.append("certificate_test_only_authority_forbidden")
-    if status.get("test_only") is True:
-        issues.append("status_test_only_authority_forbidden")
-    if portable:
-        issues.extend(_identity_integrity_issues(record_identity, spec))
-        current_identity = record_identity
-    else:
-        current_identity = certification_identity(spec, _config_for_spec(spec, config))
-        if record_identity != current_identity:
-            issues.append("certificate_identity_stale")
-    status_identity = status.get("certification_identity") or {}
-    if status_identity != current_identity:
-        issues.append("status_identity_stale")
-    issues.extend(
-        _opponent_selection_issues(
-            record.get("opponent_selection"),
-            spec,
-            current_identity,
-            allow_consumed_bootstrap=not _skip_ledger_check,
-            candidate_path=candidate_path,
-            _validated_ledger_entries=_validated_ledger_entries,
-        )
-    )
-    if spec.mode == "full":
-        from official_job_envelope import job_envelope_issues
-
-        issues.extend(job_envelope_issues(
-            record.get("job_envelope"),
-            expected_candidate_hash=str(current_identity.get("candidate_hash") or ""),
-            expected_opponent_hash=str(current_identity.get("opponent_hash") or ""),
-        ))
-    evidence_record = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
-    if portable:
-        archive_validation = validate_evidence_archive_receipt(
-            record.get("evidence_archive"),
-            expected_evidence_sha256=str(evidence_record.get("sha256") or ""),
-        )
-        retained_archive_validation = validate_evidence_archive(
-            record.get("evidence_archive"),
-            expected_evidence_sha256=str(evidence_record.get("sha256") or ""),
-        )
-    else:
-        archive_validation = validate_evidence_archive(
-            record.get("evidence_archive"),
-            expected_evidence_sha256=str(evidence_record.get("sha256") or ""),
-        )
-        retained_archive_validation = archive_validation
-    if spec.mode == "full":
-        issues.extend(archive_validation.get("issues") or [])
-    try:
-        if hash_path(candidate_path) != current_identity.get("candidate_hash"):
-            issues.append("candidate_artifact_hash_mismatch")
-    except Exception as exc:
-        issues.append(
-            f"candidate_artifact_integrity_error:{type(exc).__name__}:{str(exc)[:160]}"
-        )
-    if portable:
-        evidence_path, evidence_issues, evidence_retained = _validate_portable_file_manifest(
-            record.get("evidence"), label="evidence"
-        )
-    else:
-        evidence_path, evidence_issues = _validate_certificate_file_manifest(
-            record.get("evidence"), label="evidence"
-        )
-        evidence_retained = evidence_path is not None and not evidence_issues
-    issues.extend(evidence_issues)
-    if evidence_path is not None and not evidence_issues:
-        issues.extend(_validate_retained_evidence_artifacts(evidence_path))
-    try:
-        issues.extend(_deterministic_receipt_issues(
-            record.get("deterministic_receipt"),
-            spec,
-            evidence_manifest=evidence_record,
-            archive_receipt=(
-                record.get("evidence_archive")
-                if isinstance(record.get("evidence_archive"), dict)
-                else {}
-            ),
-        ))
-    except Exception as exc:
-        issues.append(
-            f"certificate_deterministic_receipt_invalid:{type(exc).__name__}:{str(exc)[:160]}"
-        )
-    if require_published:
-        published = published_bot_identity(candidate_path)
-        if not published.get("published"):
-            issues.append("certificate_candidate_not_published")
-        metadata = published.get("tag_metadata") or {}
-        if metadata.get("official-certificate") != digest:
-            issues.append("completion_tag_certificate_digest_mismatch")
-        if metadata.get("official-candidate-hash") != current_identity.get("candidate_hash"):
-            issues.append("completion_tag_candidate_hash_mismatch")
-        if metadata.get("official-policy") != spec.policy_id:
-            issues.append("completion_tag_policy_mismatch")
-        issues.extend(
-            _validate_published_attestation_at_tag(
-                candidate_path,
-                published,
-                digest,
-            )
-        )
-    if spec.mode == "full" and not _skip_ledger_check:
-        try:
-            from official_verdict_ledger import latest_authoritative_verdict
-
-            ledger = latest_authoritative_verdict(
-                str(current_identity.get("candidate_hash") or ""),
-                fresh=ledger_fresh,
-            )
-            if not ledger.get("valid"):
-                issues.extend(ledger.get("issues") or ["official_verdict_ledger_invalid"])
-            else:
-                ledger_entry = ledger.get("entry")
-                if not isinstance(ledger_entry, dict):
-                    issues.append("official_verdict_ledger_certificate_entry_missing")
-                elif ledger_entry.get("outcome") != STATUS_CERTIFIED:
-                    issues.append("official_verdict_ledger_latest_outcome_not_certified")
-                elif ledger_entry.get("certificate_digest") != digest:
-                    issues.append("official_verdict_ledger_certificate_digest_mismatch")
-        except Exception as exc:
-            issues.append(
-                f"official_verdict_ledger_validation_error:{type(exc).__name__}:{str(exc)[:160]}"
-            )
-    return {
-        "valid": not issues,
-        "issues": list(dict.fromkeys(issues)),
-        "certificate_digest": digest,
-        "spec": spec_record(spec),
-        "identity": current_identity,
-        "published_attestation": portable or require_published,
-        "evidence_retained": evidence_retained,
-        "standalone_evidence_retained": evidence_retained,
-        "llm_analysis_retained": False,
-        "evidence_archive_retained": bool(retained_archive_validation.get("valid")),
-        "archive_evidence_available": bool(retained_archive_validation.get("valid")),
-        "raw_evidence_available": bool(
-            evidence_retained or retained_archive_validation.get("valid")
-        ),
-        "signature_valid": bool(signature_validation.get("valid")),
-    }
 
 
 def publish_certificate_attestation(
@@ -1752,57 +1253,9 @@ def publish_certificate_attestation(
     *,
     config: OfficialPlatformConfig | None = None,
 ) -> dict[str, Any]:
-    """Write the compact certificate receipt that must ship with the bot commit."""
-    identity = (
-        status.get("certification_identity")
-        if isinstance(status.get("certification_identity"), dict)
-        else {}
-    )
-    if status.get("test_only") is True or identity.get("test_only") is not False:
-        raise RuntimeError("cannot publish test-only official certificate")
-    validation = certificate_validation(status, candidate=candidate, config=config)
-    if not validation.get("valid"):
-        raise RuntimeError(
-            "cannot publish invalid official certificate: "
-            + ", ".join(validation.get("issues") or [])
-        )
-    source = Path(str(status.get("certificate_path") or ""))
-    record, _attestation, issues = _load_certificate_container(source)
-    if issues or not isinstance(record, dict):
-        raise RuntimeError(
-            "cannot read official certificate for publication: "
-            + ", ".join(issues or ["missing_record"])
-        )
-    signature_path = Path(str(status.get("certificate_signature_path") or source.with_suffix(".sig")))
-    if signature_path.is_symlink() or not signature_path.is_file():
-        raise RuntimeError("cannot publish official certificate without detached signature")
-    signature = signature_path.read_text(encoding="utf-8")
-    destination = published_certificate_path(candidate)
-    portable_record = json.loads(json.dumps(record, ensure_ascii=False))
-    try:
-        relative_destination = destination.relative_to(ROOT).as_posix()
-    except ValueError:
-        relative_destination = str(destination)
-    payload = {
-        "schema_version": PUBLISHED_ATTESTATION_SCHEMA_VERSION,
-        "kind": "official-platform-compliance-attestation",
-        "bot": _safe_label(candidate),
-        "published_at": now_iso(),
-        "certificate_digest": record.get("certificate_digest"),
-        "signature": signature,
-        "signature_sha256": hashlib.sha256(signature.encode("utf-8")).hexdigest(),
-        "issuer": record.get("issuer"),
-        "raw_evidence_retention": "content-addressed-local-archive",
-        "certificate": portable_record,
-    }
-    payload["attestation_digest"] = _attestation_payload_digest(payload)
-    _write_json(destination, payload)
-    return {
-        "path": str(destination),
-        "relative_path": relative_destination,
-        "attestation_digest": payload["attestation_digest"],
-        "certificate_digest": record.get("certificate_digest"),
-    }
+    """Delegate to official_certification_authority."""
+    return _oca.publish_certificate_attestation(status, candidate, config=config)
+
 
 
 def official_full_certified(
@@ -1813,50 +1266,9 @@ def official_full_certified(
     require_published: bool = False,
     ledger_fresh: bool = True,
 ) -> bool:
-    status_identity = (
-        status.get("certification_identity")
-        if isinstance(status.get("certification_identity"), dict)
-        else {}
-    )
-    if (
-        status.get("test_only") is True
-        or status_identity.get("test_only") is not False
-        or status_identity.get("authority_scope") != "production"
-        or status_identity.get("runner_provenance") != PRODUCTION_RUNNER_PROVENANCE
-    ):
-        return False
-    verdict = official_compliance_verdict(status)
-    if not (
-        status.get("status") == STATUS_CERTIFIED
-        and status.get("mode") == "full"
-        and status.get("policy_id") == FULL_POLICY_ID
-        and bool(verdict.get("ok"))
-        and not bool(verdict.get("inconclusive"))
-        and not bool(verdict.get("blocking"))
-    ):
-        return False
-    validation = certificate_validation(
-        status,
-        candidate=candidate,
-        config=config,
-        require_published=require_published,
-        ledger_fresh=ledger_fresh,
-    )
-    if not validation.get("valid"):
-        return False
-    identity = validation.get("identity") if isinstance(validation.get("identity"), dict) else {}
-    from official_verdict_ledger import latest_authoritative_verdict
+    """Delegate to official_certification_authority."""
+    return _oca.official_full_certified(status, candidate, config=config, require_published=require_published, ledger_fresh=ledger_fresh)
 
-    ledger = latest_authoritative_verdict(
-        str(identity.get("candidate_hash") or ""),
-        fresh=ledger_fresh,
-    )
-    entry = ledger.get("entry") if ledger.get("valid") else None
-    return bool(
-        isinstance(entry, dict)
-        and entry.get("outcome") == STATUS_CERTIFIED
-        and entry.get("certificate_digest") == status.get("certificate_digest")
-    )
 
 
 def official_certification_profile_projection(
@@ -1865,84 +1277,9 @@ def official_certification_profile_projection(
     *,
     require_published: bool = False,
 ) -> dict[str, Any]:
-    """Project the formal profile only after reopening the signed certificate.
+    """Delegate to official_certification_authority."""
+    return _oca.official_certification_profile_projection(status, candidate, require_published=require_published)
 
-    HTTP/UI consumers must not infer the first-strict exception from ``v143``
-    or trust profile-looking fields copied into mutable status JSON.  The
-    signed certificate spec and its validated opponent selection are the sole
-    authority once publication has cleared the parked checkpoint.
-    """
-
-    status_identity = (
-        status.get("certification_identity")
-        if isinstance(status.get("certification_identity"), dict)
-        else {}
-    )
-    verdict = official_compliance_verdict(status)
-    if (
-        status.get("status") != STATUS_CERTIFIED
-        or status.get("mode") != "full"
-        or status.get("policy_id") != FULL_POLICY_ID
-        or status.get("test_only") is True
-        or status_identity.get("test_only") is not False
-        or status_identity.get("authority_scope") != "production"
-        or status_identity.get("runner_provenance") != PRODUCTION_RUNNER_PROVENANCE
-        or verdict.get("ok") is not True
-        or verdict.get("blocking") is not False
-        or verdict.get("inconclusive") is not False
-    ):
-        return {}
-    validation = certificate_validation(
-        status,
-        candidate=candidate,
-        require_published=require_published,
-    )
-    if validation.get("valid") is not True:
-        return {}
-    spec = validation.get("spec")
-    if not isinstance(spec, dict):
-        return {}
-    if (
-        spec.get("mode") != "full"
-        or spec.get("policy_id") != FULL_POLICY_ID
-        or spec.get("self_play_rounds") != 5
-        or spec.get("opponent_rounds") != 3
-        or spec.get("target_hands") != 70
-    ):
-        return {}
-
-    bootstrap_control_id = spec.get("bootstrap_control_id")
-    if bootstrap_control_id is None:
-        certification_profile = FULL_POLICY_ID
-        opponent_authority = "strict_published_pool"
-    else:
-        from first_strict_control import CONTROL_ID
-
-        if bootstrap_control_id != CONTROL_ID:
-            return {}
-        certification_profile = CONTROL_ID
-        opponent_authority = "system_control"
-
-    return {
-        "certification_profile": certification_profile,
-        "opponent_authority": opponent_authority,
-        # Official EXE evidence is compliance-only and never contributes to
-        # strategy selection or the native strength pool.
-        "strength_evidence_weight": 0,
-        "strategy_evidence_weight": 0,
-        # Certificate validation has already proven the deterministic receipt
-        # contains all eight passing rounds.  Reconstructing this from mutable
-        # summaries would create a weaker public authority.
-        "formal_summary": {
-            "self_play_rounds": 5,
-            "opponent_rounds": 3,
-            "target_hands": 70,
-            "rounds_requested": 8,
-            "rounds_run": 8,
-            "passed_rounds": 8,
-            "failed_rounds": 0,
-        },
-    }
 
 
 def authoritative_verdict_status_issues(
@@ -1950,199 +1287,50 @@ def authoritative_verdict_status_issues(
     *,
     _validated_ledger_entries: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Validate a status before the certifier signs it into the verdict ledger."""
-    if not isinstance(status, dict):
-        return [f"official_verdict_status_invalid_type:{type(status).__name__}"]
-    issues: list[str] = []
-    outcome = str(status.get("status") or "")
-    if outcome not in {STATUS_CERTIFIED, STATUS_FAILED, STATUS_INCONCLUSIVE}:
-        issues.append("official_verdict_status_outcome_not_formal")
-    if status.get("mode") != "full" or status.get("policy_id") != FULL_POLICY_ID:
-        issues.append("official_verdict_status_policy_not_full")
-    identity = (
-        status.get("certification_identity")
-        if isinstance(status.get("certification_identity"), dict)
-        else {}
-    )
-    if status.get("test_only") is True or identity.get("test_only") is not False:
-        issues.append("official_verdict_status_test_only")
-    if identity.get("authority_scope") != "production":
-        issues.append("official_verdict_status_authority_scope_invalid")
-    if identity.get("runner_provenance") != PRODUCTION_RUNNER_PROVENANCE:
-        issues.append("official_verdict_status_runner_provenance_invalid")
-    try:
-        spec = _spec_from_mapping(identity.get("spec") or {})
-    except Exception as exc:
-        return list(dict.fromkeys([
-            *issues,
-            f"official_verdict_status_spec_invalid:{type(exc).__name__}:{str(exc)[:160]}",
-        ]))
-    if spec.mode != "full" or spec.policy_id != FULL_POLICY_ID:
-        issues.append("official_verdict_status_spec_not_full")
-    issues.extend(_identity_integrity_issues(identity, spec))
-    candidate_hash = str(identity.get("candidate_hash") or "")
-    try:
-        if len(candidate_hash) != 64 or hash_path(spec.candidate) != candidate_hash:
-            issues.append("official_verdict_status_candidate_identity_invalid")
-    except Exception as exc:
-        issues.append(
-            f"official_verdict_status_candidate_identity_error:{type(exc).__name__}:{str(exc)[:120]}"
-        )
-    if status.get("bot") != _safe_label(spec.candidate):
-        issues.append("official_verdict_status_candidate_label_mismatch")
-    envelope = (
-        status.get("official_job_envelope")
-        if isinstance(status.get("official_job_envelope"), dict)
-        else None
-    )
-    try:
-        from official_job_envelope import job_envelope_issues
+    """Delegate to official_certification_authority."""
+    return _oca.authoritative_verdict_status_issues(status, _validated_ledger_entries=_validated_ledger_entries)
 
-        issues.extend(job_envelope_issues(
-            envelope,
-            expected_candidate_hash=candidate_hash,
-            expected_opponent_hash=str(identity.get("opponent_hash") or ""),
-        ))
-    except Exception as exc:
-        issues.append(
-            f"official_verdict_status_job_envelope_error:{type(exc).__name__}:{str(exc)[:120]}"
-        )
-    result = status.get("result") if isinstance(status.get("result"), dict) else {}
-    issues.extend(_job_envelope_report_issues(result, envelope))
-    started = status.get("request_started_ns")
-    completed = status.get("request_completed_ns")
-    if (
-        not isinstance(started, int)
-        or isinstance(started, bool)
-        or not isinstance(completed, int)
-        or isinstance(completed, bool)
-        or started <= 0
-        or completed < started
-    ):
-        issues.append("official_verdict_status_request_interval_invalid")
-    if outcome == STATUS_CERTIFIED:
-        validation = certificate_validation(
-            status,
-            candidate=spec.candidate,
-            _skip_ledger_check=True,
-            _validated_ledger_entries=_validated_ledger_entries,
-        )
-        issues.extend(validation.get("issues") or [])
-    else:
-        issues.extend(_deterministic_status_receipt_issues(
-            status,
-            candidate=spec.candidate,
-        ))
-        receipt = status.get("official_deterministic_status_receipt")
-        verdict = receipt.get("verdict") if isinstance(receipt, dict) else {}
-        verdict = verdict if isinstance(verdict, dict) else {}
-        if outcome == STATUS_FAILED and not (
-            verdict.get("blocking") is True
-            and verdict.get("inconclusive") is False
-        ):
-            issues.append("official_verdict_status_failure_not_deterministically_blocking")
-        if outcome == STATUS_INCONCLUSIVE and verdict.get("inconclusive") is not True:
-            issues.append("official_verdict_status_inconclusive_not_deterministic")
-    return list(dict.fromkeys(str(issue) for issue in issues if str(issue)))
 
 
 def _official_verdict_ledger_issues() -> list[str]:
-    try:
-        from official_verdict_ledger import ledger_integrity
+    """Delegate to official_certification_authority."""
+    return _oca._official_verdict_ledger_issues()
 
-        validation = ledger_integrity(fresh=True)
-    except Exception as exc:
-        return [
-            f"official_verdict_ledger_validation_error:{type(exc).__name__}:{str(exc)[:160]}"
-        ]
-    if validation.get("valid"):
-        return []
-    return list(validation.get("issues") or ["official_verdict_ledger_invalid"])
 
 
 def parent_eligible(candidate: str | Path) -> bool:
-    return bool(strict_role_eligibility(candidate, "parent_source").get("eligible"))
+    """Delegate to official_certification_authority."""
+    return _oca.parent_eligible(candidate)
+
 
 
 def active_pool_eligible(candidate: str | Path) -> bool:
-    parent = strict_role_eligibility(candidate, "parent_source")
-    rating = strict_role_eligibility(candidate, "rating_pool")
-    return bool(parent.get("eligible") and rating.get("eligible"))
+    """Delegate to official_certification_authority."""
+    return _oca.active_pool_eligible(candidate)
+
 
 
 def _digest_bound_receipt(payload: dict[str, Any]) -> dict[str, Any]:
-    return {**payload, "receipt_digest": canonical_digest(payload)}
+    """Delegate to official_certification_authority."""
+    return _oca._digest_bound_receipt(payload)
+
 
 
 def _official_certificate_opponent_receipt(
     candidate: str | Path,
     status: dict[str, Any],
 ) -> dict[str, Any]:
-    identity = published_bot_identity(candidate)
-    return _digest_bound_receipt({
-        "schema_version": OPPONENT_ELIGIBILITY_RECEIPT_SCHEMA_VERSION,
-        "kind": "official_full_certificate",
-        "role": "official_opponent",
-        "bot": str(identity.get("label") or Path(candidate).name),
-        "artifact_hash": str(identity.get("artifact_hash") or ""),
-        "policy_id": str(status.get("policy_id") or ""),
-        "certificate_digest": str(status.get("certificate_digest") or ""),
-    })
+    """Delegate to official_certification_authority."""
+    return _oca._official_certificate_opponent_receipt(candidate, status)
+
 
 
 def stable_official_opponent_selection(
     selection: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Return the immutable authorization receipt used by jobs and certificates."""
-    if not isinstance(selection, dict):
-        return None
-    opponent = selection.get("opponent") if isinstance(selection.get("opponent"), dict) else {}
-    stable = {
-        "selected": bool(selection.get("selected")),
-        "candidate": str(selection.get("candidate") or ""),
-        "opponent": {
-            key: opponent.get(key)
-            for key in (
-                "bot",
-                "path",
-                "artifact_hash",
-                "tag",
-                "tag_object",
-                "eligible",
-                "reason",
-                "eligibility_receipt",
-            )
-        },
-    }
-    # Keep ordinary v5 selection records byte-compatible.  Bootstrap fields
-    # exist only on the explicit one-time path and are part of its job/cert
-    # identity, not a fallback for normal opponent selection.
-    bootstrap_control_id = selection.get("bootstrap_control_id")
-    if bootstrap_control_id is not None:
-        stable["eligible"] = bool(selection.get("eligible"))
-        stable["reason"] = selection.get("reason")
-        stable["kind"] = selection.get("kind")
-        stable["bootstrap_control_id"] = str(bootstrap_control_id or "")
-        stable["bootstrap_control_receipt"] = selection.get(
-            "bootstrap_control_receipt"
-        )
-        stable["candidate_binding"] = selection.get("candidate_binding")
-        stable["operator_bootstrap_authorization"] = selection.get(
-            "operator_bootstrap_authorization"
-        )
-        # These negative-authority flags are part of the control receipt, not
-        # optional diagnostics.  Dropping them while freezing a durable job
-        # would make the later exact selector validator compare ``None`` with
-        # ``False`` and, more importantly, would lose the zero-strength role
-        # boundary from the certificate identity.
-        for key in (
-            "authority",
-            "normal_official_opponent",
-            "strength_admitted",
-            "rating_eligible",
-        ):
-            stable["opponent"][key] = opponent.get(key)
-    return stable
+    """Delegate to official_certification_authority."""
+    return _oca.stable_official_opponent_selection(selection)
+
 
 
 def official_opponent_eligibility(
@@ -2152,96 +1340,21 @@ def official_opponent_eligibility(
     target_version: int | None = None,
     certified_alternatives: int | None = None,
 ) -> dict[str, Any]:
-    """Return formal official-EXE opponent eligibility.
+    """Delegate to official_certification_authority."""
+    return _oca.official_opponent_eligibility(candidate, allow_bootstrap_grandfather=allow_bootstrap_grandfather, target_version=target_version, certified_alternatives=certified_alternatives)
 
-    A published signed full certificate is the sole production authorization.
-    ``allow_bootstrap_grandfather`` is retained for API compatibility only;
-    it never authorizes a content-bound migration grant in this path.
-    """
-    version = parse_bot_version(Path(candidate).name)
-    lifecycle = (
-        epoch_lifecycle_eligibility(version)
-        if version is not None
-        else {"eligible": False, "reason": "invalid_national_bot_label"}
-    )
-    if not lifecycle.get("eligible"):
-        return {
-            "eligible": False,
-            "reason": lifecycle.get("reason") or "national_epoch_ineligible",
-            "lifecycle": lifecycle,
-        }
-    status = read_status(candidate)
-    verdict = official_compliance_verdict(status)
-    if bool(verdict.get("blocking")):
-        return {
-            "eligible": False,
-            "reason": "blocking_official_failure",
-            "status": status.get("status"),
-            "mode": status.get("mode"),
-            "verdict": verdict,
-        }
-    authorization = strict_role_eligibility(candidate, "official_opponent")
-    if not authorization.get("eligible"):
-        issues = list(authorization.get("issues") or [])
-        certificate_missing = any(
-            issue in {
-                "signed_full_official_certificate_required",
-                "official_certificate_digest_invalid",
-            }
-            for issue in issues
-        )
-        return {
-            "eligible": False,
-            "reason": (
-                "official_full_certificate_required"
-                if certificate_missing
-                else authorization.get("reason") or "strict_national_bot_spec_required"
-            ),
-            "authorization": authorization,
-            "bootstrap_requested_but_disabled": bool(allow_bootstrap_grandfather),
-            "grandfathered": False,
-        }
-    if official_full_certified(status, candidate, require_published=True):
-        reason = "official_certified"
-        priority = 0
-        eligibility_receipt = _official_certificate_opponent_receipt(candidate, status)
-    else:
-        return {
-            "eligible": False,
-            "reason": "official_full_certificate_required",
-            "status": status.get("status"),
-            "mode": status.get("mode"),
-            "verdict": verdict,
-            "bootstrap_requested_but_disabled": bool(allow_bootstrap_grandfather),
-            "grandfathered": False,
-        }
-    return {
-        "eligible": True,
-        "reason": reason,
-        "priority": priority,
-        "status": status.get("status"),
-        "mode": status.get("mode"),
-        "verdict": verdict,
-        "grandfathered": False,
-        "eligibility_receipt": eligibility_receipt,
-    }
 
 
 def _bot_path_from_token(token: str | Path) -> Path:
-    raw = Path(token).expanduser()
-    if raw.is_absolute() or len(raw.parts) > 1:
-        return raw.resolve()
-    version = parse_bot_version(str(token))
-    if version is not None:
-        return (ROOT / "bots" / bot_name(version)).resolve()
-    return (ROOT / "bots" / str(token)).resolve()
+    """Delegate to official_certification_authority."""
+    return _oca._bot_path_from_token(token)
+
 
 
 def _same_bot_path(a: Path, b: Path) -> bool:
-    try:
-        return a.resolve() == b.resolve()
-    except Exception:
-        return str(a) == str(b)
+    """Delegate to official_certification_authority."""
+    return _oca._same_bot_path(a, b)
+
 
 
 def select_official_opponent(
@@ -2251,200 +1364,9 @@ def select_official_opponent(
     preferred: str | Path | None = None,
     allow_bootstrap_grandfather: bool = False,
 ) -> dict[str, Any]:
-    candidate_path = _bot_path_from_token(candidate)
-    try:
-        candidate_artifact_hash = hash_path(candidate_path)
-    except Exception:
-        candidate_artifact_hash = ""
-    target_version = parse_bot_version(candidate_path.name)
-    try:
-        from evolution_infra import get_active_bots, load_reaped_bot_versions
+    """Delegate to official_certification_authority."""
+    return _oca.select_official_opponent(candidate, active_bots, preferred=preferred, allow_bootstrap_grandfather=allow_bootstrap_grandfather)
 
-        reaped_versions = load_reaped_bot_versions()
-        if active_bots is None:
-            active_bots = get_active_bots()
-        lifecycle_error = ""
-    except Exception as exc:
-        reaped_versions = None
-        if active_bots is None:
-            active_bots = []
-        lifecycle_error = f"{type(exc).__name__}: {str(exc)[:200]}"
-    raw_tokens: list[str | Path] = []
-    if preferred:
-        raw_tokens.append(preferred)
-    raw_tokens.extend(active_bots or [])
-
-    unique_paths: list[Path] = []
-    unique_seen: set[str] = set()
-    for token in raw_tokens:
-        path = _bot_path_from_token(token)
-        if str(path) not in unique_seen and not _same_bot_path(path, candidate_path):
-            unique_seen.add(str(path))
-            unique_paths.append(path)
-    certified_alternative_artifacts: set[str] = set()
-    for path in unique_paths:
-        try:
-            alternative_status = read_status(path)
-            if official_full_certified(
-                alternative_status,
-                path,
-                require_published=True,
-            ):
-                artifact_hash = str(
-                    (alternative_status.get("certification_identity") or {}).get("candidate_hash")
-                    or ""
-                )
-                if artifact_hash:
-                    if artifact_hash == candidate_artifact_hash:
-                        continue
-                    certified_alternative_artifacts.add(artifact_hash)
-        except Exception:
-            continue
-    certified_alternatives = len(certified_alternative_artifacts)
-
-    considered: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for token in raw_tokens:
-        path = _bot_path_from_token(token)
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        name = path.name
-        if _same_bot_path(path, candidate_path):
-            considered.append({"bot": name, "path": str(path), "eligible": False, "reason": "candidate_self"})
-            continue
-        if not path.exists() or not (path / "national_bot.py").exists():
-            considered.append({"bot": name, "path": str(path), "eligible": False, "reason": "missing_native_entry"})
-            continue
-        if not (path / ".completed").exists():
-            considered.append({"bot": name, "path": str(path), "eligible": False, "reason": "missing_completed_sentinel"})
-            continue
-        if reaped_versions is None:
-            considered.append({
-                "bot": name,
-                "path": str(path),
-                "eligible": False,
-                "reason": "lifecycle_ledger_unavailable",
-                "error": lifecycle_error,
-            })
-            continue
-        identity = published_bot_identity(path)
-        if not identity.get("published"):
-            considered.append({
-                "bot": name,
-                "path": str(path),
-                "eligible": False,
-                "reason": "not_published_artifact",
-                "identity_issues": identity.get("issues") or [],
-            })
-            continue
-        if (
-            candidate_artifact_hash
-            and identity.get("artifact_hash") == candidate_artifact_hash
-        ):
-            considered.append({
-                "bot": name,
-                "path": str(path),
-                "artifact_hash": identity.get("artifact_hash"),
-                "eligible": False,
-                "reason": "candidate_artifact_clone",
-            })
-            continue
-        version = parse_bot_version(name)
-        if version is None or version in reaped_versions:
-            considered.append({
-                "bot": name,
-                "path": str(path),
-                "eligible": False,
-                "reason": "reaped_or_invalid_version",
-            })
-            continue
-        try:
-            from national_native import check_native_contract
-            from national_runtime_authority import (
-                current_system_native_runtime_errors,
-            )
-
-            native_errors = [
-                *current_system_native_runtime_errors(path),
-                *check_native_contract(path),
-            ]
-        except Exception as exc:
-            native_errors = [f"native_contract_check_error:{type(exc).__name__}:{str(exc)[:200]}"]
-        if native_errors:
-            considered.append({
-                "bot": name,
-                "path": str(path),
-                "eligible": False,
-                "reason": "native_contract_failed",
-                "native_errors": native_errors[:5],
-            })
-            continue
-        eligibility = official_opponent_eligibility(
-            path,
-            allow_bootstrap_grandfather=allow_bootstrap_grandfather,
-            target_version=target_version,
-            certified_alternatives=certified_alternatives,
-        )
-        if (
-            eligibility.get("eligible")
-            and eligibility.get("reason") != "official_certified"
-        ):
-            # Keep diagnostics about a stale/injected authorization, but never
-            # expose it as an eligible formal opponent to downstream callers.
-            eligibility = {
-                **eligibility,
-                "eligible": False,
-                "reason": "official_full_certificate_required",
-                "rejected_authorization_reason": eligibility.get("reason"),
-                "bootstrap_requested_but_disabled": bool(
-                    allow_bootstrap_grandfather
-                ),
-                "grandfathered": False,
-            }
-        item = {
-            "bot": name,
-            "path": str(path),
-            "artifact_hash": identity.get("artifact_hash"),
-            "tag": identity.get("tag"),
-            "tag_object": identity.get("tag_object"),
-            **eligibility,
-        }
-        considered.append(item)
-
-    # Defense in depth: even a stale/injected helper result must not make a
-    # content-bound grandfather receipt selectable for a formal EXE job.
-    eligible = [
-        item
-        for item in considered
-        if item.get("eligible") and item.get("reason") == "official_certified"
-    ]
-    if not eligible:
-        return {
-            "selected": False,
-            "reason": "no_official_eligible_opponent",
-            "candidate": str(candidate_path),
-            "considered": considered,
-            "readiness": {
-                "certified_alternatives": certified_alternatives,
-                "minimum_certified_alternatives": 2,
-            },
-        }
-    selected = sorted(
-        eligible,
-        key=lambda item: (int(item.get("priority", 99)), -(parse_bot_version(item.get("bot")) or 0)),
-    )[0]
-    return {
-        "selected": True,
-        "candidate": str(candidate_path),
-        "opponent": selected,
-        "considered": considered,
-        "readiness": {
-            "certified_alternatives": certified_alternatives,
-            "minimum_certified_alternatives": 2,
-        },
-    }
 
 
 def resolve_managed_certification_spec(
@@ -2452,86 +1374,31 @@ def resolve_managed_certification_spec(
     *,
     exact_opponent_only: bool = False,
 ) -> tuple[CertificationSpec | None, dict[str, Any] | None]:
-    """Revalidate/reselect the opponent immediately before formal EXE work.
-
-    Durable jobs have already frozen an opponent path and its authorization
-    receipt into their identity.  Their worker must revalidate that exact
-    artifact without depending on an unrelated scan of the mutable active
-    pool; all identity and receipt fields are compared again by the caller.
-    """
-    if spec.opponent_rounds <= 0:
-        return spec, None
-    if spec.bootstrap_control_id is not None:
-        # Bootstrap is opt-in and never falls back to an active or archived bot.
-        from official_bootstrap import (
-            authorize_operator_bootstrap_selection,
-            select_first_strict_control,
-        )
-
-        selection = select_first_strict_control(
-            spec.bootstrap_control_id,
-            spec.candidate,
-        )
-        if selection.get("selected"):
-            authorization = authorize_operator_bootstrap_selection(
-                selection,
-                spec.bootstrap_control_id,
-                spec.candidate,
-            )
-            if authorization.get("valid") is not True:
-                return None, authorization
-            selection = authorization["selection"]
-    else:
-        selection = select_official_opponent(
-            spec.candidate,
-            active_bots=(spec.opponent,) if exact_opponent_only else None,
-            preferred=spec.opponent,
-            allow_bootstrap_grandfather=False,
-        )
-    if not selection.get("selected"):
-        return None, selection
-    selected_path = str(Path(selection["opponent"]["path"]).resolve())
-    if spec.opponent == selected_path:
-        return spec, selection
-    resolved = build_spec(
-        spec.mode,
-        spec.candidate,
-        opponent=selected_path,
-        self_play_rounds=spec.self_play_rounds,
-        opponent_rounds=spec.opponent_rounds,
-        target_hands=spec.target_hands,
-        round_timeout_sec=spec.round_timeout_sec,
-        no_progress_timeout_sec=spec.no_progress_timeout_sec,
-        bootstrap_control_id=spec.bootstrap_control_id,
-        quality_admission=spec.quality_admission,
-    )
-    return resolved, selection
-
+    """Delegate to official_certification_authority."""
+    return _oca.resolve_managed_certification_spec(spec, exact_opponent_only=exact_opponent_only)
 
 def official_lock_busy(config: OfficialPlatformConfig | None = None) -> bool:
-    cfg = config or OfficialPlatformConfig()
-    return official_platform_busy(cfg.lock_path)
+    """Delegate to official_certification_runner."""
+    return _ocr.official_lock_busy(config)
+
 
 
 def _evidence_path_for_result(spec: CertificationSpec, summary: dict[str, Any], cache_key_value: str) -> Path:
-    suite_dir = summary.get("suite_dir") if isinstance(summary, dict) else None
-    if suite_dir:
-        suite_path = Path(str(suite_dir))
-        if suite_path.exists():
-            return suite_path / "official_evidence.json"
-    safe_key = cache_key_value[:12] if cache_key_value else "uncached"
-    return certification_root() / "evidence" / spec.mode / f"{_safe_label(spec.candidate)}-{safe_key}.json"
+    """Delegate to official_certification_runner."""
+    return _ocr._evidence_path_for_result(spec, summary, cache_key_value)
+
 
 
 def _official_llm_analysis_enabled() -> bool:
-    return os.environ.get("POK_OFFICIAL_LLM_ANALYSIS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    """Delegate to official_certification_runner."""
+    return _ocr._official_llm_analysis_enabled()
+
 
 
 def _short_text(value: Any, limit: int = 1200) -> str:
-    text = str(value or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
+    """Delegate to official_certification_runner."""
+    return _ocr._short_text(value, limit)
+
 
 
 def _write_certificate_record(
@@ -2542,146 +1409,15 @@ def _write_certificate_record(
     opponent_selection: dict[str, Any] | None = None,
     job_envelope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from official_certificate_signing import (
-        sign_certificate,
-        signing_identity,
-        verify_certificate_signature,
-    )
+    """Delegate to official_certification_runner."""
+    return _ocr._write_certificate_record(spec, identity, evidence_extra, cache_key_value, opponent_selection, job_envelope)
 
-    stable_selection = stable_official_opponent_selection(opponent_selection)
-    selection_issues = _opponent_selection_issues(stable_selection, spec, identity)
-    if selection_issues:
-        raise RuntimeError(
-            "official opponent authorization receipt is invalid: "
-            + ", ".join(selection_issues)
-        )
-    from official_job_envelope import job_envelope_issues
-
-    envelope_issues = job_envelope_issues(
-        job_envelope,
-        expected_candidate_hash=str(identity.get("candidate_hash") or ""),
-        expected_opponent_hash=str(identity.get("opponent_hash") or ""),
-    )
-    if envelope_issues:
-        raise RuntimeError(
-            "official durable job envelope is invalid: "
-            + ", ".join(envelope_issues)
-        )
-    evidence_path = Path(str(evidence_extra.get("official_evidence_path") or ""))
-    payload = {
-        "schema_version": CERTIFICATE_SCHEMA_VERSION,
-        "kind": "official-exe-compliance-certificate",
-        "candidate_label": _safe_label(spec.candidate),
-        "issuer": signing_identity(),
-        "issued_at": now_iso(),
-        "policy_id": spec.policy_id,
-        "mode": spec.mode,
-        "spec": spec_record(spec),
-        "identity": identity,
-        "cache_key": cache_key_value,
-        "opponent_selection": stable_selection,
-        "job_envelope": job_envelope,
-        "evidence_archive": evidence_extra.get("official_evidence_archive"),
-        "evidence": {
-            **_certificate_file_manifest(evidence_path, label="official evidence"),
-            "summary": evidence_extra.get("official_evidence_summary") or {},
-        },
-        "deterministic_receipt": evidence_extra.get("official_deterministic_receipt"),
-        "strength_evaluation": "not_applicable",
-    }
-    digest = canonical_digest(payload)
-    path = (
-        certificate_dir()
-        / str(identity.get("candidate_hash") or "missing")
-        / f"{digest}.json"
-    )
-    record = {**payload, "certificate_digest": digest}
-    _write_json(path, record)
-    signature = sign_certificate(record)
-    signature_path = path.with_suffix(".sig")
-    signature_path.write_text(signature, encoding="utf-8")
-    signature_validation = verify_certificate_signature(record, signature)
-    if not signature_validation.get("valid"):
-        raise RuntimeError(
-            "official certificate signature self-check failed: "
-            + ", ".join(signature_validation.get("issues") or [])
-        )
-    return {
-        **record,
-        "certificate_path": str(path),
-        "certificate_signature_path": str(signature_path),
-        "certificate_signature_sha256": _file_sha256(signature_path),
-    }
 
 
 def official_feedback_summary(*, limit: int = 8, max_chars: int = 6000) -> str:
-    """Return bounded official-EXE compliance feedback for planning prompts.
+    """Delegate to official_certification_runner."""
+    return _ocr.official_feedback_summary(limit=limit, max_chars=max_chars)
 
-    This is compliance-only context.  Win/loss and score outcomes from the
-    official EXE are intentionally excluded so the Master cannot treat the
-    platform as a strength evaluator.
-    """
-    rows: list[dict[str, Any]] = []
-    try:
-        files = sorted(status_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    except Exception:
-        files = []
-    for path in files:
-        payload = _read_json(path) or {}
-        if not payload:
-            continue
-        verdict = official_compliance_verdict(payload)
-        llm_summary = payload.get("official_llm_analysis_summary") or {}
-        repair_guidance = payload.get("official_llm_repair_guidance") or llm_summary.get("repair_guidance")
-        prompt_feedback = payload.get("official_llm_prompt_feedback") or llm_summary.get("prompt_feedback")
-        issues = payload.get("issues") or []
-        has_signal = (
-            verdict.get("blocking")
-            or verdict.get("inconclusive")
-            or repair_guidance
-            or prompt_feedback
-            or payload.get("status") in {STATUS_FAILED, STATUS_INCONCLUSIVE}
-        )
-        if not has_signal:
-            continue
-        rows.append({
-            "bot": payload.get("bot") or path.stem,
-            "status": payload.get("status"),
-            "mode": payload.get("mode"),
-            "classification": verdict.get("classification"),
-            "blocking": bool(verdict.get("blocking")),
-            "inconclusive": bool(verdict.get("inconclusive")),
-            "issues": issues[:5],
-            "evidence_path": payload.get("official_evidence_path"),
-            "repair_guidance": _short_text(repair_guidance, 900),
-            "prompt_feedback": _short_text(prompt_feedback, 900),
-        })
-        if len(rows) >= limit:
-            break
-    if not rows:
-        return "No official EXE compliance feedback recorded yet."
-
-    lines = [
-        "Official EXE feedback is compliance-only; do not use EXE wins/losses as strength evidence.",
-    ]
-    for row in rows:
-        lines.append(
-            f"- {row['bot']}: status={row['status']} mode={row['mode']} "
-            f"classification={row['classification']} blocking={row['blocking']} "
-            f"inconclusive={row['inconclusive']}"
-        )
-        if row["issues"]:
-            lines.append("  issues: " + "; ".join(str(item)[:180] for item in row["issues"]))
-        if row["repair_guidance"]:
-            lines.append("  repair_guidance: " + row["repair_guidance"])
-        if row["prompt_feedback"]:
-            lines.append("  prompt_feedback: " + row["prompt_feedback"])
-        if row["evidence_path"]:
-            lines.append(f"  evidence: {row['evidence_path']}")
-    text = "\n".join(lines)
-    if len(text) > max_chars:
-        text = text[: max_chars - 3].rstrip() + "..."
-    return text
 
 
 def _status_for_result(
@@ -2697,274 +1433,9 @@ def _status_for_result(
     job_envelope: dict[str, Any] | None = None,
     test_only: bool = False,
 ) -> dict[str, Any]:
-    validation_issues = report_validation_issues(result, spec)
-    valid = not validation_issues
-    raw_result_issues = result.get("issues") or []
-    if not isinstance(raw_result_issues, list):
-        raw_result_issues = [raw_result_issues]
-    issues = list(dict.fromkeys([
-        str(issue)
-        for issue in raw_result_issues + validation_issues + list(identity_issues or [])
-    ]))
-    if valid:
-        if spec.mode == "full":
-            status = STATUS_CERTIFIED
-        elif spec.mode == "compliance":
-            status = STATUS_COMPLIANCE_PASS
-        else:
-            status = STATUS_SMOKE_PASS
-    elif _issues_have_protocol_violation(issues):
-        status = STATUS_FAILED
-    else:
-        status = STATUS_INCONCLUSIVE
-    if identity_issues and status != STATUS_FAILED:
-        status = STATUS_INCONCLUSIVE
-    report = result.get("report", {}) if isinstance(result, dict) else {}
-    summary = report.get("summary", {}) if isinstance(report, dict) else {}
-    evidence_extra: dict[str, Any] = {}
-    evidence: dict[str, Any] | None = None
-    try:
-        evidence_path = _evidence_path_for_result(spec, summary, cache_key_value)
-        evidence_result = dict(result)
-        evidence_result["issues"] = issues
-        evidence = build_official_evidence_bundle(evidence_result, output_path=evidence_path)
-        deterministic = evidence.get("deterministic", {})
-        evidence_issues = [
-            str(issue)
-            for issue in (deterministic.get("issues") or [])
-            if str(issue)
-        ]
-        if evidence_issues:
-            issues = list(dict.fromkeys([*issues, *evidence_issues]))
-        if deterministic.get("blocking"):
-            status = STATUS_FAILED
-        elif deterministic.get("inconclusive"):
-            status = STATUS_INCONCLUSIVE
-        evidence_extra = {
-            "official_evidence_path": str(evidence_path),
-            "official_evidence_summary": {
-                "schema_version": evidence.get("schema_version"),
-                "classification": deterministic.get("classification"),
-                "blocking": deterministic.get("blocking"),
-                "inconclusive": deterministic.get("inconclusive"),
-                "violation": deterministic.get("violation"),
-                "issue_count": len(deterministic.get("issues") or []),
-                "deterministic_issues": [
-                    str(item) for item in (deterministic.get("issues") or [])
-                ],
-                "rounds_requested": deterministic.get("rounds_requested"),
-                "rounds_run": deterministic.get("rounds_run"),
-                "target_hands": deterministic.get("target_hands"),
-                "strength_evaluation": "not_applicable",
-            },
-        }
-        if spec.mode == "full":
-            archive = build_evidence_archive(summary.get("suite_dir"))
-            archive_validation = validate_evidence_archive(
-                archive,
-                expected_evidence_sha256=_file_sha256(evidence_path),
-            )
-            if not archive_validation.get("valid"):
-                issues = list(dict.fromkeys([
-                    *issues,
-                    *(archive_validation.get("issues") or ["official_evidence_archive_invalid"]),
-                ]))
-                status = STATUS_INCONCLUSIVE
-            else:
-                evidence_extra["official_evidence_archive"] = archive
-                if status == STATUS_CERTIFIED:
-                    deterministic_receipt = _build_deterministic_receipt(
-                        spec,
-                        evidence,
-                        evidence_path,
-                        archive,
-                    )
-                    receipt_issues = _deterministic_receipt_issues(
-                        deterministic_receipt,
-                        spec,
-                        evidence_manifest={"sha256": _file_sha256(evidence_path)},
-                        archive_receipt=archive,
-                    )
-                    if receipt_issues:
-                        issues = list(dict.fromkeys([*issues, *receipt_issues]))
-                        status = STATUS_INCONCLUSIVE
-                    else:
-                        evidence_extra["official_deterministic_receipt"] = deterministic_receipt
-        evidence_extra["official_deterministic_status_receipt"] = (
-            _build_deterministic_status_receipt(
-                spec,
-                identity,
-                evidence_path,
-                deterministic,
-                cache_key_value,
-                evidence_extra.get("official_evidence_archive"),
-            )
-        )
-    except Exception as exc:
-        issue = f"official_evidence_error: {type(exc).__name__}: {str(exc)[:300]}"
-        issues = list(dict.fromkeys([*issues, issue]))
-        status = STATUS_INCONCLUSIVE
-        # Preserve a successfully-written evidence bundle when a later archive
-        # or certificate step fails. This keeps the run diagnosable and avoids
-        # dereferencing a removed evidence path in advisory analysis.
-        evidence_extra = {
-            **evidence_extra,
-            "official_evidence_error": issue,
-        }
-    certificate_extra: dict[str, Any] = {}
-    if status == STATUS_CERTIFIED and spec.mode == "full":
-        try:
-            record = _write_certificate_record(
-                spec,
-                identity,
-                evidence_extra,
-                cache_key_value,
-                opponent_selection,
-                job_envelope,
-            )
-            certificate_extra = {
-                "certificate_schema_version": record.get("schema_version"),
-                "certificate_digest": record.get("certificate_digest"),
-                "certificate_path": record.get("certificate_path"),
-                "certificate_signature_path": record.get("certificate_signature_path"),
-                "certificate_signature_sha256": record.get("certificate_signature_sha256"),
-            }
-        except Exception as exc:
-            issues = list(dict.fromkeys([
-                *issues,
-                f"official_certificate_artifact_error:{type(exc).__name__}:{str(exc)[:240]}",
-            ]))
-            status = STATUS_INCONCLUSIVE
-    if evidence is not None and evidence_extra.get("official_evidence_path"):
-        evidence_sha256 = _file_sha256(Path(evidence_extra["official_evidence_path"]))
-        analysis_identity = canonical_digest({
-            "evidence_sha256": evidence_sha256,
-            "analysis_sha256": (
-                _file_sha256(LLM_ANALYSIS_PATH) if LLM_ANALYSIS_PATH.exists() else "missing"
-            ),
-            "prompt_sha256": (
-                _file_sha256(LLM_ANALYSIS_PROMPT_PATH)
-                if LLM_ANALYSIS_PROMPT_PATH.exists()
-                else "missing"
-            ),
-        })
-        analysis_path = (
-            certification_root()
-            / "analysis"
-            / _safe_label(spec.candidate)
-            / f"{analysis_identity}.json"
-        )
-        analysis_path.parent.mkdir(parents=True, exist_ok=True)
-        analysis_issue = ""
-        try:
-            if _official_llm_analysis_enabled():
-                from official_llm_analysis import (
-                    advisory_analysis_contract_issues,
-                    run_official_llm_analysis_sync,
-                )
+    """Delegate to official_certification_runner."""
+    return _ocr._status_for_result(spec, result, cache_hit=cache_hit, cache_key_value=cache_key_value, identity=identity, request_started_ns=request_started_ns, identity_issues=identity_issues, opponent_selection=opponent_selection, job_envelope=job_envelope, test_only=test_only)
 
-                analysis = run_official_llm_analysis_sync(evidence, output_path=analysis_path)
-                analysis_issues = advisory_analysis_contract_issues(analysis)
-                if analysis_issues:
-                    raise ValueError(";".join(analysis_issues))
-                analysis.setdefault("analysis_source", "llm")
-            else:
-                from official_llm_analysis import safe_default_analysis
-
-                analysis = safe_default_analysis(evidence, reason="llm_disabled")
-                analysis["analysis_path"] = str(analysis_path)
-                _write_json(analysis_path, analysis)
-        except Exception as exc:
-            analysis_issue = f"{type(exc).__name__}: {str(exc)[:300]}"
-            try:
-                from official_llm_analysis import safe_default_analysis
-
-                analysis = safe_default_analysis(
-                    evidence,
-                    reason=f"llm_unavailable:{type(exc).__name__}",
-                )
-            except Exception:
-                analysis = {
-                    "analysis_source": "unavailable",
-                    "repair_guidance": "",
-                    "prompt_feedback": "",
-                    "confidence": 0.0,
-                    "strength_evaluation": "not_applicable",
-                }
-            analysis["analysis_path"] = str(analysis_path)
-            _write_json(analysis_path, analysis)
-        evidence_extra["official_llm_analysis_path"] = str(analysis_path)
-        evidence_extra["official_llm_analysis_issue"] = analysis_issue
-        evidence_extra["official_llm_analysis_summary"] = {
-            "analysis_source": analysis.get("analysis_source"),
-            "analysis_status": analysis.get("analysis_status"),
-            "hypothesis_class": analysis.get("hypothesis_class"),
-            "authority": analysis.get("authority"),
-            "confidence": analysis.get("confidence"),
-            "repair_guidance": _short_text(analysis.get("repair_guidance"), 1200),
-            "prompt_feedback": _short_text(analysis.get("prompt_feedback"), 1200),
-            "strength_evaluation": "not_applicable",
-            "authoritative": False,
-        }
-        evidence_extra["official_llm_repair_guidance"] = _short_text(
-            analysis.get("repair_guidance"), 2000
-        )
-        evidence_extra["official_llm_prompt_feedback"] = _short_text(
-            analysis.get("prompt_feedback"), 2000
-        )
-    written = write_status(
-        spec.candidate,
-        status,
-        mode=spec.mode,
-        policy_id=spec.policy_id,
-        cache_hit=cache_hit,
-        cache_key=cache_key_value,
-        certification_identity=identity,
-        test_only=bool(test_only),
-        authority_scope="test-only" if test_only else "production",
-        summary=summary,
-        issues=issues,
-        result=result,
-        opponent_selection=opponent_selection,
-        official_job_envelope=job_envelope,
-        request_started_ns=request_started_ns,
-        request_completed_ns=time.time_ns(),
-        **evidence_extra,
-        **certificate_extra,
-    )
-    if (
-        spec.mode == "full"
-        and not test_only
-        and written.get("request_started_ns") == request_started_ns
-    ):
-        try:
-            from official_verdict_ledger import append_verdict
-
-            ledger_entry = append_verdict(written)
-            written = {
-                **written,
-                "official_verdict_ledger_entry": ledger_entry,
-            }
-        except Exception as exc:
-            ledger_issue = (
-                "official_verdict_ledger_error: "
-                f"{type(exc).__name__}: {str(exc)[:240]}"
-            )
-            written = {
-                **written,
-                "status": STATUS_INCONCLUSIVE,
-                "status_label": STATUS_INCONCLUSIVE,
-                "issues": list(dict.fromkeys([
-                    *(written.get("issues") or []),
-                    ledger_issue,
-                ])),
-                "official_verdict_ledger_error": ledger_issue,
-            }
-        with _status_lock(_safe_label(spec.candidate)):
-            current = _read_json(_status_path(_safe_label(spec.candidate))) or {}
-            if current.get("request_started_ns") == request_started_ns:
-                _write_json(_status_path(_safe_label(spec.candidate)), written)
-    return written
 
 
 def _run_certification_impl(
@@ -2982,152 +1453,9 @@ def _run_certification_impl(
     test_only: bool = False,
     _production_authority: object | None = None,
 ) -> dict[str, Any]:
-    if (
-        not isinstance(request_started_ns, int)
-        or isinstance(request_started_ns, bool)
-        or request_started_ns <= 0
-    ):
-        request_started_ns = time.time_ns()
-    validate_spec(spec)
-    if test_only:
-        if "PYTEST_CURRENT_TEST" not in os.environ:
-            raise RuntimeError("test-only certification runner is available only under pytest")
-        if runner_provenance != TEST_ONLY_RUNNER_PROVENANCE:
-            raise RuntimeError("test-only certification must use test-only runner provenance")
-    elif runner_provenance != PRODUCTION_RUNNER_PROVENANCE:
-        raise RuntimeError("production certification requires official-exe runner provenance")
-    if spec.mode == "full":
-        if not test_only and (
-            runner is not _PRODUCTION_CERTIFICATION_RUNNER
-            or _production_authority is not _PRODUCTION_FULL_AUTHORITY
-        ):
-            raise RuntimeError(
-                "formal full certification requires the bound production official-EXE runner"
-            )
-        from official_job_envelope import job_envelope_issues
+    """Delegate to official_certification_runner."""
+    return _ocr._run_certification_impl(spec, config=config, force=force, runner=runner, runner_provenance=runner_provenance, enforce_opponent_selection=enforce_opponent_selection, request_started_ns=request_started_ns, opponent_selection=opponent_selection, suite_dir=suite_dir, job_envelope=job_envelope, test_only=test_only, _production_authority=_production_authority)
 
-        envelope_issues = job_envelope_issues(job_envelope)
-        if envelope_issues:
-            raise RuntimeError(
-                "formal full certification requires a valid durable job envelope: "
-                + ", ".join(envelope_issues)
-            )
-        if not test_only:
-            ledger_issues = _official_verdict_ledger_issues()
-            if ledger_issues:
-                raise RuntimeError(
-                    "official_verdict_ledger_preflight_failed: "
-                    + "; ".join(ledger_issues)
-                    + "; explicitly initialize genesis with "
-                    "python3 scripts/official_certify.py init-ledger"
-                )
-    if enforce_opponent_selection:
-        resolved_spec, opponent_selection = resolve_managed_certification_spec(spec)
-        if resolved_spec is None:
-            return {
-                "bot": _safe_label(spec.candidate),
-                "status": "opponent-selection-blocked",
-                "status_label": "opponent-selection-blocked",
-                "mode": spec.mode,
-                "updated_at": now_iso(),
-                "issues": ["no_official_eligible_opponent"],
-                "blocking": False,
-                "inconclusive": True,
-                "opponent_selection": opponent_selection,
-            }
-        spec = resolved_spec
-    cfg = config or OfficialPlatformConfig()
-    cfg = _copy_config(
-        cfg,
-        round_timeout_sec=spec.round_timeout_sec,
-        no_progress_timeout_sec=spec.no_progress_timeout_sec,
-        results_dir=certification_root() / spec.mode,
-    )
-    identity_before = certification_identity(
-        spec,
-        cfg,
-        runner_provenance=runner_provenance,
-        test_only=test_only,
-    )
-    key = (
-        canonical_digest({
-            "certification_identity": identity_before,
-            "job_envelope": job_envelope,
-        })
-        if spec.mode == "full"
-        else str(identity_before["identity_digest"])
-    )
-    if not force and spec.mode != "full":
-        cached = _cache_hit(
-            spec,
-            cfg,
-            runner_provenance=runner_provenance,
-            test_only=test_only,
-        )
-        if cached:
-            return _status_for_result(
-                spec,
-                cached["result"],
-                cache_hit=True,
-                cache_key_value=key,
-                identity=identity_before,
-                request_started_ns=request_started_ns,
-                opponent_selection=opponent_selection,
-                job_envelope=job_envelope,
-                test_only=test_only,
-            )
-    if spec.mode == "full":
-        from official_certificate_signing import signing_environment_report
-
-        signing_report = signing_environment_report()
-        if not signing_report.get("ok"):
-            raise RuntimeError(
-                "official_certificate_signing_preflight_failed: "
-                + "; ".join(signing_report.get("issues") or ["unknown signing error"])
-            )
-
-    runner_kwargs = {
-        "opponent": spec.opponent,
-        "self_play_rounds": spec.self_play_rounds,
-        "opponent_rounds": spec.opponent_rounds,
-        "target_hands": spec.target_hands,
-        "config": cfg,
-    }
-    if suite_dir is not None:
-        runner_kwargs["suite_dir"] = Path(suite_dir).expanduser().resolve()
-    if job_envelope is not None:
-        runner_kwargs["job_envelope"] = job_envelope
-    result_obj = runner(spec.candidate, **runner_kwargs)
-    result = result_obj.model_dump() if hasattr(result_obj, "model_dump") else dict(result_obj)
-    identity_after = certification_identity(
-        spec,
-        cfg,
-        runner_provenance=runner_provenance,
-        test_only=test_only,
-    )
-    identity_issues: list[str] = []
-    if identity_after.get("candidate_hash") != identity_before.get("candidate_hash"):
-        identity_issues.append("candidate_changed_during_official_certification")
-    if identity_after.get("opponent_hash") != identity_before.get("opponent_hash"):
-        identity_issues.append("opponent_changed_during_official_certification")
-    if identity_after.get("platform_fingerprint") != identity_before.get("platform_fingerprint"):
-        identity_issues.append("official_platform_policy_changed_during_certification")
-    if spec.mode == "full":
-        identity_issues.extend(_job_envelope_report_issues(result, job_envelope))
-    if spec.mode != "full" and report_valid_for_spec(result, spec) and not identity_issues:
-        key = _write_cache(spec, result, identity_before)
-    return _status_for_result(
-        spec,
-        result,
-        cache_hit=False,
-        cache_key_value=key,
-        identity=identity_before,
-        request_started_ns=request_started_ns,
-        identity_issues=identity_issues,
-        opponent_selection=opponent_selection,
-        job_envelope=job_envelope,
-        test_only=test_only,
-    )
 
 
 def run_certification(
@@ -3137,17 +1465,9 @@ def run_certification(
     force: bool = False,
     suite_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run the production certification path with mandatory opponent governance."""
-    if spec.mode == "full":
-        raise RuntimeError(
-            "formal full certification must run through official_certification_job"
-        )
-    return _run_production_certification(
-        spec,
-        config=config,
-        force=force,
-        suite_dir=suite_dir,
-    )
+    """Delegate to official_certification_runner."""
+    return _ocr.run_certification(spec, config=config, force=force, suite_dir=suite_dir)
+
 
 
 def run_identity_bound_certification_job(
@@ -3159,76 +1479,9 @@ def run_identity_bound_certification_job(
     job_envelope: dict[str, Any],
     force: bool = False,
 ) -> dict[str, Any]:
-    """Run a durable job without allowing its evidence identity to drift.
+    """Delegate to official_certification_runner."""
+    return _ocr.run_identity_bound_certification_job(spec, expected_identity=expected_identity, expected_opponent_selection=expected_opponent_selection, suite_dir=suite_dir, job_envelope=job_envelope, force=force)
 
-    Opponent governance is revalidated immediately before EXE work. If live
-    policy would select a different artifact, the old job must fail and a new
-    identity-bound job must be created; evidence is never attached to the old
-    job id under a silently changed opponent.
-    """
-    validate_spec(spec)
-    current_identity = certification_identity(spec)
-    if current_identity != expected_identity:
-        raise RuntimeError("official_job_runtime_identity_changed")
-    from official_job_envelope import job_envelope_issues
-
-    envelope_issues = job_envelope_issues(
-        job_envelope,
-        expected_candidate_hash=str(expected_identity.get("candidate_hash") or ""),
-        expected_opponent_hash=str(expected_identity.get("opponent_hash") or ""),
-    )
-    if envelope_issues:
-        raise RuntimeError(
-            "official_job_envelope_invalid: " + ", ".join(envelope_issues)
-        )
-    if normal_full_quality_admission_required(spec):
-        if job_envelope.get("quality_admission") != spec.quality_admission:
-            raise RuntimeError(
-                "official_job_quality_admission_spec_envelope_mismatch"
-            )
-    resolved_spec, live_selection = resolve_managed_certification_spec(
-        spec,
-        exact_opponent_only=True,
-    )
-    if resolved_spec is None:
-        failure = {
-            "reason": (live_selection or {}).get("reason") or "selection_unavailable",
-            "considered": (live_selection or {}).get("considered") or [],
-        }
-        raise RuntimeError(
-            "official_job_opponent_no_longer_eligible: "
-            + json.dumps(failure, ensure_ascii=True, sort_keys=True)[:2000]
-        )
-    if certification_identity(resolved_spec) != expected_identity:
-        raise RuntimeError("official_job_opponent_selection_changed")
-    expected_selection = stable_official_opponent_selection(expected_opponent_selection)
-    current_selection = stable_official_opponent_selection(live_selection)
-    expected_opponent = (expected_selection or {}).get("opponent") or {}
-    live_opponent = (current_selection or {}).get("opponent") or {}
-    if expected_opponent:
-        expected_path = str(Path(str(expected_opponent.get("path") or "")).expanduser().resolve())
-        live_path = str(Path(str(live_opponent.get("path") or "")).expanduser().resolve())
-        if expected_path != live_path:
-            raise RuntimeError("official_job_opponent_receipt_path_changed")
-        expected_hash = str(expected_opponent.get("artifact_hash") or "")
-        live_hash = str(live_opponent.get("artifact_hash") or "")
-        if expected_hash and expected_hash != live_hash:
-            raise RuntimeError("official_job_opponent_receipt_hash_changed")
-        if expected_opponent.get("eligibility_receipt") != live_opponent.get("eligibility_receipt"):
-            raise RuntimeError("official_job_opponent_eligibility_receipt_changed")
-    if expected_selection != current_selection:
-        raise RuntimeError("official_job_opponent_receipt_changed")
-    return _run_certification_impl(
-        spec,
-        force=force,
-        runner=_PRODUCTION_CERTIFICATION_RUNNER,
-        runner_provenance=PRODUCTION_RUNNER_PROVENANCE,
-        enforce_opponent_selection=False,
-        opponent_selection=live_selection,
-        suite_dir=suite_dir,
-        job_envelope=job_envelope,
-        _production_authority=_PRODUCTION_FULL_AUTHORITY,
-    )
 
 
 def _run_production_certification(
@@ -3239,22 +1492,9 @@ def _run_production_certification(
     request_started_ns: int | None = None,
     suite_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    runner = (
-        _PRODUCTION_CERTIFICATION_RUNNER
-        if spec.mode == "full"
-        else run_official_acceptance_sync
-    )
-    return _run_certification_impl(
-        spec,
-        config=config,
-        force=force,
-        runner=runner,
-        runner_provenance=PRODUCTION_RUNNER_PROVENANCE,
-        enforce_opponent_selection=True,
-        request_started_ns=request_started_ns,
-        suite_dir=suite_dir,
-        _production_authority=_PRODUCTION_FULL_AUTHORITY,
-    )
+    """Delegate to official_certification_runner."""
+    return _ocr._run_production_certification(spec, config=config, force=force, request_started_ns=request_started_ns, suite_dir=suite_dir)
+
 
 
 def _run_certification_with_runner_for_test(
@@ -3267,61 +1507,11 @@ def _run_certification_with_runner_for_test(
     opponent_selection: dict[str, Any] | None = None,
     job_envelope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Inject a fake harness in unit tests without weakening the public API."""
-    if "PYTEST_CURRENT_TEST" not in os.environ:
-        raise RuntimeError("test certification runner is available only under pytest")
-    if spec.mode == "full" and job_envelope is None:
-        from official_job_envelope import build_job_envelope
+    """Delegate to official_certification_runner."""
+    return _ocr._run_certification_with_runner_for_test(spec, runner=runner, config=config, force=force, request_started_ns=request_started_ns, opponent_selection=opponent_selection, job_envelope=job_envelope)
 
-        identity = certification_identity(
-            spec,
-            config,
-            runner_provenance=TEST_ONLY_RUNNER_PROVENANCE,
-            test_only=True,
-        )
-        request = {
-            "job_id": "1" * 64,
-            "request_digest": "2" * 64,
-            "manager_sha256": "3" * 64,
-            "spec": spec_record(spec),
-            "identity": identity,
-            "opponent_selection": stable_official_opponent_selection(opponent_selection),
-            "source_v": None,
-        }
-        job_envelope = build_job_envelope(
-            request,
-            attempt=1,
-            attempt_nonce="4" * 64,
-            suite_dir=certification_root() / "pytest-suite",
-        )
-    def bound_test_runner(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        raw = runner(*args, **kwargs)
-        payload = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw)
-        if spec.mode == "full":
-            report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
-            report["job_envelope"] = job_envelope
-            for receipt in report.get("rounds") or []:
-                if isinstance(receipt, dict):
-                    receipt["job_envelope"] = job_envelope
-            payload["report"] = report
-        return payload
-
-    return _run_certification_impl(
-        spec,
-        config=config,
-        force=force,
-        runner=bound_test_runner,
-        runner_provenance=TEST_ONLY_RUNNER_PROVENANCE,
-        enforce_opponent_selection=False,
-        request_started_ns=request_started_ns,
-        opponent_selection=opponent_selection,
-        job_envelope=job_envelope,
-        test_only=True,
-    )
 
 
 def status_payload(candidate: str | Path) -> dict[str, Any]:
-    payload = read_status(candidate)
-    payload["compliance_verdict"] = official_compliance_verdict(payload)
-    payload["certification_root"] = str(certification_root())
-    return payload
+    """Delegate to official_certification_runner."""
+    return _ocr.status_payload(candidate)
