@@ -56,7 +56,29 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PHASES_REL = "web/core/tool_planning_worker_phases.py"
 _DURABLE_REL = "web/core/tool_planning_worker_durable.py"
 _TARGET = "_execute_workers_command"
+#: The four phase sub-functions that own the real exit paths after the wave-7
+#: phase decomposition. The orchestrator (``_TARGET``) is a thin wrapper that
+#: sequences these; together they form the call graph whose exit count must
+#: equal EXPECTED_WORKER_EXIT_COUNT.
+PHASE_FUNCTIONS = (
+    "_execute_workers_phase_a_preamble",
+    "_execute_workers_phase_b_rework_synthesis",
+    "_execute_workers_phase_c_rework_preparation",
+    "_execute_workers_phase_d_projection",
+)
 _NESTED_NAME = "rollback_rework_preparation"
+
+
+def _is_continuation_return(node: ast.Return) -> bool:
+    """A phase-continuation trailer: returns a 1-tuple ``(ctx_updates,)``."""
+    val = node.value
+    return isinstance(val, ast.Tuple) and len(val.elts) == 1
+
+
+def _is_orchestrator_propagation_return(node: ast.Return) -> bool:
+    """The orchestrator's ``return result`` (forwards a phase exit, not a new exit)."""
+    val = node.value
+    return isinstance(val, ast.Name) and val.id == "result"
 
 
 def _classify_return(node: ast.Return) -> str:
@@ -115,7 +137,14 @@ def _classify_return(node: ast.Return) -> str:
 
 
 def _collect_returns_from_module(rel_path: str):
-    """Parse ``rel_path`` and return (main_returns, nested_returns) AST nodes."""
+    """Parse ``rel_path`` and return (target, main_returns, nested_returns, nested_ranges).
+
+    For the phases module (``_PHASES_REL``) this walks the orchestrator PLUS the
+    four phase sub-functions as one call graph, returning the aggregated set of
+    real exit-path returns (excluding nested helpers, phase-continuation
+    trailers, and orchestrator propagation returns). For other modules it falls
+    back to walking only ``_TARGET``.
+    """
     src = (_REPO_ROOT / rel_path).read_text(encoding="utf-8")
     tree = ast.parse(src)
     target = None
@@ -128,14 +157,29 @@ def _collect_returns_from_module(rel_path: str):
             break
     assert target is not None, f"{_TARGET} not found in {rel_path}"
 
-    # Locate nested function defs to exclude (rollback_rework_preparation).
+    # For the phases module, gather the orchestrator + all phase functions.
+    is_phases = rel_path == _PHASES_REL
+    targets = {target.name: target}
+    if is_phases:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in PHASE_FUNCTIONS
+            ):
+                targets[node.name] = node
+
+    # Locate nested function defs to exclude (rollback_rework_preparation), plus
+    # the phase sub-functions themselves when walking the orchestrator-only view
+    # (so the orchestrator's body doesn't double-count phase bodies if they were
+    # ever inlined -- they aren't, but this keeps the walk defensive).
     nested_ranges = []
-    for node in ast.walk(target):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node is not target
-        ):
-            nested_ranges.append((node.lineno, node.end_lineno, node.name))
+    for fname, fnode in targets.items():
+        for node in ast.walk(fnode):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node is not fnode
+            ):
+                nested_ranges.append((node.lineno, node.end_lineno, node.name))
 
     def _in_nested(line: int) -> bool:
         for s, e, _name in nested_ranges:
@@ -145,12 +189,21 @@ def _collect_returns_from_module(rel_path: str):
 
     main_returns = []
     nested_returns = []
-    for node in ast.walk(target):
-        if isinstance(node, ast.Return):
+    for fname, fnode in targets.items():
+        for node in ast.walk(fnode):
+            if not isinstance(node, ast.Return):
+                continue
             if _in_nested(node.lineno):
                 nested_returns.append(node)
-            else:
-                main_returns.append(node)
+                continue
+            if is_phases:
+                # Exclude phase-continuation trailers inside phase functions.
+                if fname in PHASE_FUNCTIONS and _is_continuation_return(node):
+                    continue
+                # Exclude the orchestrator's propagation returns.
+                if fname == _TARGET and _is_orchestrator_propagation_return(node):
+                    continue
+            main_returns.append(node)
     return target, main_returns, nested_returns, nested_ranges
 
 
@@ -316,59 +369,72 @@ class TestWorkerExitPathContract:
         )
 
     def test_abandon_path_count_preserved(self):
-        """The 8 abandon exits must survive the move.
+        """The 8 abandon exits must survive the decomposition.
 
         An abandon exit is a json_tool_result return that follows a call to
         ``_force_abandon_frozen_worker_generation`` or
         ``_force_abandon_official_rework_generation`` (whose result is spread
         into the json dict via ``**abandon_result`` or accessed via
-        ``abandon_result.get(...)``).
+        ``abandon_result.get(...)``). After the wave-7 phase decomposition these
+        returns live inside the phase functions, so we walk the orchestrator +
+        all four phases and exclude continuation trailers / nested helpers.
         """
         src_text = (_REPO_ROOT / _PHASES_REL).read_text(encoding="utf-8")
         tree = ast.parse(src_text)
-        target = None
+        targets = {}
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == _TARGET:
-                target = node
-                break
-        assert target is not None
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                node.name == _TARGET or node.name in PHASE_FUNCTIONS
+            ):
+                targets[node.name] = node
+        assert _TARGET in targets
 
-        abandon_helpers = {
-            "_force_abandon_frozen_worker_generation",
-            "_force_abandon_official_rework_generation",
-        }
-        # Count calls to the abandon helpers inside the target function body.
-        # The fixture documents 8 abandon exits but the function makes more
-        # than 8 abandon-helper *calls* (some paths assign abandon_result then
-        # decide not to spread it). The load-bearing count is the number of
-        # DISTINCT json_tool_result returns that reference an ``abandon_result``
-        # local variable -- which is exactly ABANDON_EXIT_COUNT.
+        # Nested ranges to exclude (rollback_rework_preparation inside Phase C).
+        nested_ranges = []
+        for fnode in targets.values():
+            for node in ast.walk(fnode):
+                if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and node is not fnode):
+                    nested_ranges.append((node.lineno, node.end_lineno))
+
+        def _in_nested(line):
+            return any(s < line <= e for s, e in nested_ranges)
+
         abandon_return_count = 0
-        for node in ast.walk(target):
-            if not isinstance(node, ast.Return):
-                continue
-            val = node.value
-            if isinstance(val, ast.Await):
-                val = val.value
-            if not (isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute)
-                    and val.func.attr == "_json_tool_result"):
-                continue
-            if not val.args or not isinstance(val.args[0], ast.Dict):
-                continue
-            d = val.args[0]
-            # Check for ``**abandon_result`` spread (None-key entry with Name).
-            for k, v in zip(d.keys, d.values):
-                if k is None and isinstance(v, ast.Name) and v.id == "abandon_result":
-                    abandon_return_count += 1
-                    break
-            else:
-                # Check for ``abandon_result.get(...)`` or bare ``abandon_result``
-                # reference among the dict values (OFFICIAL_REWORK_CIRCUIT_BREAKER
-                # uses ``abandon_result.get("abandoned")`` and a raw
-                # ``"abandon_result": abandon_result`` field).
-                src_segment = ast.get_source_segment(src_text, node) or ""
-                if "abandon_result" in src_segment:
-                    abandon_return_count += 1
+        for fname, fnode in targets.items():
+            for node in ast.walk(fnode):
+                if not isinstance(node, ast.Return):
+                    continue
+                if _in_nested(node.lineno):
+                    continue
+                # Skip phase-continuation trailers.
+                if fname in PHASE_FUNCTIONS and _is_continuation_return(node):
+                    continue
+                # Skip orchestrator propagation returns.
+                if fname == _TARGET and _is_orchestrator_propagation_return(node):
+                    continue
+                val = node.value
+                if isinstance(val, ast.Await):
+                    val = val.value
+                if not (isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute)
+                        and val.func.attr == "_json_tool_result"):
+                    continue
+                if not val.args or not isinstance(val.args[0], ast.Dict):
+                    continue
+                d = val.args[0]
+                # Check for ``**abandon_result`` spread (None-key entry with Name).
+                for k, v in zip(d.keys, d.values):
+                    if k is None and isinstance(v, ast.Name) and v.id == "abandon_result":
+                        abandon_return_count += 1
+                        break
+                else:
+                    # Check for ``abandon_result.get(...)`` or bare ``abandon_result``
+                    # reference among the dict values (OFFICIAL_REWORK_CIRCUIT_BREAKER
+                    # uses ``abandon_result.get("abandoned")`` and a raw
+                    # ``"abandon_result": abandon_result`` field).
+                    src_segment = ast.get_source_segment(src_text, node) or ""
+                    if "abandon_result" in src_segment:
+                        abandon_return_count += 1
         assert abandon_return_count == ABANDON_EXIT_COUNT, (
             f"abandon exits drifted: live has {abandon_return_count}, "
             f"fixture expects {ABANDON_EXIT_COUNT}"

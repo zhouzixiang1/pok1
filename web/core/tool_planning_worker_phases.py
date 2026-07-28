@@ -1,36 +1,33 @@
-"""Worker command dispatcher -- phase body for ``_execute_workers_command``.
+"""Worker command dispatcher -- phase-decomposed ``_execute_workers_command``.
 
-Extracted verbatim from ``tool_planning_worker_durable.py`` as the second
-maintainability cut of the Group F cluster. The 2364-line body of
-``_execute_workers_command`` (76 distinct exit paths, including 8 abandon
-cascades and the nested ``rollback_rework_preparation`` closure) is moved here
-unchanged; only bare references to durable-helpers defined above the original
-function are rewritten to ``_dur.<name>``. Every ``_tw.<symbol>`` reference
-(parent module) is preserved verbatim, so monkeypatch compatibility is
-unchanged.
+The 76-return / 64-distinct-reason / 8-abandon dispatch body lives in four
+contiguous module-level phase sub-functions orchestrated by the thin
+``_execute_workers_command`` wrapper at the bottom of this module:
 
-Import contract
----------------
-- ``import tool_planning_worker as _tw`` -- the parent module (re-exports every
-  external helper symbol; tests monkeypatch the parent and the call body
-  observes it live via the proxy).
-- ``import tool_planning_worker_durable as _dur`` -- the durable companion that
-  still owns the Worker projection/effect engine and the helpers this body
-  calls.
+- ``_execute_workers_phase_a_preamble``        : arg validation, checkpoint
+                                                  hydration, early dispatch (27).
+- ``_execute_workers_phase_b_rework_synthesis``: rework task/authority synthesis
+                                                  + circuit breakers (25).
+- ``_execute_workers_phase_c_rework_preparation``: one-time repair preparation
+                                                  (source reset, hygiene, freeze)
+                                                  (10; owns the nested
+                                                  ``rollback_rework_preparation``).
+- ``_execute_workers_phase_d_projection``      : baseline drift recheck, idle
+                                                  envelope prepare, final dispatch
+                                                  (14).
 
-The parent re-exports ``_execute_workers_command`` from this module so every
-existing ``from tool_planning_worker import _execute_workers_command`` site,
-and every ``_dur._execute_workers_command`` delegate, keeps resolving.
+Continuation protocol: every return in the original body is preserved VERBATIM
+(no syntax changes). Each phase returns either the early-return value (any
+non-tuple) or a 1-tuple ``(ctx_updates,)`` to fall through. No real exit ever
+returns a bare tuple (AST-verified), so ``isinstance(result, tuple)`` is an
+unambiguous continuation signal. The fixture in ``worker_exit_path_fixture.py``
+walks the orchestrator + the four phases as one call graph and excludes the
+per-phase continuation trailers.
 
-Why a verbatim move (not a phase-handler split)
------------------------------------------------
-``worker_exit_path_fixture.py`` freezes the 76-exit / 64-distinct-reason /
-10-abandon-code contract as the load-bearing invariant. A genuine per-phase
-decomposition would have to re-prove every exit against that fixture. The
-mechanical move preserves every exit by construction (the body is copied
-byte-for-byte) and removes ~2360 lines from the durable companion. A
-follow-up wave can perform the phase split with the fixture as its safety net;
-this commit ships the line-count win without touching the dispatch contract.
+``_tw`` is the parent ``tool_planning_worker`` (re-exports all helper symbols;
+tests monkeypatch it). ``_dur`` is the durable companion owning the projection /
+effect engine. The parent re-exports ``_execute_workers_command`` from here so
+every historic caller keeps resolving.
 """
 
 from __future__ import annotations
@@ -39,7 +36,8 @@ import tool_planning_worker as _tw
 import tool_planning_worker_durable as _dur
 
 
-async def _execute_workers_command(args, *, actor_lock_owned=False):
+async def _execute_workers_phase_a_preamble(args, actor_lock_owned):
+    """Phase A: arg validation, checkpoint resolution, system-bootstrap guard,"""
     _t0 = _tw.time.time()
     tasks = args.get("tasks", [])
     if not isinstance(tasks, list):
@@ -489,6 +487,12 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             "projected_stage": durable_worker_state.get("projected_stage"),
             "next_tool": _tw.route_policy(ckpt).get("next_tool"),
         })
+
+    return ({"_system_bootstrap_executor": _system_bootstrap_executor, "checkpoint_tasks": checkpoint_tasks, "ckpt": ckpt, "durable_worker_envelope": durable_worker_envelope, "durable_worker_resume": durable_worker_resume, "durable_worker_state": durable_worker_state, "durable_worker_status": durable_worker_status, "next_dir": next_dir, "next_v": next_v, "reviewer_feedback": reviewer_feedback, "source_v": source_v, "tasks": tasks, "tasks_provided": tasks_provided, "worker_template": worker_template, "worker_workflow": worker_workflow},)  # PHASE CONTINUATION (not an exit path)
+
+
+async def _execute_workers_phase_b_rework_synthesis(actor_lock_owned, checkpoint_tasks, ckpt, durable_worker_envelope, durable_worker_resume, durable_worker_status, next_dir, next_v, reviewer_feedback, source_v, tasks, tasks_provided, worker_workflow):
+    """Phase B: architecture-policy identity recovery, prepared-artifact drift"""
     if _tw._checkpoint_architecture_policy_identity_errors(ckpt):
         if _tw._is_fresh_empty_pool_bootstrap(ckpt):
             return _tw._json_tool_result({
@@ -1336,6 +1340,12 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             "source_v": source_v,
         })
 
+    return ({"frozen_rework_resume": frozen_rework_resume, "replace_checkpoint_tasks": replace_checkpoint_tasks, "review_rework_checkpoint": review_rework_checkpoint, "reviewer_feedback": reviewer_feedback, "rework_stages": rework_stages, "tasks": tasks},)  # PHASE CONTINUATION (not an exit path)
+
+
+async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, durable_worker_state, durable_worker_status, frozen_rework_resume, next_dir, next_v, replace_checkpoint_tasks, review_rework_checkpoint, reviewer_feedback, source_v, tasks, worker_template, worker_workflow):
+    """Phase C: one-time repair preparation -- durable-preparation resume,"""
+
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
     force_sequential_rework = False
@@ -2030,6 +2040,11 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 ),
             })
 
+    return ({"force_sequential_rework": force_sequential_rework, "official_rework_count_for_write": official_rework_count_for_write, "precommit_rework_count_for_write": precommit_rework_count_for_write, "prepared_candidate_dir": prepared_candidate_dir, "quality_skipper_config": quality_skipper_config, "reviewer_feedback": reviewer_feedback, "rework_plan_metadata": rework_plan_metadata},)  # PHASE CONTINUATION (not an exit path)
+
+
+async def _execute_workers_phase_d_projection(_system_bootstrap_executor, actor_lock_owned, ckpt, durable_worker_envelope, durable_worker_resume, durable_worker_state, durable_worker_status, force_sequential_rework, frozen_rework_resume, next_dir, next_v, official_rework_count_for_write, precommit_rework_count_for_write, prepared_candidate_dir, quality_skipper_config, replace_checkpoint_tasks, reviewer_feedback, rework_plan_metadata, rework_stages, source_v, tasks, worker_template, worker_workflow):
+    """Phase D: repair-baseline drift recheck, frozen-rework pre-worker drift guard,"""
     if reviewer_feedback and rework_plan_metadata:
         expected_rework_hash = str(
             rework_plan_metadata.get("repair_baseline_artifact_hash") or ""
@@ -2398,3 +2413,41 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         "next_v": next_v,
         "source_v": source_v,
     })
+
+
+
+async def _execute_workers_command(args, *, actor_lock_owned=False):
+    """Thin orchestrator over the four phase sub-functions (see module docstring)."""
+    # Phase A: preamble + early command-name dispatch (yields the shared ctx).
+    result = await _execute_workers_phase_a_preamble(args, actor_lock_owned=actor_lock_owned)
+    if isinstance(result, tuple):
+        ctx = dict(result[0])
+    else:
+        return result
+
+    # Phase B: rework synthesis + circuit breakers.
+    result = await _execute_workers_phase_b_rework_synthesis(
+        actor_lock_owned=actor_lock_owned,
+        **{k: ctx[k] for k in ('checkpoint_tasks', 'ckpt', 'durable_worker_envelope', 'durable_worker_resume', 'durable_worker_status', 'next_dir', 'next_v', 'reviewer_feedback', 'source_v', 'tasks', 'tasks_provided', 'worker_workflow') if k in ctx}
+    )
+    if isinstance(result, tuple):
+        ctx.update(result[0])
+    else:
+        return result
+
+    # Phase C: one-time repair preparation.
+    result = await _execute_workers_phase_c_rework_preparation(
+        actor_lock_owned=actor_lock_owned,
+        **{k: ctx[k] for k in ('ckpt', 'durable_worker_state', 'durable_worker_status', 'frozen_rework_resume', 'next_dir', 'next_v', 'replace_checkpoint_tasks', 'review_rework_checkpoint', 'reviewer_feedback', 'source_v', 'tasks', 'worker_template', 'worker_workflow') if k in ctx}
+    )
+    if isinstance(result, tuple):
+        ctx.update(result[0])
+    else:
+        return result
+
+    # Phase D: projection + final dispatch (terminal phase).
+    result = await _execute_workers_phase_d_projection(
+        actor_lock_owned=actor_lock_owned,
+        **{k: ctx[k] for k in ('_system_bootstrap_executor', 'ckpt', 'durable_worker_envelope', 'durable_worker_resume', 'durable_worker_state', 'durable_worker_status', 'force_sequential_rework', 'frozen_rework_resume', 'next_dir', 'next_v', 'official_rework_count_for_write', 'precommit_rework_count_for_write', 'prepared_candidate_dir', 'quality_skipper_config', 'replace_checkpoint_tasks', 'reviewer_feedback', 'rework_plan_metadata', 'rework_stages', 'source_v', 'tasks', 'worker_template', 'worker_workflow') if k in ctx}
+    )
+    return result

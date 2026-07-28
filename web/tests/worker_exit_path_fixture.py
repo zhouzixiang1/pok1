@@ -10,13 +10,24 @@ Originally captured at ``web/core/tool_planning_worker_durable.py:1485-3843``
 before the wave-6 Group-F extraction. The verbatim code-move (commit moving
 the body to ``tool_planning_worker_phases``) preserved every exit by
 construction; the fixture's invariants (76 exits, 64 distinct reasons, 10
-abandon reason codes, 8 abandon-spread exits) are unchanged. Only the
-physical file/line anchors moved: the function now lives at
-``web/core/tool_planning_worker_phases.py:42`` (after the module docstring and
-imports). The per-exit ``line`` fields below retain their pre-move
-``durable.py`` line numbers as the canonical historical reference; the
-``EXIT_PATHS`` table is consumed by ``test_worker_exit_path_contract`` for its
-semantic (return-type + identity) assertions, not for line-number equality.
+abandon reason codes, 8 abandon-spread exits) are unchanged.
+
+Wave-7 phase decomposition: the 76-return monolithic body was split into four
+module-level phase sub-functions (``PHASE_FUNCTIONS`` below), orchestrated by a
+thin ``_execute_workers_command`` wrapper. Every return is preserved VERBATIM
+inside the phase that owns it (no syntax changes to early returns); each phase
+falls through to the next by returning a 1-tuple ``(ctx_updates,)`` (the
+"continuation trailer"). The orchestrator's 4 ``return result`` statements are
+propagation returns (forwarding a phase exit), not new exits. The self-check
+therefore walks the orchestrator + the four phases as one call graph and
+excludes continuation trailers, propagation returns, and the nested
+``rollback_rework_preparation`` closure (which lives inside Phase C). The
+aggregate invariants (76 / 64 / 8) are unchanged.
+
+The per-exit ``line`` fields below retain their pre-move ``durable.py`` line
+numbers as the canonical historical reference; the ``EXIT_PATHS`` table is
+consumed by ``test_worker_exit_path_contract`` for its semantic (return-type +
+identity) assertions, not for line-number equality.
 
 PURPOSE
 -------
@@ -408,17 +419,37 @@ def _table_abandon_count() -> int:
 # NOT import the production module -- it reads the source file as text and
 # parses it with ``ast`` so the fixture stays decoupled from runtime behavior.
 #
-# Anchor updated after the wave-6 verbatim code-move: the function body now
-# lives in ``tool_planning_worker_phases.py`` (was ``tool_planning_worker_durable.py:1485``).
-# ``_TARGET_FUNC_START`` is the line of the ``async def`` in the new module.
+# Wave-7 anchor update: the dispatch body was phase-decomposed. The thin
+# ``_execute_workers_command`` orchestrator now sequences four module-level
+# phase sub-functions (``PHASE_FUNCTIONS`` below). The 76-exit count is taken
+# across the whole call graph: orchestrator + 4 phase functions, EXCLUDING:
+#   - the per-phase "continuation trailers" (returns whose value is a 1-tuple
+#     ``(ctx_updates,)`` -- these signal "fall through to the next phase" and
+#     never reach the caller),
+#   - the orchestrator's 4 propagation returns (``return result`` after a phase
+#     returned an early value -- these forward a phase exit, they are not new
+#     exits themselves), and
+#   - the nested ``rollback_rework_preparation`` closure inside Phase C.
 
 _PROD_REL_PATH = "web/core/tool_planning_worker_phases.py"
 _TARGET_FUNCTION = "_execute_workers_command"
-_TARGET_FUNC_START = 42
-_TARGET_FUNC_END = 2400
+_TARGET_FUNC_START = 2419
+_TARGET_FUNC_END = 2453
+
+#: The four module-level phase sub-functions that own the real exit paths.
+#: The self-check walks each of these plus the orchestrator as one call graph.
+PHASE_FUNCTIONS = (
+    "_execute_workers_phase_a_preamble",
+    "_execute_workers_phase_b_rework_synthesis",
+    "_execute_workers_phase_c_rework_preparation",
+    "_execute_workers_phase_d_projection",
+)
+
 _NESTED_FUNC_NAME = "rollback_rework_preparation"
-# Nested-helper range in the NEW module (was 2795-2804 in durable.py).
-_NESTED_FUNC_RANGE = (1352, 1361)  # (start_line, end_line) inclusive of body
+# Nested-helper range, now inside Phase C (was 1352-1361 in the pre-wave-7
+# monolith). Updated by the wave-7 phase decomposition; re-derived by the AST
+# walk so this is only a documented anchor, not a hard assertion.
+_NESTED_FUNC_RANGE = None  # set lazily by the AST walk in _run_self_check
 
 
 def _resolve_repo_root() -> str:
@@ -428,11 +459,35 @@ def _resolve_repo_root() -> str:
     return os.path.dirname(os.path.dirname(here))
 
 
-def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, list]:
-    """Return (count, main_return_line_numbers, nested_return_line_numbers, nested_func_names).
+def _is_continuation_return(node) -> bool:
+    """True if ``node`` is a phase-continuation trailer (returns a 1-tuple)."""
+    import ast
+    val = node.value
+    return isinstance(val, ast.Tuple) and len(val.elts) == 1
 
-    Uses ``ast`` to walk the target function and collect every ``Return`` node,
-    excluding any ``Return`` whose line falls inside a nested function body.
+
+def _is_orchestrator_propagation_return(node, func_name: str) -> bool:
+    """True if ``node`` is the orchestrator's ``return result`` (forwards a phase exit).
+
+    The orchestrator (``_execute_workers_command``) has exactly 4 propagation
+    returns of the bare name ``result``; they are not new exits. We detect them
+    by return value being ``ast.Name(id='result')`` inside the orchestrator.
+    """
+    import ast
+    if func_name != _TARGET_FUNCTION:
+        return False
+    val = node.value
+    return isinstance(val, ast.Name) and val.id == "result"
+
+
+def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, list]:
+    """Return (count, exit_return_line_numbers, nested_return_line_numbers, nested_func_names).
+
+    Walks the orchestrator PLUS the four phase sub-functions as one call graph.
+    Excludes:
+      * returns inside any nested function (``rollback_rework_preparation``),
+      * phase-continuation trailers (1-tuple ``(ctx,)`` returns),
+      * orchestrator propagation returns (``return result``).
     """
     import ast
     import os
@@ -442,36 +497,41 @@ def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, 
         src = fh.read()
     tree = ast.parse(src)
 
-    target = None
+    # Locate the orchestrator + the four phase functions.
+    targets = {}
     for node in ast.walk(tree):
         if (
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == _TARGET_FUNCTION
+            and node.name in (_TARGET_FUNCTION, *PHASE_FUNCTIONS)
         ):
-            target = node
-            break
-    if target is None:
+            targets[node.name] = node
+
+    missing = {n for n in (_TARGET_FUNCTION, *PHASE_FUNCTIONS) if n not in targets}
+    if missing:
         raise RuntimeError(
-            f"{_TARGET_FUNCTION} not found in {_PROD_REL_PATH}; fixture is stale."
+            f"Missing functions in {_PROD_REL_PATH}: {sorted(missing)}; "
+            f"fixture is stale."
         )
 
-    # Sanity: the function must still live where we expect. If these drift the
-    # refactor has likely landed and this snapshot must be re-derived.
-    if target.lineno != _TARGET_FUNC_START:
+    orchestrator = targets[_TARGET_FUNCTION]
+    # Sanity: the orchestrator must still live where we expect.
+    if orchestrator.lineno != _TARGET_FUNC_START:
         raise RuntimeError(
-            f"{_TARGET_FUNCTION} now starts at line {target.lineno}, "
+            f"{_TARGET_FUNCTION} now starts at line {orchestrator.lineno}, "
             f"expected {_TARGET_FUNC_START}. The refactor may have landed; "
             f"re-derive this fixture."
         )
 
-    # Locate nested function defs to exclude.
+    # Collect nested function ranges across ALL phase functions (the rollback
+    # closure lives inside Phase C). Returns inside these are excluded.
     nested_ranges: List[Tuple[int, int, str]] = []
-    for node in ast.walk(target):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node is not target
-        ):
-            nested_ranges.append((node.lineno, node.end_lineno, node.name))
+    for fname, fnode in targets.items():
+        for node in ast.walk(fnode):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node is not fnode
+            ):
+                nested_ranges.append((node.lineno, node.end_lineno, node.name))
 
     def _in_nested(line: int) -> bool:
         for start, end, _name in nested_ranges:
@@ -479,30 +539,53 @@ def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, 
                 return True
         return False
 
-    main_returns: List[int] = []
+    # Collect real exit returns across the call graph.
+    exit_returns: List[int] = []
     nested_returns: List[int] = []
-    for node in ast.walk(target):
-        if isinstance(node, ast.Return):
+    for fname, fnode in targets.items():
+        for node in ast.walk(fnode):
+            if not isinstance(node, ast.Return):
+                continue
             if _in_nested(node.lineno):
                 nested_returns.append(node.lineno)
-            else:
-                main_returns.append(node.lineno)
-    main_returns.sort()
+                continue
+            # Skip phase-continuation trailers (1-tuple returns).
+            if fname in PHASE_FUNCTIONS and _is_continuation_return(node):
+                continue
+            # Skip orchestrator propagation returns (``return result``).
+            if fname == _TARGET_FUNCTION and _is_orchestrator_propagation_return(node, fname):
+                continue
+            exit_returns.append(node.lineno)
+
+    exit_returns.sort()
     nested_returns.sort()
-    nested_func_names = [name for (_s, _e, name) in nested_ranges]
-    return len(main_returns), main_returns, nested_returns, nested_func_names
+    nested_func_names = sorted({name for (_s, _e, name) in nested_ranges})
+    return len(exit_returns), exit_returns, nested_returns, nested_func_names
 
 
 def _run_self_check() -> None:
+    global _NESTED_FUNC_RANGE
     repo_root = _resolve_repo_root()
     count, lines, nested, nested_names = _count_returns_in_target_function(repo_root)
+
+    # Capture the rollback closure's current range for the printed report.
+    import ast, os
+    full = os.path.join(repo_root, _PROD_REL_PATH)
+    tree = ast.parse(open(full).read())
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == _NESTED_FUNC_NAME):
+            _NESTED_FUNC_RANGE = (node.lineno, node.end_lineno)
+            break
 
     failures = []
 
     if count != EXPECTED_WORKER_EXIT_COUNT:
         failures.append(
             f"EXPECTED_WORKER_EXIT_COUNT={EXPECTED_WORKER_EXIT_COUNT} but source "
-            f"has {count} returns in {_TARGET_FUNCTION} body (excluding nested)."
+            f"has {count} exit-path returns across the orchestrator + "
+            f"{len(PHASE_FUNCTIONS)} phase functions (excluding nested, "
+            f"continuation trailers, and orchestrator propagation returns)."
         )
 
     # The per-exit table length must match the count too.
@@ -512,15 +595,9 @@ def _run_self_check() -> None:
             f"EXPECTED_WORKER_EXIT_COUNT={EXPECTED_WORKER_EXIT_COUNT}."
         )
 
-    # Every return in the source must be accounted for by the table COUNT.
-    # The per-exit ``line`` field retains its pre-move ``durable.py`` line number
-    # as a historical anchor; after the wave-6 verbatim code-move the function
-    # body lives in ``tool_planning_worker_phases.py`` and the physical line
-    # numbers no longer match. The load-bearing invariants are the count, the
-    # return-type histogram, and the distinct-identity set -- all checked below.
     if count != len(EXIT_PATHS):
         failures.append(
-            f"Source has {count} returns but EXIT_PATHS table has "
+            f"Source has {count} exit returns but EXIT_PATHS table has "
             f"{len(EXIT_PATHS)} rows (count drifted)."
         )
 
@@ -560,21 +637,16 @@ def _run_self_check() -> None:
         )
 
     # Sanity: the nested helper we expect to exclude must still be there.
-    # After the wave-6 verbatim move the helper lives at the new module's
-    # _NESTED_FUNC_RANGE; confirm the AST found a rollback_rework_preparation
-    # definition inside the target function.
+    # After the wave-7 phase decomposition the helper lives inside Phase C.
     if _NESTED_FUNC_NAME not in set(nested_names):
         failures.append(
-            f"Nested helper {_NESTED_FUNC_NAME!r} not found inside "
-            f"{_TARGET_FUNCTION}; the rollback cascade exits cannot be "
-            f"accurately excluded."
+            f"Nested helper {_NESTED_FUNC_NAME!r} not found inside any phase "
+            f"function; the rollback cascade exits cannot be accurately excluded."
         )
     if not nested:
-        # If the nested helper was removed the count would change; that is fine
-        # as long as EXPECTED_WORKER_EXIT_COUNT was updated. We only warn.
         print(
-            f"NOTE: no nested-function returns detected in "
-            f"{_TARGET_FUNCTION} (rollback helper may have been inlined)."
+            f"NOTE: no nested-function returns detected across the call graph "
+            f"(rollback helper may have been inlined)."
         )
 
     if failures:
@@ -584,9 +656,10 @@ def _run_self_check() -> None:
         raise SystemExit(1)
 
     print("SELF-CHECK PASSED:")
-    print(f"  target function : {_PROD_REL_PATH}::{_TARGET_FUNCTION} (lines "
+    print(f"  orchestrator    : {_PROD_REL_PATH}::{_TARGET_FUNCTION} (lines "
           f"{_TARGET_FUNC_START}-{_TARGET_FUNC_END})")
-    print(f"  main returns    : {count}  (matches EXPECTED_WORKER_EXIT_COUNT)")
+    print(f"  phase functions : {', '.join(PHASE_FUNCTIONS)}")
+    print(f"  exit returns    : {count}  (matches EXPECTED_WORKER_EXIT_COUNT)")
     print(f"  nested excludes : {len(nested)} return(s) from "
           f"{_NESTED_FUNC_NAME!r} at {nested}")
     print(f"  distinct reasons: {len(EXPECTED_WORKER_EXIT_REASONS)}")
