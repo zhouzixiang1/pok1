@@ -432,9 +432,14 @@ def _table_abandon_count() -> int:
 #   - the nested ``rollback_rework_preparation`` closure inside Phase C.
 
 _PROD_REL_PATH = "web/core/tool_planning_worker_phases.py"
+#: Wave-8 slimming: the two largest phase functions (B + C) were moved VERBATIM
+#: into this sibling companion module so ``tool_planning_worker_phases.py``
+#: could drop under 2000 lines. The self-check walks both modules as one call
+#: graph (orchestrator + A + D in ``_PROD_REL_PATH``; B + C in ``_REWORK_REL_PATH``).
+_REWORK_REL_PATH = "web/core/tool_planning_worker_phases_rework.py"
 _TARGET_FUNCTION = "_execute_workers_command"
-_TARGET_FUNC_START = 2419
-_TARGET_FUNC_END = 2453
+_TARGET_FUNC_START = 868
+_TARGET_FUNC_END = 902
 
 #: The four module-level phase sub-functions that own the real exit paths.
 #: The self-check walks each of these plus the orchestrator as one call graph.
@@ -444,6 +449,16 @@ PHASE_FUNCTIONS = (
     "_execute_workers_phase_c_rework_preparation",
     "_execute_workers_phase_d_projection",
 )
+
+#: Which module each phase function lives in after the wave-8 slimming. Phases A
+#: and D stay in ``tool_planning_worker_phases``; B and C moved to the rework
+#: companion. ``rollback_rework_preparation`` (nested inside C) moved with C.
+PHASE_FUNCTION_MODULE = {
+    "_execute_workers_phase_a_preamble": _PROD_REL_PATH,
+    "_execute_workers_phase_b_rework_synthesis": _REWORK_REL_PATH,
+    "_execute_workers_phase_c_rework_preparation": _REWORK_REL_PATH,
+    "_execute_workers_phase_d_projection": _PROD_REL_PATH,
+}
 
 _NESTED_FUNC_NAME = "rollback_rework_preparation"
 # Nested-helper range, now inside Phase C (was 1352-1361 in the pre-wave-7
@@ -483,8 +498,10 @@ def _is_orchestrator_propagation_return(node, func_name: str) -> bool:
 def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, list]:
     """Return (count, exit_return_line_numbers, nested_return_line_numbers, nested_func_names).
 
-    Walks the orchestrator PLUS the four phase sub-functions as one call graph.
-    Excludes:
+    Walks the orchestrator PLUS the four phase sub-functions as one call graph,
+    spanning BOTH ``tool_planning_worker_phases`` (orchestrator + phases A and D)
+    and the rework companion (phases B and C, plus the nested
+    ``rollback_rework_preparation``). Excludes:
       * returns inside any nested function (``rollback_rework_preparation``),
       * phase-continuation trailers (1-tuple ``(ctx,)`` returns),
       * orchestrator propagation returns (``return result``).
@@ -492,25 +509,48 @@ def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, 
     import ast
     import os
 
-    full = os.path.join(repo_root, _PROD_REL_PATH)
-    with open(full, "r", encoding="utf-8") as fh:
-        src = fh.read()
-    tree = ast.parse(src)
+    # Parse both modules. The orchestrator + A + D live in the phases module;
+    # B + C (and the nested rollback closure) live in the rework companion.
+    modules: Dict[str, ast.Module] = {}
+    src_by_path: Dict[str, str] = {}
+    for rel in (_PROD_REL_PATH, _REWORK_REL_PATH):
+        full = os.path.join(repo_root, rel)
+        with open(full, "r", encoding="utf-8") as fh:
+            src = fh.read()
+        modules[rel] = ast.parse(src)
+        src_by_path[rel] = src
 
-    # Locate the orchestrator + the four phase functions.
-    targets = {}
-    for node in ast.walk(tree):
+    # Locate the orchestrator (always in the phases module) + each phase function
+    # in whichever module it now lives in (PHASE_FUNCTION_MODULE).
+    targets: Dict[str, ast.AST] = {}
+    for node in ast.walk(modules[_PROD_REL_PATH]):
         if (
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name in (_TARGET_FUNCTION, *PHASE_FUNCTIONS)
+            and node.name == _TARGET_FUNCTION
         ):
             targets[node.name] = node
+
+    for phase_name, rel in PHASE_FUNCTION_MODULE.items():
+        tree = modules[rel]
+        found = None
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == phase_name
+            ):
+                found = node
+                break
+        if found is None:
+            raise RuntimeError(
+                f"Phase function {phase_name!r} not found in {rel}; fixture is stale."
+            )
+        targets[phase_name] = found
 
     missing = {n for n in (_TARGET_FUNCTION, *PHASE_FUNCTIONS) if n not in targets}
     if missing:
         raise RuntimeError(
-            f"Missing functions in {_PROD_REL_PATH}: {sorted(missing)}; "
-            f"fixture is stale."
+            f"Missing functions across ({_PROD_REL_PATH}, {_REWORK_REL_PATH}): "
+            f"{sorted(missing)}; fixture is stale."
         )
 
     orchestrator = targets[_TARGET_FUNCTION]
@@ -523,7 +563,8 @@ def _count_returns_in_target_function(repo_root: str) -> Tuple[int, list, list, 
         )
 
     # Collect nested function ranges across ALL phase functions (the rollback
-    # closure lives inside Phase C). Returns inside these are excluded.
+    # closure lives inside Phase C, which is now in the rework companion).
+    # Returns inside these are excluded.
     nested_ranges: List[Tuple[int, int, str]] = []
     for fname, fnode in targets.items():
         for node in ast.walk(fnode):
@@ -568,14 +609,19 @@ def _run_self_check() -> None:
     repo_root = _resolve_repo_root()
     count, lines, nested, nested_names = _count_returns_in_target_function(repo_root)
 
-    # Capture the rollback closure's current range for the printed report.
+    # Capture the rollback closure's current range for the printed report. The
+    # closure moved with Phase C into the rework companion in wave-8, so search
+    # both modules.
     import ast, os
-    full = os.path.join(repo_root, _PROD_REL_PATH)
-    tree = ast.parse(open(full).read())
-    for node in ast.walk(tree):
-        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name == _NESTED_FUNC_NAME):
-            _NESTED_FUNC_RANGE = (node.lineno, node.end_lineno)
+    for rel in (_PROD_REL_PATH, _REWORK_REL_PATH):
+        full = os.path.join(repo_root, rel)
+        tree = ast.parse(open(full).read())
+        for node in ast.walk(tree):
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == _NESTED_FUNC_NAME):
+                _NESTED_FUNC_RANGE = (node.lineno, node.end_lineno)
+                break
+        if _NESTED_FUNC_RANGE is not None:
             break
 
     failures = []

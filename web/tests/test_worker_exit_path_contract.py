@@ -54,6 +54,10 @@ from web.tests.worker_exit_path_fixture import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PHASES_REL = "web/core/tool_planning_worker_phases.py"
+#: Wave-8 slimming: phases B and C (and the nested ``rollback_rework_preparation``
+#: closure) were moved VERBATIM into this sibling companion module. The contract
+#: walk therefore spans both modules.
+_REWORK_REL = "web/core/tool_planning_worker_phases_rework.py"
 _DURABLE_REL = "web/core/tool_planning_worker_durable.py"
 _TARGET = "_execute_workers_command"
 #: The four phase sub-functions that own the real exit paths after the wave-7
@@ -66,6 +70,15 @@ PHASE_FUNCTIONS = (
     "_execute_workers_phase_c_rework_preparation",
     "_execute_workers_phase_d_projection",
 )
+#: Which module each phase function lives in after the wave-8 slimming. Phases A
+#: and D stay in the phases module; B and C (plus the rollback closure nested
+#: inside C) moved to the rework companion.
+PHASE_FUNCTION_MODULE = {
+    "_execute_workers_phase_a_preamble": _PHASES_REL,
+    "_execute_workers_phase_b_rework_synthesis": _REWORK_REL,
+    "_execute_workers_phase_c_rework_preparation": _REWORK_REL,
+    "_execute_workers_phase_d_projection": _PHASES_REL,
+}
 _NESTED_NAME = "rollback_rework_preparation"
 
 
@@ -139,11 +152,13 @@ def _classify_return(node: ast.Return) -> str:
 def _collect_returns_from_module(rel_path: str):
     """Parse ``rel_path`` and return (target, main_returns, nested_returns, nested_ranges).
 
-    For the phases module (``_PHASES_REL``) this walks the orchestrator PLUS the
-    four phase sub-functions as one call graph, returning the aggregated set of
-    real exit-path returns (excluding nested helpers, phase-continuation
-    trailers, and orchestrator propagation returns). For other modules it falls
-    back to walking only ``_TARGET``.
+    For the phases call graph (``rel_path == _PHASES_REL``) this walks the
+    orchestrator PLUS the four phase sub-functions as one call graph, returning
+    the aggregated set of real exit-path returns (excluding nested helpers,
+    phase-continuation trailers, and orchestrator propagation returns). Because
+    phases B and C moved to ``_REWORK_REL`` in wave-8, phase functions are
+    resolved via ``PHASE_FUNCTION_MODULE`` (spanning both modules). For other
+    modules it falls back to walking only ``_TARGET``.
     """
     src = (_REPO_ROOT / rel_path).read_text(encoding="utf-8")
     tree = ast.parse(src)
@@ -157,16 +172,25 @@ def _collect_returns_from_module(rel_path: str):
             break
     assert target is not None, f"{_TARGET} not found in {rel_path}"
 
-    # For the phases module, gather the orchestrator + all phase functions.
+    # For the phases module, gather the orchestrator + all phase functions. Phase
+    # functions live in different modules after wave-8 (B/C in the rework
+    # companion), so resolve each from its own module.
     is_phases = rel_path == _PHASES_REL
     targets = {target.name: target}
     if is_phases:
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name in PHASE_FUNCTIONS
-            ):
-                targets[node.name] = node
+        for phase_name, phase_rel in PHASE_FUNCTION_MODULE.items():
+            phase_src = (_REPO_ROOT / phase_rel).read_text(encoding="utf-8")
+            phase_tree = ast.parse(phase_src)
+            found = None
+            for node in ast.walk(phase_tree):
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == phase_name
+                ):
+                    found = node
+                    break
+            assert found is not None, f"{phase_name} not found in {phase_rel}"
+            targets[phase_name] = found
 
     # Locate nested function defs to exclude (rollback_rework_preparation), plus
     # the phase sub-functions themselves when walking the orchestrator-only view
@@ -377,17 +401,33 @@ class TestWorkerExitPathContract:
         into the json dict via ``**abandon_result`` or accessed via
         ``abandon_result.get(...)``). After the wave-7 phase decomposition these
         returns live inside the phase functions, so we walk the orchestrator +
-        all four phases and exclude continuation trailers / nested helpers.
+        all four phases and exclude continuation trailers / nested helpers. The
+        wave-8 slimming moved phases B and C (and several abandon exits with
+        them) into the rework companion, so the walk spans both modules.
         """
-        src_text = (_REPO_ROOT / _PHASES_REL).read_text(encoding="utf-8")
-        tree = ast.parse(src_text)
+        # Parse both modules. Phase functions resolve from whichever module they
+        # live in (PHASE_FUNCTION_MODULE); the orchestrator is always in the
+        # phases module. We keep per-node source text so get_source_segment works.
+        sources = {}
+        trees = {}
+        for rel in (_PHASES_REL, _REWORK_REL):
+            sources[rel] = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+            trees[rel] = ast.parse(sources[rel])
+
         targets = {}
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-                node.name == _TARGET or node.name in PHASE_FUNCTIONS
-            ):
+        node_src = {}  # function node -> its source-text string (for get_source_segment)
+        for node in ast.walk(trees[_PHASES_REL]):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == _TARGET:
                 targets[node.name] = node
+                node_src[id(node)] = sources[_PHASES_REL]
         assert _TARGET in targets
+        for phase_name, phase_rel in PHASE_FUNCTION_MODULE.items():
+            for node in ast.walk(trees[phase_rel]):
+                if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and node.name == phase_name):
+                    targets[node.name] = node
+                    node_src[id(node)] = sources[phase_rel]
+                    break
 
         # Nested ranges to exclude (rollback_rework_preparation inside Phase C).
         nested_ranges = []
@@ -432,7 +472,7 @@ class TestWorkerExitPathContract:
                     # reference among the dict values (OFFICIAL_REWORK_CIRCUIT_BREAKER
                     # uses ``abandon_result.get("abandoned")`` and a raw
                     # ``"abandon_result": abandon_result`` field).
-                    src_segment = ast.get_source_segment(src_text, node) or ""
+                    src_segment = ast.get_source_segment(node_src[id(fnode)], node) or ""
                     if "abandon_result" in src_segment:
                         abandon_return_count += 1
         assert abandon_return_count == ABANDON_EXIT_COUNT, (
