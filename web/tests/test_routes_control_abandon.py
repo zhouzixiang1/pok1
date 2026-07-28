@@ -280,6 +280,8 @@ class TestAbandonStopsOrchestrator:
             "next_v": 1002,
             "source_v": 1001,
             "checkpoint_revision": 2,
+            "run_id": "run-1002#1",
+            "workflow_run_id": "run-1002#1",
         }
         _install_checkpoint(monkeypatch, checkpoint)
         _install_stage_guard(monkeypatch, block=None)
@@ -316,6 +318,8 @@ class TestAbandonCasMismatch:
             "next_v": 1003,
             "source_v": 1002,
             "checkpoint_revision": 9,
+            "run_id": "run-1003#1",
+            "workflow_run_id": "run-1003#1",
         }
         _install_checkpoint(monkeypatch, checkpoint)
         _install_stage_guard(monkeypatch, block=None)

@@ -2283,10 +2283,36 @@ async def _abandon_generation_transaction(reason: str) -> dict[str, Any]:
     #    rather than through ``run_blocking_isolated`` (which is reserved for
     #    blocking sync infrastructure calls and would return a coroutine
     #    object instead of awaiting it).
-    from tool_bot_management import _do_abandon_generation
+    #
+    # A forced (non-generic) reason requires the caller to supply the
+    # checkpoint CAS identity (expected_workflow_run_id / _next_v /
+    # _source_v / _checkpoint_revision / _checkpoint_stage) so the canonical
+    # transaction can prove it is abandoning exactly the candidate the
+    # operator observed. The orchestrator's own worker-terminal-abandon path
+    # (orchestrator.py:4271-4279) and cycle-timeout path (:3307-3316) do this
+    # via ``expected_abandon_identity(checkpoint)``; mirror that exactly.
+    from tool_bot_management import (
+        _do_abandon_generation,
+        expected_abandon_identity,
+    )
 
     try:
-        result = await _do_abandon_generation(reason=reason)
+        identity = expected_abandon_identity(checkpoint)
+    except Exception as exc:
+        _invalidate_observer_projection_cache()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "abandon_identity_incomplete",
+                "operation": "control_abandon_generation",
+                "reason": f"{type(exc).__name__}:{str(exc)[:240]}",
+                "stage": stage,
+                "next_v": checkpoint.get("next_v"),
+            },
+        ) from None
+
+    try:
+        result = await _do_abandon_generation(reason=reason, **identity)
     except HTTPException:
         _invalidate_observer_projection_cache()
         raise
