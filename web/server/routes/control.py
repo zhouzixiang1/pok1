@@ -164,40 +164,11 @@ class _ObserverSingleflightCache:
                 if self._key != key:
                     if self._inflight:
                         # The in-flight result belongs to the preceding local
-                        # authority.  During active generation the rating
-                        # daemon rewrites results files every few seconds, so
-                        # the content key churns faster than a refresh can
-                        # complete.  Previously this branch unconditionally
-                        # cleared ``_value`` and raised 503, producing a
-                        # persistent health/status outage for the whole
-                        # generation even though a valid (slightly stale)
-                        # projection existed.  Preserve that stale projection
-                        # inside the stale-while-revalidate window instead,
-                        # and queue a fresh refresh for the new key.  Only when
-                        # no stale value is available (or it has aged past the
-                        # stale window) do we fall back to the retryable 503.
-                        now = time.monotonic()
-                        stale_until = (
-                            self._expires_at + self.stale_while_revalidate_sec
-                        )
-                        if (
-                            self._value is not None
-                            and self.stale_while_revalidate_sec > 0.0
-                            and now < stale_until
-                        ):
-                            # Serve the stale projection and hand the single
-                            # refresh slot to the newest key once the current
-                            # in-flight builder exits.
-                            self._generation += 1
-                            self._key = key
-                            self._expires_at = 0.0
-                            self._error = None
-                            self._error_expires_at = 0.0
-                            self._pending_builder = builder
-                            cached_value = self._value
-                            break
-                        # No usable stale value: invalidate and surface the
-                        # retryable unavailability exactly as before.
+                        # authority.  Invalidate it and hand the one refresh
+                        # slot to the latest key after that builder exits.  A
+                        # zero-stale cache (health) must be just as nonblocking
+                        # as status: waiting here can pin an HTTP request behind
+                        # a many-second signature/Git projection.
                         self._generation += 1
                         self._key = key
                         self._value = None
@@ -313,16 +284,7 @@ class _ObserverSingleflightCache:
 _OBSERVER_STATUS_CACHE = _ObserverSingleflightCache(
     stale_while_revalidate_sec=60.0,
 )
-# Health is polled every few seconds by the dashboard and by external probes.
-# During active generation the rating daemon rewrites results files faster than
-# a zero-stale refresh can complete, so a zero stale window produced a
-# persistent 503 for the whole generation.  A 30s stale-while-revalidate
-# window (shorter than status because health authority must stay fresher) keeps
-# /api/control/health serving a coherent projection while a background refresh
-# catches up, instead of freezing the dashboard behind an endless refresh race.
-_OBSERVER_HEALTH_CACHE = _ObserverSingleflightCache(
-    stale_while_revalidate_sec=30.0,
-)
+_OBSERVER_HEALTH_CACHE = _ObserverSingleflightCache()
 
 
 def _invalidate_observer_projection_cache() -> None:
