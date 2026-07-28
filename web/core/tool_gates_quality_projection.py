@@ -276,7 +276,6 @@ def _build_quality_scorecard(
     declared_scope_ok,
     embedded_selftest_errors,
     import_errors,
-    issue,
     national_acceptance_errors,
     national_acceptance_ok,
     national_acceptance_payload,
@@ -310,6 +309,9 @@ def _build_quality_scorecard(
     runtime_contract_identity_ok,
     runtime_contract_ledger_digest,
     source_python_changed,
+    smoke_errors,
+    smoke_payload,
+    oversized,
 ):
     """Build the quality ScoreCard (GateResult chain + infra gate
     mutation), extracted verbatim from the run_quality_gates monolith.
@@ -565,6 +567,8 @@ def _build_failed_gates_detail(
     runtime_contract_identity_ok,
     selected_proposal_quality_evidence,
     selected_proposal_quality_ok,
+    smoke_errors,
+    oversized,
     v,
 ):
     """Build the failed_gates_detail diagnostic list, extracted verbatim

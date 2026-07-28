@@ -927,6 +927,12 @@ async def run_quality_gates(args):
             {"version": v, "errors": position_semantics_errors[:10]},
         )
 
+    # Defensive defaults: the smoke gate below assigns both unconditionally,
+    # but pre-populating them keeps any later restructuring (e.g. wrapping the
+    # call in a guard) from reintroducing the wave7 ``smoke_errors`` NameError
+    # observed in production.  They are overwritten on the next statement.
+    smoke_errors: list = []
+    smoke_payload: dict = {}
     smoke_errors, smoke_payload = await _run_workflow_smoke_gate(
         bot_dir=bot_dir,
         source_v=source_v,
@@ -1611,6 +1617,8 @@ async def run_quality_gates(args):
         runtime_contract_identity_ok=runtime_contract_identity_ok,
         selected_proposal_quality_evidence=selected_proposal_quality_evidence,
         selected_proposal_quality_ok=selected_proposal_quality_ok,
+        smoke_errors=smoke_errors,
+        oversized=oversized,
         v=v,
     )
     result["failed_gates"] = failed_gates_detail if not all_passed else []
@@ -1727,7 +1735,6 @@ async def run_quality_gates(args):
         declared_scope_ok=declared_scope_ok,
         embedded_selftest_errors=embedded_selftest_errors,
         import_errors=import_errors,
-        issue=issue,
         national_acceptance_errors=national_acceptance_errors,
         national_acceptance_ok=national_acceptance_ok,
         national_acceptance_payload=national_acceptance_payload,
@@ -1761,6 +1768,9 @@ async def run_quality_gates(args):
         runtime_contract_identity_ok=runtime_contract_identity_ok,
         runtime_contract_ledger_digest=runtime_contract_ledger_digest,
         source_python_changed=source_python_changed,
+        smoke_errors=smoke_errors,
+        smoke_payload=smoke_payload,
+        oversized=oversized,
     )
     result["scorecard"] = scorecard.model_dump()
     quality_detail["scorecard"] = result["scorecard"]
