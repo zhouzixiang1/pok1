@@ -66,6 +66,14 @@ import tool_gates_artifact_scope
 import tool_gates_internals
 import tool_gates_quality_projection
 
+# Symbols extracted into tool_gates_quality_projection by the wave7 slim-down
+# (74b32143) but still referenced by their bare names at their original call
+# sites below.  Re-export them under those names so the call sites resolve,
+# matching the existing alias-reexport pattern
+# (``_canonical_digest = tool_gates_internals._canonical_digest``).
+_build_failed_gates_detail = tool_gates_quality_projection._build_failed_gates_detail
+_build_quality_scorecard = tool_gates_quality_projection._build_quality_scorecard
+_quality_cache_current_impl = tool_gates_quality_projection._quality_cache_current_impl
 
 _REVIEW_SEMANTIC_MODES = {
     "fixed_blueprint_capability_audit": "fixed_blueprint_capability_audit_v1",
