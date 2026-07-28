@@ -20,6 +20,7 @@ and rendering logic and re-imports the names it needs.
 from __future__ import annotations
 
 import ast
+import gzip
 from pathlib import Path
 import re
 from typing import Iterable, Sequence
@@ -59,6 +60,34 @@ def _is_archive_path(path: str) -> bool:
     return "archive" in Path(path).parts
 
 
+def _companion_template_text(source_path: Path) -> str | None:
+    """Return the text of a checked-in companion template blob, if any.
+
+    Some system-owned template modules store their large ``NATIVE_*_TEMPLATE``
+    string literal in a sibling ``.bin`` file (gzip-compressed or raw UTF-8)
+    and decompress it at import time, instead of inlining the literal in the
+    ``.py`` source.  A symbol that lives in such a template value is therefore
+    absent from the loader's ``.py`` text even though it remains part of the
+    system-owned artifact.  This helper exposes that companion text so symbol
+    validation can still bind to it without importing the loader (which would
+    add a runtime side effect to this otherwise pure, stdlib-only module).
+    Returns ``None`` when there is no companion blob.
+    """
+    blob = source_path.with_suffix(".bin")
+    if not blob.is_file():
+        return None
+    raw = blob.read_bytes()
+    try:
+        decompressed = gzip.decompress(raw)
+    except OSError:
+        # Not gzipped; treat the raw bytes as the template text.
+        decompressed = raw
+    try:
+        return decompressed.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def _safe_repo_path(path: str) -> Path | None:
     candidate = Path(path)
     if candidate.is_absolute() or ".." in candidate.parts or not path:
@@ -92,7 +121,15 @@ def _validate_ref(
             source = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             return [f"{prefix}:unreadable:{type(exc).__name__}"]
-        if ref.symbol not in source:
+        # A symbol may legitimately live in a system-owned template value that
+        # the loader module decompresses from a checked-in ``.bin`` companion
+        # rather than inlining as a literal in the ``.py`` source.  Treat that
+        # companion text as part of the module's source surface so the contract
+        # keeps binding to the real artifact after such a storage refactor.
+        companion = _companion_template_text(path) if ref.symbol not in source else None
+        if ref.symbol not in source and (
+            companion is None or ref.symbol not in companion
+        ):
             errors.append(f"{prefix}:missing_symbol")
         elif require_symbol:
             if path.suffix == ".py":
