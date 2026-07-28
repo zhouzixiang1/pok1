@@ -743,12 +743,19 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
         "pipeline_job_contract",
         "producer_consumer_pipeline",
         "producer_consumer_workflow_store",
+        # Slice 2b one-ahead wiring is an extension of the inert shadow (it
+        # imports the two modules above).  It stays dormant until the explicit
+        # ``pipeline_slice2b_enabled`` flag is set truthy on the orchestrator
+        # context; see ``producer_consumer_slice2b.slice2b_enabled``.  Until
+        # activation it must not appear in any production source either.
+        "producer_consumer_slice2b",
     )
     inert_sources = {
         root / "web" / "core" / "mechanical_repair.py",
         root / "web" / "core" / "pipeline_job_contract.py",
         root / "web" / "core" / "producer_consumer_pipeline.py",
         root / "web" / "core" / "producer_consumer_workflow_store.py",
+        root / "web" / "core" / "producer_consumer_slice2b.py",
     }
     production_entrypoints = [
         root / "web" / "main.py",
