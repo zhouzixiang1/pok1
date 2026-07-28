@@ -37,6 +37,41 @@ from pathlib import Path
 import evolution_infra as _ei
 
 
+_ROTATION_PLAN_KIND = "append-log-nondestructive-rotation-v2"
+_ROTATION_WATERMARK_KIND = "append-log-archive-watermark-v2"
+_ROTATION_SET_PLAN_KIND = "append-log-nondestructive-rotation-plan"
+_ROTATION_PLAN_KEYS = frozenset({
+    "schema_version", "kind", "version", "source", "start_offset",
+    "end_offset", "archive", "archive_sha256", "new_prefix_sha256",
+    "previous_watermark_digest", "rotation_id", "state", "digest",
+})
+_ROTATION_WATERMARK_KEYS = frozenset({
+    "schema_version", "kind", "source", "end_offset", "prefix_sha256",
+    "last_version", "last_rotation_id", "last_plan_digest",
+    "previous_watermark_digest", "digest",
+})
+_ROTATION_RECEIPT_KEYS = frozenset({
+    "source", "rotation_id", "plan_digest", "archive_sha256",
+    "start_offset", "end_offset", "source_preserved_append_only",
+})
+_ROTATION_SET_PLAN_KEYS = frozenset({
+    "schema_version", "kind", "version", "publication_id",
+    "source_policy", "source_bytes_must_be_preserved", "source_snapshots",
+    "expected_rotations", "source_snapshot_set_digest",
+    "expected_rotation_set_digest", "authority_digest",
+})
+_ROTATION_SOURCE_SNAPSHOT_KEYS = frozenset({
+    "source", "keep_lines", "snapshot_exists", "snapshot_size",
+    "snapshot_sha256", "cold_end_offset", "watermark_end_offset",
+    "watermark_digest", "expected_rotation",
+})
+_ROTATION_SUBJECT_KEYS = frozenset({
+    "version", "source", "archive", "start_offset", "end_offset",
+    "archive_sha256", "new_prefix_sha256", "previous_watermark_digest",
+    "rotation_id", "completed_plan_digest",
+})
+
+
 def _rotation_rules():
     return (
         (Path(_ei.WORKER_FAILURES_FILE), 200),
@@ -179,7 +214,7 @@ def _base_rotation_watermark(source_path: Path):
 
     unsigned = {
         "schema_version": 2,
-        "kind": _ei._ROTATION_WATERMARK_KIND,
+        "kind": _ROTATION_WATERMARK_KIND,
         "source": source_path.name,
         "end_offset": 0,
         "prefix_sha256": _ei._rotation_digest(b""),
@@ -258,8 +293,8 @@ def _load_rotation_watermark(source_path: Path, raw: bytes):
     _archive, _plan, watermark_path = _ei._rotation_paths(source_path, 0)
     watermark = _ei._rotation_record(
         watermark_path,
-        kind=_ei._ROTATION_WATERMARK_KIND,
-        keys=_ei._ROTATION_WATERMARK_KEYS,
+        kind=_ROTATION_WATERMARK_KIND,
+        keys=_ROTATION_WATERMARK_KEYS,
     )
     if watermark is None:
         return _ei._base_rotation_watermark(source_path)
@@ -287,8 +322,8 @@ def _load_rotation_watermark(source_path: Path, raw: bytes):
     )
     prior_plan = _ei._rotation_record(
         prior_plan_path,
-        kind=_ei._ROTATION_PLAN_KIND,
-        keys=_ei._ROTATION_PLAN_KEYS,
+        kind=_ROTATION_PLAN_KIND,
+        keys=_ROTATION_PLAN_KEYS,
     )
     if prior_plan is None:
         raise RuntimeError(f"archive watermark plan missing: {source_path.name}")
@@ -337,7 +372,7 @@ def _completed_rotation_plan_digest(subject):
 
     unsigned = {
         "schema_version": 2,
-        "kind": _ei._ROTATION_PLAN_KIND,
+        "kind": _ROTATION_PLAN_KIND,
         "version": subject["version"],
         "source": subject["source"],
         "start_offset": subject["start_offset"],
@@ -377,13 +412,13 @@ def _validate_archive_rotation_plan_shape(
     version = int(version)
     if (
         not isinstance(rotation_plan, dict)
-        or set(rotation_plan) != set(_ei._ROTATION_SET_PLAN_KEYS)
+        or set(rotation_plan) != set(_ROTATION_SET_PLAN_KEYS)
     ):
         raise RuntimeError("archive rotation set plan fields mismatch")
     observed_publication_id = rotation_plan.get("publication_id")
     if (
         rotation_plan.get("schema_version") != 1
-        or rotation_plan.get("kind") != _ei._ROTATION_SET_PLAN_KIND
+        or rotation_plan.get("kind") != _ROTATION_SET_PLAN_KIND
         or type(rotation_plan.get("version")) is not int
         or rotation_plan["version"] != version
         or not _ei._rotation_digest_value(observed_publication_id)
@@ -408,7 +443,7 @@ def _validate_archive_rotation_plan_shape(
     for snapshot, (source_path, keep_lines) in zip(snapshots, rules):
         if (
             not isinstance(snapshot, dict)
-            or set(snapshot) != set(_ei._ROTATION_SOURCE_SNAPSHOT_KEYS)
+            or set(snapshot) != set(_ROTATION_SOURCE_SNAPSHOT_KEYS)
         ):
             raise RuntimeError("archive rotation source snapshot fields mismatch")
         source_name = source_path.name
@@ -454,7 +489,7 @@ def _validate_archive_rotation_plan_shape(
             continue
         if (
             not isinstance(expected, dict)
-            or set(expected) != set(_ei._ROTATION_SUBJECT_KEYS)
+            or set(expected) != set(_ROTATION_SUBJECT_KEYS)
         ):
             raise RuntimeError(
                 f"archive rotation expected subject fields mismatch: {source_name}"
@@ -673,7 +708,7 @@ def build_archive_rotation_plan(version, publication_id):
         })
     plan = {
         "schema_version": 1,
-        "kind": _ei._ROTATION_SET_PLAN_KIND,
+        "kind": _ROTATION_SET_PLAN_KIND,
         "version": version,
         "publication_id": publication_id,
         "source_policy": "append-only-cold-prefix",
@@ -755,8 +790,8 @@ def validate_archive_rotation_plan(
         if os.path.lexists(low_plan_path):
             low_plan = _ei._rotation_record(
                 low_plan_path,
-                kind=_ei._ROTATION_PLAN_KIND,
-                keys=_ei._ROTATION_PLAN_KEYS,
+                kind=_ROTATION_PLAN_KIND,
+                keys=_ROTATION_PLAN_KEYS,
             )
         if expected is None:
             if low_plan is not None:
@@ -782,7 +817,7 @@ def validate_archive_rotation_plan(
             require_completed=low_plan.get("state") == "completed",
             require_archive=low_plan.get("state") == "completed",
         )
-        for key in _ei._ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
+        for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
             if low_plan.get(key) != expected.get(key):
                 raise RuntimeError(
                     f"archive rotation low-level plan mismatch: {source_path.name}"
@@ -840,8 +875,8 @@ def archive_rotate_files(version, rotation_plan):
             watermark = _ei._load_rotation_watermark(source_path, raw)
             plan = _ei._rotation_record(
                 plan_path,
-                kind=_ei._ROTATION_PLAN_KIND,
-                keys=_ei._ROTATION_PLAN_KEYS,
+                kind=_ROTATION_PLAN_KIND,
+                keys=_ROTATION_PLAN_KEYS,
             )
             if plan is None:
                 if os.path.lexists(archive_path):
@@ -854,7 +889,7 @@ def archive_rotate_files(version, rotation_plan):
                     plan_path,
                     {
                         "schema_version": 2,
-                        "kind": _ei._ROTATION_PLAN_KIND,
+                        "kind": _ROTATION_PLAN_KIND,
                         **{
                             key: value
                             for key, value in expected.items()
@@ -862,10 +897,10 @@ def archive_rotate_files(version, rotation_plan):
                         },
                         "state": "planned",
                     },
-                    kind=_ei._ROTATION_PLAN_KIND,
-                    keys=_ei._ROTATION_PLAN_KEYS,
+                    kind=_ROTATION_PLAN_KIND,
+                    keys=_ROTATION_PLAN_KEYS,
                 )
-            for key in _ei._ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
+            for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
                 if plan.get(key) != expected.get(key):
                     raise RuntimeError(
                         f"archive rotation low-level plan mismatch: {source_path.name}"
@@ -891,8 +926,8 @@ def archive_rotate_files(version, rotation_plan):
                     plan = _ei._write_rotation_record(
                         plan_path,
                         {key: value for key, value in plan.items() if key != "digest"} | {"state": "completed"},
-                        kind=_ei._ROTATION_PLAN_KIND,
-                        keys=_ei._ROTATION_PLAN_KEYS,
+                        kind=_ROTATION_PLAN_KIND,
+                        keys=_ROTATION_PLAN_KEYS,
                     )
                 if plan["digest"] != expected["completed_plan_digest"]:
                     raise RuntimeError(
@@ -902,7 +937,7 @@ def archive_rotate_files(version, rotation_plan):
                     watermark_path,
                     {
                         "schema_version": 2,
-                        "kind": _ei._ROTATION_WATERMARK_KIND,
+                        "kind": _ROTATION_WATERMARK_KIND,
                         "source": source_path.name,
                         "end_offset": end,
                         "prefix_sha256": plan["new_prefix_sha256"],
@@ -911,8 +946,8 @@ def archive_rotate_files(version, rotation_plan):
                         "last_plan_digest": plan["digest"],
                         "previous_watermark_digest": plan["previous_watermark_digest"],
                     },
-                    kind=_ei._ROTATION_WATERMARK_KIND,
-                    keys=_ei._ROTATION_WATERMARK_KEYS,
+                    kind=_ROTATION_WATERMARK_KIND,
+                    keys=_ROTATION_WATERMARK_KEYS,
                 )
             elif watermark_end >= end:
                 _ei._validate_rotation_plan(
@@ -959,7 +994,7 @@ def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
     by_name = {path.name: path for path, _keep in _ei._rotation_rules()}
     supplied = {}
     for receipt in receipts:
-        if not isinstance(receipt, dict) or set(receipt) != set(_ei._ROTATION_RECEIPT_KEYS):
+        if not isinstance(receipt, dict) or set(receipt) != set(_ROTATION_RECEIPT_KEYS):
             raise RuntimeError("archive rotation receipt fields mismatch")
         source_name = receipt.get("source")
         if source_name in supplied or source_name not in by_name:
@@ -1007,8 +1042,8 @@ def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
             watermark = _ei._load_rotation_watermark(source_path, raw)
             plan = _ei._rotation_record(
                 plan_path,
-                kind=_ei._ROTATION_PLAN_KIND,
-                keys=_ei._ROTATION_PLAN_KEYS,
+                kind=_ROTATION_PLAN_KIND,
+                keys=_ROTATION_PLAN_KEYS,
             )
             if plan is None:
                 raise RuntimeError(f"archive rotation plan missing: {source_name}")
