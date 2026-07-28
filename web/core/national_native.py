@@ -115,6 +115,8 @@ from national_native_timing import (  # noqa: F401
     validate_native_match_timing_evidence,
 )
 import national_native_acceptance as _nn
+import national_native_analysis as _nna  # noqa: F401  (static-analysis/trace-parsing cluster)
+import national_native_tcp_exec as _nte  # noqa: F401  (direct-artifact TCP execution cluster)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -164,93 +166,18 @@ def _system_native_name_handshake_issues(
     process_info: dict[str, Any],
     bot_log_summary: dict[str, Any],
 ) -> list[str]:
-    """Return fail-closed raw-name launch issues for the checked-in runtime.
-
-    Legacy/non-strict fixtures intentionally do not carry a system-owned
-    log contract.  Only an entry whose bound digest is exactly this runtime
-    template *and* whose managed launch supplied a decision log is required
-    to emit the name/worker evidence below.
-    """
-
-    expected_entry_digest = hashlib.sha256(
-        NATIVE_BOT_TEMPLATE.encode("utf-8")
-    ).hexdigest()
-    if (
-        spec.entry_digest != expected_entry_digest
-        or process_info.get("bot_log_supported") is not True
-    ):
-        return []
-    handshake = bot_log_summary.get("name_handshake")
-    if not isinstance(handshake, dict):
-        return [f"{label}: native_name_handshake_missing"]
-
-    def count(field: str) -> int:
-        value = handshake.get(field)
-        return value if isinstance(value, int) and not isinstance(value, bool) else -1
-
-    issues: list[str] = []
-    received = count("received_count")
-    malformed = count("malformed_count")
-    if malformed > 0:
-        issues.append(f"{label}: native_name_handshake_malformed")
-    if handshake.get("available") is not True or received <= 0:
-        issues.append(f"{label}: native_name_handshake_missing")
-        return issues
-    if received != 1:
-        issues.append(
-            f"{label}: native_name_handshake_repeated count={received}"
-        )
-        return issues
-    if count("sent_count") != 1:
-        issues.append(f"{label}: native_name_handshake_missing_raw_reply")
-    generations = handshake.get("worker_generations")
-    generation_valid = (
-        isinstance(generations, list)
-        and len(generations) == 1
-        and isinstance(generations[0], int)
-        and not isinstance(generations[0], bool)
-        and generations[0] >= 1
+    """Delegate to national_native_analysis."""
+    return _nna._system_native_name_handshake_issues(
+        label, spec, process_info, bot_log_summary
     )
-    if (
-        count("worker_launch_started_count") != 1
-        or count("worker_launch_ok_count") != 1
-        or count("worker_launch_failed_count") != 0
-        or not generation_valid
-    ):
-        issues.append(f"{label}: native_name_handshake_launch_failed")
-    return issues
 
 
 def _artifact_execution_is_valid(
     payload: Any,
     expected_artifacts: dict[str, str],
 ) -> bool:
-    """Validate the compact execution identity without reopening bot code."""
-
-    from bot_artifact import canonical_digest
-
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        return False
-    if payload.get("mode") != "direct_content_bound_policy_artifact":
-        return False
-    by_player = payload.get("by_player")
-    if not isinstance(by_player, dict) or set(by_player) != set(expected_artifacts):
-        return False
-    for label, expected_hash in expected_artifacts.items():
-        identity = by_player.get(label)
-        if not isinstance(identity, dict):
-            return False
-        unsigned = {
-            key: value for key, value in identity.items() if key != "identity_digest"
-        }
-        if (
-            identity.get("mode") != "direct_content_bound_policy_artifact"
-            or identity.get("label") != label
-            or identity.get("artifact_hash") != expected_hash
-            or identity.get("identity_digest") != canonical_digest(unsigned)
-        ):
-            return False
-    return True
+    """Delegate to national_native_analysis."""
+    return _nna._artifact_execution_is_valid(payload, expected_artifacts)
 
 
 def ensure_native_entry(bot_dir: str | Path, *, overwrite: bool = False) -> Path:
@@ -274,86 +201,13 @@ def check_native_stream_decoder(bot_dir: str | Path) -> list[str]:
     before the managed bot sandbox is created.  First require the exact
     system-owned entrypoint bytes, then run the behavioral probe against a
     private copy made from :data:`NATIVE_BOT_TEMPLATE` itself.
+
+    The implementation delegates to national_native_analysis; this shell stays
+    in the parent module because the national alignment matrix anchors the
+    ``NationalStreamDecoder`` symbol (the checked-in runtime decoder class
+    embedded in ``NATIVE_BOT_TEMPLATE``) to this source path.
     """
-
-    bot_dir = Path(bot_dir)
-    from national_runtime_authority import current_system_native_runtime_errors
-
-    identity_errors = current_system_native_runtime_errors(bot_dir)
-    if identity_errors:
-        return [
-            f"{NATIVE_ENTRY}: current system-owned stream decoder required: {error}"
-            for error in identity_errors
-        ]
-
-    # Tokens are checked on the system authority, never by reopening the
-    # candidate after the byte-identity read above.
-    text = NATIVE_BOT_TEMPLATE
-
-    required_tokens = (
-        "NATIONAL_STREAM_DECODER_VERSION = 2",
-        "class NationalStreamDecoder",
-        "has_pending_numeric",
-        "flush_idle",
-        "select.select",
-    )
-    missing = [token for token in required_tokens if token not in text]
-    if missing:
-        return [
-            f"{NATIVE_ENTRY}: missing stream decoder v2 token {token!r}; "
-            "new candidates must defer terminal numeric messages until a following token or idle flush"
-            for token in missing
-        ]
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="pok_system_decoder_probe_") as raw_tmp:
-            probe_root = Path(raw_tmp)
-            probe_entry = probe_root / NATIVE_ENTRY
-            descriptor = os.open(
-                probe_entry,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o400,
-            )
-            try:
-                content = NATIVE_BOT_TEMPLATE.encode("utf-8")
-                with os.fdopen(descriptor, "wb", closefd=False) as writer:
-                    writer.write(content)
-                    writer.flush()
-                    os.fsync(writer.fileno())
-            finally:
-                os.close(descriptor)
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    "-c",
-                    _NATIVE_STREAM_PROBE_SCRIPT,
-                    str(probe_entry),
-                ],
-                cwd=str(probe_root),
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return [f"{NATIVE_ENTRY}: stream decoder behavior probe failed: {type(exc).__name__}: {exc}"]
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "no output")[-500:].strip()
-        return [
-            f"{NATIVE_ENTRY}: stream decoder behavior probe exited {proc.returncode}: {detail}"
-        ]
-    try:
-        payload = json.loads(proc.stdout)
-    except (TypeError, json.JSONDecodeError) as exc:
-        return [
-            f"{NATIVE_ENTRY}: stream decoder behavior probe returned invalid JSON: "
-            f"{type(exc).__name__}: {proc.stdout[-300:]!r}"
-        ]
-    return [
-        f"{NATIVE_ENTRY}: stream decoder behavior violation: {item}"
-        for item in (payload.get("errors") or [])[:20]
-    ]
+    return _nna.check_native_stream_decoder(bot_dir)
 
 
 def check_native_contract(
@@ -533,50 +387,23 @@ def check_native_contract(
 
 
 def _function_source(text: str, name: str) -> str | None:
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return ast.get_source_segment(text, node) or ""
-    return None
+    """Delegate to national_native_analysis."""
+    return _nna._function_source(text, name)
 
 
 def _policy_decision_has_exception_pass(text: str) -> bool:
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_policy_decision":
-            for child in ast.walk(node):
-                if isinstance(child, ast.Try):
-                    for handler in child.handlers:
-                        if (
-                            _handler_catches_broad_exception(handler)
-                            and len(handler.body) == 1
-                            and isinstance(handler.body[0], ast.Pass)
-                        ):
-                            return True
-    return False
+    """Delegate to national_native_analysis."""
+    return _nna._policy_decision_has_exception_pass(text)
 
 
 def _handler_catches_broad_exception(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:
-        return True
-    if isinstance(handler.type, ast.Name):
-        return handler.type.id in {"Exception", "BaseException"}
-    if isinstance(handler.type, ast.Tuple):
-        return any(
-            isinstance(item, ast.Name) and item.id in {"Exception", "BaseException"}
-            for item in handler.type.elts
-        )
-    return False
+    """Delegate to national_native_analysis."""
+    return _nna._handler_catches_broad_exception(handler)
 
 
 def _bot_version(label: str) -> int:
-    return parse_bot_version(label) or -1
+    """Delegate to national_native_analysis."""
+    return _nna._bot_version(label)
 
 
 def resolve_bot(token: str | Path) -> tuple[str, Path]:
@@ -778,165 +605,31 @@ def _validate_formal_native_env_overrides(
     side: str,
     overrides: dict[str, str | int | None] | None,
 ) -> dict[str, str | int | None]:
-    """Validate the complete caller-controlled environment ABI.
-
-    The managed executor does not inherit arbitrary ``POK_*`` variables.  An
-    unknown explicit override must therefore be rejected, not accepted and
-    silently discarded as if an experiment or gate had actually run.
-    """
-
-    normalized = dict(overrides or {})
-    unknown = sorted(
-        str(key)
-        for key in normalized
-        if str(key) not in FORMAL_NATIVE_ENV_OVERRIDE_KEYS
-    )
-    if unknown:
-        raise ValueError(
-            f"unsupported formal native environment override ({side}):"
-            + ",".join(unknown)
-        )
-    for raw_key, value in normalized.items():
-        key = str(raw_key)
-        if key in _FORMAL_NATIVE_TIMING_OVERRIDE_KEYS:
-            raise ValueError(
-                "formal native timing is fixed by NativeMatchTimingPlan:"
-                f"{side}:{key}"
-            )
-        if key == "POK_TRACE_DECISIONS" and value is not None:
-            if str(value) not in {"0", "1"}:
-                raise ValueError(
-                    f"invalid formal native trace override ({side}):{key}"
-                )
-    return normalized
+    """Delegate to national_native_analysis."""
+    return _nna._validate_formal_native_env_overrides(side, overrides)
 
 
 def _trace_decisions_from_overrides(
     side: str,
     overrides: dict[str, str | int | None] | None,
 ) -> bool:
-    """Accept only an explicit non-timing trace switch for a child process."""
-
-    normalized = _validate_formal_native_env_overrides(side, overrides)
-    return str(normalized.get("POK_TRACE_DECISIONS") or "0") == "1"
+    """Delegate to national_native_analysis."""
+    return _nna._trace_decisions_from_overrides(side, overrides)
 
 
 def _parse_decision_trace(stderr_text: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for raw_line in stderr_text.splitlines():
-        if not raw_line.startswith(TRACE_PREFIX):
-            continue
-        payload = raw_line[len(TRACE_PREFIX):]
-        try:
-            row = json.loads(payload)
-        except Exception:
-            rows.append({"type": "parse_error", "raw": payload[:1000]})
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
+    """Delegate to national_native_analysis."""
+    return _nna._parse_decision_trace(stderr_text)
 
 
 def _compact_native_hand_records(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Compile native engine events into bounded, replay-safe per-hand facts."""
-    hands: dict[int, dict[str, Any]] = {}
-    pending_requests: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        try:
-            hand = int(event.get("hand", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if hand <= 0:
-            continue
-        row = hands.setdefault(hand, {
-            "hand": hand,
-            "sb_idx": None,
-            "bb_idx": None,
-            "hole_cards": [[], []],
-            "board": [],
-            "actions": [],
-            "starting_pot": 150,
-            "settlement": None,
-        })
-        event_type = event.get("type")
-        if event_type == "hand_start":
-            row["sb_idx"] = event.get("sb_idx")
-            row["bb_idx"] = event.get("bb_idx")
-            row["starting_pot"] = int(event.get("pot", 150) or 150)
-        elif event_type == "cards_dealt":
-            cards = event.get("hole_cards")
-            if isinstance(cards, list) and len(cards) == 2:
-                row["hole_cards"] = cards
-        elif event_type == "stage":
-            cards = event.get("cards") or []
-            if isinstance(cards, list):
-                row["board"].extend(str(card) for card in cards)
-        elif event_type == "action_requested":
-            try:
-                player_idx = int(event.get("player_idx"))
-            except (TypeError, ValueError):
-                continue
-            stage = str(event.get("stage") or "unknown")
-            pending_requests.setdefault((hand, player_idx, stage), []).append({
-                "pot_before": event.get("pot"),
-                "player_bets_before": event.get("player_bets"),
-                "timeout_budget_sec": event.get("timeout_budget_sec"),
-            })
-        elif event_type == "action":
-            try:
-                player_idx = int(event.get("player_idx"))
-            except (TypeError, ValueError):
-                player_idx = event.get("player_idx")
-            stage = str(event.get("stage") or "unknown")
-            queue = pending_requests.get((hand, player_idx, stage)) or []
-            request = queue.pop(0) if queue else {}
-            if not queue:
-                pending_requests.pop((hand, player_idx, stage), None)
-            pot_before = request.get("pot_before")
-            pot_after = event.get("pot")
-            # Check/fold/timeout events do not carry an engine-side post-action
-            # pot.  Their legal action commits no chips, so the request pot is
-            # also the truthful post-action pot.
-            if pot_after is None:
-                pot_after = pot_before
-            row["actions"].append({
-                "player_idx": player_idx,
-                "stage": stage,
-                "action": str(event.get("action") or "unknown"),
-                "amount": event.get("amount"),
-                "pot_before": pot_before,
-                "pot_after": pot_after,
-                "player_bets_before": request.get("player_bets_before"),
-                "decision_wait_sec": event.get("decision_wait_sec"),
-                "timeout_budget_sec": request.get(
-                    "timeout_budget_sec", event.get("timeout_budget_sec")
-                ),
-            })
-        elif event_type == "settle":
-            row["settlement"] = {
-                key: event.get(key)
-                for key in (
-                    "earnings", "pot", "is_showdown", "winner_idx", "reason",
-                    "sb_cards", "bb_cards", "community", "sb_hand", "bb_hand",
-                )
-            }
-            if event.get("community"):
-                row["board"] = list(event.get("community") or [])
-    return [
-        hands[hand]
-        for hand in sorted(hands)
-        if isinstance(hands[hand].get("settlement"), dict)
-    ]
+    """Delegate to national_native_analysis."""
+    return _nna._compact_native_hand_records(events)
 
 
 def _safe_label_fragment(label: str) -> str:
-    safe = "".join(
-        char if char.isascii() and (char.isalnum() or char in "_.-") else "_"
-        for char in label
-    )
-    return safe[:80] or "bot"
+    """Delegate to national_native_analysis."""
+    return _nna._safe_label_fragment(label)
 
 
 async def _execute_tcp_server_with_processes(
@@ -2065,408 +1758,39 @@ async def run_native_strength_pair(
 
 
 async def _run_direct_artifact_tcp_pair(
-    bot_a_token: str | Path,
-    bot_b_token: str | Path,
-    hands: int,
+    bot_a_token,
+    bot_b_token,
+    hands,
     *,
-    deck_seed_base: int | None,
-    bot_seed_base: int | None,
-    timeout_sec: float | None,
-    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
-    bot_a_env_overrides: dict[str, str | int | None] | None = None,
-    bot_b_env_overrides: dict[str, str | int | None] | None = None,
-    native_full_match_liveness_budget: dict[str, float | int] | None = None,
-    capture_events: bool = False,
-    sanitize_parent_environment: bool = True,
-    control_execution_ticket: dict[str, Any] | None = None,
-    progress_callback: Any = None,
-) -> dict[str, Any]:
-    if not sanitize_parent_environment:
-        raise ValueError("native strength timing must not inherit parent environment")
-    if native_full_match_liveness_budget is not None:
-        raise ValueError(
-            "raw native full-match liveness budgets are not execution authority; "
-            "pass the immutable timing_plan instead"
-        )
-    trace_decisions = (
-        _trace_decisions_from_overrides("bot_a", bot_a_env_overrides)
-        or _trace_decisions_from_overrides("bot_b", bot_b_env_overrides)
+    deck_seed_base=None,
+    bot_seed_base=None,
+    timeout_sec=None,
+    timing_plan=None,
+    bot_a_env_overrides=None,
+    bot_b_env_overrides=None,
+    native_full_match_liveness_budget=None,
+    capture_events=False,
+    sanitize_parent_environment=True,
+    control_execution_ticket=None,
+    progress_callback=None,
+):
+    """Delegate to national_native_tcp_exec."""
+    return await _nte._run_direct_artifact_tcp_pair(
+        bot_a_token,
+        bot_b_token,
+        hands,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+        timing_plan=timing_plan,
+        bot_a_env_overrides=bot_a_env_overrides,
+        bot_b_env_overrides=bot_b_env_overrides,
+        native_full_match_liveness_budget=native_full_match_liveness_budget,
+        capture_events=capture_events,
+        sanitize_parent_environment=sanitize_parent_environment,
+        control_execution_ticket=control_execution_ticket,
+        progress_callback=progress_callback,
     )
-    if control_execution_ticket is not None and (
-        capture_events is not True
-        or int(hands) != 70
-    ):
-        raise ValueError(
-            "first strict control ticket requires one captured 70-hand "
-            "direct-artifact match"
-        )
-    label_a, dir_a = resolve_bot(bot_a_token)
-    system_control_b = control_execution_ticket is not None
-    if control_execution_ticket is not None:
-        from first_strict_execution_journal import normalize_execution_scope
-
-        ticket_input = control_execution_ticket.get("input_payload") or {}
-        ticket_scope = normalize_execution_scope(ticket_input.get("scope"))
-        if label_a != ticket_scope["candidate_label"]:
-            raise ValueError("first strict candidate label mismatch")
-        dir_b = Path(bot_b_token).absolute()
-        label_a = ticket_scope["candidate_label"]
-        label_b = ticket_scope["control_id"]
-    else:
-        ticket_scope = {}
-        label_b, dir_b = resolve_bot(bot_b_token)
-    hands = max(1, min(70, int(hands)))
-    frozen_timing_plan = _resolve_native_match_timing_plan(
-        timing_plan,
-        hands=hands,
-        requested_timeout_sec=timeout_sec,
-    )
-    capacity_owner = (
-        f"native_tcp:{label_a}:{label_b}:{os.getpid()}:{time.monotonic_ns()}"
-    )
-    capacity_lease = None
-    bound_progress_callback = None
-    # This digest is a runtime-only prelaunch identity, not replay or strength
-    # evidence.  It is fixed before capacity wait and artifact preparation so
-    # the exact provider dispatch can prove liveness across the whole bounded
-    # operation.  Artifact bytes are independently bound by NativeBotSpec
-    # before either process or socket is launched.
-    match_run_nonce = uuid.uuid4().hex
-    match_identity_digest = _canonical_timing_digest({
-        "schema_version": 3,
-        "identity_kind": "runtime_only_native_prelaunch",
-        "bot_a_label": label_a,
-        "bot_a_path": str(dir_a.absolute()),
-        "bot_b_label": label_b,
-        "bot_b_path": str(dir_b.absolute()),
-        "system_control_b": system_control_b,
-        "hands": hands,
-        "deck_seed_base": deck_seed_base,
-        "bot_seed_base": bot_seed_base,
-        "timing_plan_digest": frozen_timing_plan.digest(),
-        "control_match_run_id": str(
-            (control_execution_ticket or {}).get("match_run_id") or ""
-        ),
-        "match_run_nonce": match_run_nonce,
-    })
-    operation_started_at_epoch: float | None = None
-    engine_phase_started_at: float | None = None
-    finalizing_phase_started_at: float | None = None
-    terminal_progress_reported = False
-    terminal_outcome = "runner_raised"
-    launch_heartbeat_stop = asyncio.Event()
-    launch_heartbeat_task: asyncio.Task | None = None
-
-    async def bound_progress_callback(projection: dict[str, Any]) -> bool:
-        nonlocal operation_started_at_epoch
-        nonlocal engine_phase_started_at, finalizing_phase_started_at
-        nonlocal terminal_progress_reported
-        if progress_callback is None:
-            return False
-        if not isinstance(projection, dict):
-            return False
-        event_type = str(projection.get("event_type") or "")
-        terminal_event = (
-            projection.get("terminal") is True or event_type == "terminal"
-        )
-        if terminal_event:
-            if terminal_progress_reported:
-                return True
-            outcome = str(projection.get("terminal_outcome") or "")
-            if outcome not in {
-                "runner_returned",
-                "runner_raised",
-                "runner_cancelled",
-            }:
-                return False
-            # This event is consumed by the identity-aware reporter; it never
-            # becomes a persistent liveness projection.
-            enriched = {
-                "event_type": "terminal",
-                "terminal": True,
-                "terminal_outcome": outcome,
-                "match_identity_digest": match_identity_digest,
-                "timing_plan_digest": frozen_timing_plan.digest(),
-            }
-        elif event_type == "launching":
-            try:
-                phase_started_at = float(
-                    projection.get("phase_started_at_epoch")
-                )
-            except (TypeError, ValueError):
-                return False
-            if not math.isfinite(phase_started_at) or phase_started_at <= 0.0:
-                return False
-            if operation_started_at_epoch is None:
-                operation_started_at_epoch = phase_started_at
-            elif phase_started_at != operation_started_at_epoch:
-                return False
-            if engine_phase_started_at is not None:
-                return False
-            phase_budget_us = frozen_timing_plan.launch_timeout_us
-            enriched = {
-                **dict(projection),
-                "hand": None,
-                "liveness_phase": "launching",
-                "phase_started_at_epoch": phase_started_at,
-                "phase_budget_us": phase_budget_us,
-                "match_identity_digest": match_identity_digest,
-                "timing_plan_digest": frozen_timing_plan.digest(),
-                "hands": frozen_timing_plan.hands,
-                "effective_timeout_us": frozen_timing_plan.effective_timeout_us,
-                "operation_started_at_epoch": operation_started_at_epoch,
-                "operation_deadline_epoch": (
-                    operation_started_at_epoch
-                    + frozen_timing_plan.first_strict_lease_timeout_us
-                    / 1_000_000.0
-                ),
-                "operation_budget_us": (
-                    frozen_timing_plan.first_strict_lease_timeout_us
-                ),
-                "phase_deadline_epoch": (
-                    phase_started_at + phase_budget_us / 1_000_000.0
-                ),
-            }
-        elif event_type == "finalizing":
-            if engine_phase_started_at is None or operation_started_at_epoch is None:
-                return False
-            if projection.get("hand") != frozen_timing_plan.hands:
-                return False
-            try:
-                phase_started_at = float(
-                    projection.get("phase_started_at_epoch")
-                )
-            except (TypeError, ValueError):
-                return False
-            if not math.isfinite(phase_started_at) or phase_started_at <= 0.0:
-                return False
-            if finalizing_phase_started_at is None:
-                finalizing_phase_started_at = phase_started_at
-            elif phase_started_at != finalizing_phase_started_at:
-                return False
-            phase_budget_us = frozen_timing_plan.finalization_timeout_us
-            enriched = {
-                **dict(projection),
-                "liveness_phase": "finalizing",
-                "phase_started_at_epoch": finalizing_phase_started_at,
-                "phase_budget_us": phase_budget_us,
-                "match_identity_digest": match_identity_digest,
-                "timing_plan_digest": frozen_timing_plan.digest(),
-                "hands": frozen_timing_plan.hands,
-                "effective_timeout_us": frozen_timing_plan.effective_timeout_us,
-                "operation_started_at_epoch": operation_started_at_epoch,
-                "operation_deadline_epoch": (
-                    operation_started_at_epoch
-                    + frozen_timing_plan.first_strict_lease_timeout_us
-                    / 1_000_000.0
-                ),
-                "operation_budget_us": (
-                    frozen_timing_plan.first_strict_lease_timeout_us
-                ),
-                "phase_deadline_epoch": (
-                    finalizing_phase_started_at
-                    + phase_budget_us / 1_000_000.0
-                ),
-            }
-        else:
-            if event_type == "engine_started":
-                try:
-                    engine_phase_started_at = float(
-                        projection.get("phase_started_at_epoch")
-                    )
-                except (TypeError, ValueError):
-                    return False
-                if (
-                    not math.isfinite(engine_phase_started_at)
-                    or engine_phase_started_at <= 0.0
-                ):
-                    return False
-                launch_heartbeat_stop.set()
-            if engine_phase_started_at is None or operation_started_at_epoch is None:
-                # Only the trusted runner can declare the actual engine
-                # boundary.  Do not derive it from an arbitrary first
-                # action/settlement callback.
-                return False
-            phase_budget_us = frozen_timing_plan.effective_timeout_us
-            enriched = {
-                **dict(projection),
-                "liveness_phase": "engine_running",
-                "phase_started_at_epoch": engine_phase_started_at,
-                "phase_budget_us": phase_budget_us,
-                "match_identity_digest": match_identity_digest,
-                "timing_plan_digest": frozen_timing_plan.digest(),
-                "hands": frozen_timing_plan.hands,
-                "effective_timeout_us": frozen_timing_plan.effective_timeout_us,
-                "operation_started_at_epoch": operation_started_at_epoch,
-                "operation_deadline_epoch": (
-                    operation_started_at_epoch
-                    + frozen_timing_plan.first_strict_lease_timeout_us
-                    / 1_000_000.0
-                ),
-                "operation_budget_us": (
-                    frozen_timing_plan.first_strict_lease_timeout_us
-                ),
-                "phase_deadline_epoch": (
-                    engine_phase_started_at + phase_budget_us / 1_000_000.0
-                ),
-            }
-        try:
-            callback_result = progress_callback(enriched)
-            if asyncio.iscoroutine(callback_result):
-                callback_result = await callback_result
-            # A reporter may explicitly reject an identity-mismatched or
-            # failed unlink.  Only an acknowledged terminal clear suppresses
-            # the outer finally retry; generic callbacks returning None retain
-            # backward-compatible success semantics.
-            if terminal_event and callback_result is not False:
-                terminal_progress_reported = True
-            return callback_result is not False
-        except Exception:
-            # The native engine remains authoritative.  A failed
-            # orchestrator sidecar write must not change the match result.
-            return False
-
-    async def refresh_launch_progress(phase_started_at_epoch: float) -> None:
-        """Refresh freshness only; the launch phase deadline stays immutable."""
-
-        while not launch_heartbeat_stop.is_set():
-            try:
-                await asyncio.wait_for(
-                    launch_heartbeat_stop.wait(),
-                    timeout=NATIVE_LAUNCH_HEARTBEAT_INTERVAL_SEC,
-                )
-                return
-            except asyncio.TimeoutError:
-                accepted = await bound_progress_callback({
-                    "event_type": "launching",
-                    "phase_started_at_epoch": phase_started_at_epoch,
-                })
-                if not accepted:
-                    return
-
-    try:
-        # Launch liveness begins before the bounded capacity and preparation
-        # phases.  A provider reaching this tool near its original deadline
-        # can therefore receive exactly one plan-bound extension instead of
-        # timing out while a valid first-strict lease still owns the effect.
-        if progress_callback is not None:
-            launch_started_at_epoch = time.time()
-            launch_accepted = await bound_progress_callback({
-                "event_type": "launching",
-                "phase_started_at_epoch": launch_started_at_epoch,
-            })
-            if launch_accepted:
-                launch_heartbeat_task = asyncio.create_task(
-                    refresh_launch_progress(launch_started_at_epoch),
-                    name="native-tcp-launch-heartbeat",
-                )
-        # Queue duration is part of the immutable timing plan.  In particular
-        # the first-strict journal ticket is claimed before this wait, so the
-        # ticket's system-owned lease covers this bounded interval.
-        capacity_lease = await acquire_match_slots_async(
-            capacity_owner,
-            count=1,
-            timeout=frozen_timing_plan.capacity_queue_timeout_us / 1_000_000.0,
-        )
-        if progress_callback is not None and operation_started_at_epoch is not None:
-            await bound_progress_callback({
-                "event_type": "launching",
-                "phase_started_at_epoch": operation_started_at_epoch,
-            })
-        spec_a = await _prepare_native_spec_bounded(
-            label_a,
-            dir_a,
-            timing_plan=frozen_timing_plan,
-            expected_artifact_hash=str(
-                ticket_scope.get("candidate_artifact_hash") or ""
-            ),
-        )
-        if progress_callback is not None and operation_started_at_epoch is not None:
-            await bound_progress_callback({
-                "event_type": "launching",
-                "phase_started_at_epoch": operation_started_at_epoch,
-            })
-        spec_b = await _prepare_native_spec_bounded(
-            label_b,
-            dir_b,
-            timing_plan=frozen_timing_plan,
-            system_control=system_control_b,
-            expected_artifact_hash=str(
-                ticket_scope.get("control_artifact_hash") or ""
-            ),
-        )
-        if progress_callback is not None and operation_started_at_epoch is not None:
-            await bound_progress_callback({
-                "event_type": "launching",
-                "phase_started_at_epoch": operation_started_at_epoch,
-            })
-        runner_kwargs = {
-            "hands": hands,
-            "timing_plan": frozen_timing_plan,
-            "deck_seed_base": deck_seed_base,
-            "bot_seed_base": bot_seed_base,
-            "capture_events": capture_events,
-            "trace_decisions": trace_decisions,
-            "progress_callback": (
-                bound_progress_callback if progress_callback is not None else None
-            ),
-        }
-        if control_execution_ticket is not None:
-            runner_kwargs["control_execution_ticket"] = control_execution_ticket
-        result = await _run_tcp_server_with_processes(
-            spec_a,
-            spec_b,
-            **runner_kwargs,
-        )
-        if control_execution_ticket is not None:
-            # The control runner seals and journals this exact object.  Do not
-            # copy or mutate it after return, or the outer idempotent journal
-            # completion would correctly reject the changed replay bytes.
-            if not isinstance(result, dict) or validate_native_match_timing_evidence(
-                result,
-                timing_plan=frozen_timing_plan,
-            ):
-                raise RuntimeError(
-                    "first strict control runner timing evidence missing or drifted"
-                )
-        else:
-            # The production runner already annotates before returning.  Keep
-            # this idempotent adapter for isolated direct-runner test doubles.
-            result = _annotate_native_full_match_liveness(result, frozen_timing_plan)
-        terminal_outcome = "runner_returned"
-        return result
-    finally:
-        # A completed/failed match must not leave its last `settle` sidecar
-        # eligible to extend a later non-engine provider stall.  The reporter
-        # recognizes this terminal projection and clears only its own
-        # checkpoint-bound heartbeat; ordinary callbacks may ignore it.
-        launch_heartbeat_stop.set()
-        if launch_heartbeat_task is not None:
-            if not launch_heartbeat_task.done():
-                launch_heartbeat_task.cancel()
-            try:
-                await launch_heartbeat_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-        if capacity_lease is not None:
-            capacity_lease.release()
-        if progress_callback is not None and not terminal_progress_reported:
-            try:
-                task = asyncio.current_task()
-                final_outcome = (
-                    "runner_cancelled"
-                    if task is not None and task.cancelling()
-                    else terminal_outcome
-                )
-                await bound_progress_callback({
-                    "event_type": "terminal",
-                    "terminal": True,
-                    "terminal_outcome": final_outcome,
-                })
-            except Exception:
-                pass
 
 
 def _acceptance_opponent_runtime_mode(label: str, path: Path) -> str:
