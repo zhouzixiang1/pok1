@@ -465,7 +465,16 @@ Active implementation is under `web/core/`. Major responsibilities include:
   `test_national_runtime_probe.py`);
 - `national_capability_contract.py`, `national_runtime_probe.py` — static and
   dynamic policy-ABI enforcement;
-- `elo_daemon.py` — internal native-match scheduling and immutable evaluation-cycle publication;
+- `elo_daemon.py` — internal native-match scheduling and immutable evaluation-cycle publication.
+  Its `_single_writer_daemon` decorator runs two startup guards before creating
+  `RESULTS_DIR`/taking the writer lease: the namespace guard
+  (`_assert_bot_namespace_matches_env`) fails fast with an actionable error when
+  on-disk bots belong to a different namespace than the configured
+  `ACTIVE_BOT_PREFIX` (e.g. a daemon launched without `POK_CLOUD_RUNTIME=1`,
+  which would otherwise silently validate zero `national_cloud_v*` replays and
+  crash inside `save_cycle` with an indirect `stored_h2h_raw_history_mismatch`),
+  then `require_policy_epoch_initialized`; an empty bot pool (the first-strict
+  state) is allowed through;
 - `tool_gates.py`, `tool_eval.py`, `tool_commit.py` — quality, precommit, signed
   publication;
 - `post_publication_handoff.py`, `cycle_archivist.py` — publication-linearized,
@@ -649,7 +658,29 @@ handoff, and stability identities. A changed sample is withheld rather than
 combined across revisions. The frontend consumes those typed identities,
 rejects stale/out-of-order epoch or handoff events, clears state after stream
 loss, and displays `pending`, `running`, or `blocked` without deriving
-authority from bot directories or local component state. An independently
+authority from bot directories or local component state.
+
+The read-only observer projection (`/api/control/health` and `/status`) is
+served through a content-keyed singleflight cache in
+`web/server/routes/control.py`. The builder (`_sync_evolution_fields`) takes
+~76s because it samples `strict_epoch_projection` up to three times to prove
+epoch/handoff/transition identity did not move (each resample is a load-bearing
+coherence check and must not be deduped). A **same-key** follower therefore
+**cooperatively awaits** the single in-flight build (bounded by
+`_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC`) instead of failing fast with 503; a
+**changed-key** follower still fails closed
+(`observer_projection_authority_changed_during_refresh`) because a superseded
+authority's bytes must never be served under a new key. The await runs on the
+follower's own off-loop worker thread (one isolated
+`ThreadPoolExecutor(max_workers=1)` per request), so the ASGI loop is never
+blocked. The cache is synchronously invalidated on every mutation, so its TTL
+(`_OBSERVER_CACHE_TTL_SEC`) never serves stale data across a write. The
+frontend treats a retryable observer 503 as a neutral "refreshing" state on
+first load (pure state machine `lib/controlFirstLoadState.ts`), not a red
+authority failure; only a genuine non-retryable error fails closed. Full
+analysis: `docs/observer-cache-availability-2026-07-28.md`.
+
+An independently
 fetched pipeline checkpoint is rendered only when its schema-2 positive
 `checkpoint_revision` and full epoch/version/stage/run/workflow identity match
 the paired active-generation projection; a same-stage older revision is stale.

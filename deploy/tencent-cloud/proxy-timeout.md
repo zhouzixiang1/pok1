@@ -109,3 +109,52 @@ watch -n2 'curl -sS -o /dev/null -w "%{http_code} %{time_total}s\n" https://<hos
 
 If 503s persist with these timeouts, the cause is **not** the proxy window —
 check `journalctl -u pok-evolution -f` and the A3 cache layer instead.
+
+## The persistent 503 on `/api/control/health` (resolved 2026-07-28)
+
+A distinct, recurring 503 on the dashboard's authority endpoints was mislabeled
+"502" by some operators. Its root cause was **not** the proxy window — it was
+the read-only observer-projection singleflight cache being tuned for a build
+that no longer exists. Full analysis in
+[`docs/observer-cache-availability-2026-07-28.md`](../../docs/observer-cache-availability-2026-07-28.md);
+summary:
+
+- The observer builder (`_sync_evolution_fields` in
+  `web/server/routes/control.py`) takes **~76s** because it samples
+  `strict_epoch_projection` up to three times to prove epoch/handoff/transition
+  identity did not move (those resamples are load-bearing churn checks and are
+  **not** redundant). The cache constants were calibrated for a "30-80ms" build:
+  `_OBSERVER_CACHE_TTL_SEC = 1.0` (a successful build evicted after 1s) and a
+  `0.30s` retry window. A 76s build could never complete inside that window, so
+  every poll during active generation returned a retryable 503
+  (`observer_projection_refreshing`).
+- The previous fix (`5fca50e4`) raised the retry delay from 0.025s to 0.15s and
+  taught the frontend to keep the last good status on a retryable 503 — but it
+  did not close the gap, and on a **first page load** (no previous status) the
+  dashboard still flipped to the red "无法确认版本与运行权威" banner.
+
+Final fix (this branch):
+
+1. **Cooperative await (singleflight).** A same-key follower no longer fails
+   fast with 503; it parks on the cache's condition variable and is served the
+   single in-flight build's result (bounded by
+   `_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC = 90s`). A **changed-key** follower
+   still fails closed (`observer_projection_authority_changed_during_refresh`)
+   — the never-serve-stale-authority invariant is unchanged. The await runs on
+   the follower's own off-loop worker thread (one isolated
+   `ThreadPoolExecutor(max_workers=1)` per request), so the ASGI event loop is
+   never blocked.
+2. **`_OBSERVER_CACHE_TTL_SEC` 1.0 → 15.0.** The cache is synchronously
+   invalidated on every mutation (`_invalidate_observer_projection_cache`), so a
+   longer TTL never serves stale data across a write — it only reduces redundant
+   rebuilds during steady-state polling.
+3. **Frontend first-load neutral state.** `useControlStatus` keeps
+   `loading=true` while the first observation has not resolved and the latest
+   error is a retryable 503, so the dashboard shows the neutral "正在核对…" /
+   "正在刷新运行权威…" state instead of the red banner. Only a genuine
+   non-retryable authority error fails closed. (Pure state machine:
+   `web/frontend/src/lib/controlFirstLoadState.ts`.)
+4. **Daemon startup namespace guard.** A daemon launched without
+   `POK_CLOUD_RUNTIME=1` now fails fast at startup with an actionable
+   "namespace mismatch" error instead of crashing inside `save_cycle` with an
+   indirect `stored_h2h_raw_history_mismatch`.

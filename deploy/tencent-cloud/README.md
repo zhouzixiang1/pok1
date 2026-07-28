@@ -188,6 +188,25 @@ cd /home/ubuntu/pok1/.evolution_pok
 python3 web/core/orchestrator.py --one-gen
 ```
 
+### Dashboard authority endpoints and the observer cache
+
+`/api/control/health` and `/api/control/status` are served through a
+content-keyed singleflight cache whose builder (`_sync_evolution_fields`) takes
+**~76s** (it samples `strict_epoch_projection` up to three times to prove
+epoch/handoff/transition identity did not move). A same-key follower
+**cooperatively awaits** the single in-flight build instead of returning 503,
+so the first dashboard load after a restart may take up to ~76s to populate
+(rarely up to `_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC` under load) — this is
+normal, not an outage. A **changed-key** drift (authority moved during a build)
+still returns a retryable fail-closed 503, which the frontend shows as a neutral
+"refreshing" state on first load rather than the red authority banner. Always
+start the daemon through the cloud-runtime launcher (which exports
+`POK_CLOUD_RUNTIME=1`); launching it without that env var makes the namespace
+prefix default to `national_v` and now fails fast at startup with an actionable
+"namespace mismatch" error. Full analysis:
+[`docs/observer-cache-availability-2026-07-28.md`](../../docs/observer-cache-availability-2026-07-28.md)
+and [`proxy-timeout.md`](proxy-timeout.md).
+
 ## Sizing notes (4 vCPU / 3.6 GiB VM)
 
 `env.runtime` sets `POK_DAEMON_WORKERS=2` and `POK_DAEMON_PAIRS=2`
