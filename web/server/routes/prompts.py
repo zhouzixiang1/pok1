@@ -96,18 +96,55 @@ def _prompt_info(name: str) -> dict:
     }
 
 
+def _list_prompts_blocking() -> list[dict]:
+    """Synchronous prompt-catalog read for offloaded execution."""
+    return [_prompt_info(name) for name in sorted(ALLOWED_PROMPTS)]
+
+
 @router.get("")
 async def list_prompts():
-    """List all prompt files with metadata."""
-    return [_prompt_info(name) for name in sorted(ALLOWED_PROMPTS)]
+    """List all prompt files with metadata.
+
+    Offloaded to an isolated worker thread so the per-prompt stat + line-count
+    file reads never stall the shared uvicorn event loop.
+    """
+    from blocking_runtime import run_blocking_isolated
+
+    return await run_blocking_isolated(
+        _list_prompts_blocking,
+        thread_name_prefix="prompts-list",
+    )
+
+
+def _get_prompt_text_blocking(name: str) -> tuple[bool, str]:
+    """Synchronous prompt-file read for offloaded execution.
+
+    Returns ``(found, text)``: ``found`` is False when the name is unknown or
+    the file is missing (and ``text`` carries the error message); True when
+    the file was read successfully.
+    """
+    if name not in ALLOWED_PROMPTS:
+        return False, f"Unknown prompt: {name}. Allowed: {sorted(ALLOWED_PROMPTS)}"
+    path = _prompt_path(name)
+    if not path.exists():
+        return False, f"Prompt file not found: {path.name}"
+    return True, path.read_text(errors="replace")
 
 
 @router.get("/{name}", response_class=PlainTextResponse)
 async def get_prompt(name: str):
-    """Read a prompt file by name."""
-    if name not in ALLOWED_PROMPTS:
-        return PlainTextResponse(f"Unknown prompt: {name}. Allowed: {sorted(ALLOWED_PROMPTS)}", status_code=404)
-    path = _prompt_path(name)
-    if not path.exists():
-        return PlainTextResponse(f"Prompt file not found: {path.name}", status_code=404)
-    return PlainTextResponse(path.read_text(errors="replace"))
+    """Read a prompt file by name.
+
+    Offloaded to an isolated worker thread so the file read never stalls the
+    shared uvicorn event loop.
+    """
+    from blocking_runtime import run_blocking_isolated
+
+    found, text = await run_blocking_isolated(
+        _get_prompt_text_blocking,
+        name,
+        thread_name_prefix="prompts-get",
+    )
+    if not found:
+        return PlainTextResponse(text, status_code=404)
+    return PlainTextResponse(text)
