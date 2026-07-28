@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
+from blocking_runtime import run_blocking_isolated
 from server.routes._helpers import (
     load_strict_strength_snapshot,
 )
@@ -130,14 +131,26 @@ def strict_daemon_status(
     return payload
 
 
-@router.get("/ratings")
-async def get_ratings():
+def _ratings_list_blocking() -> list:
     snapshot = _snapshot()
     return list(snapshot.get("selection_rows") or []) if snapshot.get("available") else []
 
 
-@router.get("/ratings/{bot_name}")
-async def get_rating_detail(bot_name: str):
+@router.get("/ratings")
+async def get_ratings():
+    """Strength selection rows for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread: ``_snapshot`` reopens multiple
+    JSON/JSONL files on each call and must not freeze the shared uvicorn event
+    loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _ratings_list_blocking,
+        thread_name_prefix="ratings-snapshot",
+    )
+
+
+def _rating_detail_blocking(bot_name: str) -> dict:
     snapshot = _snapshot()
     for row in snapshot.get("selection_rows") or []:
         if row["name"] == bot_name:
@@ -145,11 +158,20 @@ async def get_rating_detail(bot_name: str):
     raise HTTPException(status_code=404, detail="Bot not found")
 
 
-@router.get("/history")
-async def history(
-    bots: str = Query("", description="Comma-separated bot names"),
-    resolution: str = Query("medium", description="full, medium, or low"),
-):
+@router.get("/ratings/{bot_name}")
+async def get_rating_detail(bot_name: str):
+    """Per-bot rating detail for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread (see ``get_ratings``).
+    """
+    return await run_blocking_isolated(
+        _rating_detail_blocking,
+        bot_name,
+        thread_name_prefix="ratings-snapshot",
+    )
+
+
+def _history_blocking(bots: str, resolution: str) -> list:
     entries = list(_snapshot().get("rating_history") or [])
     if resolution != "full" and len(entries) > 100:
         step = max(1, len(entries) // (200 if resolution == "medium" else 50))
@@ -175,8 +197,26 @@ async def history(
     return result
 
 
-@router.get("/history/summary")
-async def history_summary():
+@router.get("/history")
+async def history(
+    bots: str = Query("", description="Comma-separated bot names"),
+    resolution: str = Query("medium", description="full, medium, or low"),
+):
+    """Rating history time series for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread: ``_snapshot`` reopens multiple
+    JSON/JSONL files on each call and must not freeze the shared uvicorn event
+    loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _history_blocking,
+        bots,
+        resolution,
+        thread_name_prefix="ratings-snapshot",
+    )
+
+
+def _history_summary_blocking() -> dict:
     entries = list(_snapshot().get("rating_history") or [])
     if not entries:
         return {}
@@ -213,13 +253,39 @@ async def history_summary():
     return summary
 
 
-@router.get("/daemon/status")
-async def daemon_status():
+@router.get("/history/summary")
+async def history_summary():
+    """Aggregated rating/win-rate summary for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread (see ``history``).
+    """
+    return await run_blocking_isolated(
+        _history_summary_blocking,
+        thread_name_prefix="ratings-snapshot",
+    )
+
+
+def _daemon_status_blocking() -> dict:
     return strict_daemon_status()
 
 
-@router.get("/h2h")
-async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
+@router.get("/daemon/status")
+async def daemon_status():
+    """Daemon observability projection for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread: ``strict_daemon_status`` transitively
+    performs the strict epoch projection, a daemon health snapshot, the rating
+    snapshot (multiple JSON/JSONL reads), and a manifest file stat. All of these
+    are blocking file/process operations that must not freeze the shared
+    uvicorn event loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _daemon_status_blocking,
+        thread_name_prefix="daemon-status",
+    )
+
+
+def _h2h_blocking(bot_name: str) -> dict:
     data = _snapshot().get("h2h") or {}
     if not data:
         return {}
@@ -233,6 +299,32 @@ async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
     return filtered
 
 
+@router.get("/h2h")
+async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
+    """Head-to-head matrix for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread: ``_snapshot`` reopens multiple
+    JSON/JSONL files on each call and must not freeze the shared uvicorn event
+    loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _h2h_blocking,
+        bot_name,
+        thread_name_prefix="ratings-snapshot",
+    )
+
+
+def _all_bot_stats_blocking() -> dict:
+    return _snapshot().get("bot_stats") or {}
+
+
 @router.get("/bot-stats")
 async def get_all_bot_stats():
-    return _snapshot().get("bot_stats") or {}
+    """Per-bot aggregate stats for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread (see ``get_h2h``).
+    """
+    return await run_blocking_isolated(
+        _all_bot_stats_blocking,
+        thread_name_prefix="ratings-snapshot",
+    )

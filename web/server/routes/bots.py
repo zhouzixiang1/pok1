@@ -254,9 +254,15 @@ def _resolve_bot_dir(
     raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
 
 
-@router.get("/{version}")
-async def bot_detail(version: int):
-    """Get detailed info about a specific bot version."""
+def _bot_detail_blocking(version: int) -> dict:
+    """Synchronous bot-detail read for offloaded execution.
+
+    Runs on an isolated worker thread (see ``bot_detail``) so the blocking
+    git/file reads it transitively performs (including ``git ls-remote origin``
+    via ``_strict_published_authority`` and the ``git tag`` parent lookup) never
+    freeze the shared uvicorn event loop and starve every other HTTP handler.
+    Mirrors the ``_list_bots_blocking`` pattern.
+    """
     name = bot_name(version)
     active_names, generation_identities = _strict_published_authority()
     snapshot = _inventory_strength_snapshot(active_names)
@@ -278,9 +284,9 @@ async def bot_detail(version: int):
         else "awaiting_first_rating_cycle"
     )
 
-    # Try to get git parent from tag
+    # Try to get git parent from tag. This is a synchronous subprocess call —
+    # safe here because the whole body runs off the event loop.
     try:
-        import subprocess
         result = subprocess.run(
             ["git", "tag", "-l", bot_tag(version), "--format=%(contents)"],
             capture_output=True, text=True, cwd=str(PROJECT_ROOT)
@@ -299,14 +305,28 @@ async def bot_detail(version: int):
     return _decorate_published(summary, identity)
 
 
-@router.get("/{version}/download")
-async def bot_download(version: int):
-    """Download the complete bot source directory as a zip archive.
+@router.get("/{version}")
+async def bot_detail(version: int):
+    """Get detailed info about a specific bot version.
 
-    Packs the whole bot directory into an in-memory zip (bots are small, at
-    most a few hundred KB). Bytecode caches (``__pycache__`` / ``.pyc``) and
-    symlinks are excluded — the former are compile artifacts, the latter could
-    resolve outside the bot dir and leak unrelated files.
+    Offloaded to an isolated worker thread: the detail read transitively
+    performs blocking git/file operations (published-authority resolution,
+    strength snapshot, and the ``git tag`` parent lookup) which must not stall
+    the shared uvicorn event loop (see the ``list_bots`` offload rationale and
+    the prior ``/api/bots`` stall fix).
+    """
+    return await run_blocking_isolated(
+        _bot_detail_blocking,
+        version,
+        thread_name_prefix="bot-detail",
+    )
+
+
+def _bot_download_blocking(version: int) -> tuple[bytes, str]:
+    """Synchronous bot-source zip packing for offloaded execution.
+
+    Runs on an isolated worker thread (see ``bot_download``) so the directory
+    walk + in-memory zip of the bot dir never freezes the event loop.
     """
     bot_dir = _resolve_bot_dir(version)
     bot_name = bot_dir.name
@@ -333,26 +353,68 @@ async def bot_download(version: int):
                 # daemon) — skip silently rather than 500.
                 continue
 
-    return Response(
-        buf.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{bot_name}.zip"'},
+    return buf.getvalue(), bot_name
+
+
+@router.get("/{version}/download")
+async def bot_download(version: int):
+    """Download the complete bot source directory as a zip archive.
+
+    Packs the whole bot directory into an in-memory zip (bots are small, at
+    most a few hundred KB). Bytecode caches (``__pycache__`` / ``.pyc``) and
+    symlinks are excluded — the former are compile artifacts, the latter could
+    resolve outside the bot dir and leak unrelated files.
+
+    Offloaded to an isolated worker thread so the directory walk and zip
+    packing never stall the event loop.
+    """
+    data, bot_dir_name = await run_blocking_isolated(
+        _bot_download_blocking,
+        version,
+        thread_name_prefix="bot-download",
     )
+    return Response(
+        data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{bot_dir_name}.zip"'},
+    )
+
+
+def _bot_code_blocking(version: int, filename: str) -> str | None:
+    """Synchronous bot source-file read for offloaded execution.
+
+    Returns the file text, or ``None`` when the file is absent/invalid. Runs on
+    an isolated worker thread (see ``bot_code``) so the published-authority
+    resolution and file read never freeze the event loop.
+    """
+    if not filename.endswith(".py") or "/" in filename or "\\" in filename:
+        return None
+    try:
+        base = _resolve_bot_dir(version)
+    except HTTPException:
+        return None
+    path = base / filename
+    if path.is_file() and not path.is_symlink():
+        return path.read_text(errors="replace")
+    return None
 
 
 @router.get("/{version}/code/{filename}", response_class=PlainTextResponse)
 async def bot_code(version: int, filename: str):
-    """Read a bot source file. filename must end with .py."""
-    if not filename.endswith(".py") or "/" in filename or "\\" in filename:
-        return PlainTextResponse("Invalid filename", status_code=400)
+    """Read a bot source file. filename must end with .py.
 
-    name = bot_name(version)
-    try:
-        base = _resolve_bot_dir(version)
-    except HTTPException:
+    Offloaded to an isolated worker thread so the published-authority
+    resolution (which can reach ``git ls-remote origin``) and the file read
+    never stall the event loop.
+    """
+    text = await run_blocking_isolated(
+        _bot_code_blocking,
+        version,
+        filename,
+        thread_name_prefix="bot-code",
+    )
+    if text is None:
+        if not filename.endswith(".py") or "/" in filename or "\\" in filename:
+            return PlainTextResponse("Invalid filename", status_code=400)
         return PlainTextResponse(f"File not found: {filename}", status_code=404)
-    path = base / filename
-    if path.is_file() and not path.is_symlink():
-        return PlainTextResponse(path.read_text(errors="replace"))
-
-    return PlainTextResponse(f"File not found: {filename}", status_code=404)
+    return PlainTextResponse(text)

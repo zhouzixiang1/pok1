@@ -10,6 +10,7 @@ import json
 from fastapi import APIRouter, Query
 from fastapi.responses import PlainTextResponse
 
+from blocking_runtime import run_blocking_isolated
 from evolution_infra import RESULTS_DIR, locked_file
 
 METRICS_FILE = RESULTS_DIR / "llm_call_metrics.jsonl"
@@ -63,24 +64,31 @@ def _read_metrics_lines() -> list[dict]:
     return rows
 
 
-@router.get("/metrics")
-async def get_metrics(
-    limit: int = Query(200, ge=1, le=1000, description="Number of most recent records"),
-):
-    """Return the most recent N LLM call metric records (newest first)."""
+def _get_metrics_blocking(limit: int) -> list[dict]:
     rows = _read_metrics_lines()
     rows.reverse()  # newest first
     return rows[:limit]
 
 
-@router.get("/metrics/summary")
-async def get_metrics_summary():
-    """Aggregate metrics grouped by ``role``.
+@router.get("/metrics")
+async def get_metrics(
+    limit: int = Query(200, ge=1, le=1000, description="Number of most recent records"),
+):
+    """Return the most recent N LLM call metric records (newest first).
 
-    Each role bucket reports call count, success rate, cache hit rate, plus
-    average / max / total for the core numeric KPIs (tokens, elapsed seconds,
-    throughput, cost).  A ``__total__`` bucket rolls up every role.
+    Offloaded to an isolated worker thread: ``_read_metrics_lines`` reads and
+    parses the entire ``llm_call_metrics.jsonl`` under a shared lock — blocking
+    work that must not freeze the shared uvicorn event loop (single-worker,
+    shared with the orchestrator).
     """
+    return await run_blocking_isolated(
+        _get_metrics_blocking,
+        limit,
+        thread_name_prefix="llm-metrics",
+    )
+
+
+def _get_metrics_summary_blocking() -> dict:
     rows = _read_metrics_lines()
     if not rows:
         return {"roles": {}, "total": {}}
@@ -177,18 +185,55 @@ async def get_metrics_summary():
     }
 
 
+@router.get("/metrics/summary")
+async def get_metrics_summary():
+    """Aggregate metrics grouped by ``role``.
+
+    Each role bucket reports call count, success rate, cache hit rate, plus
+    average / max / total for the core numeric KPIs (tokens, elapsed seconds,
+    throughput, cost).  A ``__total__`` bucket rolls up every role.
+
+    Offloaded to an isolated worker thread: the full JSONL read + Python
+    aggregation are blocking work that must not freeze the shared uvicorn event
+    loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _get_metrics_summary_blocking,
+        thread_name_prefix="llm-metrics",
+    )
+
+
+def _export_metrics_blocking() -> str | None:
+    """Synchronous raw JSONL read for offloaded execution.
+
+    Returns the file content, or ``None`` when the metrics file is missing or
+    unreadable. Runs on an isolated worker thread (see ``export_metrics``) so
+    the full-file read under a shared file lock never freezes the event loop.
+    """
+    if not METRICS_FILE.exists():
+        return None
+    try:
+        with locked_file(METRICS_FILE, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 @router.get("/metrics/export", response_class=PlainTextResponse)
 async def export_metrics():
     """Return the raw JSONL content of the metrics file for export.
 
     The response is ``application/x-ndjson`` so external tools can stream it
     directly.  Missing file yields an empty body.
+
+    Offloaded to an isolated worker thread: the full-file read under a shared
+    file lock is blocking work that must not freeze the shared uvicorn event
+    loop (single-worker, shared with the orchestrator).
     """
-    if not METRICS_FILE.exists():
-        return PlainTextResponse("", media_type="application/x-ndjson")
-    try:
-        with locked_file(METRICS_FILE, "r", encoding="utf-8") as f:
-            content = f.read()
-    except OSError:
+    content = await run_blocking_isolated(
+        _export_metrics_blocking,
+        thread_name_prefix="llm-metrics",
+    )
+    if content is None:
         return PlainTextResponse("", media_type="application/x-ndjson")
     return PlainTextResponse(content, media_type="application/x-ndjson")

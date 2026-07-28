@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
+from blocking_runtime import run_blocking_isolated
 from evolution_infra import locked_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -127,8 +128,7 @@ def _current_event_epoch_identity() -> dict | None:
     }
 
 
-@router.get("/logs/generations")
-async def list_generations():
+def _list_generations_blocking() -> list:
     from server.routes._helpers import (
         list_generation_dirs,
         strict_observable_generation_versions,
@@ -141,8 +141,21 @@ async def list_generations():
     return list_generation_dirs(RESULTS_DIR, allowed_versions=allowed)
 
 
-@router.get("/logs/generations/{version}/{filename}")
-async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
+@router.get("/logs/generations")
+async def list_generations():
+    """List observable generation log directories for the current strict cycle.
+
+    Offloaded to an isolated worker thread: the observable-versions read and
+    ``list_generation_dirs`` perform blocking directory walks / JSON reads that
+    must not freeze the shared uvicorn event loop.
+    """
+    return await run_blocking_isolated(
+        _list_generations_blocking,
+        thread_name_prefix="logs-generations",
+    )
+
+
+def _get_generation_log_blocking(version: str, filename: str, tail: int) -> dict:
     from server.routes._helpers import (
         generation_log_path,
         strict_observable_generation_versions,
@@ -176,9 +189,24 @@ async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
     return {"version": version, "filename": filename, "content": content}
 
 
-@router.get("/logs/orchestrator")
-async def list_orchestrator_logs():
-    """List orchestrator log files (most recent first)."""
+@router.get("/logs/generations/{version}/{filename}")
+async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
+    """Read a generation log file under a no-follow descriptor walk.
+
+    Offloaded to an isolated worker thread: the observable-versions read, the
+    descriptor walk, and the (potentially multi-MB) file read are blocking
+    operations that must not freeze the shared uvicorn event loop.
+    """
+    return await run_blocking_isolated(
+        _get_generation_log_blocking,
+        version,
+        filename,
+        tail,
+        thread_name_prefix="logs-generations",
+    )
+
+
+def _list_orchestrator_logs_blocking() -> list:
     if _current_log_epoch_identity() is None or not ORCHESTRATOR_LOGS_DIR.exists():
         return []
     files = sorted(
@@ -197,21 +225,55 @@ async def list_orchestrator_logs():
     ]
 
 
-@router.get("/logs/orchestrator/{filename}", response_class=PlainTextResponse)
-async def get_orchestrator_log(filename: str, tail: int = Query(0, ge=0)):
-    """Get orchestrator log content. filename must be orchestrator_*.txt."""
+@router.get("/logs/orchestrator")
+async def list_orchestrator_logs():
+    """List orchestrator log files (most recent first).
+
+    Offloaded to an isolated worker thread: iterdir + stat on every file under
+    the logs dir are blocking operations that must not freeze the shared
+    uvicorn event loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _list_orchestrator_logs_blocking,
+        thread_name_prefix="logs-orchestrator",
+    )
+
+
+def _get_orchestrator_log_blocking(filename: str, tail: int) -> tuple[int, str]:
+    """Return ``(status_code, content)`` for the orchestrator-log read.
+
+    Runs on an isolated worker thread (see ``get_orchestrator_log``) so the
+    potentially multi-MB ``read_text`` never freezes the event loop. The
+    status/message precedence matches the original synchronous handler exactly.
+    """
     if not filename.startswith("orchestrator_") or not filename.endswith(".txt") or "/" in filename:
-        return PlainTextResponse("Invalid filename", status_code=400)
+        return 400, "Invalid filename"
     if _current_log_epoch_identity() is None:
-        return PlainTextResponse("Log epoch unavailable", status_code=404)
+        return 404, "Log epoch unavailable"
     path = ORCHESTRATOR_LOGS_DIR / filename
     if path.is_symlink() or not path.is_file():
-        return PlainTextResponse("File not found", status_code=404)
+        return 404, "File not found"
     content = path.read_text(errors="replace")
     if tail > 0:
         lines = content.splitlines()
         content = "\n".join(lines[-tail:])
-    return PlainTextResponse(content)
+    return 200, content
+
+
+@router.get("/logs/orchestrator/{filename}", response_class=PlainTextResponse)
+async def get_orchestrator_log(filename: str, tail: int = Query(0, ge=0)):
+    """Get orchestrator log content. filename must be orchestrator_*.txt.
+
+    Offloaded to an isolated worker thread: the (potentially multi-MB) log
+    ``read_text`` must not freeze the shared uvicorn event loop.
+    """
+    status_code, content = await run_blocking_isolated(
+        _get_orchestrator_log_blocking,
+        filename,
+        tail,
+        thread_name_prefix="logs-orchestrator",
+    )
+    return PlainTextResponse(content, status_code=status_code)
 
 
 def _infer_category_from_type(event_type: str) -> str:
@@ -248,18 +310,17 @@ def _normalise_structured_event(entry: dict) -> dict:
     return entry
 
 
-@router.get("/logs/system-events")
-async def get_system_events(
-    type: str = Query("", description="Filter by event type prefix (e.g. pipeline.)"),
-    category: str = Query("", description="Filter by data.category or type-prefix category (e.g. pipeline.)"),
-    severity: str = Query("", description="Filter by severity: info|warn|error|success"),
-    source: str = Query("structured", description="Canonical event source; only 'structured' is valid"),
-    run_id: str = Query("", description="Filter by data.run_id, e.g. 231#0"),
-    stage: str = Query("", description="Filter by data.stage"),
-    since: float | None = Query(None, description="Only events after this Unix timestamp"),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-):
+def _get_system_events_blocking(
+    type: str,
+    category: str,
+    severity: str,
+    source: str,
+    run_id: str,
+    stage: str,
+    since: float | None,
+    limit: int,
+    offset: int,
+) -> dict:
     if source != "structured":
         raise HTTPException(status_code=400, detail="source must be 'structured'")
     identity = _current_event_epoch_identity()
@@ -328,14 +389,46 @@ async def get_system_events(
     }
 
 
-@router.get("/logs/worker-failures")
-async def get_worker_failures(
-    gen: int = Query(None, description="Filter by generation number"),
-    role: str = Query("", description="Filter by role name"),
-    category: str = Query("", description="Filter by category: worker|gate"),
-    limit: int = Query(50, ge=1, le=200),
+@router.get("/logs/system-events")
+async def get_system_events(
+    type: str = Query("", description="Filter by event type prefix (e.g. pipeline.)"),
+    category: str = Query("", description="Filter by data.category or type-prefix category (e.g. pipeline.)"),
+    severity: str = Query("", description="Filter by severity: info|warn|error|success"),
+    source: str = Query("structured", description="Canonical event source; only 'structured' is valid"),
+    run_id: str = Query("", description="Filter by data.run_id, e.g. 231#0"),
+    stage: str = Query("", description="Filter by data.stage"),
+    since: float | None = Query(None, description="Only events after this Unix timestamp"),
+    limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
+    """Structured system events for the current policy epoch.
+
+    Offloaded to an isolated worker thread: parsing every line of
+    ``events.jsonl`` under flock is blocking work that must not freeze the
+    shared uvicorn event loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _get_system_events_blocking,
+        type,
+        category,
+        severity,
+        source,
+        run_id,
+        stage,
+        since,
+        limit,
+        offset,
+        thread_name_prefix="logs-system-events",
+    )
+
+
+def _get_worker_failures_blocking(
+    gen: int | None,
+    role: str,
+    category: str,
+    limit: int,
+    offset: int,
+) -> dict:
     from server.routes._helpers import read_strict_worker_failures
 
     failures_file = RESULTS_DIR / "worker_failures.jsonl"
@@ -354,3 +447,28 @@ async def get_worker_failures(
     ]
     total = len(failures)
     return {"failures": failures[offset:offset + limit], "total": total}
+
+
+@router.get("/logs/worker-failures")
+async def get_worker_failures(
+    gen: int = Query(None, description="Filter by generation number"),
+    role: str = Query("", description="Filter by role name"),
+    category: str = Query("", description="Filter by category: worker|gate"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Strict worker/gate failure records for the current evaluation cycle.
+
+    Offloaded to an isolated worker thread: ``read_strict_worker_failures``
+    reads the entire ``worker_failures.jsonl`` and is blocking work that must
+    not freeze the shared uvicorn event loop.
+    """
+    return await run_blocking_isolated(
+        _get_worker_failures_blocking,
+        gen,
+        role,
+        category,
+        limit,
+        offset,
+        thread_name_prefix="logs-worker-failures",
+    )

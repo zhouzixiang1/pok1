@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
+from blocking_runtime import run_blocking_isolated
 from server.cache import read_locked
 from server.routes._helpers import (
     build_match_matrix,
@@ -27,8 +28,7 @@ def _snapshot() -> dict:
     return snapshot if snapshot.get("available") is True else {}
 
 
-@router.get("/matches/matrix")
-async def match_matrix():
+def _match_matrix_blocking() -> dict:
     snapshot = _snapshot()
     return build_match_matrix(
         snapshot.get("h2h") or {},
@@ -37,18 +37,60 @@ async def match_matrix():
     )
 
 
+@router.get("/matches/matrix")
+async def match_matrix():
+    """Head-to-head matrix + ratings + daemon stats for the current strict cycle.
+
+    Offloaded to an isolated worker thread: ``_snapshot`` reopens multiple
+    JSON/JSONL files on each call and must not freeze the shared uvicorn event
+    loop (single-worker, shared with the orchestrator).
+    """
+    return await run_blocking_isolated(
+        _match_matrix_blocking,
+        thread_name_prefix="matches-matrix",
+    )
+
+
+def _match_stats_blocking() -> dict:
+    return build_match_stats(_snapshot().get("daemon_stats"))
+
+
 @router.get("/matches/stats")
 async def match_stats():
-    return build_match_stats(_snapshot().get("daemon_stats"))
+    """Aggregate match stats for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread (see ``match_matrix``).
+    """
+    return await run_blocking_isolated(
+        _match_stats_blocking,
+        thread_name_prefix="matches-matrix",
+    )
+
+
+def _recent_matches_blocking(limit: int) -> list:
+    return list(_snapshot().get("match_history") or [])[:limit]
 
 
 @router.get("/matches/recent")
 async def recent_matches(limit: int = Query(50, le=200)):
-    return list(_snapshot().get("match_history") or [])[:limit]
+    """Most recent admitted matches for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread (see ``match_matrix``).
+    """
+    return await run_blocking_isolated(
+        _recent_matches_blocking,
+        limit,
+        thread_name_prefix="matches-matrix",
+    )
 
 
-@router.get("/matches/replay/{match_id}")
-async def match_replay(match_id: str):
+def _match_replay_blocking(match_id: str) -> dict:
+    """Synchronous strict-replay admission + read for offloaded execution.
+
+    Runs on an isolated worker thread (see ``match_replay``) so the snapshot
+    read, locked replay read, and native replay validation never freeze the
+    shared uvicorn event loop.
+    """
     path = (REPLAY_DIR / match_id).resolve()
     if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
         raise HTTPException(status_code=404, detail="Match not found")
@@ -95,3 +137,18 @@ async def match_replay(match_id: str):
             detail="Replay players are not the current published match identity",
         )
     return replay
+
+
+@router.get("/matches/replay/{match_id}")
+async def match_replay(match_id: str):
+    """Validate + read an admitted replay for the current strict evaluation cycle.
+
+    Offloaded to an isolated worker thread: the snapshot read, locked replay
+    read (``read_locked``), and ``validate_native_replay`` are blocking file +
+    CPU operations that must not freeze the shared uvicorn event loop.
+    """
+    return await run_blocking_isolated(
+        _match_replay_blocking,
+        match_id,
+        thread_name_prefix="matches-replay",
+    )
