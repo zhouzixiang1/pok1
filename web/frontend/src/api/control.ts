@@ -529,8 +529,19 @@ export type ControlConfigUpdate = Pick<AppConfig, "daemon_enabled" | "daemon_wor
 const BASE = "/api/control";
 const CONTROL_TIMEOUT = 30_000;
 
+/** A retryable 503 from the observer (projection refreshing, not a real error). */
+export class RetryableControlError extends Error {
+  readonly retryAfter: number | null;
+  constructor(message: string, retryAfter: number | null) {
+    super(message);
+    this.name = "RetryableControlError";
+    this.retryAfter = retryAfter;
+  }
+}
+
 async function extractError(res: Response): Promise<never> {
   let msg = `HTTP ${res.status}`;
+  let detailObj: { retryable?: boolean; code?: string; message?: string } | null = null;
   try {
     const b = await res.json();
     if (b.detail) {
@@ -538,9 +549,17 @@ async function extractError(res: Response): Promise<never> {
         ? b.detail
         : b.detail.message || b.detail.code || JSON.stringify(b.detail);
       msg += `: ${detail}`;
+      if (typeof b.detail === "object" && b.detail !== null) detailObj = b.detail;
     }
   } catch {
     // Keep the status-only message when the error body is not JSON.
+  }
+  // A retryable observer 503 (projection refreshing during active generation)
+  // must NOT be treated as a hard authority failure. Throw a typed error so the
+  // caller can keep the previous good status instead of wiping the dashboard.
+  if (res.status === 503 && detailObj?.retryable === true) {
+    const retryAfter = res.headers.get("Retry-After");
+    throw new RetryableControlError(msg, retryAfter ? parseInt(retryAfter, 10) : null);
   }
   throw new Error(msg);
 }

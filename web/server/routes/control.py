@@ -33,7 +33,10 @@ _LifecycleResult = TypeVar("_LifecycleResult")
 
 _OBSERVER_CACHE_TTL_SEC = 1.0
 _OBSERVER_ERROR_TTL_SEC = 0.2
-_OBSERVER_HTTP_RETRY_DELAY_SEC = 0.025
+# The observer builder (strict_epoch_projection + git scans) takes 30-80ms.
+# The retry must wait long enough for a concurrent background refresh to
+# complete, otherwise every poll during active generation returns 503.
+_OBSERVER_HTTP_RETRY_DELAY_SEC = 0.15
 
 
 class _ObserverProjectionUnavailable(RuntimeError):
@@ -350,7 +353,6 @@ def _observer_authority_content_key() -> tuple:
         Path(infra.RESULTS_DIR) / POLICY_EPOCH_RESET_RECEIPT_FILENAME,
         Path(infra.RESULTS_DIR) / RUNTIME_RECONCILIATION_CLAIM_FILENAME,
         Path(infra.RESULTS_DIR) / "stability_observation.json",
-        Path(infra.RESULTS_DIR) / "evaluation_cycle_manifest.json",
         infra.POST_PUBLICATION_HANDOFF_DIR,
     )
     from bot_namespace import bot_name

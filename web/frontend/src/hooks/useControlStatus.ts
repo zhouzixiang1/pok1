@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { controlApi, type ActiveGeneration, type ControlHealth, type ControlStatus } from "../api/control";
+import { controlApi, RetryableControlError, type ActiveGeneration, type ControlHealth, type ControlStatus } from "../api/control";
 
 export function authorityNextVersion(status: ControlStatus | null): number | null {
   if (!status) return null;
@@ -151,9 +151,18 @@ export function useControlStatus(pollMs = 5_000) {
         setError(null);
       } catch (err) {
         if (!mounted.current) return;
-        // Fail closed: no page may retain a formerly healthy task, route,
-        // mutation permission, or epoch-bound evidence after either half of
-        // the paired observation becomes unavailable or changes identity.
+        // A retryable observer 503 (projection refreshing during active
+        // generation) must NOT wipe the dashboard. Keep the previous good
+        // status/health and set a transient "refreshing" error that the UI
+        // can show as a neutral state instead of the scary red banner.
+        if (err instanceof RetryableControlError) {
+          setError(err.message);
+          return;
+        }
+        // Fail closed for genuine non-retryable authority errors: no page may
+        // retain a formerly healthy task, route, mutation permission, or
+        // epoch-bound evidence after either half of the paired observation
+        // becomes unavailable or changes identity.
         setStatus(null);
         setHealth(null);
         setError(err instanceof Error ? err.message : String(err));
