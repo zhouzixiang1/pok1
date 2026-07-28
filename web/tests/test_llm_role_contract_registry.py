@@ -1276,6 +1276,17 @@ class _ProviderVisitor(ast.NodeVisitor):
                 # same provider call as a bare ``run_claude_query`` — classify it
                 # as ``run`` so the registry-coverage contract stays uniform.
                 name = "run"
+            elif (
+                node.func.value.id in self.module_aliases
+                and node.func.attr == "claude_query"
+            ):
+                # The SDK-level dispatch (``claude_agent_sdk.query``) reached via
+                # a ``llm_query`` module alias (e.g. ``_lq.claude_query`` inside
+                # the llm_query_retry companion, which routes the call through
+                # the parent namespace so test monkeypatches take effect) is the
+                # same SDK call as a bare ``claude_query`` — classify it as
+                # ``sdk`` so the inventory stays uniform after extraction.
+                name = "sdk"
         if name:
             self.calls.add((self.relative, self.stack[-1] if self.stack else "<module>", name))
         self.generic_visit(node)
@@ -1310,7 +1321,7 @@ def test_active_tree_provider_scan_covers_aliases_attributes_subpackages_scripts
         ("web/core/combined_analyst.py", "_run_combined_analysis", "run"),
         ("web/core/official_llm_analysis.py", "_default_runner", "run"),
         ("web/core/operator_sdk_probe.py", "run_operator_probe", "run_indirect"),
-        ("web/core/llm_query.py", "_run_stream_with_signature_retry_attempts", "sdk"),
+        ("web/core/llm_query_retry.py", "_run_stream_with_signature_retry_attempts", "sdk"),
         ("web/core/orchestrator.py", "_stream_response", "sdk"),
     }
     assert found == expected_run_functions
