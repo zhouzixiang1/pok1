@@ -712,7 +712,7 @@ This block is generated from `web/core/national_alignment_matrix.py` (schema 16)
 ### `strict_connection_memory` — current / source_contract
 
 - Authority/source: `AGENTS.md`; `docs/official-terminal-settlement-oracle-2026-07-11.md`
-- Production owner: `web/core/national_native_templates.py::OpponentTracker`; `web/core/national_native.py::NativeNationalBot`
+- Production owner: `web/core/national_native_templates_bot.py::OpponentTracker`; `web/core/national_native.py::NativeNationalBot`
 - Dynamic gate: `web/core/national_runtime_probe.py::run_national_runtime_probe`; `web/core/runtime_architecture_policy.py::_apply_typed_runtime_probe`
 - Prompt renderer/template: Master=`web/core/agent_master_prompts.py::_render_master_final_provider_prompt` → `web/core/prompts/master_prompt.md`; Worker=`web/core/agent_workers.py::_render_worker_provider_prompt` → `web/core/prompts/worker_prompt.md`, `web/core/prompts/worker_profile_national_native.md`; Reviewer=`web/core/tool_gates_critic_review.py::_render_reviewer_provider_prompt` → `web/core/prompts/reviewer_prompt.md`; Critic=`web/core/agent_review.py::_render_critic_provider_prompt` → `web/core/prompts/critic_prompt.md`; Orchestrator=`web/core/orchestrator.py::_render_orchestrator_provider_prompt` → `web/core/prompts/orchestrator.md`
 - Prompt statement: All five rendered roles must consume only typed, current-generation connection-memory evidence supplied by the runtime; they may not invent or promote unbound historical opponent memory.

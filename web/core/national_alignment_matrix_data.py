@@ -627,7 +627,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("docs/official-terminal-settlement-oracle-2026-07-11.md"),
         ),
         production_owners=(
-            _ref("web/core/national_native_templates.py", "OpponentTracker"),
+            _ref("web/core/national_native_templates_bot.py", "OpponentTracker"),
             _ref("web/core/national_native.py", "NativeNationalBot"),
         ),
         dynamic_gates=(
