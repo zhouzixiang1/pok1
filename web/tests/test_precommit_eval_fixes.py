@@ -539,11 +539,19 @@ class TestP3StageAwareTimeout:
     """P3: Timeout handler skips kill when pipeline is at verified/critic_checked stage."""
 
     def _read_orchestrator_source(self):
-        return Path(__file__).resolve().parent.parent / "core" / "orchestrator.py"
+        # The cycle timeout handler moved to orchestrator_cycle_phases.py after
+        # the _run_one_cycle phase split; read both modules so the stage-aware
+        # timeout assertions still cover the moved logic.
+        base = Path(__file__).resolve().parent.parent / "core"
+        source = (base / "orchestrator.py").read_text()
+        companion = base / "orchestrator_cycle_phases.py"
+        if companion.exists():
+            source += "\n" + companion.read_text()
+        return source
 
     def test_timeout_skip_stages(self):
         """Timeout handler checks for verified and critic_checked stages."""
-        source = self._read_orchestrator_source().read_text()
+        source = self._read_orchestrator_source()
         # Find the stage-aware timeout block
         assert '"verified"' in source, 'Stage "verified" not found in timeout handler'
         assert '"critic_checked"' in source, 'Stage "critic_checked" not found in timeout handler'
@@ -561,13 +569,13 @@ class TestP3StageAwareTimeout:
 
     def test_watchdog_still_active(self):
         """P3 does not disable the watchdog — WATCHDOG_TIMEOUT still referenced."""
-        source = self._read_orchestrator_source().read_text()
+        source = self._read_orchestrator_source()
         assert "WATCHDOG_TIMEOUT" in source, "WATCHDOG_TIMEOUT reference removed — watchdog disabled"
         assert "_watchdog_coroutine" in source, "_watchdog_coroutine function removed"
 
     def test_no_blanket_extension(self):
         """CYCLE_TIMEOUT does not add a blanket +300 or +360 extension."""
-        source = self._read_orchestrator_source().read_text()
+        source = self._read_orchestrator_source()
         # CYCLE_TIMEOUT should be a fixed value, not CYCLE_TIMEOUT + 300 or similar
         assert "CYCLE_TIMEOUT + 300" not in source, (
             "Blanket +300 extension found — P3 should use stage-aware skip, not blanket extension"

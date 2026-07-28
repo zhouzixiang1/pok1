@@ -1246,7 +1246,10 @@ class _ProviderVisitor(ast.NodeVisitor):
             # ``llm_query`` exposes ``run_claude_query`` directly; ``agent_master``
             # re-exports it (``import llm_query``) so companions that route via
             # ``_am.run_claude_query`` are still covered by the registry.
-            if item.name in {"llm_query", "core.llm_query", "agent_master"}:
+            # ``orchestrator`` is added so the cycle-phase companion
+            # (``orchestrator_cycle_phases``) routes its SDK dispatch via
+            # ``_orch.claude_query`` and stays inventoried as an ``sdk`` call.
+            if item.name in {"llm_query", "core.llm_query", "agent_master", "orchestrator"}:
                 self.module_aliases.add(item.asname or item.name.split(".")[-1])
         self.generic_visit(node)
 
@@ -1322,7 +1325,10 @@ def test_active_tree_provider_scan_covers_aliases_attributes_subpackages_scripts
         ("web/core/official_llm_analysis.py", "_default_runner", "run"),
         ("web/core/operator_sdk_probe.py", "run_operator_probe", "run_indirect"),
         ("web/core/llm_query_retry.py", "_run_stream_with_signature_retry_attempts", "sdk"),
-        ("web/core/orchestrator.py", "_stream_response", "sdk"),
+        # _stream_response moved to the cycle-phase companion after the
+        # _run_one_cycle phase split; it still owns the only orchestrator-level
+        # SDK dispatch (now via _orch.claude_query).
+        ("web/core/orchestrator_cycle_phases.py", "_stream_response", "sdk"),
     }
     assert found == expected_run_functions
 

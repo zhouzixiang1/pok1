@@ -90,6 +90,14 @@ def test_keyerror_valueerror_business_is_not_infra():
 
 
 def test_daemon_dead_prepare_log_escalates_after_repeated_failures():
+    # The daemon-dead prepare backoff moved to orchestrator_loop_phases.py after
+    # the orchestrator_loop phase split; read both modules so the escalation
+    # contract still covers the moved logic.
+    import os
     source = inspect.getsource(orchestrator.orchestrator_loop)
+    companion = os.path.join(os.path.dirname(orchestrator.__file__), "orchestrator_loop_phases.py")
+    if os.path.exists(companion):
+        with open(companion, encoding="utf-8") as fh:
+            source += "\n" + fh.read()
 
     assert 'daemon_dead_level = "error" if consecutive_prep_fails >= 3 else "warn"' in source

@@ -559,17 +559,31 @@ def test_llm_stages_documents_checkpoint_and_evaluation_authority():
 
 
 def test_main_orchestrator_has_mcp_tools_but_no_builtin_tools_on_all_dispatches():
-    source = (ROOT / "web" / "core" / "orchestrator.py").read_text(
-        encoding="utf-8"
-    )
-    tree = ast.parse(source)
-    options_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "ClaudeAgentOptions"
-    ]
+    # The orchestrator's ClaudeAgentOptions calls (initial dispatch + 529 retry)
+    # live in orchestrator_cycle_phases.py after the _run_one_cycle phase split
+    # (referenced as _orch.ClaudeAgentOptions). Walk both modules and recognize
+    # both the bare-Name and _orch.Attribute forms.
+    sources = []
+    for rel in ("web/core/orchestrator.py", "web/core/orchestrator_cycle_phases.py"):
+        path = ROOT / rel
+        if path.exists():
+            sources.append(path.read_text(encoding="utf-8"))
+    options_calls = []
+    for source in sources:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = None
+            if isinstance(func, ast.Name):
+                name = func.id
+            elif (isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "_orch"):
+                name = func.attr
+            if name == "ClaudeAgentOptions":
+                options_calls.append(node)
     # Initial dispatch and the 529 retry must have identical tool authority.
     assert len(options_calls) == 2
     for call in options_calls:
