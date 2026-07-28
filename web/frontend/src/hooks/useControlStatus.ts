@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { controlApi, RetryableControlError, type ActiveGeneration, type ControlHealth, type ControlStatus } from "../api/control";
+// The visible fail-closed banner is governed by isControlFailClosed /
+// controlFirstLoadPhase in lib/controlFirstLoadState. The loading-flag logic
+// below mirrors that contract (see controlFirstLoadState.ts) so the backend's
+// retryable 503 (a transient projection build) is never rendered as an
+// authority loss on first load.
 
 export function authorityNextVersion(status: ControlStatus | null): number | null {
   if (!status) return null;
@@ -133,6 +138,16 @@ export function useControlStatus(pollMs = 5_000) {
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
   const mounted = useRef(true);
+  // True once a single /health observation has resolved into a coherent
+  // status.  It never resets, so a subsequent retryable refresh on an already-
+  // populated page keeps the last known authority (handled below) while a
+  // FIRST-LOAD retryable refresh keeps the dashboard in its neutral "核对中"
+  // state instead of flipping to the scary red "无法确认版本与运行权威" banner.
+  // The backend's retryable 503 ("observer projection refreshing during an
+  // active generation") is a transient build, not an authority failure; the
+  // frontend must surface it as such until it has a real observation or a
+  // genuine non-retryable error.
+  const seenResolved = useRef(false);
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return inFlight.current;
@@ -146,17 +161,33 @@ export function useControlStatus(pollMs = 5_000) {
         const nextStatus = nextHealth.status;
         assertMatchingObservation(nextStatus, nextHealth);
         if (!mounted.current) return;
+        seenResolved.current = true;
         setStatus(nextStatus);
         setHealth(nextHealth);
         setError(null);
+        setLoading(false);
       } catch (err) {
         if (!mounted.current) return;
-        // A retryable observer 503 (projection refreshing during active
-        // generation) must NOT wipe the dashboard. Keep the previous good
-        // status/health and set a transient "refreshing" error that the UI
-        // can show as a neutral state instead of the scary red banner.
-        if (err instanceof RetryableControlError) {
+        const retryable = err instanceof RetryableControlError;
+        // The visible fail-closed banner is governed by isControlFailClosed in
+        // lib/controlFirstLoadState: only genuine non-retryable authority
+        // errors render it.  The loading flag mirrors that contract — a
+        // first-load retryable refresh keeps loading=true (neutral "refreshing"
+        // state) instead of flipping to the red banner — so the backend's
+        // retryable 503 (a transient projection build) is never shown as an
+        // authority loss.
+        if (retryable) {
           setError(err.message);
+          if (!seenResolved.current) {
+            // On the very first load there is no previous good status to keep:
+            // stay in the neutral loading state so the dashboard shows
+            // "正在核对…" rather than the red fail-closed banner, because this
+            // is a transient backend build, not an authority loss.
+            return;
+          }
+          // A populated page that hit a transient refresh keeps its last good
+          // status (already set above) and just records the transient error.
+          setLoading(false);
           return;
         }
         // Fail closed for genuine non-retryable authority errors: no page may
@@ -166,8 +197,7 @@ export function useControlStatus(pollMs = 5_000) {
         setStatus(null);
         setHealth(null);
         setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (mounted.current) setLoading(false);
+        setLoading(false);
       }
     })();
     inFlight.current = request;

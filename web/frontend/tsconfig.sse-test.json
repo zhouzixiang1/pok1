@@ -19,6 +19,7 @@
     "src/lib/evolutionStreamController.ts",
     "src/lib/epochStreamAuthority.ts",
     "src/lib/controlRuntimeState.ts",
+    "src/lib/controlFirstLoadState.ts",
     "src/lib/pipelinePresentation.ts",
     "src/lib/canonicalGenerationIdentity.ts",
     "src/lib/stabilityView.ts",

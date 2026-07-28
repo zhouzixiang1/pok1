@@ -206,7 +206,27 @@ test("frontend validates but never derives canonical generation identity", () =>
       canonical_bot_name: "national_v142",
       canonical_tag: "national-bot-v142",
     }),
-    ["canonical_version"],
+    // A self-consistent different version (canonical_version, bot name and tag
+    // all agree on 142) is itself valid; without an expected version there is
+    // nothing to flag. The validator splits out-of-range canonical_version from
+    // an expected-version mismatch (canonical_version_expected) — neither fires
+    // here, so no issues are reported.
+    [],
+  );
+  // The expected-version mismatch is reported under canonical_version_expected,
+  // distinct from an out-of-range canonical_version (which fires canonical_version).
+  assert.deepEqual(
+    canonicalGenerationIdentityIssues(
+      { ...identity, canonical_version: 142, canonical_bot_name: "national_v142", canonical_tag: "national-bot-v142" },
+      143,
+    ),
+    ["canonical_version_expected"],
+  );
+  // An out-of-range canonical_version (below the strict floor) is the only
+  // condition that reports canonical_version itself.
+  assert.deepEqual(
+    canonicalGenerationIdentityIssues({ ...identity, canonical_version: 0, canonical_bot_name: "national_v0", canonical_tag: "national-bot-v0" }),
+    ["canonical_version", "canonical_bot_name", "canonical_tag"],
   );
   assert.equal(
     sameCanonicalGenerationIdentity(identity, { ...identity, generation_ordinal: 2 }),

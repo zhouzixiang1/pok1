@@ -38,7 +38,19 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
     return (
       <div className={cn("rounded-xl border border-gray-200 bg-white p-4 text-sm dark:border-border-subtle dark:bg-surface-1", className)}>
         {loading ? (
-          <span className="text-gray-500">正在核对严格进化与版本身份…</span>
+          // First-load / refreshing state: the backend projection is being
+          // built (a retryable 503, not an authority failure).  Show a neutral
+          // "refreshing" state rather than the red fail-closed banner.  Only a
+          // genuine non-retryable authority error flips loading off and reaches
+          // the red branch below.
+          <div>
+            <span className="text-gray-500">
+              {error ? "正在刷新运行权威（后端投影构建中）…" : "正在核对严格进化与版本身份…"}
+            </span>
+            {error && (
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">{error}</p>
+            )}
+          </div>
         ) : (
           <div>
             <p className="font-semibold text-red-600 dark:text-red-300">无法确认版本与运行权威</p>
