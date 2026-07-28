@@ -40,6 +40,175 @@ from llm_availability_store import LLMAvailabilityPauseError
 from orchestrator_cost_policy import GenerationCostPolicy
 
 
+# Slice 2b one-ahead-buffer activation (default-off; see
+# producer_consumer_slice2b_activation).  The activation lives in a per-process
+# registry on the orchestrator module so the loop, the consumer task and the
+# promotion barrier share one :class:`Slice2bActivation` instance.  These
+# accessors stay no-ops when slice2b is inactive.
+def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, outcome):
+    """Seal the candidate and launch the background consumer gate chain.
+
+    Returns True iff the Slice 2b one-ahead path handled this ``workers_done``
+    seam.  When True, the canonical ``run_quality_gates`` handler is NOT
+    invoked inline; the consumer task runs the *unchanged* canonical gate chain
+    (``run_quality_gates`` -> ``run_review`` -> ``run_critic`` ->
+    ``run_precommit_eval`` -> ``commit_bot``) in the background, and the
+    producer is cleared to begin the next ``prepare_generation``.  The
+    promotion barrier at ``commit_bot`` (see :func:`_slice2b_promotion_barrier`)
+    synchronizes publication.
+    """
+
+    try:
+        from producer_consumer_slice2b_activation import (
+            Slice2bActivation,
+            build_snapshot_from_checkpoint,
+            slice2b_active,
+            stage_is_workers_done_seam,
+        )
+    except Exception:
+        return False
+    if not stage_is_workers_done_seam(checkpoint):
+        return False
+    if not slice2b_active():
+        return False
+
+    activation = _o._slice2b_activation_registry("get")
+    if activation is None:
+        return False
+
+    # The orchestrator already computed the content-bound artifact/manifest/
+    # charter digests for the canonical gate chain; Slice 2b reuses them.  When
+    # they are not present on the checkpoint projection (e.g. an older
+    # checkpoint), Slice 2b refuses to seal rather than guessing -- the
+    # canonical inline path then runs unchanged.
+    artifact_hash = checkpoint.get("candidate_artifact_hash") or checkpoint.get(
+        "artifact_hash"
+    )
+    manifest_digest = checkpoint.get("candidate_manifest_digest") or checkpoint.get(
+        "manifest_digest"
+    )
+    charter_digest = checkpoint.get("charter_digest")
+    if not (artifact_hash and manifest_digest and charter_digest):
+        return False
+
+    snapshot = build_snapshot_from_checkpoint(
+        checkpoint,
+        artifact_hash=artifact_hash,
+        manifest_digest=manifest_digest,
+        charter_digest=charter_digest,
+        quality_native_match_timing_plan=checkpoint.get(
+            "quality_native_match_timing_plan"
+        ),
+    )
+    candidate_id = snapshot["candidate_id"]
+
+    sealed = activation.seal_at_workers_done(
+        snapshot=snapshot,
+        run_id=snapshot["workflow_run_id"],
+        job_id=f"job:{snapshot['draft_id']}:quality-static",
+        idempotency_key=f"{snapshot['draft_id']}:quality-static:v1",
+        artifact_digest=artifact_hash,
+        resource_claim={
+            "resource_class": "cpu",
+            "cpu_slots": 1,
+            "memory_mb": 512,
+            "gpu_slots": 0,
+            "match_slots": 0,
+            "official_slots": 0,
+        },
+        retry_policy={
+            "max_attempts": 3,
+            "initial_backoff_sec": 1.0,
+            "backoff_multiplier": 2.0,
+            "max_backoff_sec": 10.0,
+            "retryable_outcomes": ["infrastructure_failure"],
+        },
+        deadline={
+            "submitted_at_epoch": float(checkpoint.get("last_update_ts") or 0.0),
+            "not_before_epoch": float(checkpoint.get("last_update_ts") or 0.0),
+            "expires_at_epoch": float(checkpoint.get("last_update_ts") or 0.0) + 3600.0,
+        },
+        evaluation_contract_digest=str(
+            checkpoint.get("evaluation_contract_digest") or charter_digest
+        ),
+        executor_digest=str(checkpoint.get("executor_digest") or charter_digest),
+        repository_digest=str(checkpoint.get("repository_digest") or charter_digest),
+        runtime_digest=str(checkpoint.get("runtime_digest") or charter_digest),
+    )
+
+    # Schedule the background consumer task running the canonical gate chain.
+    # The seam runs synchronously (outside the orchestrator event loop), so we
+    # register the factory here; the promotion barrier or the orchestrator loop
+    # drives it via ``ensure_consumer_running`` from inside the loop.
+    activation.schedule_consumer(
+        candidate_id=candidate_id,
+        gate_runner_factory=_o._slice2b_gate_runner_factory(next_v, source_v),
+    )
+
+    if outcome is not None:
+        outcome.clear()
+        outcome.update({
+            "checkpoint": checkpoint,
+            "route": {"next_tool": "run_quality_gates", "stage": "workers_done"},
+            "result": {
+                "success": True,
+                "slice2b_sealed": True,
+                "candidate_id": candidate_id,
+                "effect_id": sealed["effect_id"],
+            },
+            "terminal_abandon_result": None,
+        })
+    try:
+        _o.log_system_event(
+            "pipeline.slice2b_sealed_at_workers_done",
+            "info",
+            f"Slice 2b sealed v{next_v}; consumer gate chain launched in background, producer may advance.",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "candidate_id": candidate_id,
+                "effect_id": sealed["effect_id"],
+            },
+        )
+    except Exception:
+        pass
+    return True
+
+
+async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
+    """Synchronous fail-closed barrier before ``commit_bot`` publishes.
+
+    Returns True iff Slice 2b is active AND there is a sealed candidate for
+    this generation awaiting promotion.  When True, the caller MUST first
+    :func:`await activation.await_promotion` and only proceed with the
+    canonical ``commit_bot`` if it returns a promoted entry.  Returns False in
+    all other cases (slice2b inactive, no sealed candidate, already promoted)
+    so the canonical inline ``commit_bot`` runs unchanged.
+    """
+
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return False
+    if not slice2b_active():
+        return False
+    activation = _o._slice2b_activation_registry("get")
+    if activation is None:
+        return False
+    candidate_id = str(
+        checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+    )
+    if candidate_id not in activation._sealed_snapshots:
+        # No one-ahead seal for this generation: canonical inline path.
+        return False
+    if activation.ledger.is_promoted(candidate_id):
+        # Already promoted by the consumer; canonical commit_bot may publish.
+        return False
+    # Slice 2b owns this publication: wait for the consumer to finish.
+    await activation.await_promotion(candidate_id=candidate_id)
+    return True
+
+
 async def _try_deterministic_checkpoint_route(
     recovery,
     ui=None,
@@ -93,6 +262,31 @@ async def _try_deterministic_checkpoint_route(
             parent2_v = None
         if parent2_v is None:
             return False
+
+    # Slice 2b one-ahead seam: at workers_done, seal the candidate and launch
+    # the background consumer gate chain instead of blocking on the inline
+    # run_quality_gates.  The canonical gate chain runs unchanged inside the
+    # consumer task; the producer is cleared to begin the next prepare.  When
+    # slice2b is inactive (the default) or the seam refuses (missing digests,
+    # high-water full), this returns False and the inline path runs unchanged.
+    if (
+        next_tool == "run_quality_gates"
+        and stage == "workers_done"
+        and _slice2b_seal_at_workers_done(
+            checkpoint, next_v, source_v, ui=ui, outcome=outcome
+        )
+    ):
+        return True
+
+    # Slice 2b promotion barrier: at commit_bot, the canonical publication may
+    # only proceed once the background consumer has promoted the sealed
+    # candidate.  When slice2b is inactive or there is no sealed candidate for
+    # this generation, this is a no-op and the inline commit_bot runs unchanged.
+    if next_tool == "commit_bot":
+        if await _slice2b_promotion_barrier(checkpoint, next_v, source_v):
+            # Consumer promoted; fall through to the canonical commit_bot, which
+            # owns the actual publication authority (unchanged).
+            pass
 
     try:
         handler, args = _o._deterministic_route_handler_and_args(

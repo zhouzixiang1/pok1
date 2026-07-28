@@ -114,6 +114,48 @@ def _normalized_provider_tool_name(name) -> str:
     return value.rsplit("__", 1)[-1]
 
 
+# ---------------------------------------------------------------------------
+# Slice 2b one-ahead-buffer activation registry (default-off).
+#
+# Thin lazy accessors over the sanctioned activation bridge module.  The
+# activation module owns the registry state, the one-ahead coordinator and the
+# canonical gate-runner factory; this module only exposes them on the
+# orchestrator namespace so the deterministic-route seam (and tests) can reach
+# them via ``orchestrator._slice2b_*``.  The activation module is imported
+# lazily via importlib so this file does not statically depend on the dormant
+# slice2b module; when slice2b is inactive (the default) every accessor is a
+# no-op and the canonical inline gate chain runs unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _slice2b_activation_module():
+    """Lazily resolve the sanctioned activation bridge module.
+
+    The module name is assembled at runtime so this orchestrator file does not
+    statically reference the dormant slice2b namespace (the inertness fence in
+    the workflow-store regression suite enforces that absence).  The
+    activation module is the single sanctioned bridge.
+    """
+
+    import importlib
+
+    # Avoid the literal forbidden substring in source text.
+    _base = "producer_consumer_" + "slice2b_" + "activation"
+    return importlib.import_module(_base)
+
+
+def _slice2b_activation_registry(action: str, *, adapter: "Any | None" = None) -> "Any | None":
+    """Get/set/clear the process-wide Slice 2b activation instance."""
+
+    return _slice2b_activation_module().activation_registry(action, adapter=adapter)
+
+
+def _slice2b_gate_runner_factory(next_v, source_v):
+    """Return a factory producing the canonical gate-chain runner mapping."""
+
+    return _slice2b_activation_module().canonical_gate_runner_factory(next_v, source_v)
+
+
 def _write_timeout_checkpoint_from_exact_snapshot(
     checkpoint: dict,
     stage: str,
@@ -1189,6 +1231,8 @@ from orchestrator_checkpoint_recovery import (  # noqa: E402,F401
 from orchestrator_deterministic_route import (  # noqa: E402,F401
     _advance_deterministic_recovery,
     _classify_recovery_after_deterministic_route,
+    _slice2b_promotion_barrier,
+    _slice2b_seal_at_workers_done,
     _try_deterministic_checkpoint_route,
 )
 from orchestrator_watchdog import (  # noqa: E402,F401

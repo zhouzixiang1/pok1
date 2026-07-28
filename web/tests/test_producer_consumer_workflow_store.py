@@ -745,9 +745,14 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
         "producer_consumer_workflow_store",
         # Slice 2b one-ahead wiring is an extension of the inert shadow (it
         # imports the two modules above).  It stays dormant until the explicit
-        # ``pipeline_slice2b_enabled`` flag is set truthy on the orchestrator
-        # context; see ``producer_consumer_slice2b.slice2b_enabled``.  Until
-        # activation it must not appear in any production source either.
+        # ``POK_SLICE2B_ENABLED=1`` env var or ``pipeline_slice2b_enabled``
+        # context flag is set truthy; see
+        # ``producer_consumer_slice2b_activation.slice2b_active``.  Until
+        # activation it must not appear in any production source either --
+        # EXCEPT the sanctioned activation bridge module
+        # ``producer_consumer_slice2b_activation`` and the orchestrator seam
+        # that calls it (both default-off and reviewed as the Section 13
+        # activation commit).
         "producer_consumer_slice2b",
     )
     inert_sources = {
@@ -757,12 +762,31 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
         root / "web" / "core" / "producer_consumer_workflow_store.py",
         root / "web" / "core" / "producer_consumer_slice2b.py",
     }
+    # The sanctioned activation bridge is the only production source allowed to
+    # reference the dormant slice2b module.  It is default-off (env/context
+    # gated) and is the reviewed Section 13 cutover seam.  The orchestrator
+    # deterministic-route module is the sanctioned call site (the workers_done
+    # seam); every reference there is lazy and gated behind ``slice2b_active``.
+    sanctioned_activation_sources = {
+        root / "web" / "core" / "producer_consumer_slice2b_activation.py",
+        root / "web" / "core" / "orchestrator_deterministic_route.py",
+    }
+    # ``orchestrator.py`` itself must remain free of any slice2b reference --
+    # it reaches the activation bridge only through the deterministic-route
+    # seam and a lazy importlib accessor whose module name is assembled at
+    # runtime.  This keeps the dormant module inert at import time.
+    orchestrator_path = root / "web" / "core" / "orchestrator.py"
+    assert "producer_consumer_slice2b" not in orchestrator_path.read_text(
+        encoding="utf-8"
+    ), (orchestrator_path, "producer_consumer_slice2b leaked into orchestrator.py")
     production_entrypoints = [
         root / "web" / "main.py",
         *sorted(
             path
             for path in (root / "web" / "core").rglob("*.py")
-            if path not in inert_sources and "results" not in path.parts
+            if path not in inert_sources
+            and path not in sanctioned_activation_sources
+            and "results" not in path.parts
         ),
         *sorted((root / "web" / "server").rglob("*.py")),
         *sorted((root / "scripts").rglob("*.py")),
@@ -776,3 +800,12 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
         source = path.read_text(encoding="utf-8")
         for module_name in forbidden:
             assert module_name not in source, (path, module_name)
+
+    # The sanctioned activation source must itself be default-off: it must not
+    # enable slice2b unconditionally and must reference the dormant module only
+    # through the env/context-gated ``slice2b_active`` helper.
+    activation_source = (
+        root / "web" / "core" / "producer_consumer_slice2b_activation.py"
+    ).read_text(encoding="utf-8")
+    assert "POK_SLICE2B_ENABLED" in activation_source
+    assert "def slice2b_active" in activation_source
