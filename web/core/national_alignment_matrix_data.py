@@ -383,7 +383,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "_full_v5_completion_issues",
             ),
             _ref(
-                "web/core/official_platform_harness.py",
+                "web/core/official_platform_runtime.py",
                 "round_completion_issues",
             ),
         ),
@@ -1504,7 +1504,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "stability_observation_cached_projection",
             ),
             _ref(
-                "web/core/orchestrator.py",
+                "web/core/orchestrator_watchdog.py",
                 "_stability_projection_maintenance_tick",
             ),
         ),
@@ -1597,7 +1597,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/core/llm_query.py",
                 "cache_verified_provider_terminal_abandon",
             ),
-            _ref("web/core/orchestrator.py", "_detect_actionable_stage_handoff"),
+            _ref("web/core/orchestrator_stream_handoff.py", "_detect_actionable_stage_handoff"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
@@ -1855,7 +1855,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/core/worker_workflow.py",
                 "operator_shutdown_interrupted",
             ),
-            _ref("web/core/workflow_kernel.py", "interrupt_effect"),
+            _ref("web/core/workflow_kernel_effects.py", "interrupt_effect"),
             _ref(
                 "web/core/orchestrator_tool_result_classification.py",
                 "_is_worker_operator_shutdown_interrupted",
@@ -1867,7 +1867,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/core/worker_workflow.py",
                 "operator_shutdown_interrupted",
             ),
-            _ref("web/core/workflow_kernel.py", "interrupt_effect"),
+            _ref("web/core/workflow_kernel_effects.py", "interrupt_effect"),
             _ref(
                 "web/core/orchestrator_tool_result_classification.py",
                 "_is_worker_operator_shutdown_interrupted",
