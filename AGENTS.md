@@ -687,6 +687,33 @@ text. They retain the last verified fence: a later exact valid projection at the
 same revision may restore authority, while a contradictory same-revision
 projection remains blocked until a genuinely newer revision arrives.
 
+`POST /api/control/abandon` is the operator-facing escape hatch for a
+generation stuck at an abandonable stage that no auto-route reaches — notably
+`workers_done` / `rework_running`, where the documented abandon only fires from
+terminal-rejected gates or the 4h cycle timeout (which never triggers for
+fast-cycling rework loops). It is a mutation route serialized through the same
+`_RUNTIME_LIFECYCLE_LOCK` as start/stop/config. It does not implement its own
+abandon: inside the lock it stops the live orchestrator task exactly like
+`/api/control/stop`, then calls the canonical `_do_abandon_generation` from
+`tool_bot_management.py` (the same code the orchestrator dispatches for the
+`abandon_generation` MCP tool). Stopping the runtime first is load-bearing:
+`_do_abandon_generation` is publication-authority code that acquires the bot
+publication lock, fences the actor journal, revalidates the checkpoint CAS,
+quarantines the candidate, and clears the checkpoint by exact CAS — running it
+against a checkpoint a live loop is mutating would strand the workflow between
+an abandoned candidate and a half-cleared checkpoint. The runtime is left
+stopped; the operator restarts via `/api/control/start` after inspecting the
+receipt. The endpoint surfaces typed 409 boundaries: `no_active_generation_to_abandon`
+(absent/terminal checkpoint), `stage_not_disposable` (the stage is in the
+canonical `never_disposable` set — verified, official_*, publishing, archived),
+and `checkpoint_cas_mismatch` (the workflow fence inside the canonical abandon
+detected an identity drift mid-transaction). An operator may pass an optional
+`{"reason": "..."}` annotation that travels into the durable abandon receipt;
+the target is always the canonical active checkpoint, never a caller-selected
+version. The HTTP capability id is `abandon_active_generation`, deliberately
+distinct from the MCP tool name `abandon_generation` so the HTTP capability
+registry remains a hand-maintained list, not a projection of MCP `all_tools`.
+
 Native precommit cancellation is attempt-local and monotonic. The exact token
 is passed into the real 70-hand loop, checked before every opponent/repeat and
 after each complete match/journal, and permanently set on timeout/cancellation.

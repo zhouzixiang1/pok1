@@ -462,6 +462,16 @@ _CONTROL_CAPABILITIES = (
         "requires_epoch": False,
     },
     {
+        "id": "abandon_active_generation",
+        "method": "POST",
+        "path": "/api/control/abandon",
+        "mutation": True,
+        # An abandon only makes sense with an initialized epoch that owns the
+        # active checkpoint; do not advertise it as a fallback when the epoch
+        # authority itself is unavailable.
+        "requires_epoch": True,
+    },
+    {
         "id": "update_config",
         "method": "PUT",
         "path": "/api/control/config",
@@ -2132,6 +2142,259 @@ async def _stop_evolution_transaction() -> dict[str, str]:
 async def stop_evolution(request: Request):
     require_operator_mutation(request, operation="control_stop_evolution")
     return await _run_lifecycle_operation(_stop_evolution_transaction)
+
+
+class AbandonRequest(BaseModel):
+    """Optional body for ``POST /api/control/abandon``.
+
+    The abandon target is always the canonical active checkpoint; callers do
+    not select a version. ``reason`` is an opaque operator annotation that
+    travels into the durable abandon receipt (it defaults to the same
+    ``abandon_generation`` reason the MCP tool uses when an operator drives
+    cleanup manually).
+    """
+
+    model_config = {"extra": "ignore"}
+    reason: str | None = Field(default=None, max_length=200)
+
+
+def _abandonable_stage_block(checkpoint: dict | None, reason: str) -> dict | None:
+    """Return the canonical generic-abandon refusal payload, or None if clear.
+
+    Mirrors the exact guard ``_do_abandon_generation`` applies internally via
+    ``_generic_abandon_stage_block`` so the HTTP layer can surface the same
+    typed 409 (``stage_not_disposable``) before invoking irreversible
+    publication-authority code.
+    """
+
+    from pipeline_state import generic_abandon_block
+
+    return generic_abandon_block(checkpoint, reason=reason)
+
+
+async def _abandon_generation_transaction(reason: str) -> dict[str, Any]:
+    """Stop the live orchestrator inside the lifecycle lock, then abandon.
+
+    Why Option B (stop-then-abandon within the lock) is the safe choice:
+
+    ``_do_abandon_generation`` is publication-authority code: it acquires the
+    bot publication lock, fences the actor journal, revalidates the checkpoint
+    CAS, quarantines the candidate, and clears the checkpoint by exact CAS.
+    Running that against a checkpoint a live orchestrator is concurrently
+    mutating would race the loop and could strand the workflow between an
+    abandoned candidate and a half-cleared checkpoint.  ``/api/control/stop``
+    already establishes the contract for tearing the task down gracefully
+    inside ``_RUNTIME_LIFECYCLE_LOCK``; reusing it here serializes the
+    abandon against any concurrent start/stop/config mutation and ensures the
+    orchestrator is quiescent before irreversible cleanup runs.
+
+    The service is left stopped; the operator restarts it via
+    ``/api/control/start`` once they have inspected the abandon receipt.
+    """
+
+    # Invalidate the observer projection cache up-front so the snapshot a
+    # browser polls after this returns reflects the post-stop state rather
+    # than the pre-stop running projection.
+    _invalidate_observer_projection_cache()
+
+    # 1) Stop the orchestrator task (graceful, mirroring stop_evolution).
+    app_state.request_shutdown()
+    task = app_state.stop_running()
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+    if task is not None and not task.done():
+        _invalidate_observer_projection_cache()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "evolution_task_stop_timeout",
+                "operation": "control_abandon_generation",
+                "task": app_state.task_snapshot(),
+            },
+        )
+
+    # 2) Read the canonical checkpoint from evolution_infra (the same reader
+    #    the MCP abandon tool uses) and apply the disposable-stage guard. An
+    #    absent or terminal-stage checkpoint has nothing to abandon.
+    from evolution_infra import PIPELINE_STATE_FILE, read_pipeline_checkpoint
+
+    checkpoint: dict | None = None
+    try:
+        if os.path.lexists(PIPELINE_STATE_FILE):
+            checkpoint = read_pipeline_checkpoint()
+    except Exception as exc:
+        _invalidate_observer_projection_cache()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "checkpoint_read_failed",
+                "operation": "control_abandon_generation",
+                "failure": f"{type(exc).__name__}:{str(exc)[:240]}",
+            },
+        ) from None
+
+    if not isinstance(checkpoint, dict):
+        _invalidate_observer_projection_cache()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "no_active_generation_to_abandon",
+                "operation": "control_abandon_generation",
+                "checkpoint_present": False,
+                "directive": (
+                    "No active pipeline checkpoint to abandon. The generation "
+                    "either completed, was already abandoned, or never started."
+                ),
+            },
+        ) from None
+
+    stage = checkpoint.get("stage")
+    block = _abandonable_stage_block(checkpoint, reason)
+    if block is not None:
+        _invalidate_observer_projection_cache()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "stage_not_disposable",
+                "operation": "control_abandon_generation",
+                "stage": stage,
+                "next_v": checkpoint.get("next_v"),
+                "source_v": checkpoint.get("source_v"),
+                "block": block,
+                "directive": block.get("directive"),
+            },
+        ) from None
+
+    # 3) Invoke the canonical abandon transaction (the same code the
+    #    orchestrator dispatches for ``abandon_generation``). Do not
+    #    reimplement abandon logic here. ``_do_abandon_generation`` reads the
+    #    checkpoint itself, revalidates the CAS under the publication lock,
+    #    fences the actor journal, quarantines the candidate, clears the
+    #    checkpoint by exact CAS, and writes the terminal receipt. It is a
+    #    coroutine that manages its own locks, so it runs on the event loop
+    #    rather than through ``run_blocking_isolated`` (which is reserved for
+    #    blocking sync infrastructure calls and would return a coroutine
+    #    object instead of awaiting it).
+    from tool_bot_management import _do_abandon_generation
+
+    try:
+        result = await _do_abandon_generation(reason=reason)
+    except HTTPException:
+        _invalidate_observer_projection_cache()
+        raise
+    except Exception as exc:
+        _invalidate_observer_projection_cache()
+        # The canonical abandon surfaces most revalidation failures as a
+        # dict result rather than an exception (e.g. CAS mismatch after the
+        # workflow fence). Only true unexpected errors land here; expose the
+        # typed reason without leaking internal tracebacks.
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "abandon_transaction_failed",
+                "operation": "control_abandon_generation",
+                "failure": f"{type(exc).__name__}:{str(exc)[:240]}",
+                "stage": stage,
+                "next_v": checkpoint.get("next_v"),
+            },
+        ) from None
+
+    if not isinstance(result, dict):
+        _invalidate_observer_projection_cache()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "abandon_transaction_invalid_result",
+                "operation": "control_abandon_generation",
+                "stage": stage,
+                "next_v": checkpoint.get("next_v"),
+            },
+        ) from None
+
+    # 4) Translate the canonical abandon result into the HTTP contract. A
+    #    ``abandoned: False`` result is a typed refusal from inside the
+    #    canonical transaction (CAS mismatch, workflow fence failure, rate
+    #    limit, ...); surface it as a 409 so operators can distinguish a
+    #    refused-but-fenced outcome from a server error.
+    _invalidate_observer_projection_cache()
+    if result.get("abandoned") is not True:
+        canonical_reason = str(result.get("reason") or "abandon_refused")
+        if canonical_reason == "expected_checkpoint_identity_mismatch":
+            http_code = "checkpoint_cas_mismatch"
+        else:
+            http_code = "abandon_refused"
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": http_code,
+                "operation": "control_abandon_generation",
+                "canonical_reason": canonical_reason,
+                "stage": stage,
+                "next_v": checkpoint.get("next_v"),
+                "result": result,
+            },
+        ) from None
+
+    return {
+        "status": "abandoned",
+        "operation": "control_abandon_generation",
+        "transaction_id": result.get("abandon_transaction_id"),
+        "abandoned_v": result.get("abandoned_v"),
+        "reason": result.get("reason") or reason,
+        "cleared_checkpoint": result.get("cleared_checkpoint"),
+        "removed_directory": result.get("removed_directory"),
+        "abandon_receipt_digest": result.get("abandon_receipt_digest"),
+        "finalize_receipt_digest": result.get("finalize_receipt_digest"),
+        "workflow_fenced": result.get("workflow_fenced"),
+        "workflow_run_id": result.get("workflow_run_id"),
+        "runtime_stopped": True,
+        "directive": (
+            "Generation abandoned and runtime left stopped. Restart evolution "
+            "via POST /api/control/start after inspecting the abandon receipt."
+        ),
+    }
+
+
+@router.post("/abandon")
+async def abandon_generation(request: Request):
+    """Abandon the currently stuck generation.
+
+    Operator-facing escape hatch for a generation stuck at an abandonable
+    stage (e.g. ``workers_done`` / ``rework_running``) where the documented
+    auto-abandon paths do not fire. Stops the live orchestrator inside the
+    runtime lifecycle lock, then runs the canonical abandon transaction.
+    The runtime is left stopped for the operator to restart.
+    """
+    require_operator_mutation(request, operation="control_abandon_generation")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        req = AbandonRequest(**body)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "abandon_request_invalid",
+                "operation": "control_abandon_generation",
+                "failure": f"{type(exc).__name__}:{str(exc)[:200]}",
+            },
+        ) from None
+    reason = req.reason or "abandon_generation"
+    return await _run_lifecycle_operation(
+        lambda: _abandon_generation_transaction(reason)
+    )
 
 
 @router.post("/tool/{tool_name}", status_code=410)
