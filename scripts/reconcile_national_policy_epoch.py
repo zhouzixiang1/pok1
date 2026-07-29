@@ -1503,6 +1503,8 @@ def _build_plan() -> dict:
         # checkpoint, bots already published), archive the stale ledger so a
         # fresh allocation authority can compute next_v from the published
         # high-water without the stale entries blocking the health projection.
+        if not os.path.lexists(CHECKPOINT):
+            return _cloud_epoch_ledger_archive_plan(published)
         checkpoint_raw = _safe_read_bytes(CHECKPOINT)
         if not checkpoint_raw.strip():
             return _cloud_epoch_ledger_archive_plan(published)
