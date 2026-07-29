@@ -29,6 +29,98 @@ OSCILLATION_BREAKOUT_SCORE_TOLERANCE = 0.02
 OSCILLATION_BREAKOUT_MIN_MARGIN = 0.01
 
 
+def _maybe_promote_draft_to_primary():
+    """Promote a one-ahead draft checkpoint to the primary slot if eligible.
+
+    Called at the top of the primary ``prepare_generation`` (after gen N has
+    fully published and the primary loop returns to prepare gen N+1).  If a
+    draft sits at ``workers_done`` in ``pipeline_state_draft.json`` and its
+    ``next_v`` equals the canonical next allocation (``published_high_water +
+    1``), the draft is moved to the primary slot and the draft slot cleared.
+    The canonical CAS refuses if the primary is still active, so this is
+    naturally safe and idempotent.  Returns True iff a promotion happened.
+    Best-effort: callers swallow exceptions.
+    """
+    try:
+        from evolution_infra import (
+            read_pipeline_checkpoint,
+            write_pipeline_checkpoint,
+            clear_pipeline_checkpoint,
+            no_slot_override,
+        )
+    except Exception:
+        return False
+    draft = read_pipeline_checkpoint(slot_id="draft")
+    if not isinstance(draft, dict) or not draft:
+        return False
+    if draft.get("stage") != "workers_done":
+        return False
+    try:
+        draft_next_v = int(draft.get("next_v") or 0)
+    except (TypeError, ValueError):
+        return False
+    # Confirm the draft targets the canonical next allocation by consulting
+    # the epoch projection (override-bypassed so it reads the real published
+    # high-water, not the draft slot).
+    try:
+        from epoch_authority import strict_epoch_projection
+
+        with no_slot_override():
+            projection = strict_epoch_projection()
+        expected_next_v = int(projection.get("next_v") or 0)
+    except Exception:
+        expected_next_v = 0
+    if expected_next_v <= 0 or draft_next_v != expected_next_v:
+        # Stale or mismatched draft; leave it for reaping/retry.
+        return False
+    promote_fields = {
+        "next_v": draft_next_v,
+        "source_v": int(draft.get("source_v") or 0),
+        "stage": "workers_done",
+        "master_plan": draft.get("master_plan"),
+        "parent2_v": draft.get("parent2_v"),
+        "direction_audit": draft.get("direction_audit"),
+        "audit_context": draft.get("audit_context"),
+        "gate_results": draft.get("gate_results"),
+        "worker_failure_count": draft.get("worker_failure_count"),
+        "worker_invocation_count": draft.get("worker_invocation_count"),
+        "reviewer_feedback": draft.get("reviewer_feedback") or "",
+        "charter_digest": draft.get("charter_digest"),
+        "candidate_artifact_hash": draft.get("candidate_artifact_hash"),
+        "candidate_manifest_digest": draft.get("candidate_manifest_digest"),
+        "workflow_run_id": draft.get("workflow_run_id"),
+        "audit_attempt": draft.get("audit_attempt"),
+        "precommit_attempt": draft.get("precommit_attempt"),
+        "precommit_rework_count": draft.get("precommit_rework_count"),
+        "official_rework_count": draft.get("official_rework_count"),
+        "timeout_extensions": draft.get("timeout_extensions"),
+        "literature_probe": draft.get("literature_probe"),
+        "prepare_scope_files": draft.get("prepare_scope_files"),
+        "official_job": draft.get("official_job"),
+        "repair_baseline_artifact_hash": draft.get(
+            "repair_baseline_artifact_hash"
+        ),
+        "review_attempt_journal": draft.get("review_attempt_journal"),
+        "identity_replan_history": draft.get("identity_replan_history"),
+    }
+    with no_slot_override():
+        ok = bool(write_pipeline_checkpoint(**promote_fields))
+    if not ok:
+        return False
+    clear_pipeline_checkpoint(slot_id="draft")
+    try:
+        log_system_event(
+            "pipeline.draft_promoted_to_primary",
+            "info",
+            f"One-ahead draft promoted to primary at v{draft_next_v} "
+            f"(skipping re-prepare)",
+            {"next_v": draft_next_v},
+        )
+    except Exception:
+        pass
+    return True
+
+
 def _wilson_lower_bound(points, games, z=1.96):
     """95% lower confidence bound on the true win rate (Wilson score interval).
 
@@ -461,6 +553,7 @@ def _prepare_protocol_bootstrap_generation(
     abandoned_receipt_floor: int,
     workflow_run_id: str,
     ui=None,
+    slot_id=None,
 ) -> GenerationContext | None:
     """Select a zero/one-strict-bot generation without fabricated ratings."""
 
@@ -612,6 +705,7 @@ def _prepare_protocol_bootstrap_generation(
             "master_context": master_context,
         },
         workflow_run_id=workflow_run_id,
+        slot_id=slot_id,
     )
     if not ok:
         raise RuntimeError(f"protocol bootstrap checkpoint refused for v{next_v}")
@@ -642,8 +736,19 @@ def _prepare_protocol_bootstrap_generation(
     )
 
 
-async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
-    """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
+async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=None) -> GenerationContext | None:
+    """Phase 1: Analyze state, decide strategy. Disposable on interrupt.
+
+    ``slot_id`` (Phase 5b one-ahead draft) routes the two selected-checkpoint
+    writes to a per-slot file instead of the primary.  When ``slot_id`` is not
+    None the caller is the one-ahead draft task, which must compute its own
+    one-ahead target rather than reusing the primary projection's ``next_v``
+    (the primary checkpoint is still occupied by the sealed generation N).
+    The draft target is ``primary_next_v + 1`` (i.e. ``published_high_water +
+    2``), derived by reading the PRIMARY checkpoint with the slot override
+    bypassed.  Everything else — workflow contract, runtime guard, source
+    selection — runs unchanged because the draft is a real generation.
+    """
     from evolution_infra import (
         MAX_ACTIVE_BOTS, find_latest_active_v, get_active_bots,
         wait_for_daemon_eval, ensure_publish_ready_for_new_generation,
@@ -652,6 +757,21 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
+
+    # Phase 5b one-ahead draft promotion (primary path only).  When the
+    # primary loop returns here after gen N fully publishes, a one-ahead draft
+    # for gen N+1 may be sitting at workers_done in the draft slot.  Promote
+    # it to the primary slot instead of re-preparing from scratch: the draft
+    # already ran direction_audit/Master/Workers, so the primary loop's
+    # deterministic recovery picks up at run_quality_gates.  Best-effort and
+    # non-fatal: any refusal or mismatch falls through to the canonical
+    # prepare.  This is the reliable promotion point because gen N's tag now
+    # exists (published_high_water == N) and the primary checkpoint is clear.
+    if slot_id is None:
+        try:
+            _maybe_promote_draft_to_primary()
+        except Exception:
+            pass
 
     # A published bot is not a completed evolution cycle until its durable
     # Archivist journal finishes.  This check precedes epoch reads, cost scope,
@@ -844,6 +964,34 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     _abandoned_floor = int(_epoch_projection["abandoned_receipt_floor"])
     allocation_floor = int(_epoch_projection["allocation_floor"])
     _planned_next_v = int(_epoch_projection["next_v"])
+    # Phase 5b one-ahead draft: the draft slot projection does not see the
+    # primary's sealed generation N, so its ``next_v`` would collide with the
+    # primary target.  Derive the one-ahead target from the PRIMARY checkpoint
+    # (slot override bypassed): primary_next_v + 1.  Falls back to
+    # ``published_high_water + 2`` when the primary checkpoint is absent or
+    # unreadable, which keeps the draft one ahead of the published tag
+    # high-water regardless of primary state.
+    if slot_id is not None:
+        from evolution_infra import no_slot_override, read_pipeline_checkpoint
+
+        with no_slot_override():
+            _primary_ckpt = read_pipeline_checkpoint()
+        _draft_floor = max(allocation_floor, current_v)
+        if isinstance(_primary_ckpt, dict):
+            try:
+                _primary_next_v = int(_primary_ckpt.get("next_v") or 0)
+            except (TypeError, ValueError):
+                _primary_next_v = 0
+            if _primary_next_v > _draft_floor:
+                _draft_floor = _primary_next_v
+        _planned_next_v = _draft_floor + 1
+        allocation_floor = _draft_floor
+        log.info(
+            "One-ahead draft slot=%s target v%d (primary high-water v%d)",
+            slot_id,
+            _planned_next_v,
+            current_v,
+        )
     # No directory, log filename, direct commit or runtime counter participates
     # here. A valid active checkpoint may hold its bound target; otherwise the
     # next label is tag high-water / durable abandon-receipt floor + one.
@@ -946,6 +1094,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             abandoned_receipt_floor=_abandoned_floor,
             workflow_run_id=_prepare_workflow_run_id,
             ui=ui,
+            slot_id=slot_id,
         )
     if active_v <= 0 or not active_bots:
         log_system_event(
@@ -1444,6 +1593,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 # digest-bound copy instead of trusting an LLM transcription.
                 "master_context": master_context,
             },
+            slot_id=slot_id,
         )
     except Exception as exc:
         log_system_event(

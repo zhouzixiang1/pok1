@@ -225,6 +225,13 @@ async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
     canonical ``commit_bot`` if it returns a promoted entry.  Returns False in
     all other cases (slice2b inactive, no sealed candidate, already promoted)
     so the canonical inline ``commit_bot`` runs unchanged.
+
+    Phase 5b: after the consumer promotes gen N, this also attempts a
+    best-effort promotion of the one-ahead draft (gen N+1) from the draft
+    slot to the primary slot.  The promotion is idempotent and non-fatal: if
+    the primary checkpoint is still active (gen N not yet fully archived),
+    the draft is left in place for a later attempt or for the canonical
+    prepare path to rediscover.
     """
 
     try:
@@ -247,6 +254,118 @@ async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
         return False
     # Slice 2b owns this publication: wait for the consumer to finish.
     await activation.await_promotion(candidate_id=candidate_id)
+    # Best-effort draft promotion now that gen N's consumer has promoted.
+    try:
+        _promote_draft_to_primary(next_v)
+    except Exception as exc:
+        try:
+            _o.log_system_event(
+                "orchestrator.slice2b_draft_promotion_failed",
+                "warn",
+                f"One-ahead draft promotion failed at barrier: "
+                f"{type(exc).__name__}: {exc}",
+                {"next_v": next_v, "source_v": source_v},
+            )
+        except Exception:
+            pass
+    return True
+
+
+def _promote_draft_to_primary(published_next_v):
+    """Best-effort move of the one-ahead draft checkpoint to the primary slot.
+
+    Reads ``pipeline_state_draft.json``; if it holds a complete draft at
+    ``workers_done`` whose target is exactly one ahead of the just-published
+    generation (``published_next_v + 1``), it writes that checkpoint to the
+    primary slot and clears the draft slot.  The primary write goes through
+    the canonical CAS, so it is refused harmlessly when the primary checkpoint
+    is still active (gen N mid-publication) -- in that case the draft is left
+    in place and the promotion is retried at the next barrier firing or
+    rediscovered by ``prepare_generation``.
+
+    Non-fatal: any exception is swallowed by the caller.  Never raises into
+    the publication path.
+    """
+
+    try:
+        from evolution_infra import (
+            read_pipeline_checkpoint,
+            write_pipeline_checkpoint,
+            clear_pipeline_checkpoint,
+            no_slot_override,
+        )
+    except Exception:
+        return False
+    # Read the draft slot explicitly (bypass any ambient override).
+    draft = read_pipeline_checkpoint(slot_id="draft")
+    if not isinstance(draft, dict) or not draft:
+        return False
+    if draft.get("stage") != "workers_done":
+        # Draft not yet at a promotable stage; leave it pre-computing.
+        return False
+    try:
+        draft_next_v = int(draft.get("next_v") or 0)
+    except (TypeError, ValueError):
+        return False
+    try:
+        published_v = int(published_next_v)
+    except (TypeError, ValueError):
+        return False
+    if draft_next_v != published_v + 1:
+        # The draft targets a different generation than the one-ahead slot;
+        # do not promote a stale/mismatched draft.
+        return False
+    # Build a minimal promote payload from the draft fields.  We re-write the
+    # draft's exact state into the primary slot at workers_done so the primary
+    # loop's deterministic recovery picks up at run_quality_gates.  The CAS
+    # refuses if the primary is still active, which is the correct behaviour.
+    promote_fields = {
+        "next_v": draft_next_v,
+        "source_v": int(draft.get("source_v") or 0),
+        "stage": "workers_done",
+        "master_plan": draft.get("master_plan"),
+        "parent2_v": draft.get("parent2_v"),
+        "direction_audit": draft.get("direction_audit"),
+        "audit_context": draft.get("audit_context"),
+        "gate_results": draft.get("gate_results"),
+        "worker_failure_count": draft.get("worker_failure_count"),
+        "worker_invocation_count": draft.get("worker_invocation_count"),
+        "reviewer_feedback": draft.get("reviewer_feedback") or "",
+        "charter_digest": draft.get("charter_digest"),
+        "candidate_artifact_hash": draft.get("candidate_artifact_hash"),
+        "candidate_manifest_digest": draft.get("candidate_manifest_digest"),
+        "workflow_run_id": draft.get("workflow_run_id"),
+        "audit_attempt": draft.get("audit_attempt"),
+        "precommit_attempt": draft.get("precommit_attempt"),
+        "precommit_rework_count": draft.get("precommit_rework_count"),
+        "official_rework_count": draft.get("official_rework_count"),
+        "timeout_extensions": draft.get("timeout_extensions"),
+        "literature_probe": draft.get("literature_probe"),
+        "prepare_scope_files": draft.get("prepare_scope_files"),
+        "official_job": draft.get("official_job"),
+        "repair_baseline_artifact_hash": draft.get(
+            "repair_baseline_artifact_hash"
+        ),
+        "review_attempt_journal": draft.get("review_attempt_journal"),
+        "identity_replan_history": draft.get("identity_replan_history"),
+    }
+    # Write to primary with the override bypassed (force primary slot).
+    with no_slot_override():
+        ok = bool(write_pipeline_checkpoint(**promote_fields))
+    if not ok:
+        # Primary still active or CAS refused; leave the draft for retry.
+        return False
+    # Success: clear the draft slot.
+    clear_pipeline_checkpoint(slot_id="draft")
+    try:
+        _o.log_system_event(
+            "orchestrator.slice2b_draft_promoted",
+            "info",
+            f"One-ahead draft promoted to primary at v{draft_next_v}",
+            {"next_v": draft_next_v, "published_v": published_v},
+        )
+    except Exception:
+        pass
     return True
 
 

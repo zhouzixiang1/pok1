@@ -663,6 +663,19 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                     ):
                         if not _publication_accounting_allows_successor():
                             break
+                    elif advanced["terminal_action"] is None:
+                        # Sealed candidate (gen N) with the consumer gate chain
+                        # running in the background.  Attempt a one-ahead draft
+                        # prepare for gen N+1 to fill LLM idle time.  This is the
+                        # one-ahead producer that keeps the 2-permit LLM pool
+                        # busy while gen N's quality->review->critic->precommit
+                        # ->commit chain runs concurrently.  Best-effort and
+                        # non-fatal: any failure simply continues the canonical
+                        # spin-wait on the primary slot.
+                        try:
+                            _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                        except Exception:
+                            pass
                     recovery = advanced["recovery"]
                     await _orch.asyncio.sleep(1)
                     continue
@@ -757,6 +770,15 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             and not _publication_accounting_allows_successor()
                         ):
                             break
+                        if advanced["terminal_action"] is None:
+                            # Same one-ahead draft-prepare hook as the primary
+                            # seal branch above; the selected deterministic
+                            # recovery route can also reach a sealed/consumer-
+                            # running state where the producer may advance.
+                            try:
+                                _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                            except Exception:
+                                pass
                         recovery = advanced["recovery"]
                         await _orch.asyncio.sleep(1)
                         continue
@@ -1215,4 +1237,270 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                 )
 
     return terminal_outcome
+
+
+# ---------------------------------------------------------------------------
+# One-ahead draft-prepare helper (Slice 2b fill-bubble scheduler)
+# ---------------------------------------------------------------------------
+#
+# After gen N is sealed at workers_done, the consumer gate chain
+# (quality->review->critic->precommit->commit) runs in the background.
+# While it runs, the producer is cleared to begin preparing gen N+1 in a
+# "draft" slot so the 2-permit LLM pool stays busy instead of spin-waiting.
+#
+# This helper is BEST-EFFORT:
+#   * Failure is non-fatal; the canonical loop continues unchanged.
+#   * The draft is launched at most once per sealed candidate (guarded by the
+#     existence of a "draft" slot checkpoint).
+#   * gen_count and identity bookkeeping are NOT affected.
+#   * Draft promotion happens at the commit_bot publication barrier.
+#
+# Phase 5b: ``prepare_generation`` now accepts ``slot_id`` and the draft task
+# runs inside an ``active_slot_override('draft')`` ContextVar so every
+# checkpoint read/write transparently targets ``pipeline_state_draft.json``.
+# The draft advances selected -> preparing -> prepared -> direction_audited ->
+# master_planned -> workers_done and stops; the consumer gate chain and the
+# Slice 2b seal-at-workers-done seam are NOT triggered for the draft.  When
+# gen N publishes, the promotion barrier promotes the draft checkpoint to the
+# primary slot (see ``orchestrator_deterministic_route``).
+
+
+def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
+    """Best-effort one-ahead draft prepare for gen N+1 after a seal.
+
+    Called from the continuous loop after a sealed candidate (gen N) has its
+    consumer gate chain running in the background and
+    ``advanced["terminal_action"] is None``.  Checks the Slice 2b activation
+    path and the one-ahead coordinator's backpressure gate, then launches a
+    fire-and-forget asyncio task that drives the draft through its LLM stages.
+    Never raises and never blocks the loop.
+    """
+
+    # Lazy import through the sanctioned activation seam (inertness fence:
+    # orchestrator.py must not name producer_consumer_slice2b directly).
+    try:
+        from producer_consumer_slice2b_activation import (
+            slice2b_active,
+        )
+    except Exception:
+        return
+    if not slice2b_active():
+        return
+
+    # Resolve the per-process activation + one-ahead coordinator through the
+    # same registry used by the seal seam in orchestrator_deterministic_route.
+    try:
+        activation = _orch._slice2b_activation_registry("get")
+    except Exception:
+        activation = None
+    if activation is None:
+        # No live activation yet; the seal seam would also have refused, so
+        # there is no sealed candidate to fill behind.  Nothing to do.
+        return
+
+    try:
+        may_advance = bool(activation.producer_may_advance())
+    except Exception:
+        return
+    if not may_advance:
+        # One-ahead buffer is full (high-water=1 reached); backpressure.
+        return
+
+    # De-duplicate: at most one in-flight draft per sealed candidate.  The
+    # draft slot checkpoint is the durable marker.
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+
+        existing_draft = read_pipeline_checkpoint(slot_id="draft")
+    except Exception:
+        existing_draft = None
+    if existing_draft:
+        # A draft is already pending; do not launch another.  Promotion /
+        # abandon / re-prepare is a later phase.
+        return
+
+    # Do not start a speculative draft while a shutdown is in flight.
+    try:
+        if shutdown_mgr is not None and shutdown_mgr.is_shutting_down:
+            return
+    except Exception:
+        pass
+
+    # Launch the draft prepare as a fire-and-forget background task.  The draft
+    # runs prepare -> direction_audit -> Master -> Workers into
+    # pipeline_state_draft.json, filling the LLM permit idle time while gen N's
+    # consumer gate chain runs concurrently.  It is fenced by the one-ahead
+    # coordinator (high-water=1) and the draft checkpoint existence check above.
+    # If gen N rejects (abandons) the draft is abandoned at promotion time.
+    async def _draft_prepare_task():
+        try:
+            await _run_draft_cycle(ui, shutdown_mgr, gen_count)
+        except Exception as exc:
+            # Best-effort: a draft failure is non-fatal.  Clear the draft slot.
+            try:
+                from evolution_infra import clear_pipeline_checkpoint
+
+                clear_pipeline_checkpoint(slot_id="draft")
+            except Exception:
+                pass
+            try:
+                _orch.log_system_event(
+                    "orchestrator.slice2b_draft_prepare_failed",
+                    "warn",
+                    f"One-ahead draft prepare failed: {type(exc).__name__}: {exc}",
+                )
+            except Exception:
+                pass
+
+    try:
+        _orch.asyncio.create_task(_draft_prepare_task())
+        _orch.log_system_event(
+            "orchestrator.slice2b_draft_prepare_launched",
+            "info",
+            "One-ahead draft prepare launched for gen N+1",
+            {"gen_count": gen_count},
+        )
+    except Exception:
+        # If the task cannot be scheduled (e.g. no running loop), clear any
+        # partial draft marker so the next tick can retry.
+        try:
+            from evolution_infra import clear_pipeline_checkpoint
+
+            clear_pipeline_checkpoint(slot_id="draft")
+        except Exception:
+            pass
+
+
+async def _run_draft_cycle(ui, shutdown_mgr, gen_count):
+    """Drive the one-ahead draft (gen N+1) through its LLM stages.
+
+    Runs entirely inside an ``active_slot_override('draft')`` asyncio task
+    context so that every checkpoint read/write performed by
+    ``prepare_generation`` and the deterministic stage router transparently
+    targets ``pipeline_state_draft.json``.  The draft advances:
+
+        selected -> preparing -> prepared        (prepare_generation)
+        prepared -> direction_audited            (run_direction_audit)
+        direction_audited -> master_planned      (run_master)
+        master_planned -> workers_done           (execute_workers)
+
+    and STOPS at ``workers_done``.  It deliberately does NOT run the consumer
+    gate chain (quality->review->critic->precommit->commit) nor trigger the
+    Slice 2b seal-at-workers-done seam: the draft is a pre-computed candidate
+    that is promoted to the primary slot when gen N publishes (see the
+    promotion barrier), after which the canonical primary loop owns its gate
+    chain and publication.
+
+    Best-effort and non-fatal: any exception clears the draft slot so the next
+    loop tick can re-prepare from scratch.
+    """
+    from evolution_infra import active_slot_override, clear_pipeline_checkpoint
+    from generation_scheduler import prepare_generation as _prepare_generation
+
+    with active_slot_override("draft"):
+        # Phase 1: prepare the draft generation into the draft slot.  This
+        # computes the one-ahead target (primary_next_v + 1) and writes the
+        # ``selected`` checkpoint to pipeline_state_draft.json.
+        draft_ctx = await _prepare_generation(
+            shutdown_mgr, ui, slot_id="draft"
+        )
+        if draft_ctx is None:
+            # Prepare refused (handoff, epoch, workflow guard, shutdown, ...).
+            # Nothing to drive; leave the draft slot clean.
+            clear_pipeline_checkpoint(slot_id="draft")
+            return
+
+        # Phases 2-4: drive the deterministic stage router one stage at a time
+        # until the draft reaches workers_done.  Each iteration re-reads the
+        # draft checkpoint (via the slot override) and routes the next safe
+        # tool.  We cap the number of iterations to defend against any routing
+        # loop; the happy path is exactly four routed stages.
+        max_iterations = 12
+        for _ in range(max_iterations):
+            if shutdown_mgr is not None and shutdown_mgr.is_shutting_down:
+                # Stop pre-computing on shutdown; leave the draft checkpoint in
+                # place for a future session to promote or reap.
+                return
+            recovery = _orch._checkpoint_recovery_context(
+                "draft_stage_advance",
+                ui,
+                log_level="info",
+                label="[Draft]",
+            )
+            if not recovery or recovery.get("action") != "resume":
+                # No resumable draft checkpoint (clean/abandoned/blocked) --
+                # the draft is done or stuck; stop driving it.
+                return
+            checkpoint = recovery.get("checkpoint") or {}
+            stage = checkpoint.get("stage")
+            if stage == "workers_done":
+                # Draft pre-computation complete.  Do NOT route
+                # run_quality_gates: that would trigger the Slice 2b
+                # seal-at-workers-done seam and launch a consumer for the
+                # draft, which is not what we want.  Leave the draft sitting
+                # at workers_done for the promotion barrier to promote.
+                try:
+                    _orch.log_system_event(
+                        "orchestrator.slice2b_draft_workers_done",
+                        "info",
+                        "One-ahead draft reached workers_done; awaiting promotion",
+                        {
+                            "next_v": checkpoint.get("next_v"),
+                            "source_v": checkpoint.get("source_v"),
+                            "gen_count": gen_count,
+                        },
+                    )
+                except Exception:
+                    pass
+                return
+
+            # Route exactly one stage.  _advance_deterministic_recovery drives
+            # the handler (prepare_next_gen / run_direction_audit / run_master /
+            # execute_workers) and writes the result back to the draft slot via
+            # the override.  Terminal actions (abandon, handoff) end the draft.
+            advanced = await _orch._advance_deterministic_recovery(
+                recovery,
+                ui,
+                cost_policy=_orch.load_operator_generation_cost_policy(),
+                shutdown_mgr=shutdown_mgr,
+                log_level="info",
+                label="[Draft]",
+                gen_ctx=draft_ctx,
+                gen_count=gen_count,
+            )
+            terminal_action = advanced.get("terminal_action")
+            if terminal_action:
+                # The draft reached a terminal state (e.g. its worker stage
+                # abandoned, or classification produced a terminal action).
+                # Clear the draft slot -- it cannot be promoted.
+                try:
+                    _orch.log_system_event(
+                        "orchestrator.slice2b_draft_terminal",
+                        "info",
+                        f"One-ahead draft reached terminal action "
+                        f"{terminal_action}; clearing draft slot",
+                        {"terminal_action": terminal_action,
+                         "gen_count": gen_count},
+                    )
+                except Exception:
+                    pass
+                clear_pipeline_checkpoint(slot_id="draft")
+                return
+            if not advanced.get("routed"):
+                # Could not route (e.g. blocked recovery).  Stop driving; the
+                # draft checkpoint stays for inspection or a later retry.
+                return
+        # Iteration cap hit without reaching workers_done: clear the partial
+        # draft so the next tick starts fresh rather than churning.
+        try:
+            _orch.log_system_event(
+                "orchestrator.slice2b_draft_iteration_cap",
+                "warn",
+                "One-ahead draft exceeded stage-advance iteration cap; clearing",
+                {"gen_count": gen_count},
+            )
+        except Exception:
+            pass
+        clear_pipeline_checkpoint(slot_id="draft")
+
 

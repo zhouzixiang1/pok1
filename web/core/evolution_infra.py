@@ -22,10 +22,77 @@ from copy import deepcopy
 
 import fcntl
 import time
+import contextvars
 from contextlib import contextmanager
 from pathlib import Path
 
 log = logging.getLogger("pok.infra")
+
+# ──────────────────────────────────────────────
+# One-ahead draft slot override (Phase 5b)
+# ──────────────────────────────────────────────
+# When the one-ahead draft task (gen N+1) runs concurrently with the primary
+# consumer gate chain (gen N), it sets this ContextVar to "draft" for the
+# duration of the draft asyncio task.  asyncio.create_task() copies the
+# parent's context at creation time, so the override is scoped to exactly
+# that task tree and never leaks into the primary loop or sibling tasks.
+#
+# ``pipeline_state_path`` consults this when its explicit ``slot_id`` argument
+# is None, which makes every checkpoint read/write/read-all/projection call
+# site (including the dozens inside stage handlers that take no slot_id)
+# transparently target the draft slot while the override is active.  An
+# explicit non-None ``slot_id`` argument always wins and bypasses the
+# override, preserving the byte-identical primary path when callers pass
+# slot_id=None from outside a draft task.
+_ACTIVE_SLOT_OVERRIDE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_ACTIVE_SLOT_OVERRIDE", default=None
+)
+
+
+@contextmanager
+def active_slot_override(slot_id):
+    """Bind a slot override for the duration of a draft asyncio task.
+
+    Entering sets ``_ACTIVE_SLOT_OVERRIDE`` to ``slot_id`` so that every
+    ``pipeline_state_path`` / ``read_pipeline_checkpoint`` /
+    ``write_pipeline_checkpoint`` / ``clear_pipeline_checkpoint`` call made by
+    code paths that take no explicit ``slot_id`` resolves to the draft slot
+    file.  Exiting restores the prior value.  Must be entered inside the draft
+    task (not the caller) so the asyncio task context carries the override.
+    Yields a token suitable for ``ContextVar.reset`` if needed.
+    """
+    token = _ACTIVE_SLOT_OVERRIDE.set(slot_id)
+    try:
+        yield token
+    finally:
+        _ACTIVE_SLOT_OVERRIDE.reset(token)
+
+
+@contextmanager
+def no_slot_override():
+    """Temporarily clear the slot override to read/write the primary slot.
+
+    Used inside a draft task that needs to consult the *primary* checkpoint
+    (e.g. to derive the draft's one-ahead ``next_v`` from the primary's sealed
+    generation N).  Restores the prior override value on exit.
+    """
+    token = _ACTIVE_SLOT_OVERRIDE.set(None)
+    try:
+        yield token
+    finally:
+        _ACTIVE_SLOT_OVERRIDE.reset(token)
+
+
+def current_slot_override():
+    """Return the active slot override, or None if no override is bound.
+
+    Lets callers (e.g. ``prepare_generation``) detect that they are running
+    inside a draft task without inspecting the ContextVar directly.
+    """
+    try:
+        return _ACTIVE_SLOT_OVERRIDE.get()
+    except LookupError:
+        return None
 
 # Local module imports (same directory)
 from glicko2 import Glicko2Player, update_rating_period
@@ -84,7 +151,21 @@ def pipeline_state_path(slot_id=None):
     ``slot_id=None`` (default) returns the primary/canonical checkpoint file
     (backward-compatible with all existing callers).  A non-None slot_id
     returns ``pipeline_state_<slot_id>.json`` for a concurrent generation.
+
+    Phase 5b one-ahead draft: when a draft asyncio task is running and has
+    bound ``_ACTIVE_SLOT_OVERRIDE``, a caller-supplied ``slot_id=None`` is
+    transparently redirected to the draft slot.  An explicit non-None
+    ``slot_id`` always wins.  This keeps the byte-identical primary path for
+    every non-draft caller while letting the draft's stage handlers (which
+    take no slot_id) target the draft slot file.
     """
+    if slot_id is None:
+        try:
+            override = _ACTIVE_SLOT_OVERRIDE.get()
+        except LookupError:
+            override = None
+        if override is not None:
+            slot_id = override
     if slot_id is None:
         return PIPELINE_STATE_FILE
     safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(slot_id))
