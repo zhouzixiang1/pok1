@@ -34,7 +34,7 @@ def test_tools_none_reaches_options_and_cli_as_explicit_zero_tools(
     captured = {}
     events = []
 
-    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name, **_kwargs):
         captured["prompt"] = full_prompt
         captured["options"] = options
         return ["ok"], 0.0, {}

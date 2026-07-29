@@ -541,7 +541,7 @@ def test_default_official_analysis_runner_supports_headless_ui(monkeypatch, tmp_
 
     seen = {}
 
-    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name, **_kwargs):
         seen.update({
             "full_prompt": full_prompt,
             "tools": options.tools,

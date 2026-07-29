@@ -1774,14 +1774,21 @@ async def run_claude_query(
             # Review, Critic, direction_audit, crossover, etc.).  FIFO ordering
             # prevents starvation; Master/Worker stages are temporally separated
             # by the linear pipeline stage machine so they rarely contend.
+            #
+            # The permit is acquired PER-ATTEMPT inside the signature-retry loop
+            # (llm_query_retry._run_stream_with_signature_retry_attempts), NOT
+            # around the whole retry loop.  This means signature-retry backoff
+            # sleeps RELEASE the permit so other LLM work can fill the gap —
+            # critical for keeping the 2-permit pool fully utilized.
             from llm_concurrency import get_global_llm_semaphore
 
             _global_llm_sem = get_global_llm_semaphore()
             _sem_wait_start = time.time()
-            async with _global_llm_sem:
-                lifecycle_fields["semaphore_wait_sec"] = round(time.time() - _sem_wait_start, 3)
-                full_text, cost_usd, usage = await _run_stream_with_signature_retry(
-                    full_prompt, options, log_file_path, ui, role_name)
+            lifecycle_fields["semaphore_wait_sec"] = round(time.time() - _sem_wait_start, 3)
+            full_text, cost_usd, usage = await _run_stream_with_signature_retry(
+                full_prompt, options, log_file_path, ui, role_name,
+                semaphore=_global_llm_sem,
+            )
 
         streamed_output = "\n".join(full_text)
         output = streamed_output

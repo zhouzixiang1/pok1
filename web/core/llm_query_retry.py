@@ -941,9 +941,15 @@ async def _signature_retry_sleep(delay, role_name, log_file_path):
 # ---------------------------------------------------------------------------
 
 async def _run_stream_with_signature_retry(
-    full_prompt, options, log_file_path, ui, role_name
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
 ):
-    """Run bounded SDK retries under one role-wide total wall-clock budget."""
+    """Run bounded SDK retries under one role-wide total wall-clock budget.
+
+    ``semaphore`` (the global LLM semaphore) is acquired PER-ATTEMPT inside the
+    retry loop, so signature-retry backoff sleeps release the permit and allow
+    other LLM work to fill the gap.  This keeps the 2-permit pool utilized even
+    during multi-attempt signature retries.
+    """
 
     import llm_query as _lq
 
@@ -959,19 +965,24 @@ async def _run_stream_with_signature_retry(
     })
     try:
         return await _run_stream_with_signature_retry_attempts(
-            full_prompt, options, log_file_path, ui, role_name
+            full_prompt, options, log_file_path, ui, role_name,
+            semaphore=semaphore,
         )
     finally:
         _lq._LLM_TOTAL_DEADLINE.reset(token)
 
 
 async def _run_stream_with_signature_retry_attempts(
-    full_prompt, options, log_file_path, ui, role_name
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
 ):
     """Run one streaming query with retries on transient SDK signature errors.
 
     Extracted so the 529/429 retry paths reuse the same handling as the initial query.
     Returns (texts_list, cost_usd, usage).
+
+    ``semaphore`` (the global LLM semaphore) is acquired per-attempt around the
+    actual stream processing.  Backoff sleeps between attempts run WITHOUT the
+    permit, so other LLM roles can fill the gap during signature retries.
     """
     import llm_query as _lq
 
@@ -998,9 +1009,15 @@ async def _run_stream_with_signature_retry_attempts(
         billing_token = _lq._LLM_BILLING_RESULTS.set(billing_results)
         _attempt_start = time.time()
         try:
-            texts, cost_usd, usage, stream_metrics = await _lq._process_stream(
-                query_gen, log_file_path, ui, role_name
-            )
+            if semaphore is not None:
+                async with semaphore:
+                    texts, cost_usd, usage, stream_metrics = await _lq._process_stream(
+                        query_gen, log_file_path, ui, role_name
+                    )
+            else:
+                texts, cost_usd, usage, stream_metrics = await _lq._process_stream(
+                    query_gen, log_file_path, ui, role_name
+                )
             attempt_cost, attempt_usage = _record_completed_billing_attempt(
                 role_name=role_name,
                 ui=ui,

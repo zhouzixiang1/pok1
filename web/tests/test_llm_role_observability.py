@@ -190,7 +190,7 @@ async def _no_wait(*_args, **_kwargs):
 def test_run_claude_query_emits_role_start_and_done(monkeypatch, tmp_path):
     events = []
 
-    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name, **_kwargs):
         assert "base prompt" in full_prompt
         assert "context body" in full_prompt
         return ["hello"], 0.125, {"input_tokens": 10, "output_tokens": 3}
@@ -267,7 +267,7 @@ def test_strict_query_parses_and_persists_terminal_result_not_stream_aggregate(
         result='{"terminal":true}',
     )
 
-    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name, **_kwargs):
         del options, log_file_path, ui, role_name
         assert "SYSTEM-OWNED STRICT SCHEMA REPAIR" in full_prompt
         capture = llm_query._STRICT_PROVIDER_RESULTS.get()
@@ -323,7 +323,7 @@ def test_strict_query_parses_and_persists_terminal_result_not_stream_aggregate(
 def test_run_claude_query_injects_runtime_path_contract(monkeypatch, tmp_path):
     seen = {}
 
-    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name, **_kwargs):
         seen["prompt"] = full_prompt
         seen["cwd"] = options.cwd
         return ["ok"], 0.0, {}

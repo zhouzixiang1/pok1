@@ -390,7 +390,7 @@ def test_all_subagent_roles_reach_provider_with_independent_receipts(monkeypatch
     captures = []
     events = []
 
-    async def provider_capture(full_prompt, options, log_file_path, ui, role_name):
+    async def provider_capture(full_prompt, options, log_file_path, ui, role_name, **_kwargs):
         captures.append((full_prompt, options, role_name))
         return [f"ok:{role_name}"], 0.0, {}
 
@@ -811,7 +811,7 @@ def test_tools_and_paths_are_frozen_before_quota_wait(monkeypatch, tmp_path):
         read_dirs.append(ROOT)
         write_scope["files"] = [ROOT / "web/core/llm_query.py"]
 
-    async def provider(full_prompt, options, *_args):
+    async def provider(full_prompt, options, *_args, **_kwargs):
         captured["prompt"] = full_prompt
         captured["options"] = options
         return ["ok"], 0.0, {}
