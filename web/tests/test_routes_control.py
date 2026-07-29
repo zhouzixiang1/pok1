@@ -948,6 +948,20 @@ class TestStatus:
         monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
         monkeypatch.setattr(app_module.web_ui, "log_history", lambda *args: events.append(args))
 
+        # Isolate the Arena manager so the lifespan startup does not acquire the
+        # shared Arena process owner held by a concurrently running service.
+        # Without this, running the test suite while ``pok-evolution`` is live
+        # fails with ``ArenaConflict: already has a process owner`` -- a test-
+        # isolation hole unrelated to the view-only contract under test.
+        async def _noop_arena_startup(*_args, **_kwargs):
+            return False
+
+        async def _noop_arena_shutdown(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(app_module.arena_manager, "startup", _noop_arena_startup)
+        monkeypatch.setattr(app_module.arena_manager, "shutdown", _noop_arena_shutdown)
+
         async def run_lifespan():
             async with app_module.lifespan(app_module.app):
                 assert app_state.to_dict()["running"] is False

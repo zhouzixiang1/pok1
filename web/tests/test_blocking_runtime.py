@@ -49,3 +49,52 @@ def test_back_to_back_isolated_calls_do_not_depend_on_default_executor_wakeup():
 
     assert (first, second) == ("first", "second")
     assert default_executor is None
+
+
+def test_slow_blocking_call_does_not_starve_the_event_loop():
+    """Regression guard for the /start hang.
+
+    The boundary must not busy-poll the worker future while a slow blocking
+    call (e.g. ``_runtime_launch_barrier_snapshot`` taking ~44s) runs: a tight
+    ``while not done: await asyncio.sleep(0.001)`` loop wakes the event loop
+    1000x/sec and starves every concurrent request (health, SSE, the HTTP
+    response itself), which is exactly why ``/api/control/start`` hung for
+    120s+ with HTTP 000. The fix uses a single ``add_done_callback`` wakeup, so
+    a concurrent "health-check" coroutine must keep making progress while the
+    blocking worker runs.
+    """
+
+    import time
+
+    def slow_worker():
+        time.sleep(1.0)
+        return "worker-done"
+
+    async def health_like():
+        ticks = 0
+        for _ in range(10):
+            await asyncio.sleep(0.1)
+            ticks += 1
+        return ticks
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        worker_task = asyncio.create_task(run_blocking_isolated(slow_worker))
+        health_task = asyncio.create_task(health_like())
+        ticks = await health_task
+        worker_result = await worker_task
+        elapsed = loop.time() - start
+        return ticks, worker_result, elapsed
+
+    ticks, worker_result, elapsed = asyncio.run(scenario())
+
+    # The worker ran to completion.
+    assert worker_result == "worker-done"
+    # The concurrent coroutine made full progress (not starved by busy-poll).
+    assert ticks == 10
+    # Both finished in roughly the slow-worker duration, not 2x it (which would
+    # indicate they ran serially) nor far beyond it (which would indicate
+    # starvation). Allow generous slack for CI scheduling jitter.
+    assert elapsed < 2.5
+

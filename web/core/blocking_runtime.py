@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 import contextvars
 from functools import partial
 from typing import Any, TypeVar
@@ -36,25 +36,41 @@ async def run_blocking_isolated(
 
     context = contextvars.copy_context()
     invocation = partial(function, *args, **kwargs)
-    executor = ThreadPoolExecutor(
+    executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix=thread_name_prefix,
     )
+    loop = asyncio.get_running_loop()
+    # Bridge the concurrent.futures result back to the event loop with a single
+    # wakeup instead of a tight poll. ``add_done_callback`` schedules exactly
+    # one ``loop.call_soon_threadsafe`` when the worker finishes, so the loop
+    # sleeps idle (rather than waking 1000x/sec) while a slow blocking call
+    # runs -- this was the root cause of /start starving the event loop while
+    # ``_runtime_launch_barrier_snapshot`` ran for ~44s twice. The bridge does
+    # not depend on the loop's default executor (satisfies the no-default-
+    # executor contract) and remains responsive under constrained runtimes.
+    aio_future: asyncio.Future = loop.create_future()
+
+    def _transfer_result(done_future: concurrent.futures.Future) -> None:
+        def _set_result() -> None:
+            if not aio_future.done():
+                try:
+                    aio_future.set_result(done_future.result())
+                except BaseException as exc:  # noqa: BLE001 - propagate any
+                    aio_future.set_exception(exc)
+        loop.call_soon_threadsafe(_set_result)
+
     try:
-        concurrent = executor.submit(context.run, invocation)
+        work_future = executor.submit(context.run, invocation)
     except BaseException:
         executor.shutdown(wait=False, cancel_futures=True)
         raise
+    work_future.add_done_callback(_transfer_result)
     try:
-        # Poll the owned future instead of relying solely on the loop's
-        # cross-thread notification pipe. This keeps the boundary responsive
-        # during interpreter/server shutdown and under constrained runtimes.
-        while not concurrent.done():
-            await asyncio.sleep(0.001)
-        return concurrent.result()
+        return await aio_future
     finally:
-        if concurrent.done():
+        if work_future.done():
             executor.shutdown(wait=True, cancel_futures=False)
         else:
-            concurrent.cancel()
+            work_future.cancel()
             executor.shutdown(wait=False, cancel_futures=True)
