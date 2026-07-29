@@ -790,9 +790,10 @@ def _git_blob_bytes(ref: str, relative_path: str) -> bytes:
 
 
 def _publication_commit_paths(intent: dict) -> tuple[str, str]:
+    cert_path = str(intent.get("certificate_relative_path") or "")
     return (
         bot_relpath(int(intent["version"])),
-        str(intent["certificate_relative_path"]),
+        cert_path,
     )
 
 
@@ -1047,7 +1048,10 @@ def _create_publication_commit(intent: dict) -> str:
             "Refusing publication commit with pre-existing blocking staged files: "
             + ", ".join(blocking[:10])
         )
-    _ei._git("add", "--", bot_path, certificate_path, check=False)
+    add_targets = [bot_path]
+    if certificate_path:
+        add_targets.append(certificate_path)
+    _ei._git("add", "--", *add_targets, check=False)
     ref_updated = False
     index_path = _ei.RESULTS_DIR / (
         f".publication-index.{os.getpid()}.{uuid.uuid4().hex}"
@@ -1342,27 +1346,37 @@ def ensure_bot_git_publication(
 
     from bot_artifact import hash_path, validate_completion_tag
     from official_certification import FULL_POLICY_ID
-    from publication_transaction import publication_intent_structure_errors
+    from publication_transaction import (
+        publication_intent_structure_errors,
+        PUBLICATION_INTENT_KIND_STAGING,
+    )
 
     intent = dict(publication_intent or {})
     errors = publication_intent_structure_errors(intent)
     if errors:
         raise RuntimeError("invalid publication intent: " + "; ".join(errors))
     version = int(intent["version"])
+    is_staging = intent.get("kind") == PUBLICATION_INTENT_KIND_STAGING
     certificate = dict(official_certificate or {})
-    expected_certificate = {
-        "certificate_digest": intent.get("official_certificate_digest"),
-        "candidate_hash": intent.get("candidate_artifact_hash"),
-        "policy_id": intent.get("official_policy_id"),
-    }
-    for field, expected in expected_certificate.items():
-        if certificate.get(field) != expected:
-            raise RuntimeError(f"official certificate {field} differs from publication intent")
-    if certificate.get("policy_id") != FULL_POLICY_ID:
-        raise RuntimeError("publication intent is not bound to the full official policy")
-    if hash_path(_ei.get_bot_dir(version)) != intent.get("candidate_artifact_hash"):
-        raise RuntimeError("candidate changed after publication intent was recorded")
-    _ei._validate_publication_certificate_file(intent)
+    if is_staging:
+        # Staging tier: no official certificate exists yet (cert runs async).
+        # Only the candidate hash must match; skip all cert-bound validation.
+        if hash_path(_ei.get_bot_dir(version)) != intent.get("candidate_artifact_hash"):
+            raise RuntimeError("candidate changed after publication intent was recorded")
+    else:
+        expected_certificate = {
+            "certificate_digest": intent.get("official_certificate_digest"),
+            "candidate_hash": intent.get("candidate_artifact_hash"),
+            "policy_id": intent.get("official_policy_id"),
+        }
+        for field, expected in expected_certificate.items():
+            if certificate.get(field) != expected:
+                raise RuntimeError(f"official certificate {field} differs from publication intent")
+        if certificate.get("policy_id") != FULL_POLICY_ID:
+            raise RuntimeError("publication intent is not bound to the full official policy")
+        if hash_path(_ei.get_bot_dir(version)) != intent.get("candidate_artifact_hash"):
+            raise RuntimeError("candidate changed after publication intent was recorded")
+        _ei._validate_publication_certificate_file(intent)
     _ei._require_national_epoch_registry_for_commit()
     _ei._git_ensure_main_branch()
 
@@ -1392,19 +1406,32 @@ def ensure_bot_git_publication(
             )
 
         local_refs = _ei._validate_local_publication_refs(intent, commit_oid)
-        tag_validation = validate_completion_tag(
-            _ei.get_bot_dir(version),
-            expected_metadata={
-                "official-certificate": str(
-                    intent["official_certificate_digest"]
-                ),
-                "official-candidate-hash": str(
-                    intent["candidate_artifact_hash"]
-                ),
-                "official-policy": str(intent["official_policy_id"]),
-            },
-            certificate_path=str(intent["certificate_relative_path"]),
-        )
+        if is_staging:
+            # Staging tag annotation carries staging-candidate-hash, not
+            # official-certificate lines, and has no certificate file.
+            tag_validation = validate_completion_tag(
+                _ei.get_bot_dir(version),
+                expected_metadata={
+                    "staging-candidate-hash": str(
+                        intent["candidate_artifact_hash"]
+                    ),
+                },
+                certificate_path="",
+            )
+        else:
+            tag_validation = validate_completion_tag(
+                _ei.get_bot_dir(version),
+                expected_metadata={
+                    "official-certificate": str(
+                        intent["official_certificate_digest"]
+                    ),
+                    "official-candidate-hash": str(
+                        intent["candidate_artifact_hash"]
+                    ),
+                    "official-policy": str(intent["official_policy_id"]),
+                },
+                certificate_path=str(intent["certificate_relative_path"]),
+            )
         if tag_validation.get("valid") is not True:
             raise RuntimeError(
                 "completion tag failed frozen publication validation: "

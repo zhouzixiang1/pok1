@@ -552,6 +552,7 @@ def publication_intent_live_errors(
     errors = publication_intent_checkpoint_errors(intent, checkpoint)
     if not isinstance(intent, dict):
         return errors
+    staging_intent = _intent_is_staging(intent)
     try:
         from bot_artifact import hash_path
 
@@ -561,29 +562,33 @@ def publication_intent_live_errors(
         errors.append(
             f"publication_intent_candidate_hash_error:{type(exc).__name__}"
         )
-    if canonical_digest(official_status) != intent.get("official_status_digest"):
-        errors.append("publication_intent_official_status_drift")
     if final_gate_ledger_digest != intent.get("final_gate_ledger_digest"):
         errors.append("publication_intent_final_ledger_drift")
-    certificate = Path(repo_root) / str(
-        intent.get("certificate_relative_path") or ""
-    )
-    try:
-        if file_sha256(certificate) != intent.get("certificate_file_sha256"):
-            errors.append("publication_intent_certificate_file_drift")
-        payload = json.loads(certificate.read_text(encoding="utf-8"))
-        if payload.get("attestation_digest") != intent.get(
-            "certificate_attestation_digest"
-        ):
-            errors.append("publication_intent_attestation_digest_drift")
-        if payload.get("certificate_digest") != intent.get(
-            "official_certificate_digest"
-        ):
-            errors.append("publication_intent_certificate_digest_drift")
-    except Exception as exc:
-        errors.append(
-            f"publication_intent_certificate_read_error:{type(exc).__name__}"
+    if not staging_intent:
+        # Certificate-bound checks apply only to the certified tier.  A staging
+        # intent publishes without an official certificate; its official-status
+        # and certificate-file fields are empty and must not be rebound here.
+        if canonical_digest(official_status) != intent.get("official_status_digest"):
+            errors.append("publication_intent_official_status_drift")
+        certificate = Path(repo_root) / str(
+            intent.get("certificate_relative_path") or ""
         )
+        try:
+            if file_sha256(certificate) != intent.get("certificate_file_sha256"):
+                errors.append("publication_intent_certificate_file_drift")
+            payload = json.loads(certificate.read_text(encoding="utf-8"))
+            if payload.get("attestation_digest") != intent.get(
+                "certificate_attestation_digest"
+            ):
+                errors.append("publication_intent_attestation_digest_drift")
+            if payload.get("certificate_digest") != intent.get(
+                "official_certificate_digest"
+            ):
+                errors.append("publication_intent_certificate_digest_drift")
+        except Exception as exc:
+            errors.append(
+                f"publication_intent_certificate_read_error:{type(exc).__name__}"
+            )
     current_pool = sorted({str(item) for item in current_strict_bots})
     candidate = str(intent.get("bot") or "")
     without_candidate = [item for item in current_pool if item != candidate]

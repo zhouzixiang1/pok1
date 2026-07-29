@@ -279,6 +279,13 @@ async def commit_bot(args):
             "validation_errors": publication_errors[:20],
         })
     ckpt = _matching_checkpoint(v, source_v)
+    # Two-tier publication: the checkpoint selects the publication tier.  The
+    # default ("certified") preserves the historical byte-identical official
+    # EXE certification path.  "staging" publishes the bot bytes immediately
+    # without an inline official certificate; async certification produces the
+    # certified-tier tag later.
+    publication_tier = str((ckpt or {}).get("publication_tier") or "certified")
+    is_staging_publication = publication_tier == "staging"
     ledger = validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=bot_dir)
     missing_gates = ledger["missing_gates"]
     failed_gates = ledger["failed_gates"]
@@ -309,14 +316,20 @@ async def commit_bot(args):
         })
 
     official_certification_status = {}
-    official_full_gate = await _run_official_full_commit_gate(
-        v,
-        source_v,
-        bot_dir,
-        ckpt,
-        gate_results,
-        retry_terminal=existing_infra is not None,
-    )
+    if is_staging_publication:
+        # Staging tier: skip the inline official EXE certification gate.  The
+        # bot bytes are published immediately and official certification runs
+        # asynchronously, producing a certified-tier tag at the same commit.
+        official_full_gate = {"outcome": "staging_skipped", "tier": "staging"}
+    else:
+        official_full_gate = await _run_official_full_commit_gate(
+            v,
+            source_v,
+            bot_dir,
+            ckpt,
+            gate_results,
+            retry_terminal=existing_infra is not None,
+        )
     if official_full_gate.get("outcome") == "operator_bootstrap_required":
         if not _record_official_bootstrap_required_checkpoint(
             v,
@@ -466,7 +479,7 @@ async def commit_bot(args):
             "checkpoint_stage": resume_stage,
             "official_full_gate": official_full_gate,
         })
-    if not official_full_gate.get("passed"):
+    if not is_staging_publication and not official_full_gate.get("passed"):
         official_stage = _record_official_full_gate_checkpoint(
             v,
             source_v,
@@ -510,20 +523,21 @@ async def commit_bot(args):
             "official_full_gate": official_full_gate,
         })
     official_certification_status = official_full_gate.get("status") or {}
-    if not _record_official_full_pass_checkpoint(
-        v,
-        source_v,
-        ckpt,
-        official_full_gate,
-        clear_infra_failure=existing_infra is not None,
-        clear_official_job=bool((ckpt or {}).get("official_job")),
-    ):
-        return _json_tool_result({
-            "error": "COMMIT BLOCKED: failed to persist official full certificate in checkpoint ledger.",
-            "version": v,
-            "source_v": source_v,
-        })
-    ckpt = read_pipeline_checkpoint() or ckpt
+    if not is_staging_publication:
+        if not _record_official_full_pass_checkpoint(
+            v,
+            source_v,
+            ckpt,
+            official_full_gate,
+            clear_infra_failure=existing_infra is not None,
+            clear_official_job=bool((ckpt or {}).get("official_job")),
+        ):
+            return _json_tool_result({
+                "error": "COMMIT BLOCKED: failed to persist official full certificate in checkpoint ledger.",
+                "version": v,
+                "source_v": source_v,
+            })
+        ckpt = read_pipeline_checkpoint() or ckpt
 
     # Diversity evidence is owned by generation-frozen native TCP snapshots.
     # Publication never reopens an auxiliary live behavior archive.
@@ -621,7 +635,7 @@ async def commit_bot(args):
             "source_v": source_v,
             "checkpoint_preserved": True,
         })
-    if not official_certificate:
+    if not is_staging_publication and not official_certificate:
         return _json_tool_result({
             "error": "COMMIT BLOCKED: official certificate projection is missing.",
             "version": v,
@@ -629,57 +643,88 @@ async def commit_bot(args):
         })
     try:
         from national_runtime_authority import strict_published_bot_names
-        from official_certification import publish_certificate_attestation
         from publication_transaction import (
             build_publication_intent,
+            build_staging_publication_intent,
             file_sha256,
             publication_gate_ledger_digest,
         )
 
-        certificate_publication = publish_certificate_attestation(
-            official_certification_status,
-            bot_dir,
-        )
-        certificate_relative_path = str(
-            certificate_publication.get("relative_path") or ""
-        )
-        certificate_path = PROJECT_ROOT / certificate_relative_path
-        publication_intent = build_publication_intent(
-            checkpoint=ckpt,
-            candidate_artifact_hash=str(
-                official_certificate.get("candidate_hash") or ""
-            ),
-            certificate_digest=str(
-                official_certificate.get("certificate_digest") or ""
-            ),
-            certificate_policy_id=str(
-                official_certificate.get("policy_id") or ""
-            ),
-            official_status=official_certification_status,
-            certificate_relative_path=certificate_relative_path,
-            certificate_file_sha256=file_sha256(certificate_path),
-            certificate_attestation_digest=str(
-                certificate_publication.get("attestation_digest") or ""
-            ),
-            final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
-            strategy_tag=strategy,
-            rating_info=rating_info,
-            baseline_head=_git("rev-parse", f"refs/heads/{EVOLUTION_BRANCH}").strip(),
-            baseline_remote_main=_git(
-                "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
-            ).strip(),
-            baseline_remote_completion_refs=(
-                remote_completion_ref_snapshot()
-                if (
-                    evolution_git_push_required()
-                    or evolution_git_push_enabled()
-                )
-                else {}
-            ),
-            prepublication_strict_bots=strict_published_bot_names(),
-            remote_publication_required=evolution_git_push_required(),
-            remote_publication_enabled=evolution_git_push_enabled(),
-        )
+        if is_staging_publication:
+            # Staging tier: no official certificate.  Bind the candidate hash
+            # from the gate-ledger code fingerprint and publish without any
+            # certificate-bound fields; async certification follows.
+            publication_intent = build_staging_publication_intent(
+                checkpoint=ckpt,
+                candidate_artifact_hash=str(
+                    ledger.get("current_code_fingerprint") or ""
+                ),
+                final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
+                strategy_tag=strategy,
+                rating_info=rating_info,
+                baseline_head=_git("rev-parse", f"refs/heads/{EVOLUTION_BRANCH}").strip(),
+                baseline_remote_main=_git(
+                    "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
+                ).strip(),
+                baseline_remote_completion_refs=(
+                    remote_completion_ref_snapshot()
+                    if (
+                        evolution_git_push_required()
+                        or evolution_git_push_enabled()
+                    )
+                    else {}
+                ),
+                prepublication_strict_bots=strict_published_bot_names(),
+                remote_publication_required=evolution_git_push_required(),
+                remote_publication_enabled=evolution_git_push_enabled(),
+            )
+        else:
+            from official_certification import publish_certificate_attestation
+
+            certificate_publication = publish_certificate_attestation(
+                official_certification_status,
+                bot_dir,
+            )
+            certificate_relative_path = str(
+                certificate_publication.get("relative_path") or ""
+            )
+            certificate_path = PROJECT_ROOT / certificate_relative_path
+            publication_intent = build_publication_intent(
+                checkpoint=ckpt,
+                candidate_artifact_hash=str(
+                    official_certificate.get("candidate_hash") or ""
+                ),
+                certificate_digest=str(
+                    official_certificate.get("certificate_digest") or ""
+                ),
+                certificate_policy_id=str(
+                    official_certificate.get("policy_id") or ""
+                ),
+                official_status=official_certification_status,
+                certificate_relative_path=certificate_relative_path,
+                certificate_file_sha256=file_sha256(certificate_path),
+                certificate_attestation_digest=str(
+                    certificate_publication.get("attestation_digest") or ""
+                ),
+                final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
+                strategy_tag=strategy,
+                rating_info=rating_info,
+                baseline_head=_git("rev-parse", f"refs/heads/{EVOLUTION_BRANCH}").strip(),
+                baseline_remote_main=_git(
+                    "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
+                ).strip(),
+                baseline_remote_completion_refs=(
+                    remote_completion_ref_snapshot()
+                    if (
+                        evolution_git_push_required()
+                        or evolution_git_push_enabled()
+                    )
+                    else {}
+                ),
+                prepublication_strict_bots=strict_published_bot_names(),
+                remote_publication_required=evolution_git_push_required(),
+                remote_publication_enabled=evolution_git_push_enabled(),
+            )
     except Exception as exc:
         return _json_tool_result({
             "error": "COMMIT BLOCKED: publication intent could not be built.",
@@ -739,13 +784,19 @@ async def commit_bot(args):
     handoff_result = {
         **publication_result,
         "push_ok": push_ok,
+        "publication_tier": publication_tier,
         "next_tool": "run_archivist",
         "directive": (
             "Call run_archivist for this exact version/source before preparing "
             "another generation."
         ),
     }
-    if official_full_gate:
+    if is_staging_publication:
+        # Staging published the bot bytes without an official certificate.
+        # Async certification must follow to produce the certified-tier tag at
+        # the same commit.
+        handoff_result["async_certification_pending"] = True
+    if official_full_gate and not is_staging_publication:
         handoff_result["official_full_gate"] = {
             "status": official_certification_status.get("status"),
             "mode": official_certification_status.get("mode"),

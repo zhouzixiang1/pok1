@@ -167,6 +167,7 @@ def _revalidate_publication_authority_before_push(
     )
     from official_certification import official_full_certified
     from publication_transaction import (
+        PUBLICATION_INTENT_KIND_STAGING,
         publication_gate_ledger_digest,
         publication_intent_checkpoint_errors,
         publication_intent_live_errors,
@@ -179,6 +180,9 @@ def _revalidate_publication_authority_before_push(
             "pre-push publishing checkpoint changed: "
             + "; ".join(checkpoint_errors[:30])
         )
+    staging_intent = isinstance(intent, dict) and (
+        intent.get("kind") == PUBLICATION_INTENT_KIND_STAGING
+    )
     official_status = (
         (((current or {}).get("gate_results") or {}).get("official_full") or {})
         .get("status")
@@ -207,21 +211,25 @@ def _revalidate_publication_authority_before_push(
             current_remote_required=_tc.evolution_git_push_required(),
         )
     )
-    tag_matches, tag_mismatch = _tc._existing_local_bot_tag_matches_certificate(
-        v,
-        _tc._official_certificate_projection(official_status),
-    )
-    if not tag_matches:
-        errors.append(
-            "pre_push_completion_identity_invalid:"
-            + (tag_mismatch or "unknown")
+    if not staging_intent:
+        # Certificate-bound identity checks apply only to the certified tier.
+        # A staging intent has no official certificate; its completion tag
+        # carries staging metadata, not official-certificate lines.
+        tag_matches, tag_mismatch = _tc._existing_local_bot_tag_matches_certificate(
+            v,
+            _tc._official_certificate_projection(official_status),
         )
-    if not official_full_certified(
-        official_status,
-        bot_dir,
-        require_published=True,
-    ):
-        errors.append("pre_push_official_certificate_identity_invalid")
+        if not tag_matches:
+            errors.append(
+                "pre_push_completion_identity_invalid:"
+                + (tag_mismatch or "unknown")
+            )
+        if not official_full_certified(
+            official_status,
+            bot_dir,
+            require_published=True,
+        ):
+            errors.append("pre_push_official_certificate_identity_invalid")
     errors = list(dict.fromkeys(errors))
     if errors:
         raise RuntimeError(
@@ -244,12 +252,16 @@ def _resume_publication_transaction(v, source_v, ckpt):
     )
     from official_certification import official_full_certified
     from publication_transaction import (
+        PUBLICATION_INTENT_KIND_STAGING,
         publication_gate_ledger_digest,
         publication_intent_live_errors,
     )
 
     bot_dir = _tc.get_bot_dir(v)
     intent = (ckpt or {}).get("publication_intent")
+    staging_intent = isinstance(intent, dict) and (
+        intent.get("kind") == PUBLICATION_INTENT_KIND_STAGING
+    )
     official_status = (
         (((ckpt or {}).get("gate_results") or {}).get("official_full") or {})
         .get("status")
@@ -258,28 +270,41 @@ def _resume_publication_transaction(v, source_v, ckpt):
     official_certificate = _tc._official_certificate_projection(official_status)
     pending_proof = None
     if _tc.git_has_tag(v):
-        tag_matches, mismatch = _tc._existing_local_bot_tag_matches_certificate(
-            v, official_certificate
-        )
-        if not tag_matches:
-            return _publication_pending_result(
-                v,
-                source_v,
-                error=(
-                    "COMMIT BLOCKED: existing completion tag does not match "
-                    "the frozen publication intent."
-                ),
-                reason=mismatch,
+        if staging_intent:
+            # Staging completion tags carry staging metadata, not official
+            # certificate lines; skip the certificate-bound tag match.
+            try:
+                pending_proof = build_pending_local_publication_proof(bot_dir)
+            except Exception as exc:
+                return _publication_pending_result(
+                    v,
+                    source_v,
+                    error="COMMIT BLOCKED: local publication proof is invalid.",
+                    reason=f"{type(exc).__name__}: {str(exc)[:300]}",
+                )
+        else:
+            tag_matches, mismatch = _tc._existing_local_bot_tag_matches_certificate(
+                v, official_certificate
             )
-        try:
-            pending_proof = build_pending_local_publication_proof(bot_dir)
-        except Exception as exc:
-            return _publication_pending_result(
-                v,
-                source_v,
-                error="COMMIT BLOCKED: local publication proof is invalid.",
-                reason=f"{type(exc).__name__}: {str(exc)[:300]}",
-            )
+            if not tag_matches:
+                return _publication_pending_result(
+                    v,
+                    source_v,
+                    error=(
+                        "COMMIT BLOCKED: existing completion tag does not match "
+                        "the frozen publication intent."
+                    ),
+                    reason=mismatch,
+                )
+            try:
+                pending_proof = build_pending_local_publication_proof(bot_dir)
+            except Exception as exc:
+                return _publication_pending_result(
+                    v,
+                    source_v,
+                    error="COMMIT BLOCKED: local publication proof is invalid.",
+                    reason=f"{type(exc).__name__}: {str(exc)[:300]}",
+                )
 
     remote_required = bool((intent or {}).get("remote_publication_required"))
     remote_attempted = bool(
@@ -347,7 +372,7 @@ def _resume_publication_transaction(v, source_v, ckpt):
             error="COMMIT BLOCKED: publication intent or its live inputs drifted.",
             validation_errors=live_errors[:30],
         )
-    if not official_full_certified(official_status, bot_dir):
+    if not staging_intent and not official_full_certified(official_status, bot_dir):
         return _publication_pending_result(
             v,
             source_v,
@@ -414,7 +439,7 @@ def _resume_publication_transaction(v, source_v, ckpt):
             reason=f"{type(exc).__name__}: {str(exc)[:300]}",
             remote_proof=remote_proof,
         )
-    if not official_full_certified(
+    if not staging_intent and not official_full_certified(
         official_status,
         bot_dir,
         require_published=True,
