@@ -6,7 +6,9 @@ import pytest
 from bot_namespace import (
     NATIONAL_RUNTIME_MANIFEST,
     POLICY_EPOCH_RECEIPT,
+    ROLE_OFFICIAL_OPPONENT,
     ROLE_PARENT_SOURCE,
+    ROLE_RATING_POOL,
     artifact_contract_digest,
     bot_name,
     bot_tag,
@@ -182,13 +184,57 @@ def test_published_role_requires_completion_identity_and_full_certificate(tmp_pa
         repo_root=tmp_path,
         publication_resolver=publication,
         certificate_resolver=certificate,
+        require_certificate=True,
     )
 
     assert spec.eligible is True
     assert spec.certificate_digest == "a" * 64
+    assert spec.publication_tier == "certified"
 
 
 def test_published_role_fails_closed_without_certificate(tmp_path):
+    """Rating pool and official opponents ALWAYS require a certificate.
+
+    With two-tier publication, parent_source accepts staging (no cert), but
+    rating_pool and official_opponent must remain certified-only regardless
+    of the ALLOW_STAGING_AS_PARENT flag.
+    """
+    bot = _write_policy_bot(tmp_path, STRICT_TARGET_V)
+    publication = lambda _path: {
+        "published": True,
+        "version": STRICT_TARGET_V,
+        "tag": strict_bot_tag(),
+    }
+    no_cert = lambda _path: {
+        "eligible": False,
+        "certificate_digest": "",
+    }
+
+    # Rating pool: must fail closed without certificate.
+    rating_spec = resolve_national_bot_spec(
+        bot,
+        ROLE_RATING_POOL,
+        repo_root=tmp_path,
+        publication_resolver=publication,
+        certificate_resolver=no_cert,
+    )
+    assert rating_spec.eligible is False
+    assert "signed_full_official_certificate_required" in rating_spec.issues
+
+    # Official opponent: must fail closed without certificate.
+    opponent_spec = resolve_national_bot_spec(
+        bot,
+        ROLE_OFFICIAL_OPPONENT,
+        repo_root=tmp_path,
+        publication_resolver=publication,
+        certificate_resolver=no_cert,
+    )
+    assert opponent_spec.eligible is False
+    assert "signed_full_official_certificate_required" in opponent_spec.issues
+
+
+def test_staging_parent_source_accepted_without_certificate(tmp_path):
+    """Two-tier: parent_source accepts a staging bot (no cert) when the flag is on."""
     bot = _write_policy_bot(tmp_path, STRICT_TARGET_V)
 
     spec = resolve_national_bot_spec(
@@ -206,9 +252,9 @@ def test_published_role_fails_closed_without_certificate(tmp_path):
         },
     )
 
-    assert spec.eligible is False
-    assert "signed_full_official_certificate_required" in spec.issues
-    assert "official_certificate_digest_invalid" in spec.issues
+    assert spec.eligible is True
+    assert spec.publication_tier == "staging"
+    assert spec.certificate_digest == ""
 
 
 def test_version_authority_uses_tags_and_ignores_stale_directory(monkeypatch, tmp_path):

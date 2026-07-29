@@ -55,6 +55,14 @@ HIGH_WATER_TAG_PREFIX = os.environ.get(
 # can distinguish "published (staging)" from "published + certified" without
 # altering the paired completion/high-water authority model.
 CERTIFIED_TAG_PREFIX = os.environ.get("POK_CERTIFIED_TAG_PREFIX", "national-certified-v")
+# When enabled (default), a staging bot (published but not yet officially
+# certified) may serve as a PARENT_SOURCE for the next generation.  This
+# allows the pipeline to prepare N+1 while gen N's async certification runs.
+# ROLE_RATING_POOL and ROLE_OFFICIAL_OPPONENT ALWAYS require certification
+# regardless of this flag — rating and formal opponents must be certified.
+ALLOW_STAGING_AS_PARENT = os.environ.get(
+    "POK_ALLOW_STAGING_AS_PARENT", "1"
+).lower() in {"1", "true", "yes", "on"}
 VERSION_WIDTH = 0
 
 # The canonical evolution publication branch. Configurable so a deployment can
@@ -696,6 +704,9 @@ class NationalBotSpec:
     epoch_receipt: dict[str, Any] = field(default_factory=dict)
     publication_identity: dict[str, Any] = field(default_factory=dict)
     certificate_digest: str = ""
+    # "certified" = signed full certificate present; "staging" = published but
+    # awaiting async certification (only allowed for parent_source role).
+    publication_tier: str = "certified"
     issues: tuple[str, ...] = ()
 
     @property
@@ -719,6 +730,7 @@ class NationalBotSpec:
             "epoch_receipt": self.epoch_receipt,
             "publication_identity": self.publication_identity,
             "certificate_digest": self.certificate_digest,
+            "publication_tier": self.publication_tier,
             "issues": list(self.issues),
         }
 
@@ -798,11 +810,15 @@ def resolve_national_bot_spec(
         if require_completion is None
         else bool(require_completion)
     )
-    certificate_required = (
-        role in ACTIVE_PUBLISHED_ROLES
-        if require_certificate is None
-        else bool(require_certificate)
-    )
+    if require_certificate is not None:
+        certificate_required = bool(require_certificate)
+    elif role == ROLE_PARENT_SOURCE and ALLOW_STAGING_AS_PARENT:
+        # Two-tier: a staging bot may serve as a parent while its async
+        # certification runs.  Rating pool and official opponents ALWAYS
+        # require a signed certificate regardless of this flag.
+        certificate_required = False
+    else:
+        certificate_required = role in ACTIVE_PUBLISHED_ROLES
     if completion_required and version is not None and path.is_dir():
         try:
             if publication_resolver is None:
@@ -851,6 +867,13 @@ def resolve_national_bot_spec(
             else:
                 certificate_digest = raw_digest
 
+    # Determine publication tier: if certificate was required and found → certified.
+    # If certificate was NOT required (staging parent path) → staging.
+    # If certificate was required but missing, issues already capture the failure
+    # and the spec is not eligible; tier stays "certified" (the expected/default).
+    publication_tier = "certified"
+    if not certificate_required and role == ROLE_PARENT_SOURCE:
+        publication_tier = "staging"
     return NationalBotSpec(
         path=path,
         label=label,
@@ -860,6 +883,7 @@ def resolve_national_bot_spec(
         epoch_receipt=receipt,
         publication_identity=publication,
         certificate_digest=certificate_digest,
+        publication_tier=publication_tier,
         issues=tuple(dict.fromkeys(issues)),
     )
 
