@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 from server.state import app_state
 from testclient_compat import backend_options_for_testclient
 
@@ -212,20 +213,20 @@ def test_health_uses_only_canonical_ignored_checkpoint_summary(
 
     ignored = {
         "next_v": 155,
-        "source_v": 142,
+        "source_v": STRICT_SOURCE_V,
         "stage": "workers_done",
         "reason": "checkpoint_not_bound_to_strict_epoch",
         "issues": ["checkpoint_schema_version_missing_or_mismatch"],
     }
     projection = {
-        "current_v": 142,
-        "next_v": 143,
+        "current_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "strict_generation_count": 0,
         "active_generation": None,
         "evaluation_epoch": "national_tcp_policy_v1",
         "state": "reset_required",
         "initialized": False,
-        "version_authority_high_water": 142,
+        "version_authority_high_water": STRICT_SOURCE_V,
         "strict_published_versions": [],
         "strict_published_bot_identities": [],
         "active_bots": [],
@@ -234,7 +235,7 @@ def test_health_uses_only_canonical_ignored_checkpoint_summary(
         "operator_action": "execute_policy_epoch_reset",
         "operator_command": "reset-command",
         "ignored_checkpoint": ignored,
-        "max_committed_v": 142,
+        "max_committed_v": STRICT_SOURCE_V,
     }
     monkeypatch.setattr(
         epoch_authority,

@@ -14,7 +14,7 @@ from claude_agent_sdk.types import (
 
 import llm_query
 import evolution_infra
-from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, bot_tag
 
 
 def _rendered(role, text):
@@ -101,8 +101,8 @@ def _rendered(role, text):
         snapshot = cycle_archivist._cycle_archivist_prompt_projection(
             {
                 "evaluation_epoch": "national_tcp_policy_v1",
-                "bot_name": "national_v149",
-                "git_tag": "national-bot-v149",
+                "bot_name": bot_name(149),
+                "git_tag": bot_tag(149),
                 "publication_identity": {
                     "publication_id": "1" * 64,
                     "commit_oid": "2" * 40,
@@ -1483,7 +1483,7 @@ def test_subagent_cost_guard_blocks_unbounded_git_history():
         "git log --oneline --max-count 20"
     ) is None
     assert llm_query._subagent_bash_cost_detector(
-        "git log --oneline national-bot-v250..HEAD"
+        f"git log --oneline {bot_tag(250)}..HEAD"
     ) is None
 
 
@@ -1505,7 +1505,7 @@ def test_subagent_cost_guard_denial_is_recoverable_warning(monkeypatch):
         handler(
             {
                 "tool_name": "Bash",
-                "tool_input": {"command": "git log --oneline --all national-bot-v143..HEAD"},
+                "tool_input": {"command": f"git log --oneline --all {bot_tag(143)}..HEAD"},
             },
             "tool-use-1",
             {},
@@ -1528,8 +1528,8 @@ def test_subagent_cost_guard_denial_is_recoverable_warning(monkeypatch):
 @pytest.mark.parametrize(
     "command",
     (
-        "git log --max-count=1 national-bot-v143",
-        "git --no-pager show national-bot-v143:policy.py",
+        f"git log --max-count=1 {bot_tag(143)}",
+        f"git --no-pager show {bot_tag(143)}:policy.py",
         "git rev-list --max-count=1 HEAD",
         "bash -lc 'git log -1 -- policy.py'",
     ),

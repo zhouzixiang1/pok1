@@ -2,6 +2,8 @@ import ast
 import asyncio
 from pathlib import Path
 
+from bot_namespace import bot_name, bot_tag
+
 
 class _UI:
     def log_history(self, *_args, **_kwargs):
@@ -61,8 +63,8 @@ def test_tools_none_reaches_options_and_cli_as_explicit_zero_tools(
     snapshot = cycle_archivist._cycle_archivist_prompt_projection(
         {
             "evaluation_epoch": "national_tcp_policy_v1",
-            "bot_name": "national_v149",
-            "git_tag": "national-bot-v149",
+            "bot_name": bot_name(149),
+            "git_tag": bot_tag(149),
             "publication_identity": {
                 "publication_id": "1" * 64,
                 "commit_oid": "2" * 40,

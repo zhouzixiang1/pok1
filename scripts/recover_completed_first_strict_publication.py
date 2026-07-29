@@ -47,8 +47,10 @@ sys.path.insert(1, str(ROOT))
 
 from bot_artifact import canonical_digest  # noqa: E402
 from bot_namespace import (  # noqa: E402
+    ACTIVE_TAG_PREFIX,
     ARCHIVED_VERSION_HIGH_WATER,
     FIRST_STRICT_POLICY_VERSION,
+    HIGH_WATER_TAG_PREFIX,
     bot_name,
 )
 
@@ -460,8 +462,8 @@ def publishing_exact_git_issues(
             publication_parent=parent,
         ))
         for tag in (
-            f"national-bot-v{FIRST_STRICT_POLICY_VERSION}",
-            f"national-high-water-v{FIRST_STRICT_POLICY_VERSION}",
+            f"{ACTIVE_TAG_PREFIX}{FIRST_STRICT_POLICY_VERSION}",
+            f"{HIGH_WATER_TAG_PREFIX}{FIRST_STRICT_POLICY_VERSION}",
         ):
             probe = subprocess.run(
                 ["git", "show-ref", "--verify", "--quiet", f"refs/tags/{tag}"],
@@ -567,7 +569,7 @@ def publishing_live_claim_issues(
             issues.append(
                 "first_strict_publication_recovery_candidate_drift_on_resume"
             )
-        tag = f"refs/tags/national-bot-v{FIRST_STRICT_POLICY_VERSION}"
+        tag = f"refs/tags/{ACTIVE_TAG_PREFIX}{FIRST_STRICT_POLICY_VERSION}"
         tag_present = subprocess.run(
             ["git", "show-ref", "--verify", "--quiet", tag],
             cwd=str(root),
@@ -1189,8 +1191,8 @@ def build_claim(
     status_ledger = status_ledger if isinstance(status_ledger, dict) else {}
     completion_tags = []
     for tag in (
-        f"national-bot-v{FIRST_STRICT_POLICY_VERSION}",
-        f"national-high-water-v{FIRST_STRICT_POLICY_VERSION}",
+        f"{ACTIVE_TAG_PREFIX}{FIRST_STRICT_POLICY_VERSION}",
+        f"{HIGH_WATER_TAG_PREFIX}{FIRST_STRICT_POLICY_VERSION}",
     ):
         probe = subprocess.run(
             ["git", "show-ref", "--verify", "--quiet", f"refs/tags/{tag}"],

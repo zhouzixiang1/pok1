@@ -290,7 +290,7 @@ def test_initial_projection_is_unpublished_content_bound_and_deterministic():
     })
 
     tampered = deepcopy(first)
-    tampered["target_identity"]["canonical_tag"] = "national-bot-v999"
+    tampered["target_identity"]["canonical_tag"] = bot_tag(999)
     with pytest.raises(pipeline.PipelineContractError):
         pipeline.validate_projection(tampered)
 
@@ -300,8 +300,8 @@ def test_initial_projection_is_unpublished_content_bound_and_deterministic():
     [
         ({**TARGET, "extra": True}, "fields"),
         ({**TARGET, "generation_ordinal": 0}, "inconsistent"),
-        ({**TARGET, "canonical_bot_name": "national_v144"}, "inconsistent"),
-        ({**TARGET, "canonical_tag": "national_v143"}, "inconsistent"),
+        ({**TARGET, "canonical_bot_name": bot_name(144)}, "inconsistent"),
+        ({**TARGET, "canonical_tag": bot_tag(143)}, "inconsistent"),
         ({**TARGET, "workflow_run_id": ""}, "workflow_run_id"),
         ({**TARGET, "target_lease_digest": "7" * 63}, "lease digest"),
     ],

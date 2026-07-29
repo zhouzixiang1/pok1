@@ -3,6 +3,7 @@ import asyncio
 from fastapi import FastAPI
 import httpx
 
+from bot_namespace import bot_name, bot_tag
 from national_arena import manager as arena_manager
 from national_arena.manager import NationalArenaManager
 from national_arena.sandbox import ArenaSandboxUnavailable
@@ -308,9 +309,9 @@ def test_managed_start_reports_sandbox_infrastructure_failure_as_503(
     async def scenario():
         manager, client = await _app_client(tmp_path)
         identity = {
-            "label": "national_v1",
+            "label": bot_name(1),
             "artifact_hash": "a" * 64,
-            "tag": "national-bot-v1",
+            "tag": bot_tag(1),
             "tag_object": "tag-a",
             "commit_oid": "commit-a",
             "current_tree_oid": "tree-a",
@@ -319,7 +320,7 @@ def test_managed_start_reports_sandbox_infrastructure_failure_as_503(
         def catalog(*, force_refresh=False):
             del force_refresh
             return [{
-                "id": "national_v1",
+                "id": bot_name(1),
                 "artifact_identity": identity,
                 "certification": {"arena_launch_eligible": True},
             }]
@@ -338,8 +339,8 @@ def test_managed_start_reports_sandbox_infrastructure_failure_as_503(
                 json={
                     "mode": "managed_bots",
                     "port": 10001,
-                    "top_bot": "national_v1",
-                    "bottom_bot": "national_v1",
+                    "top_bot": bot_name(1),
+                    "bottom_bot": bot_name(1),
                 },
             )
             assert created_response.status_code == 201
@@ -362,8 +363,8 @@ def test_managed_start_reports_sandbox_infrastructure_failure_as_503(
                     "mode": "managed_bots",
                     "port": 10001,
                     "managed_port_override": True,
-                    "top_bot": "national_v1",
-                    "bottom_bot": "national_v1",
+                    "top_bot": bot_name(1),
+                    "bottom_bot": bot_name(1),
                 },
             )
             assert override.status_code == 201

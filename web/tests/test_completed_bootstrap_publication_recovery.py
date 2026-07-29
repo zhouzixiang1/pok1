@@ -458,16 +458,16 @@ def test_publishing_live_recheck_accepts_portable_status_and_own_sentinel(
             "first_strict_publication_recovery_gate_status_mismatch",
         ),
         (
-            lambda value: value.update(active_bots=["national_v143"]),
+            lambda value: value.update(active_bots=[bot_name(FIRST_STRICT_POLICY_VERSION)]),
             "first_strict_publication_recovery_active_pool_not_empty",
         ),
         (
-            lambda value: value.update(strict_bots=["national_v143"]),
+            lambda value: value.update(strict_bots=[bot_name(FIRST_STRICT_POLICY_VERSION)]),
             "first_strict_publication_recovery_strict_pool_not_empty",
         ),
         (
             lambda value: value.update(
-                completion_tags=["national-bot-v143"]
+                completion_tags=[bot_tag(FIRST_STRICT_POLICY_VERSION)]
             ),
             "first_strict_publication_recovery_completion_tag_present",
         ),

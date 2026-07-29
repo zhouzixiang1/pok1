@@ -4,17 +4,19 @@ from pathlib import Path
 
 import pytest
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name, strict_bot_tag
+
 
 def _snapshot() -> dict:
     return {
         "evaluation_epoch": "national_tcp_policy_v1",
-        "version": 143,
-        "source_v": 142,
-        "bot_name": "national_v143",
-        "git_tag": "national-bot-v143",
+        "version": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
+        "bot_name": strict_bot_name(),
+        "git_tag": strict_bot_tag(),
         "publication_identity": {
-            "version": 143,
-            "source_v": 142,
+            "version": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "publication_id": "a" * 64,
             "commit_oid": "b" * 40,
             "candidate_artifact_hash": "c" * 64,
@@ -42,7 +44,7 @@ def test_cycle_archivist_rejects_unbound_strength_evidence():
     snapshot = _snapshot()
     snapshot.pop("strength_evidence_identity")
     assert "cycle_archivist_strength_evidence_identity_missing" in (
-        snapshot_identity_errors(snapshot, version=143, source_v=142)
+        snapshot_identity_errors(snapshot, version=STRICT_TARGET_V, source_v=STRICT_SOURCE_V)
     )
 
 
@@ -79,8 +81,8 @@ async def test_cycle_archivist_annotation_cannot_emit_prompt_lessons(monkeypatch
         lambda *_args, **_kwargs: [],
     )
     result = await cycle_archivist.run_cycle_archivist_analysis(
-        143,
-        142,
+        STRICT_TARGET_V,
+        STRICT_SOURCE_V,
         _snapshot(),
         object(),
         handoff_record={"validated": True},
@@ -105,8 +107,8 @@ async def test_cycle_archivist_does_not_call_llm_after_identity_failure(monkeypa
     snapshot = _snapshot()
     snapshot["evaluation_epoch"] = "national_native_v1"
     result = await cycle_archivist.run_cycle_archivist_analysis(
-        143,
-        142,
+        STRICT_TARGET_V,
+        STRICT_SOURCE_V,
         snapshot,
         object(),
     )
@@ -129,13 +131,13 @@ def test_cycle_archivist_prompt_projection_excludes_poison_history():
     snapshot["unknown_future_field"] = "POISON_UNKNOWN_EXTENSION"
     projection = cycle_archivist._cycle_archivist_prompt_projection(
         snapshot,
-        version=143,
-        source_v=142,
+        version=STRICT_TARGET_V,
+        source_v=STRICT_SOURCE_V,
     )
     rendered = cycle_archivist._render_cycle_archivist_provider_prompt({
         "snapshot": projection,
-        "version": 143,
-        "source_v": 142,
+        "version": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
     })
     for poison in (
         "POISON_HISTORY_MUST_NOT_REACH_PROVIDER",
@@ -166,7 +168,7 @@ def test_cycle_archivist_rejects_self_signed_annotation_for_wrong_subject():
         cycle_archivist.annotation_identity_errors(
             annotation,
             _snapshot(),
-            version=143,
-            source_v=142,
+            version=STRICT_TARGET_V,
+            source_v=STRICT_SOURCE_V,
         )
     )

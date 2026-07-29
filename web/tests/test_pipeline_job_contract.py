@@ -3,6 +3,7 @@ from copy import deepcopy
 import pytest
 
 from bot_artifact import canonical_digest
+from conftest import strict_bot_tag
 from pipeline_job_contract import (
     JOB_ENVELOPE_KIND,
     JOB_ENVELOPE_SCHEMA_VERSION,
@@ -62,8 +63,8 @@ def _input_refs(
         "timing-plan": "native-timing-plan",
         "seed-schedule": "native-seed-schedule",
         "replay-verifier": "native-replay-verifier",
-        "published-identity": "national-bot-v143-published-identity",
-        "official-certificate": "national-bot-v143-certificate",
+        "published-identity": f"{strict_bot_tag()}-published-identity",
+        "official-certificate": f"{strict_bot_tag()}-certificate",
         "rating-cycle-authority": "immutable-rating-cycle-1",
     }
     kinds = [

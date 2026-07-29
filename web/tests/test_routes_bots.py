@@ -194,14 +194,14 @@ class TestListBots:
         ):
             bots_mod._decorate_published(
                 {
-                    "name": "national_v143",
+                    "name": bot_name(143),
                     "version": 144,
                 },
                 {
                     "generation_ordinal": 2,
                     "canonical_version": 144,
-                    "canonical_bot_name": "national_v144",
-                    "canonical_tag": "national-bot-v144",
+                    "canonical_bot_name": bot_name(144),
+                    "canonical_tag": bot_tag(144),
                 },
             )
 
@@ -217,19 +217,19 @@ class TestListBots:
             "strict_epoch_projection",
             lambda **_kwargs: {
                 "initialized": True,
-                "active_bots": ["national_v143", "national_v147"],
+                "active_bots": [bot_name(143), bot_name(147)],
                 "strict_published_bot_identities": [
                     {
                         "generation_ordinal": 2,
                         "canonical_version": 143,
-                        "canonical_bot_name": "national_v143",
-                        "canonical_tag": "national-bot-v143",
+                        "canonical_bot_name": bot_name(143),
+                        "canonical_tag": bot_tag(143),
                     },
                     {
                         "generation_ordinal": 1,
                         "canonical_version": 147,
-                        "canonical_bot_name": "national_v147",
-                        "canonical_tag": "national-bot-v147",
+                        "canonical_bot_name": bot_name(147),
+                        "canonical_tag": bot_tag(147),
                     },
                 ],
             },
@@ -399,7 +399,7 @@ class TestBotDetail:
         monkeypatch.setattr(
             bots_mod,
             "_strict_published_inventory",
-            lambda: ["national_v143"],
+            lambda: [bot_name(143)],
         )
 
         with pytest.raises(Exception) as exc_info:

@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from bot_namespace import bot_name, bot_tag, high_water_tag
+from bot_namespace import (
+    ACTIVE_TAG_PREFIX,
+    HIGH_WATER_TAG_PREFIX,
+    bot_name,
+    bot_tag,
+    high_water_tag,
+)
 from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name, strict_bot_tag
 from scripts import reset_national_tcp_policy_epoch as reset
 from evaluation_contract import ALWAYS_CRITICAL_EXACT
@@ -60,9 +66,9 @@ def test_policy_epoch_reset_refuses_rerun_after_strict_tag(monkeypatch):
                 f"tag\tcommit\t{strict_bot_tag()}\n"
                 f"tag\tcommit\t{high_water_tag(STRICT_TARGET_V)}"
             )
-        if args[:3] == ("tag", "-l", "national-bot-v*"):
+        if args[:3] == ("tag", "-l", f"{ACTIVE_TAG_PREFIX}*"):
             return strict_bot_tag()
-        if args[:3] == ("tag", "-l", "national-high-water-v*"):
+        if args[:3] == ("tag", "-l", f"{HIGH_WATER_TAG_PREFIX}*"):
             return high_water_tag(STRICT_TARGET_V)
         return "a" * 40
 

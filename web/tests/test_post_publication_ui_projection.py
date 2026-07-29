@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from bot_namespace import bot_name
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+
 
 def _route(*, state="pending", revision=2, owner_scope=None):
     owner_scope = owner_scope or (
@@ -9,9 +12,9 @@ def _route(*, state="pending", revision=2, owner_scope=None):
     )
     return {
         "status": "pending",
-        "version": 143,
-        "source_v": 142,
-        "workflow_run_id": "generation:143:workflow-v1",
+        "version": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
         "identity_digest": "a" * 64,
         "publication_id": "b" * 64,
         "state": state,
@@ -61,9 +64,9 @@ def test_pipeline_health_projects_handoff_when_checkpoint_is_cleared():
         "status": "pending",
         "state": "pending",
         "blocked": False,
-        "version": 143,
-        "source_v": 142,
-        "workflow_run_id": "generation:143:workflow-v1",
+        "version": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
         "identity_digest": "a" * 64,
         "publication_id": "b" * 64,
         "record_revision": 3,
@@ -95,9 +98,9 @@ def test_pipeline_health_blocks_foreign_handoff_owner_but_accepts_exact_current_
         "status": "running",
         "state": "running",
         "blocked": False,
-        "version": 143,
-        "source_v": 142,
-        "workflow_run_id": "generation:143:workflow-v1",
+        "version": STRICT_TARGET_V,
+        "source_v": STRICT_SOURCE_V,
+        "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
         "identity_digest": "a" * 64,
         "publication_id": "b" * 64,
         "record_revision": 3,
@@ -157,13 +160,13 @@ def test_active_generation_and_handoff_overlap_is_blocked():
 
     snapshot = control._read_pipeline_health({
         "epoch_initialized": True,
-        "active_generation": {"next_v": 144},
+        "active_generation": {"next_v": STRICT_TARGET_V + 1},
         "post_publication_handoff": {
             "status": "pending",
             "blocked": False,
-            "version": 143,
-            "source_v": 142,
-            "workflow_run_id": "generation:143:workflow-v1",
+            "version": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "identity_digest": "a" * 64,
             "publication_id": "b" * 64,
             "record_revision": 2,
@@ -215,7 +218,7 @@ def test_effective_handoff_conflict_degrades_health(monkeypatch):
         "running": True,
         "daemon_enabled": False,
         "epoch_initialized": True,
-        "active_generation": {"next_v": 144},
+        "active_generation": {"next_v": STRICT_TARGET_V + 1},
         "post_publication_handoff": {"blocked": False},
         "stability_observation": {
             "continuity_valid": True,
@@ -301,16 +304,16 @@ def test_control_status_rejects_stability_cache_from_another_epoch(monkeypatch):
     import stability_observation
 
     epoch = {
-        "current_v": 143,
-        "next_v": 144,
+        "current_v": STRICT_TARGET_V,
+        "next_v": STRICT_TARGET_V + 1,
         "strict_generation_count": 1,
         "active_generation": None,
         "evaluation_epoch": "national_tcp_policy_v1",
         "state": "strict_published",
         "initialized": True,
-        "version_authority_high_water": 143,
-        "strict_published_versions": [143],
-        "active_bots": ["national_v143"],
+        "version_authority_high_water": STRICT_TARGET_V,
+        "strict_published_versions": [STRICT_TARGET_V],
+        "active_bots": [bot_name(STRICT_TARGET_V)],
         "reset_receipt_valid": True,
         "reset_receipt_digest": "a" * 64,
         "reset_receipt_issues": [],

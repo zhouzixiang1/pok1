@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from bot_namespace import bot_name, bot_tag
 from national_arena import manager as arena_manager
 from national_arena.manager import (
     ArenaConflict,
@@ -238,7 +239,7 @@ def test_manager_managed_mode_uses_server_side_launchable_whitelist(tmp_path, mo
         with pytest.raises(ArenaError, match="not active/native/official-eligible"):
             await manager.create_session(
                 mode="managed_bots",
-                top_bot="national_v1",
+                top_bot=bot_name(1),
                 bottom_bot="national_v2",
             )
         await manager.shutdown()
@@ -251,9 +252,9 @@ def test_managed_session_revalidates_published_bot_identity_before_start(tmp_pat
         manager = NationalArenaManager(ArenaStore(tmp_path / "arena"))
         await manager.startup()
         original = {
-            "label": "national_v1",
+            "label": bot_name(1),
             "artifact_hash": "a" * 64,
-            "tag": "national-bot-v1",
+            "tag": bot_tag(1),
             "tag_object": "tag-a",
             "commit_oid": "commit-a",
             "current_tree_oid": "tree-a",
@@ -268,7 +269,7 @@ def test_managed_session_revalidates_published_bot_identity_before_start(tmp_pat
             identity = changed if force_refresh else original
             return [
                 {
-                    "id": "national_v1",
+                    "id": bot_name(1),
                     "artifact_identity": identity,
                     "certification": certification,
                 }
@@ -277,8 +278,8 @@ def test_managed_session_revalidates_published_bot_identity_before_start(tmp_pat
         monkeypatch.setattr(manager, "list_launchable_bots", catalog)
         created = await manager.create_session(
             mode="managed_bots",
-            top_bot="national_v1",
-            bottom_bot="national_v1",
+            top_bot=bot_name(1),
+            bottom_bot=bot_name(1),
         )
 
         with pytest.raises(ArenaConflict, match="publication identity changed"):
@@ -359,15 +360,15 @@ def test_manager_recovers_event_id_high_watermark_after_snapshot_lag(tmp_path):
 def _managed_catalog(*, force_refresh=False):
     del force_refresh
     identity = {
-        "label": "national_v1",
+        "label": bot_name(1),
         "artifact_hash": "a" * 64,
-        "tag": "national-bot-v1",
+        "tag": bot_tag(1),
         "tag_object": "tag-a",
         "commit_oid": "commit-a",
         "current_tree_oid": "tree-a",
     }
     return [{
-        "id": "national_v1",
+        "id": bot_name(1),
         "artifact_identity": identity,
         "certification": {
             "official_full_certified": True,
@@ -386,8 +387,8 @@ def test_managed_defaults_to_ephemeral_loopback_and_rejects_public_bind(
 
         created = await manager.create_session(
             mode="managed_bots",
-            top_bot="national_v1",
-            bottom_bot="national_v1",
+            top_bot=bot_name(1),
+            bottom_bot=bot_name(1),
         )
         assert created["host"] == "127.0.0.1"
         assert created["port"] == 0
@@ -397,8 +398,8 @@ def test_managed_defaults_to_ephemeral_loopback_and_rejects_public_bind(
             await manager.create_session(
                 mode="managed_bots",
                 host="0.0.0.0",
-                top_bot="national_v1",
-                bottom_bot="national_v1",
+                top_bot=bot_name(1),
+                bottom_bot=bot_name(1),
             )
         await manager.stop_session(created["session_id"])
         await manager.shutdown()
@@ -415,8 +416,8 @@ def test_managed_start_without_bwrap_is_infrastructure_failure(
         monkeypatch.setattr(manager, "list_launchable_bots", _managed_catalog)
         created = await manager.create_session(
             mode="managed_bots",
-            top_bot="national_v1",
-            bottom_bot="national_v1",
+            top_bot=bot_name(1),
+            bottom_bot=bot_name(1),
         )
 
         def unavailable():
@@ -444,8 +445,8 @@ def test_managed_seat_endpoints_ignore_connection_order_and_reported_name(
         monkeypatch.setattr(manager, "list_launchable_bots", _managed_catalog)
         created = await manager.create_session(
             mode="managed_bots",
-            top_bot="national_v1",
-            bottom_bot="national_v1",
+            top_bot=bot_name(1),
+            bottom_bot=bot_name(1),
         )
         session = manager._sessions[created["session_id"]]
         runtime = arena_manager._ArenaRuntime(session_id=session.session_id)
@@ -546,8 +547,8 @@ def test_managed_launch_records_central_executor_profile(tmp_path, monkeypatch):
         session = ArenaSession(
             session_id="arena_20260711_feedbabe",
             mode="managed_bots",
-            top_bot="national_v1",
-            bottom_bot="national_v1",
+            top_bot=bot_name(1),
+            bottom_bot=bot_name(1),
             managed_bot_identities={"top": identity, "bottom": identity},
             managed_endpoints={
                 "top": {"host": "127.0.0.1", "port": 41001},
@@ -652,8 +653,8 @@ def test_managed_capacity_is_acquired_before_official_port_lease(
         created = await manager.create_session(
             mode="managed_bots",
             port=10001,
-            top_bot="national_v1",
-            bottom_bot="national_v1",
+            top_bot=bot_name(1),
+            bottom_bot=bot_name(1),
         )
         session = manager._sessions[created["session_id"]]
         runtime = arena_manager._ArenaRuntime(session_id=session.session_id)

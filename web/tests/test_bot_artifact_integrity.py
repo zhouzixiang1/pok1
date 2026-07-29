@@ -15,6 +15,7 @@ from bot_artifact import (
     hash_path,
     validate_completion_tag,
 )
+from conftest import strict_bot_name, strict_bot_tag
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -278,7 +279,7 @@ def _completion_tag_git(expected, *, duplicate_certificate=False):
         if args[0] == "ls-tree":
             return SimpleNamespace(
                 returncode=0,
-                stdout="official_certificates/national_v143.json\n",
+                stdout=f"official_certificates/{strict_bot_name()}.json\n",
             )
         return SimpleNamespace(returncode=0, stdout="")
 
@@ -287,7 +288,7 @@ def _completion_tag_git(expected, *, duplicate_certificate=False):
 
 def _published_completion_identity(expected):
     return {
-        "tag": "national-bot-v143",
+        "tag": strict_bot_tag(),
         "tag_type": "tag",
         "tag_object": "c" * 40,
         "commit_oid": "d" * 40,
@@ -299,7 +300,7 @@ def _published_completion_identity(expected):
 
 
 def test_completion_tag_validation_rejects_duplicate_metadata(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v143"
+    bot = tmp_path / strict_bot_name()
     bot.mkdir()
     expected = {
         "official-certificate": "a" * 64,
@@ -320,7 +321,7 @@ def test_completion_tag_validation_rejects_duplicate_metadata(monkeypatch, tmp_p
     result = validate_completion_tag(
         bot,
         expected_metadata=expected,
-        certificate_path="official_certificates/national_v143.json",
+        certificate_path=f"official_certificates/{strict_bot_name()}.json",
     )
 
     assert result["valid"] is False
@@ -328,7 +329,7 @@ def test_completion_tag_validation_rejects_duplicate_metadata(monkeypatch, tmp_p
 
 
 def test_completion_tag_validation_accepts_exact_annotated_tag(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v143"
+    bot = tmp_path / strict_bot_name()
     bot.mkdir()
     expected = {
         "official-certificate": "a" * 64,
@@ -345,7 +346,7 @@ def test_completion_tag_validation_accepts_exact_annotated_tag(monkeypatch, tmp_
     result = validate_completion_tag(
         bot,
         expected_metadata=expected,
-        certificate_path="official_certificates/national_v143.json",
+        certificate_path=f"official_certificates/{strict_bot_name()}.json",
     )
 
     assert result["valid"] is True

@@ -10,6 +10,7 @@ import time
 import pytest
 
 from bot_namespace import bot_name, bot_tag
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V, strict_bot_name, strict_bot_tag
 
 
 class TestEvolutionTaskOwnership:
@@ -667,45 +668,45 @@ class TestStatus:
         import server.routes.control as control
         from server.state import app_state
 
-        app_state.bootstrap(142)
+        app_state.bootstrap(STRICT_SOURCE_V)
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
             lambda **_kwargs: {
-                "current_v": 143,
-                "next_v": 144,
+                "current_v": STRICT_TARGET_V,
+                "next_v": STRICT_TARGET_V + 1,
                 "strict_generation_count": 1,
                 "active_generation": {
                     "generation_ordinal": 2,
-                    "canonical_version": 144,
-                    "canonical_bot_name": bot_name(144),
-                    "canonical_tag": bot_tag(144),
-                    "next_v": 144,
-                    "source_v": 143,
+                    "canonical_version": STRICT_TARGET_V + 1,
+                    "canonical_bot_name": bot_name(STRICT_TARGET_V + 1),
+                    "canonical_tag": bot_tag(STRICT_TARGET_V + 1),
+                    "next_v": STRICT_TARGET_V + 1,
+                    "source_v": STRICT_TARGET_V,
                     "stage": "prepared",
-                    "run_id": "generation:144:strict",
-                    "workflow_run_id": "generation:144:strict",
+                    "run_id": f"generation:{STRICT_TARGET_V + 1}:strict",
+                    "workflow_run_id": f"generation:{STRICT_TARGET_V + 1}:strict",
                     "attempt": {"generation": 0, "audit": 0, "precommit": 0},
                 },
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "state": "strict_published",
                 "initialized": True,
-                "version_authority_high_water": 143,
-                "strict_published_versions": [143],
+                "version_authority_high_water": STRICT_TARGET_V,
+                "strict_published_versions": [STRICT_TARGET_V],
                 "strict_published_bot_identities": [{
                     "generation_ordinal": 1,
-                    "canonical_version": 143,
-                    "canonical_bot_name": bot_name(143),
-                    "canonical_tag": bot_tag(143),
+                    "canonical_version": STRICT_TARGET_V,
+                    "canonical_bot_name": bot_name(STRICT_TARGET_V),
+                    "canonical_tag": bot_tag(STRICT_TARGET_V),
                 }],
-                "active_bots": [bot_name(143)],
+                "active_bots": [bot_name(STRICT_TARGET_V)],
                 "reset_receipt_valid": True,
                 "reset_receipt_digest": "a" * 64,
                 "reset_receipt_issues": [],
                 "operator_action": None,
                 "operator_command": None,
                 "ignored_checkpoint": None,
-                "max_committed_v": 143,
+                "max_committed_v": STRICT_TARGET_V,
             },
         )
         monkeypatch.setattr(
@@ -718,14 +719,14 @@ class TestStatus:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["current_v"] == 143
-        assert data["next_v"] == 144
+        assert data["current_v"] == STRICT_TARGET_V
+        assert data["next_v"] == STRICT_TARGET_V + 1
         assert data["generation_count"] == 1
         assert data["active_generation"]["stage"] == "prepared"
         assert data["active_generation"]["generation_ordinal"] == 2
-        assert data["active_generation"]["canonical_version"] == 144
-        assert data["active_generation"]["canonical_bot_name"] == bot_name(144)
-        assert data["active_generation"]["canonical_tag"] == bot_tag(144)
+        assert data["active_generation"]["canonical_version"] == STRICT_TARGET_V + 1
+        assert data["active_generation"]["canonical_bot_name"] == bot_name(STRICT_TARGET_V + 1)
+        assert data["active_generation"]["canonical_tag"] == bot_tag(STRICT_TARGET_V + 1)
         assert data["strict_published_bot_identities"][0]["generation_ordinal"] == 1
         assert data["evaluation_epoch"] == "national_tcp_policy_v1"
         assert data["reset_receipt_digest"] == "a" * 64
@@ -750,9 +751,9 @@ class TestStatus:
             "strength_evidence_weight": 0,
             "strategy_evidence_weight": 0,
             "evaluation_epoch": "national_tcp_policy_v1",
-            "workflow_run_id": "generation:143:transition-test",
-            "candidate_version": 143,
-            "source_v": 142,
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:transition-test",
+            "candidate_version": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "checkpoint_stage": "official_bootstrap_required",
             "checkpoint_revision": 9,
             "candidate_hash": "a" * 64,
@@ -760,25 +761,25 @@ class TestStatus:
             "transition_digest": "c" * 64,
         }
         monkeypatch.setattr(epoch_authority, "strict_epoch_projection", lambda **_kwargs: {
-            "current_v": 142,
-            "next_v": 143,
+            "current_v": STRICT_SOURCE_V,
+            "next_v": STRICT_TARGET_V,
             "strict_generation_count": 0,
             "active_generation": {
                 "generation_ordinal": 1,
-                "canonical_version": 143,
-                "canonical_bot_name": "national_v143",
-                "canonical_tag": "national-bot-v143",
-                "next_v": 143,
-                "source_v": 142,
+                "canonical_version": STRICT_TARGET_V,
+                "canonical_bot_name": strict_bot_name(),
+                "canonical_tag": strict_bot_tag(),
+                "next_v": STRICT_TARGET_V,
+                "source_v": STRICT_SOURCE_V,
                 "stage": "official_bootstrap_required",
-                "run_id": "143#0",
-                "workflow_run_id": "generation:143:transition-test",
+                "run_id": f"{STRICT_TARGET_V}#0",
+                "workflow_run_id": f"generation:{STRICT_TARGET_V}:transition-test",
                 "attempt": {"generation": 0, "audit": 0, "precommit": 0},
             },
             "evaluation_epoch": "national_tcp_policy_v1",
             "state": "fresh_bootstrap_ready",
             "initialized": True,
-            "version_authority_high_water": 142,
+            "version_authority_high_water": STRICT_SOURCE_V,
             "strict_published_versions": [],
             "strict_published_bot_identities": [],
             "active_bots": [],
@@ -792,7 +793,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "unpublished_candidate_versions",
-            lambda **_kwargs: [143],
+            lambda **_kwargs: [STRICT_TARGET_V],
         )
 
         payload = client.get("/api/control/status").json()
@@ -809,14 +810,14 @@ class TestStatus:
             epoch_authority,
             "strict_epoch_projection",
             lambda **_kwargs: {
-                "current_v": 142,
-                "next_v": 143,
+                "current_v": STRICT_SOURCE_V,
+                "next_v": STRICT_TARGET_V,
                 "strict_generation_count": 0,
                 "active_generation": None,
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "state": "reset_required",
                 "initialized": False,
-                "version_authority_high_water": 142,
+                "version_authority_high_water": STRICT_SOURCE_V,
                 "strict_published_versions": [],
                 "strict_published_bot_identities": [],
                 "active_bots": [],
@@ -826,12 +827,12 @@ class TestStatus:
                 "operator_command": "python scripts/reset_national_tcp_policy_epoch.py --execute --acknowledge-runtime-checkout",
                 "ignored_checkpoint": {
                     "next_v": 155,
-                    "source_v": 142,
+                    "source_v": STRICT_SOURCE_V,
                     "stage": "direction_audited",
                     "reason": "checkpoint_not_bound_to_strict_epoch",
                     "issues": ["checkpoint_schema_version_missing_or_mismatch"],
                 },
-                "max_committed_v": 142,
+                "max_committed_v": STRICT_SOURCE_V,
             },
         )
         monkeypatch.setattr(
@@ -844,8 +845,8 @@ class TestStatus:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["current_v"] == 142
-        assert data["next_v"] == 143
+        assert data["current_v"] == STRICT_SOURCE_V
+        assert data["next_v"] == STRICT_TARGET_V
         assert data["generation_count"] == 0
         assert data["active_generation"] is None
         assert data["ignored_checkpoint"]["next_v"] == 155
@@ -887,33 +888,33 @@ class TestStatus:
         import server.routes.control as control
         from server.state import app_state
 
-        app_state.bootstrap(143)
+        app_state.bootstrap(STRICT_TARGET_V)
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
             lambda **_kwargs: {
-                "current_v": 143,
+                "current_v": STRICT_TARGET_V,
                 "next_v": 145,
                 "strict_generation_count": 1,
                 "active_generation": None,
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "state": "strict_published",
                 "initialized": True,
-                "version_authority_high_water": 143,
-                "strict_published_versions": [143],
+                "version_authority_high_water": STRICT_TARGET_V,
+                "strict_published_versions": [STRICT_TARGET_V],
                 "strict_published_bot_identities": [{
                     "generation_ordinal": 1,
-                    "canonical_version": 143,
-                    "canonical_bot_name": "national_v143",
-                    "canonical_tag": "national-bot-v143",
+                    "canonical_version": STRICT_TARGET_V,
+                    "canonical_bot_name": strict_bot_name(),
+                    "canonical_tag": strict_bot_tag(),
                 }],
-                "active_bots": ["national_v143"],
+                "active_bots": [strict_bot_name()],
                 "reset_receipt_valid": True,
                 "reset_receipt_issues": [],
                 "operator_action": None,
                 "operator_command": None,
                 "ignored_checkpoint": None,
-                "max_committed_v": 143,
+                "max_committed_v": STRICT_TARGET_V,
             },
         )
         monkeypatch.setattr(
@@ -926,7 +927,7 @@ class TestStatus:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["current_v"] == 143
+        assert data["current_v"] == STRICT_TARGET_V
         assert data["next_v"] == 145
         assert data["generation_count"] == 1
         assert data["active_generation"] is None
@@ -1257,12 +1258,12 @@ class TestStatus:
         import server.routes.control as control
 
         checkpoint = {
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "parent2_v": None,
             "stage": "direction_audited",
-            "run_id": "143#0",
-            "workflow_run_id": "generation:143:route-test",
+            "run_id": f"{STRICT_TARGET_V}#0",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:route-test",
             "checkpoint_revision": 7,
             "generation_attempt": 0,
         }
@@ -1270,19 +1271,19 @@ class TestStatus:
             "epoch_initialized": True,
             "epoch_state": "fresh_bootstrap_ready",
             "active_generation": {
-                "next_v": 143,
-                "source_v": 142,
+                "next_v": STRICT_TARGET_V,
+                "source_v": STRICT_SOURCE_V,
                 "stage": "direction_audited",
-                "run_id": "143#0",
-                "workflow_run_id": "generation:143:route-test",
+                "run_id": f"{STRICT_TARGET_V}#0",
+                "workflow_run_id": f"generation:{STRICT_TARGET_V}:route-test",
                 "checkpoint_revision": 7,
                 "attempt": {"generation": 0, "audit": 0, "precommit": 0},
             },
         }
         route = {
             "stage": "direction_audited",
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "parent2_v": None,
             "next_tool": "run_master",
             "allowed_tools": ["run_master"],
@@ -1312,8 +1313,8 @@ class TestStatus:
         snapshot = control._read_pipeline_health(status)
 
         assert snapshot["route"] == route
-        assert snapshot["source_v"] == 142
-        assert snapshot["run_id"] == "143#0"
+        assert snapshot["source_v"] == STRICT_SOURCE_V
+        assert snapshot["run_id"] == f"{STRICT_TARGET_V}#0"
         assert snapshot["checkpoint_revision"] == 7
         assert seen == [checkpoint]
 
@@ -1328,12 +1329,12 @@ class TestStatus:
         import server.routes.control as control
 
         checkpoint = {
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "parent2_v": None,
             "stage": "direction_audited",
-            "run_id": "143#0",
-            "workflow_run_id": "generation:143:blocked-route-test",
+            "run_id": f"{STRICT_TARGET_V}#0",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:blocked-route-test",
             "checkpoint_revision": 7,
             "generation_attempt": 0,
         }
@@ -1342,11 +1343,11 @@ class TestStatus:
             "epoch_state": "fresh_bootstrap_ready",
             "operator_action": None,
             "active_generation": {
-                "next_v": 143,
-                "source_v": 142,
+                "next_v": STRICT_TARGET_V,
+                "source_v": STRICT_SOURCE_V,
                 "stage": "direction_audited",
-                "run_id": "143#0",
-                "workflow_run_id": "generation:143:blocked-route-test",
+                "run_id": f"{STRICT_TARGET_V}#0",
+                "workflow_run_id": f"generation:{STRICT_TARGET_V}:blocked-route-test",
                 "checkpoint_revision": 7,
                 "attempt": {"generation": 0, "audit": 0, "precommit": 0},
             },
@@ -1389,7 +1390,7 @@ class TestStatus:
         snapshot = control._read_pipeline_health({
             "epoch_initialized": True,
             "epoch_state": "strict_published",
-            "current_v": 143,
+            "current_v": STRICT_TARGET_V,
             "next_v": 145,
             "active_generation": None,
             "post_publication_handoff": {"status": "none"},
@@ -1410,8 +1411,8 @@ class TestStatus:
         operator_blocked = control._read_pipeline_health({
             "epoch_initialized": True,
             "epoch_state": "fresh_bootstrap_ready",
-            "current_v": 142,
-            "next_v": 143,
+            "current_v": STRICT_SOURCE_V,
+            "next_v": STRICT_TARGET_V,
             "active_generation": None,
             "post_publication_handoff": {"status": "none"},
             "ignored_checkpoint": None,
@@ -1445,9 +1446,9 @@ class TestStatus:
                 "status": "pending",
                 "state": "pending",
                 "blocked": False,
-                "version": 144,
-                "source_v": 143,
-                "workflow_run_id": "generation:144:workflow-v1",
+                "version": STRICT_TARGET_V + 1,
+                "source_v": STRICT_TARGET_V,
+                "workflow_run_id": f"generation:{STRICT_TARGET_V + 1}:workflow-v1",
                 "identity_digest": "i" * 64,
                 "projection_digest": "p" * 64,
                 "publication_id": "u" * 64,
@@ -1467,7 +1468,7 @@ class TestStatus:
         (
             ("source_v", 141),
             ("parent2_v", 140),
-            ("run_id", "143#other"),
+            ("run_id", f"{STRICT_TARGET_V}#other"),
             ("checkpoint_revision", 8),
         ),
     )
@@ -1482,12 +1483,12 @@ class TestStatus:
         import server.routes.control as control
 
         checkpoint = {
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "parent2_v": None,
             "stage": "direction_audited",
-            "run_id": "143#0",
-            "workflow_run_id": "generation:143:route-test",
+            "run_id": f"{STRICT_TARGET_V}#0",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:route-test",
             "checkpoint_revision": 7,
             "generation_attempt": 0,
         }
@@ -1495,12 +1496,12 @@ class TestStatus:
         status = {
             "epoch_initialized": True,
             "active_generation": {
-                "next_v": 143,
-                "source_v": 142,
+                "next_v": STRICT_TARGET_V,
+                "source_v": STRICT_SOURCE_V,
                 "parent2_v": None,
                 "stage": "direction_audited",
-                "run_id": "143#0",
-                "workflow_run_id": "generation:143:route-test",
+                "run_id": f"{STRICT_TARGET_V}#0",
+                "workflow_run_id": f"generation:{STRICT_TARGET_V}:route-test",
                 "checkpoint_revision": 7,
                 "attempt": {"generation": 0, "audit": 0, "precommit": 0},
             },
@@ -1544,12 +1545,12 @@ class TestStatus:
 
         digest = "a" * 64
         checkpoint = {
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "parent2_v": None,
             "stage": "review_rejected",
-            "run_id": "143#0",
-            "workflow_run_id": "generation:143:terminal-route-test",
+            "run_id": f"{STRICT_TARGET_V}#0",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:terminal-route-test",
             "checkpoint_revision": 9,
             "generation_attempt": 0,
             "terminal_gate_outcome": {
@@ -1566,12 +1567,12 @@ class TestStatus:
         status = {
             "epoch_initialized": True,
             "active_generation": {
-                "next_v": 143,
-                "source_v": 142,
+                "next_v": STRICT_TARGET_V,
+                "source_v": STRICT_SOURCE_V,
                 "parent2_v": None,
                 "stage": "review_rejected",
-                "run_id": "143#0",
-                "workflow_run_id": "generation:143:terminal-route-test",
+                "run_id": f"{STRICT_TARGET_V}#0",
+                "workflow_run_id": f"generation:{STRICT_TARGET_V}:terminal-route-test",
                 "checkpoint_revision": 9,
                 "attempt": {"generation": 0, "audit": 0, "precommit": 0},
             },
@@ -1590,8 +1591,8 @@ class TestStatus:
         )
         route = {
             "stage": "review_rejected",
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "parent2_v": None,
             "next_tool": (
                 "abandon_generation"
@@ -1942,8 +1943,8 @@ class TestStartConflict:
                     "operator_action": None,
                     "active_generation": None,
                     "post_publication_handoff": {"status": "none"},
-                    "current_v": 142,
-                    "next_v": 143,
+                    "current_v": STRICT_SOURCE_V,
+                    "next_v": STRICT_TARGET_V,
                 },
                 {
                     "blocked": False,
@@ -1953,7 +1954,7 @@ class TestStartConflict:
                         "state": "ready_to_prepare",
                         "provider_action": "end_stream",
                         "scheduler_action": "prepare_generation",
-                        "next_v": 143,
+                        "next_v": STRICT_TARGET_V,
                         "source_v": None,
                     },
                 },
@@ -1987,8 +1988,8 @@ class TestStartConflict:
                     "operator_action": None,
                     "active_generation": None,
                     "post_publication_handoff": {"status": "none"},
-                    "current_v": 142,
-                    "next_v": 143,
+                    "current_v": STRICT_SOURCE_V,
+                    "next_v": STRICT_TARGET_V,
                 },
                 {
                     "blocked": False,
@@ -1998,7 +1999,7 @@ class TestStartConflict:
                         "state": "ready_to_prepare",
                         "provider_action": "end_stream",
                         "scheduler_action": "prepare_generation",
-                        "next_v": 143,
+                        "next_v": STRICT_TARGET_V,
                         "source_v": None,
                     },
                 },
@@ -2106,9 +2107,9 @@ class TestStartConflict:
                 "status": "running",
                 "state": "running",
                 "blocked": False,
-                "version": 144,
-                "source_v": 143,
-                "workflow_run_id": "generation:144:workflow-v1",
+                "version": STRICT_TARGET_V + 1,
+                "source_v": STRICT_TARGET_V,
+                "workflow_run_id": f"generation:{STRICT_TARGET_V + 1}:workflow-v1",
                 "identity_digest": "i" * 64,
                 "projection_digest": "p" * 64,
                 "publication_id": "u" * 64,

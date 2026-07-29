@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+from bot_namespace import bot_name
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,8 +35,8 @@ def test_arena_cli_run_calls_shared_api_contract(monkeypatch, capsys):
     result = module.main([
         "run",
         "--mode", "managed",
-        "--top-bot", "national_v141",
-        "--bottom-bot", "national_v142",
+        "--top-bot", bot_name(141),
+        "--bottom-bot", bot_name(142),
         "--hands", "70",
     ])
 

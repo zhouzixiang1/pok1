@@ -14,6 +14,7 @@ from bot_namespace import (
     EVOLUTION_BRANCH,
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
+    bot_tag,
 )
 import checkpoint_schema
 import evaluation_contract
@@ -1284,13 +1285,13 @@ def test_called_allin_diagnosis_rejects_every_incident_identity_drift(field):
             candidate_completed=True
         ),
         lambda value: value["authority_absence"].update(
-            completion_tags=["national-bot-v143"]
+            completion_tags=[bot_tag(FIRST_STRICT_POLICY_VERSION)]
         ),
         lambda value: value["authority_absence"].update(
-            active_bots=["national_v143"]
+            active_bots=[bot_name(FIRST_STRICT_POLICY_VERSION)]
         ),
         lambda value: value["authority_absence"].update(
-            strict_published_bots=["national_v143"]
+            strict_published_bots=[bot_name(FIRST_STRICT_POLICY_VERSION)]
         ),
         lambda value: value["authority_absence"].update(
             control_successful_count=1
@@ -2652,7 +2653,7 @@ def test_canonical_reason_reopens_external_proof_and_crossbinds_checkpoint(
     (
         lambda claim: claim.update(git_head=OLD_HEAD),
         lambda claim: claim["git_state"].update(head=OLD_HEAD),
-        lambda claim: claim["candidate"].update(path="bots/national_v144"),
+        lambda claim: claim["candidate"].update(path=f"bots/{bot_name(144)}"),
     ),
 )
 def test_canonical_external_binding_rejects_head_or_path_splice(
@@ -2932,7 +2933,7 @@ def test_historical_job_requires_unique_finalized_claim_and_transaction(
         lambda canonical: canonical["checkpoint"].update(source_v=141),
         lambda canonical: canonical["checkpoint"].update(stage="verified"),
         lambda canonical: canonical["candidate"].update(
-            path="bots/national_v144"
+            path=f"bots/{bot_name(144)}"
         ),
         lambda canonical: canonical.update(transaction_id="d" * 64),
     ),

@@ -5,6 +5,7 @@ import threading
 import time
 
 from bot_namespace import bot_name
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 
 
 def _active_epoch(*, revision=7, stage="master_planning"):
@@ -14,16 +15,16 @@ def _active_epoch(*, revision=7, stage="master_planning"):
         "initialized": True,
         "reset_receipt_valid": True,
         "reset_receipt_digest": "a" * 64,
-        "version_authority_high_water": 142,
-        "current_v": 142,
-        "next_v": 143,
+        "version_authority_high_water": STRICT_SOURCE_V,
+        "current_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
         "active_bots": [],
         "active_generation": {
-            "next_v": 143,
-            "source_v": 142,
+            "next_v": STRICT_TARGET_V,
+            "source_v": STRICT_SOURCE_V,
             "stage": stage,
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:workflow-v1",
+            "run_id": f"{STRICT_TARGET_V}#1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "checkpoint_revision": revision,
         },
     }
@@ -103,8 +104,8 @@ class TestEvolutionState:
                 "initialized": False,
                 "reset_receipt_valid": False,
                 "reset_receipt_digest": None,
-                "current_v": 142,
-                "next_v": 143,
+                "current_v": STRICT_SOURCE_V,
+                "next_v": STRICT_TARGET_V,
                 "active_bots": [],
                 "active_generation": None,
             },
@@ -121,8 +122,8 @@ class TestEvolutionState:
 
         assert data["epoch_state"] == "reset_required"
         assert data["epoch_initialized"] is False
-        assert data["current_v"] == 142
-        assert data["next_v"] == 143
+        assert data["current_v"] == STRICT_SOURCE_V
+        assert data["next_v"] == STRICT_TARGET_V
         assert data["status"] == "Stopped: reset_required"
         assert data["is_working"] is False
         assert data["metrics"] == {}
@@ -146,9 +147,9 @@ class TestEvolutionState:
                 "initialized": True,
                 "reset_receipt_valid": True,
                 "reset_receipt_digest": receipt_digest,
-                "version_authority_high_water": 142,
-                "current_v": 142,
-                "next_v": 143,
+                "version_authority_high_water": STRICT_SOURCE_V,
+                "current_v": STRICT_SOURCE_V,
+                "next_v": STRICT_TARGET_V,
                 "active_bots": [],
                 "active_generation": None,
             },
@@ -161,8 +162,8 @@ class TestEvolutionState:
         assert data["epoch_initialized"] is True
         assert data["epoch_reset_receipt_digest"] == receipt_digest
         assert len(data["stream_authority_digest"]) == 64
-        assert data["current_v"] == 142
-        assert data["next_v"] == 143
+        assert data["current_v"] == STRICT_SOURCE_V
+        assert data["next_v"] == STRICT_TARGET_V
         assert data["pipeline_checkpoint_revision"] is None
 
     def test_initialized_state_carries_validated_checkpoint_revision(
@@ -182,15 +183,15 @@ class TestEvolutionState:
                 "initialized": True,
                 "reset_receipt_valid": True,
                 "reset_receipt_digest": "a" * 64,
-                "version_authority_high_water": 142,
-                "current_v": 142,
-                "next_v": 143,
+                "version_authority_high_water": STRICT_SOURCE_V,
+                "current_v": STRICT_SOURCE_V,
+                "next_v": STRICT_TARGET_V,
                 "active_bots": [],
                 "active_generation": {
-                    "next_v": 143,
-                    "source_v": 142,
+                    "next_v": STRICT_TARGET_V,
+                    "source_v": STRICT_SOURCE_V,
                     "stage": "reviewed",
-                    "run_id": "143#1",
+                    "run_id": f"{STRICT_TARGET_V}#1",
                     "workflow_run_id": "workflow-v1",
                     "checkpoint_revision": 7,
                 },
@@ -226,11 +227,11 @@ class TestEvolutionState:
             lambda: (dict(epoch), dict(handoff), "b" * 64),
         )
         monkeypatch.setattr(route, "_live_task_snapshot", _active_task)
-        monkeypatch.setitem(web_ui._state, "status", "Master planning for v143")
+        monkeypatch.setitem(web_ui._state, "status", f"Master planning for v{STRICT_TARGET_V}")
         monkeypatch.setitem(web_ui._state, "is_working", True)
         monkeypatch.setitem(web_ui._state, "status_identity", {
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:workflow-v1",
+            "run_id": f"{STRICT_TARGET_V}#1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "checkpoint_revision": 7,
             "stage": "master_planning",
             "task_owner_id": "f" * 32,
@@ -241,13 +242,13 @@ class TestEvolutionState:
 
         data = client.get("/api/evolution/state").json()
 
-        assert data["status"] == "Master planning for v143"
+        assert data["status"] == f"Master planning for v{STRICT_TARGET_V}"
         assert data["is_working"] is True
         assert data["transient_status"] == {
-            "msg": "Master planning for v143",
+            "msg": f"Master planning for v{STRICT_TARGET_V}",
             "is_working": True,
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:workflow-v1",
+            "run_id": f"{STRICT_TARGET_V}#1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "checkpoint_revision": 7,
             "stage": "master_planning",
             "task_owner_id": "f" * 32,
@@ -278,11 +279,11 @@ class TestEvolutionState:
             lambda: (dict(epoch), {"status": "none"}, "b" * 64),
         )
         monkeypatch.setattr(route, "_live_task_snapshot", _active_task)
-        monkeypatch.setitem(web_ui._state, "status", "Master planning for v143")
+        monkeypatch.setitem(web_ui._state, "status", f"Master planning for v{STRICT_TARGET_V}")
         monkeypatch.setitem(web_ui._state, "is_working", True)
         monkeypatch.setitem(web_ui._state, "status_identity", {
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:workflow-v1",
+            "run_id": f"{STRICT_TARGET_V}#1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "checkpoint_revision": 7,
             "stage": "master_planning",
             "task_lifecycle_revision": 7,
@@ -318,8 +319,8 @@ class TestEvolutionState:
 
         epoch = _active_epoch()
         old_status = {
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:workflow-v1",
+            "run_id": f"{STRICT_TARGET_V}#1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "checkpoint_revision": 7,
             "stage": "master_planning",
             "task_owner_id": "e" * 32,
@@ -332,7 +333,7 @@ class TestEvolutionState:
             lambda: (dict(epoch), {"status": "none"}, "b" * 64),
         )
         monkeypatch.setattr(route, "_live_task_snapshot", _active_task)
-        monkeypatch.setitem(web_ui._state, "status", "Master planning for v143")
+        monkeypatch.setitem(web_ui._state, "status", f"Master planning for v{STRICT_TARGET_V}")
         monkeypatch.setitem(web_ui._state, "is_working", True)
         monkeypatch.setitem(web_ui._state, "status_identity", old_status)
         monkeypatch.setattr(route.time, "time", lambda: 1_001.0)
@@ -365,11 +366,11 @@ class TestEvolutionState:
             lambda: (dict(epoch), {"status": "none"}, "b" * 64),
         )
         monkeypatch.setattr(route, "_live_task_snapshot", lambda: stopping)
-        monkeypatch.setitem(web_ui._state, "status", "Master planning for v143")
+        monkeypatch.setitem(web_ui._state, "status", f"Master planning for v{STRICT_TARGET_V}")
         monkeypatch.setitem(web_ui._state, "is_working", True)
         monkeypatch.setitem(web_ui._state, "status_identity", {
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:workflow-v1",
+            "run_id": f"{STRICT_TARGET_V}#1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "checkpoint_revision": 7,
             "stage": "master_planning",
             "task_owner_id": "f" * 32,
@@ -424,13 +425,13 @@ class TestEvolutionStream:
         _, queue = broadcaster.add_client("a" * 64)
         ui = WebUI(broadcaster)
 
-        ui.set_status("Master planning for v143", is_working=True)
+        ui.set_status(f"Master planning for v{STRICT_TARGET_V}", is_working=True)
 
         event = queue.get_nowait()
         payload = json.loads(event["data"])
         assert event["event"] == "status"
-        assert payload["run_id"] == "143#1"
-        assert payload["workflow_run_id"] == "generation:143:workflow-v1"
+        assert payload["run_id"] == f"{STRICT_TARGET_V}#1"
+        assert payload["workflow_run_id"] == f"generation:{STRICT_TARGET_V}:workflow-v1"
         assert payload["checkpoint_revision"] == 7
         assert payload["stage"] == "master_planning"
         assert payload["task_owner_id"] == "f" * 32
@@ -558,7 +559,7 @@ class TestEvolutionStream:
         broadcaster.bind_authority("a" * 64)
         _, queue = broadcaster.add_client("a" * 64)
 
-        WebUI(broadcaster).set_status("Master planning for v143", is_working=True)
+        WebUI(broadcaster).set_status(f"Master planning for v{STRICT_TARGET_V}", is_working=True)
 
         payload = json.loads(queue.get_nowait()["data"])
         assert payload["run_id"] is None
@@ -574,10 +575,10 @@ class TestEvolutionStream:
 
         epoch = _active_epoch()
         current = {
-            "msg": "Master planning for v143",
+            "msg": f"Master planning for v{STRICT_TARGET_V}",
             "is_working": True,
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:workflow-v1",
+            "run_id": f"{STRICT_TARGET_V}#1",
+            "workflow_run_id": f"generation:{STRICT_TARGET_V}:workflow-v1",
             "checkpoint_revision": 7,
             "stage": "master_planning",
             "task_owner_id": "f" * 32,
@@ -680,7 +681,7 @@ class TestEvolutionStream:
                 "initialized": True,
                 "reset_receipt_valid": True,
                 "reset_receipt_digest": "a" * 64,
-                "version_authority_high_water": 142,
+                "version_authority_high_water": STRICT_SOURCE_V,
                 "active_bots": [],
             },
             {
@@ -689,8 +690,8 @@ class TestEvolutionStream:
                 "initialized": True,
                 "reset_receipt_valid": True,
                 "reset_receipt_digest": "a" * 64,
-                "version_authority_high_water": 143,
-                "active_bots": ["national_v143"],
+                "version_authority_high_water": STRICT_TARGET_V,
+                "active_bots": [bot_name(STRICT_TARGET_V)],
             },
         ))
         monkeypatch.setattr(route, "_epoch_projection", lambda: next(epochs))
@@ -700,7 +701,7 @@ class TestEvolutionStream:
             lambda epoch: {
                 "projection_digest": (
                     "1" * 64
-                    if epoch["version_authority_high_water"] == 142
+                    if epoch["version_authority_high_water"] == STRICT_SOURCE_V
                     else "2" * 64
                 )
             },
@@ -708,7 +709,7 @@ class TestEvolutionStream:
 
         epoch, handoff, digest = route._stable_stream_projection(max_attempts=1)
 
-        assert epoch["version_authority_high_water"] == 143
+        assert epoch["version_authority_high_water"] == STRICT_TARGET_V
         assert handoff["projection_digest"] == "1" * 64
         assert digest is None
 
@@ -725,8 +726,8 @@ class TestEvolutionStream:
             "initialized": True,
             "reset_receipt_valid": True,
             "reset_receipt_digest": "a" * 64,
-            "version_authority_high_water": 143,
-            "active_bots": ["national_v143"],
+            "version_authority_high_water": STRICT_TARGET_V,
+            "active_bots": [bot_name(STRICT_TARGET_V)],
         }
         revision = {"value": 2}
         epoch_reads = {"count": 0}
@@ -780,10 +781,10 @@ class TestEvolutionStream:
                     "initialized": True,
                     "reset_receipt_valid": True,
                     "reset_receipt_digest": "a" * 64,
-                    "version_authority_high_water": 143,
-                    "current_v": 143,
-                    "next_v": 144,
-                    "active_bots": ["national_v143"],
+                    "version_authority_high_water": STRICT_TARGET_V,
+                    "current_v": STRICT_TARGET_V,
+                    "next_v": STRICT_TARGET_V + 1,
+                    "active_bots": [bot_name(STRICT_TARGET_V)],
                     "active_generation": None,
                 },
                 {"status": "pending", "projection_digest": "b" * 64},
@@ -815,8 +816,8 @@ class TestEvolutionStream:
                 "state": "reset_required",
                 "initialized": False,
                 "reset_receipt_digest": None,
-                "current_v": 142,
-                "next_v": 143,
+                "current_v": STRICT_SOURCE_V,
+                "next_v": STRICT_TARGET_V,
             },
         )
 
@@ -841,7 +842,7 @@ class TestEvolutionStream:
         import epoch_authority
         from server.app import broadcaster
 
-        target_v = 143
+        target_v = STRICT_TARGET_V
         projection = {
             "evaluation_epoch": "national_tcp_policy_v1",
             "state": "strict_published",

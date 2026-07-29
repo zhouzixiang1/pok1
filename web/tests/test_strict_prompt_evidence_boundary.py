@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from bot_namespace import bot_name, bot_tag
+from conftest import STRICT_SOURCE_V
+
 
 class _UI:
     costs = {}
@@ -40,9 +43,9 @@ def test_direction_audit_uses_only_strict_published_completion_commits(
     def fake_git(*args, **_kwargs):
         assert args[0] == "log", "raw tag enumeration is forbidden"
         tag = args[1]
-        if tag == "national-bot-v143":
+        if tag == bot_tag(143):
             return "strict v143 typed policy foundation"
-        if tag == "national-bot-v145":
+        if tag == bot_tag(145):
             return "strict v145 opponent evidence consumer"
         raise AssertionError(f"unexpected completion identity: {tag}")
 
@@ -62,11 +65,17 @@ def test_direction_audit_uses_only_strict_published_completion_commits(
             None,
         )
 
+    # The archived/below-floor bot must never appear in the completion history.
+    # On main the floor is 142 so v141 is archived; on cloud the floor is 0 so
+    # we use the branch-aware STRICT_SOURCE_V (0 on cloud -> name does not parse
+    # as an active bot and is skipped by the auditor).
+    archived_v = STRICT_SOURCE_V if STRICT_SOURCE_V > 0 else 141
+    archived_name = bot_name(archived_v) if STRICT_SOURCE_V > 0 else f"archived_legacy_v{STRICT_SOURCE_V}"
     monkeypatch.setattr(direction_auditor, "PROMPTS_DIR", prompts)
     monkeypatch.setattr(
         direction_auditor,
         "strict_published_bot_names",
-        lambda: ("national_v141", "national_v143", "national_v145"),
+        lambda: (archived_name, bot_name(143), bot_name(145)),
     )
     monkeypatch.setattr(direction_auditor, "get_logs_dir", lambda _v: tmp_path)
     monkeypatch.setattr(direction_auditor, "run_claude_query", fake_query)
@@ -78,7 +87,8 @@ def test_direction_audit_uses_only_strict_published_completion_commits(
     assert result["repetition_detected"] is False
     assert "v143" in captured["prompt"]
     assert "v145" in captured["prompt"]
-    assert "v141" not in captured["prompt"]
+    assert f"v{archived_v}" not in captured["prompt"]
+    assert archived_name not in captured["prompt"]
     # The canonical template itself explains that archived critic prose is
     # forbidden; assert the injected history contains only completion commits
     # instead of treating that policy word as evidence contamination.
@@ -175,7 +185,7 @@ def test_combined_prompt_is_built_only_from_supplied_frozen_bundle(
                 "persistent_weaknesses": [],
                 "reason": "frozen evidence is sufficient",
                 "suggestion": None,
-                "recommended_source": "national_v143",
+                "recommended_source": bot_name(143),
                 "source_rationale": "only strict frozen row",
                 "causal_analysis": (
                     "policy.py threshold change definitely caused the rating gain"
@@ -186,7 +196,7 @@ def test_combined_prompt_is_built_only_from_supplied_frozen_bundle(
         )
 
     row = {
-        "name": "national_v143",
+        "name": bot_name(143),
         "selection_score": 0.55,
         "leaderboard_score": 0.55,
         "h2h_avg_wr": 0.55,
@@ -209,11 +219,11 @@ def test_combined_prompt_is_built_only_from_supplied_frozen_bundle(
 
     result = asyncio.run(combined_analyst._run_combined_analysis(
         source_v=143,
-        active_bots=["national_v143"],
-        ratings={"national_v143": Glicko2Player(r=1510, rd=80, sigma=0.06)},
+        active_bots=[bot_name(143)],
+        ratings={bot_name(143): Glicko2Player(r=1510, rd=80, sigma=0.06)},
         ui=_UI(),
         h2h_data={},
-        bot_stats_data={"national_v143": {"games": 20, "win_rate": 0.55}},
+        bot_stats_data={bot_name(143): {"games": 20, "win_rate": 0.55}},
         selection_rows_data=[row],
         rating_history_data=[],
     ))
@@ -283,7 +293,7 @@ def test_strict_llm_gate_identity_never_fingerprints_numeric_high_water(
 ):
     import tool_gates
 
-    candidate = tmp_path / "national_v143"
+    candidate = tmp_path / bot_name(143)
     candidate.mkdir()
     seen = []
 

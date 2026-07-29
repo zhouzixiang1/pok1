@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 from epoch_authority import (
     require_policy_epoch_initialized as _real_require_policy_epoch_initialized,
 )
@@ -22,8 +23,10 @@ def _state(name: str, *, initialized: bool) -> dict:
         "reset_receipt_valid": name == "fresh_bootstrap_ready",
         "reset_receipt_digest": "a" * 64 if initialized else None,
         "reset_receipt_issues": [] if initialized else ["reset_missing"],
-        "version_authority_high_water": 143 if name == "strict_published" else 142,
-        "first_strict_version": 143,
+        "version_authority_high_water": STRICT_TARGET_V
+        if name == "strict_published"
+        else STRICT_SOURCE_V,
+        "first_strict_version": STRICT_TARGET_V,
         "operator_action": None if initialized else "execute_policy_epoch_reset",
         "operator_command": None if initialized else "reset-command",
     }
@@ -119,9 +122,9 @@ def test_pre_reset_read_only_control_calls_do_not_persist_events(
 
     projection = {
         **_state("reset_required", initialized=False),
-        "current_v": 142,
-        "next_v": 143,
-        "max_committed_v": 142,
+        "current_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
+        "max_committed_v": STRICT_SOURCE_V,
         "abandoned_floor": 0,
         "active_bots": [],
         "active_bots_count": 0,
@@ -389,9 +392,9 @@ def test_view_only_lifespan_can_read_reset_required_status(monkeypatch):
 
     projection = {
         **_state("reset_required", initialized=False),
-        "current_v": 142,
-        "next_v": 143,
-        "max_committed_v": 142,
+        "current_v": STRICT_SOURCE_V,
+        "next_v": STRICT_TARGET_V,
+        "max_committed_v": STRICT_SOURCE_V,
         "abandoned_floor": 0,
         "active_bots": [],
         "active_bots_count": 0,
