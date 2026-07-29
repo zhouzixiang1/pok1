@@ -4,6 +4,10 @@ import type { CanonicalGenerationIdentity } from "../api/control.js";
 // namespaces. The backend namespace prefix is branch-configurable.
 const BOT_NAME = /^national(?:_cloud)?_v([1-9][0-9]*)$/;
 const BOT_TAG = /^national-(?:cloud-)?bot-v([1-9][0-9]*)$/;
+// Two-tier publication: the certified-tier tag (added after async official
+// certification) is a separate namespace. This regex is for display/validation
+// of certified tags; the canonical_tag field still uses the staging (bot-v) tag.
+const CERTIFIED_TAG = /^national-(?:cloud-)?certified-v([1-9][0-9]*)$/;
 // Branch-configurable strict-policy version floor. Cloud branch
 // (national_cloud_v namespace) starts at v1; main branch historically
 // started at v143. The frontend must not pin to a specific branch's literal.
@@ -59,4 +63,10 @@ export function canonicalGenerationLabel(
     return null;
   }
   return `第${identity.generation_ordinal}代 · ${identity.canonical_bot_name} · ${identity.canonical_tag}`;
+}
+
+/** Check if a tag string is a certified-tier tag (Phase 1 two-tier publication). */
+export function isCertifiedTag(tag: string | null | undefined): boolean {
+  if (!tag) return false;
+  return CERTIFIED_TAG.test(tag);
 }

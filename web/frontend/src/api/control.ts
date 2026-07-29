@@ -58,6 +58,18 @@ export interface ActiveGeneration extends CanonicalGenerationIdentity {
   };
 }
 
+/** A draft-slot generation running concurrently with the primary (Phase 4b). */
+export interface DraftGeneration {
+  slot_id: "draft";
+  next_v: number;
+  source_v: number | null;
+  parent2_v: number | null;
+  stage: string;
+  workflow_run_id: string | null;
+  checkpoint_revision: number;
+  is_draft: true;
+}
+
 export interface PipelineRoute {
   stage: string;
   next_v: number;

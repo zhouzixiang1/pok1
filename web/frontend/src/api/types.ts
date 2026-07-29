@@ -210,6 +210,7 @@ export type OfficialCertificationState =
   | "official-inconclusive"
   | "official-failed"
   | "official-uncertified"
+  | "official-staging"
   | "official-unavailable";
 
 export interface OfficialCertification {
@@ -235,7 +236,13 @@ export interface OfficialCertification {
   official_verdict_ledger_entry?: Record<string, unknown>;
   /** Backend-validated publication authority; the UI must not reconstruct it. */
   formal_certified?: boolean;
-  formal_authority?: "signed_full_v5" | "none" | "pipeline_attached_full_v5_job";
+  formal_authority?:
+    | "signed_full_v5"
+    | "staging_uncertified"
+    | "none"
+    | "pipeline_attached_full_v5_job";
+  /** Two-tier publication: "staging" = published but awaiting async cert; "certified" = signed. */
+  publication_tier?: "staging" | "certified";
   formal_summary?: {
     self_play_rounds: number;
     opponent_rounds: number;
@@ -380,6 +387,10 @@ export interface BotSummary {
   status_label?: string;
   status_reasons?: string[];
   official_certification?: OfficialCertification;
+  /** Two-tier: "staging" = published awaiting async cert; "certified" = signed full cert. */
+  publication_tier?: "staging" | "certified";
+  /** Certified-tier annotated tag (only present after async official cert completes). */
+  certified_tag?: string | null;
 }
 
 export interface BotDetail extends BotSummary {

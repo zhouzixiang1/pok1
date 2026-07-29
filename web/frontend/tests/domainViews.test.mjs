@@ -461,6 +461,15 @@ test("evidenceTierForOfficialCertification only treats signed_full_v5 as complia
   assert.equal(none.tier, "zero");
 });
 
+test("evidenceTierForOfficialCertification classifies staging tier correctly", () => {
+  // Two-tier: a staging bot (published, awaiting async cert) is staging tier, not compliance or zero.
+  const staging = evidenceTierForOfficialCertification({ publication_tier: "staging", formal_authority: "staging_uncertified" });
+  assert.equal(staging.tier, "staging");
+  // A certified bot is still compliance even if publication_tier is also set.
+  const certified = evidenceTierForOfficialCertification({ publication_tier: "certified", formal_certified: true, formal_authority: "signed_full_v5" });
+  assert.equal(certified.tier, "compliance");
+});
+
 test("official job rows remain zero-weight progress until a signed certificate is validated", () => {
   const normalJob = evidenceTierForBootstrapJob({ formal_authority: "pipeline_attached_full_v5_job" });
   const firstJob = evidenceTierForBootstrapJob({ formal_authority: "operator_bootstrap_full_v5_job" });
@@ -490,9 +499,9 @@ test("criticAdvisoryVerdictLabel mirrors criticAdvisoryComplete field chain", ()
   assert.equal(incomplete.complete, false);
 });
 
-test("EVIDENCE_TIER_LABELS exposes all five tiers", () => {
+test("EVIDENCE_TIER_LABELS exposes all six tiers", () => {
   const tiers = Object.keys(EVIDENCE_TIER_LABELS).sort();
-  assert.deepEqual(tiers, ["advisory", "compliance", "diagnostic", "strength", "zero"]);
+  assert.deepEqual(tiers, ["advisory", "compliance", "diagnostic", "staging", "strength", "zero"]);
 });
 
 test("workerFailureRows keeps the backend category without re-deriving it", () => {

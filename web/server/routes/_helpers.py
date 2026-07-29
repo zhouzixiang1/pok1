@@ -304,13 +304,39 @@ def build_bot_summary(
         except Exception:
             profile = {}
         formal = bool(profile)
+        # Two-tier publication: detect staging tier. A staging bot is published
+        # (has a completion tag + .completed) but lacks a signed certificate.
+        # If it has a staging tag but no certified tag, it's awaiting async cert.
+        publication_tier = "certified" if formal else "staging"
+        try:
+            if not formal:
+                from bot_namespace import certified_tag, parse_bot_version
+                _bv = parse_bot_version(bot_name)
+                if _bv is not None:
+                    import subprocess
+                    _ct = certified_tag(_bv)
+                    _has_certified = subprocess.run(
+                        ["git", "tag", "-l", _ct],
+                        capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
+                    ).stdout.strip()
+                    if not _has_certified:
+                        publication_tier = "staging"
+                    else:
+                        publication_tier = "certified"
+        except Exception:
+            pass
+        formal_authority = "signed_full_v5" if formal else (
+            "staging_uncertified" if publication_tier == "staging" else "none"
+        )
         certification.update({
             "formal_certified": formal,
-            "formal_authority": "signed_full_v5" if formal else "none",
+            "formal_authority": formal_authority,
+            "publication_tier": publication_tier,
             "formal_summary": None,
             **profile,
         })
         summary["official_certification"] = certification
+        summary["publication_tier"] = publication_tier
     except Exception:
         summary["official_certification"] = {
             "bot": bot_name,
@@ -319,6 +345,7 @@ def build_bot_summary(
             "issues": ["certification_status_unavailable"],
             "formal_certified": False,
             "formal_authority": "none",
+            "publication_tier": "certified",
             "formal_summary": None,
         }
     for key in (

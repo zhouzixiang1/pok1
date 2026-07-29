@@ -15,6 +15,7 @@ import { criticAdvisoryComplete } from "../lib/pipelinePresentation.js";
  */
 export type EvidenceAuthorityTier =
   | "compliance" // official-full-v5 certificate, capability probe, native precommit
+  | "staging" // published (staging tag) but awaiting async official certification
   | "strength" // immutable 70-hand rating cycle, selection rows
   | "advisory" // schema-valid Critic recommendation only (non-blocking)
   | "diagnostic" // Arena sessions, local probes (zero strength weight)
@@ -29,6 +30,7 @@ export interface EvidenceAuthorityLabel {
 
 export const EVIDENCE_TIER_LABELS: Record<EvidenceAuthorityTier, EvidenceAuthorityLabel> = {
   compliance: { tier: "compliance", label: "发布/合规门证据", tone: "success" },
+  staging: { tier: "staging", label: "已发布/待认证", tone: "warning" },
   strength: { tier: "strength", label: "强度证据", tone: "info" },
   advisory: { tier: "advisory", label: "建议（不决定发布）", tone: "warning" },
   diagnostic: { tier: "diagnostic", label: "诊断（零强度权重）", tone: "neutral" },
@@ -59,6 +61,13 @@ export function evidenceTierForOfficialCertification(
   if (!cert) return EVIDENCE_TIER_LABELS.zero;
   if (cert.formal_certified === true && cert.formal_authority === "signed_full_v5") {
     return EVIDENCE_TIER_LABELS.compliance;
+  }
+  // Two-tier publication: a staging bot is published (staging tag) but its
+  // async official certification has not yet completed. It is NOT compliance
+  // evidence, but it is more than zero — it is a real published artifact
+  // awaiting certification.
+  if (cert.publication_tier === "staging" || cert.formal_authority === "staging_uncertified") {
+    return EVIDENCE_TIER_LABELS.staging;
   }
   // A pending/failed/bootstrap job is not evidence merely because it carries
   // a formal_authority label. Only the server-validated signed certificate is

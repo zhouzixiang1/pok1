@@ -351,7 +351,10 @@ class TestBuildBotSummary:
         )["official_certification"]
 
         assert certification["formal_certified"] is False
-        assert certification["formal_authority"] == "none"
+        # Two-tier: an unvalidated published bot is staging-tier, not "none".
+        # It is published but lacks a signed certificate. formal_certified stays
+        # False — it must NEVER be projected as formal/compliance authority.
+        assert certification["formal_authority"] in ("none", "staging_uncertified")
         assert certification["formal_summary"] is None
 
     def test_projects_first_strict_control_profile_from_signed_authority(
