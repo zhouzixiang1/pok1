@@ -87,8 +87,13 @@ export interface OperatorTransition {
   strategy_evidence_weight: 0;
   evaluation_epoch: EvaluationEpoch;
   workflow_run_id: string | null;
-  candidate_version: 143 | null;
-  source_v: 142 | null;
+  // The first-strict candidate/source versions are branch-configurable
+  // (national_cloud_v1 with source_v=null on the cloud branch; the
+  // historical national_v143/source_v=142 on main). The frontend must not
+  // pin these to a specific branch's literals — it validates the values
+  // carried by the backend projection against the active generation.
+  candidate_version: number | null;
+  source_v: number | null;
   checkpoint_stage: "official_bootstrap_required" | null;
   checkpoint_revision: number | null;
   candidate_hash?: string | null;

@@ -29,9 +29,15 @@ function transitionMatches(
     && (transition.reason == null || typeof transition.reason === "string")
     && transition.evaluation_epoch === "national_tcp_policy_v1"
     && generation
-    && generation.next_v === 143
-    && transition.candidate_version === 143
-    && transition.source_v === 142
+    // The first-strict candidate/source versions are branch-configurable
+    // (cloud: next_v=1, source_v=null; main: next_v=143, source_v=142).
+    // Validate the backend-provided transition identity against the live
+    // active generation instead of pinning to a branch-specific literal.
+    && typeof generation.next_v === "number"
+    && Number.isSafeInteger(generation.next_v)
+    && generation.next_v >= 1
+    && transition.candidate_version === generation.next_v
+    && (transition.source_v == null ? generation.source_v == null : transition.source_v === generation.source_v)
     && transition.workflow_run_id === generation.workflow_run_id
     && transition.checkpoint_stage === "official_bootstrap_required"
     && typeof transition.checkpoint_revision === "number"
@@ -214,7 +220,8 @@ export function OfficialCertificationProgressView({
   const transition = boundTransition && transitionJobBindingValid(boundTransition, job)
     ? boundTransition
     : null;
-  // v143 legitimately carries source_v=142 as numeric-high-water continuity.
+  // The first-strict candidate carries source_v as numeric-high-water
+  // continuity only (cloud: v1 with source_v=0; main historically v143/v142).
   // Certification profile comes only from the content-bound transition/job;
   // version/source arithmetic must never reinterpret system-control as normal.
   const certificationProfile = transition?.certification_profile ?? job?.certification_profile ?? null;
@@ -289,7 +296,7 @@ export function OfficialCertificationProgressView({
               ? "操作员尚未启动唯一授权的只读 system-control job；这是受控暂停，不是认证失败。"
               : transition?.state === "bootstrap_failed"
                 ? "后端已用 digest-bound transition 报告 durable job 发现失败；reason、action 和 command 以上方投影为准。"
-              : "尚无与 transition、workflow、v143 和 system-control profile 全部匹配的只读任务。"
+              : "尚无与 transition、workflow 和 system-control profile 全部匹配的只读任务。"
             : stage === "publishing"
               ? "发布阶段未返回身份匹配的 job 快照；页面不从 stage 反推证书摘要。"
               : stage === "official_failed" || stage === "official_inconclusive"

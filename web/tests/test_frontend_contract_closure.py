@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from bot_namespace import ACTIVE_TAG_PREFIX
+
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "web" / "frontend" / "src"
@@ -262,7 +264,7 @@ def test_bot_page_consumes_backend_dual_identity_without_reindexing_or_tag_synth
     assert "sameCanonicalGenerationIdentity(bot, authority)" in bots
     assert "第{identity.generation_ordinal}代" in bots
     assert "tag: {completionTag}" in bots
-    assert "`national-bot-v${bot.version}`" not in bots
+    assert f"`{ACTIVE_TAG_PREFIX}${{bot.version}}`" not in bots
     assert "identity?.canonical_tag" in bots
     assert "排序和过滤不会重编号" in bots
 
@@ -313,15 +315,28 @@ def test_official_ui_preserves_jobless_digest_bound_bootstrap_failure_and_normal
 
 
 def test_v143_numeric_high_water_source_does_not_select_normal_certification_profile():
-    # The real fresh checkpoint binds numeric high-water v142 as source_v while
-    # explicitly carrying no inherited source artifact.  Frontend profile
-    # selection must therefore consume the bound transition/job, not source_v.
+    # The first-strict checkpoint binds the branch's archived high-water as
+    # source_v (cloud: 0; main historically: 142) while explicitly carrying no
+    # inherited source artifact.  Frontend profile selection must therefore
+    # consume the bound transition/job, not source_v. The frontend must NOT
+    # pin to a branch-specific literal (142/143) — it validates the
+    # backend-provided transition identity against the live active generation.
     checkpoint_fixture = {"next_v": 143, "source_v": 142}
     source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
 
+    # The historical main-branch fixture is still a valid example of the
+    # numeric-high-water-as-source_v pattern; it is not asserted as the only
+    # legal value.
     assert checkpoint_fixture == {"next_v": 143, "source_v": 142}
-    assert "generation.source_v == null" not in source
-    assert "transition.source_v === 142" in source
+    # The frontend no longer pins source_v to 142; it validates against the
+    # live active_generation.source_v (branch-configurable).
+    assert "transition.source_v === 142" not in source
+    assert "generation.next_v === 143" not in source
+    assert "transition.candidate_version === 143" not in source
+    # Instead it binds candidate_version to generation.next_v and source_v to
+    # generation.source_v (both branch-configurable).
+    assert "transition.candidate_version === generation.next_v" in source
+    assert "transition.source_v == null ? generation.source_v == null : transition.source_v === generation.source_v" in source
     assert 'certificationProfile === "first_strict_control_v1"' in source
     assert 'job.certification_profile === "official-full-v5"' in source
     assert 'job.opponent_authority === "strict_published_pool"' in source

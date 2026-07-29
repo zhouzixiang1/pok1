@@ -5,6 +5,7 @@ import {
   type EventSourceController,
   type EventSourceControllerDependencies,
 } from "./eventSourceController.js";
+import { FIRST_STRICT_POLICY_VERSION } from "./canonicalGenerationIdentity.js";
 
 export type StreamType = "prompt" | "claude" | "thinking" | "tool" | "tool_result" | "error" | "default";
 
@@ -609,7 +610,8 @@ const isPostPublicationHandoff = (value: unknown): boolean => {
       )
     )
     && isInteger(value.version)
-    && value.version >= 143
+    // Branch-configurable strict floor (cloud: v1; main historically: v143).
+    && value.version >= FIRST_STRICT_POLICY_VERSION
     && isInteger(value.source_v)
     && value.source_v < value.version
     && typeof value.workflow_run_id === "string"

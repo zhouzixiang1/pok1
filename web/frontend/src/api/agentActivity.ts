@@ -1,6 +1,7 @@
 import type { AgentActivityResponse } from "./types.js";
 import type { ActiveGeneration } from "./control.js";
 import { isOfficialCertificationStage } from "./officialJobs.js";
+import { FIRST_STRICT_POLICY_VERSION } from "../lib/canonicalGenerationIdentity.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -186,7 +187,9 @@ export function expectAgentActivity(value: unknown): AgentActivityResponse {
   }
   if (
     !isInteger(value.next_v)
-    || value.next_v < 143
+    // The first-strict candidate version is branch-configurable (cloud: v1;
+    // main historically: v143). Reject only versions below the strict floor.
+    || value.next_v < FIRST_STRICT_POLICY_VERSION
     || !nullableInteger(value.source_v)
     || !nullableInteger(value.parent2_v)
     || typeof value.stage !== "string"

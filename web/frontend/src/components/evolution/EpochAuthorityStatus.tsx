@@ -199,8 +199,10 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
               {status.active_generation.recovery_kind === "publication_reconciliation" && (
                 <> · 正在恢复同一发布事务</>
               )}
-              {status.active_generation.next_v === 143 && status.active_generation.source_v === 142 && (
-                <> · v142 仅为数字高水位，不表示继承源 artifact</>
+              {status.active_generation.source_v != null
+                && status.active_generation.source_v < status.active_generation.next_v
+                && (
+                <> · v{status.active_generation.source_v} 仅为数字高水位，不表示继承源 artifact</>
               )}
             </p>
           )}

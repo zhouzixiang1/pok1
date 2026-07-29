@@ -4,7 +4,10 @@ import type { CanonicalGenerationIdentity } from "../api/control.js";
 // namespaces. The backend namespace prefix is branch-configurable.
 const BOT_NAME = /^national(?:_cloud)?_v([1-9][0-9]*)$/;
 const BOT_TAG = /^national-(?:cloud-)?bot-v([1-9][0-9]*)$/;
-const FIRST_STRICT_POLICY_VERSION = 1;
+// Branch-configurable strict-policy version floor. Cloud branch
+// (national_cloud_v namespace) starts at v1; main branch historically
+// started at v143. The frontend must not pin to a specific branch's literal.
+export const FIRST_STRICT_POLICY_VERSION = 1;
 
 /** Validate backend-owned identity without deriving an ordinal or tag. */
 export function canonicalGenerationIdentityIssues(

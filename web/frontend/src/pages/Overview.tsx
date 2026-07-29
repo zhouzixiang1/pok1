@@ -205,7 +205,7 @@ export default function Overview() {
       ? "当前严格发布池为空；尚无可进入评分周期的 Bot。"
       : "严格发布池正在等待首个绑定当前发布池的完整 70 手评分周期；不会用默认分伪造强度。"
     : nextAuthorityVersion != null
-      ? `严格进化尚未初始化；v${controlStatus?.version_authority_high_water ?? 142} 只用于防止版本号倒退，初始化后首目标为 v${nextAuthorityVersion}。`
+      ? `严格进化尚未初始化；v${controlStatus?.version_authority_high_water ?? 0} 只用于防止版本号倒退，初始化后首目标为 v${nextAuthorityVersion}。`
       : "当前无法验证严格进化身份；恢复前不声明下一版本或强度结果。";
   const strengthSampleDisplay = controlStatus?.epoch_initialized && visibleRatings.length > 0
     ? (stats?.total_strength_samples ?? stats?.total_games ?? 0).toLocaleString()
