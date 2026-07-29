@@ -492,7 +492,7 @@ async def _execute_workers_phase_a_preamble(args, actor_lock_owned):
     return ({"_system_bootstrap_executor": _system_bootstrap_executor, "checkpoint_tasks": checkpoint_tasks, "ckpt": ckpt, "durable_worker_envelope": durable_worker_envelope, "durable_worker_resume": durable_worker_resume, "durable_worker_state": durable_worker_state, "durable_worker_status": durable_worker_status, "next_dir": next_dir, "next_v": next_v, "reviewer_feedback": reviewer_feedback, "source_v": source_v, "tasks": tasks, "tasks_provided": tasks_provided, "worker_template": worker_template, "worker_workflow": worker_workflow},)  # PHASE CONTINUATION (not an exit path)
 
 
-async def _execute_workers_phase_d_projection(_system_bootstrap_executor, actor_lock_owned, ckpt, durable_worker_envelope, durable_worker_resume, durable_worker_state, durable_worker_status, force_sequential_rework, frozen_rework_resume, next_dir, next_v, official_rework_count_for_write, precommit_rework_count_for_write, prepared_candidate_dir, quality_skipper_config, replace_checkpoint_tasks, reviewer_feedback, rework_plan_metadata, rework_stages, source_v, tasks, worker_template, worker_workflow):
+async def _execute_workers_phase_d_projection(_system_bootstrap_executor, actor_lock_owned, ckpt, durable_worker_envelope, durable_worker_resume, durable_worker_state, durable_worker_status, force_sequential_rework, frozen_rework_resume, next_dir, next_v, official_rework_count_for_write, precommit_rework_count_for_write, prepared_candidate_dir, quality_skipper_config, replace_checkpoint_tasks, reviewer_feedback, rework_plan_metadata, rework_preparation_dir, rework_stages, source_v, tasks, worker_template, worker_workflow):
     """Phase D: repair-baseline drift recheck, frozen-rework pre-worker drift guard,"""
     if reviewer_feedback and rework_plan_metadata:
         expected_rework_hash = str(
@@ -897,6 +897,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
     # Phase D: projection + final dispatch (terminal phase).
     result = await _execute_workers_phase_d_projection(
         actor_lock_owned=actor_lock_owned,
-        **{k: ctx[k] for k in ('_system_bootstrap_executor', 'ckpt', 'durable_worker_envelope', 'durable_worker_resume', 'durable_worker_state', 'durable_worker_status', 'force_sequential_rework', 'frozen_rework_resume', 'next_dir', 'next_v', 'official_rework_count_for_write', 'precommit_rework_count_for_write', 'prepared_candidate_dir', 'quality_skipper_config', 'replace_checkpoint_tasks', 'reviewer_feedback', 'rework_plan_metadata', 'rework_stages', 'source_v', 'tasks', 'worker_template', 'worker_workflow') if k in ctx}
+        **{k: ctx[k] for k in ('_system_bootstrap_executor', 'ckpt', 'durable_worker_envelope', 'durable_worker_resume', 'durable_worker_state', 'durable_worker_status', 'force_sequential_rework', 'frozen_rework_resume', 'next_dir', 'next_v', 'official_rework_count_for_write', 'precommit_rework_count_for_write', 'prepared_candidate_dir', 'quality_skipper_config', 'replace_checkpoint_tasks', 'reviewer_feedback', 'rework_plan_metadata', 'rework_preparation_dir', 'rework_stages', 'source_v', 'tasks', 'worker_template', 'worker_workflow') if k in ctx}
     )
     return result

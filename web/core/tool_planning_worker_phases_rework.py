@@ -1570,4 +1570,4 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
                 ),
             })
 
-    return ({"force_sequential_rework": force_sequential_rework, "official_rework_count_for_write": official_rework_count_for_write, "precommit_rework_count_for_write": precommit_rework_count_for_write, "prepared_candidate_dir": prepared_candidate_dir, "quality_skipper_config": quality_skipper_config, "reviewer_feedback": reviewer_feedback, "rework_plan_metadata": rework_plan_metadata},)  # PHASE CONTINUATION (not an exit path)
+    return ({"force_sequential_rework": force_sequential_rework, "official_rework_count_for_write": official_rework_count_for_write, "precommit_rework_count_for_write": precommit_rework_count_for_write, "prepared_candidate_dir": prepared_candidate_dir, "quality_skipper_config": quality_skipper_config, "reviewer_feedback": reviewer_feedback, "rework_plan_metadata": rework_plan_metadata, "rework_preparation_dir": rework_preparation_dir},)  # PHASE CONTINUATION (not an exit path)
