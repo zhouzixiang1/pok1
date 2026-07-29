@@ -971,6 +971,7 @@ def strict_epoch_projection(
         ],
         "strict_generation_count": len(published_versions),
         "active_generation": None,
+        "active_generations": [],
         "ignored_checkpoint": None,
     }
     if initialization.get("runtime_reconciliation_claimed"):
@@ -1234,6 +1235,34 @@ def strict_epoch_projection(
         projection["operator_transition"] = first_strict_operator_transition(
             checkpoint
         )
+    # Phase 4b: multi-slot projection.  Build ``active_generations`` as a list
+    # of all active slots (primary first, then any draft slot) so the frontend
+    # and control plane can display concurrent generations.  ``active_generation``
+    # remains the primary slot (backward-compatible with all existing consumers).
+    active_generations = []
+    if isinstance(projection.get("active_generation"), dict):
+        active_generations.append(
+            {**projection["active_generation"], "slot_id": "primary"}
+        )
+    try:
+        draft_checkpoint = infra.read_pipeline_checkpoint(slot_id="draft")
+        if isinstance(draft_checkpoint, dict) and draft_checkpoint:
+            draft_stage = str(draft_checkpoint.get("stage") or "")
+            if draft_stage not in {"", "archived", "abandoned"}:
+                draft_entry = {
+                    "slot_id": "draft",
+                    "next_v": int(draft_checkpoint.get("next_v") or 0),
+                    "source_v": draft_checkpoint.get("source_v"),
+                    "parent2_v": draft_checkpoint.get("parent2_v"),
+                    "stage": draft_stage,
+                    "workflow_run_id": draft_checkpoint.get("workflow_run_id"),
+                    "checkpoint_revision": draft_checkpoint.get("checkpoint_revision"),
+                    "is_draft": True,
+                }
+                active_generations.append(draft_entry)
+    except Exception:
+        pass
+    projection["active_generations"] = active_generations
     return projection
 
 
