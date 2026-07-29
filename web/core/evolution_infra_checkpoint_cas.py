@@ -87,6 +87,18 @@ from bot_namespace import (
 log = logging.getLogger("pok.infra")
 
 
+def _state_file_for_slot(slot_id=None):
+    """Resolve the per-slot checkpoint file path.
+
+    ``slot_id=None`` resolves to the primary/canonical checkpoint file
+    (``pipeline_state.json``) — backward-compatible with all existing callers.
+    A non-None ``slot_id`` resolves to ``pipeline_state_<slot_id>.json`` for a
+    concurrent generation.  Each slot file has its own sidecar lock (derived
+    from the data file path), so per-file-per-slot gets per-slot locking.
+    """
+    return _ei.pipeline_state_path(slot_id)
+
+
 def _capture_repo_baseline(stage, *, next_v=None, source_v=None, checkpoint=None):
     """Capture the git baseline persisted with an active generation checkpoint."""
     try:
@@ -671,7 +683,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                identity_replan_history=None,
                                candidate_artifact_hash=None,
                                candidate_manifest_digest=None,
-                               charter_digest=None):
+                               charter_digest=None,
+                               slot_id=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -687,18 +700,19 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         _profile, "national_execution_mode", "native_tcp"
     )
 
-    # Lock a stable sidecar inode. Locking _ei.PIPELINE_STATE_FILE itself is unsafe
+    # Lock a stable sidecar inode. Locking the state file itself is unsafe
     # because os.replace swaps that inode while waiters may still hold an open
     # descriptor to the retired file and later overwrite a newer projection.
+    state_file = _state_file_for_slot(slot_id)
     try:
-        _ei._preflight_state_sidecar(_ei.PIPELINE_STATE_FILE)
+        _ei._preflight_state_sidecar(state_file)
     except OSError as exc:
         log.error("Checkpoint sidecar path is unsafe: %s", exc)
         return False
-    with _ei._locked_state_sidecar(_ei.PIPELINE_STATE_FILE, lock_type=fcntl.LOCK_EX):
+    with _ei._locked_state_sidecar(state_file, lock_type=fcntl.LOCK_EX):
         try:
             raw = _ei._read_regular_state_text(
-                _ei.PIPELINE_STATE_FILE,
+                state_file,
                 allow_missing=True,
             )
         except (OSError, UnicodeError) as exc:
@@ -1674,7 +1688,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         # Whole-file atomic publication under the stable sidecar lock.
         _ei._atomic_publish_state_text(
-            _ei.PIPELINE_STATE_FILE,
+            state_file,
             json.dumps(state, indent=2, ensure_ascii=False, allow_nan=False),
         )
 
@@ -1698,14 +1712,15 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         return True
 
 
-def read_pipeline_checkpoint():
+def read_pipeline_checkpoint(slot_id=None):
     """Return saved pipeline state dict, or None."""
-    if not os.path.lexists(_ei.PIPELINE_STATE_FILE):
+    state_file = _state_file_for_slot(slot_id)
+    if not os.path.lexists(state_file):
         return None
     try:
-        with _ei._locked_state_sidecar(_ei.PIPELINE_STATE_FILE, lock_type=fcntl.LOCK_SH):
+        with _ei._locked_state_sidecar(state_file, lock_type=fcntl.LOCK_SH):
             raw = _ei._read_regular_state_text(
-                _ei.PIPELINE_STATE_FILE,
+                state_file,
                 allow_missing=False,
             )
         checkpoint = json.loads(raw)
@@ -1723,24 +1738,26 @@ def clear_pipeline_checkpoint(
     expected_source_v=None,
     expected_checkpoint_revision=None,
     expected_checkpoint_stage=None,
+    slot_id=None,
 ):
     """Delete pipeline checkpoint (called on successful commit).
 
     Uses exclusive lock to prevent race with concurrent writes.
     """
+    state_file = _state_file_for_slot(slot_id)
     previous = None
     try:
-        _ei._preflight_state_sidecar(_ei.PIPELINE_STATE_FILE)
+        _ei._preflight_state_sidecar(state_file)
     except OSError:
         return False
     guard = _ei._locked_state_sidecar(
-        _ei.PIPELINE_STATE_FILE,
+        state_file,
         lock_type=fcntl.LOCK_EX,
     )
     with guard:
         try:
             raw = _ei._read_regular_state_text(
-                _ei.PIPELINE_STATE_FILE,
+                state_file,
                 allow_missing=True,
             )
         except (OSError, UnicodeError):
@@ -1796,8 +1813,8 @@ def clear_pipeline_checkpoint(
                 return False
         # Unlink under the stable sidecar lock so writers cannot race a retired
         # checkpoint inode.
-        _ei.PIPELINE_STATE_FILE.unlink(missing_ok=True)
-        _ei._fsync_directory(_ei.PIPELINE_STATE_FILE.parent)
+        state_file.unlink(missing_ok=True)
+        _ei._fsync_directory(state_file.parent)
     try:
         from event_bus import emit
         next_v = previous.get("next_v") if previous else None

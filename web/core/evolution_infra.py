@@ -76,6 +76,21 @@ H2H_FILE = RESULTS_DIR / "head_to_head.json"
 BOT_STATS_FILE = RESULTS_DIR / "bot_stats.json"
 WORKER_FAILURES_FILE = RESULTS_DIR / "worker_failures.jsonl"
 PIPELINE_STATE_FILE = RESULTS_DIR / "pipeline_state.json"
+
+
+def pipeline_state_path(slot_id=None):
+    """Resolve the checkpoint file path for a slot.
+
+    ``slot_id=None`` (default) returns the primary/canonical checkpoint file
+    (backward-compatible with all existing callers).  A non-None slot_id
+    returns ``pipeline_state_<slot_id>.json`` for a concurrent generation.
+    """
+    if slot_id is None:
+        return PIPELINE_STATE_FILE
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(slot_id))
+    return RESULTS_DIR / f"pipeline_state_{safe}.json"
+
+
 REPLAY_DIR = RESULTS_DIR / "match_replay"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 ARCHIVE_DIR = RESULTS_DIR / "archive"
@@ -603,15 +618,16 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                identity_replan_history=None,
                                candidate_artifact_hash=None,
                                candidate_manifest_digest=None,
-                               charter_digest=None):
+                               charter_digest=None,
+                               slot_id=None):
     """Delegate to evolution_infra_checkpoint_cas."""
-    return _ckpt.write_pipeline_checkpoint(next_v=next_v, source_v=source_v, stage=stage, master_plan=master_plan, reviewer_feedback=reviewer_feedback, generation_attempt=generation_attempt, gate_results=gate_results, worker_failure_count=worker_failure_count, worker_invocation_count=worker_invocation_count, parent2_v=parent2_v, direction_audit=direction_audit, audit_context=audit_context, reset_generation_attempt=reset_generation_attempt, replace_audit_context=replace_audit_context, audit_context_replacement_reason=audit_context_replacement_reason, audit_attempt=audit_attempt, reset_audit_attempt=reset_audit_attempt, precommit_attempt=precommit_attempt, reset_precommit_attempt=reset_precommit_attempt, precommit_rework_count=precommit_rework_count, official_rework_count=official_rework_count, timeout_extensions=timeout_extensions, touch_stage_timestamp=touch_stage_timestamp, literature_probe=literature_probe, prepare_scope_files=prepare_scope_files, clear_reviewer_feedback=clear_reviewer_feedback, infra_failure=infra_failure, clear_infra_failure=clear_infra_failure, infra_failure_owner=infra_failure_owner, expected_infra_failure_digest=expected_infra_failure_digest, official_job=official_job, clear_official_job=clear_official_job, expected_official_job_id=expected_official_job_id, repair_baseline_artifact_hash=repair_baseline_artifact_hash, clear_repair_baseline_artifact_hash=clear_repair_baseline_artifact_hash, reset_runtime_contract_ledger=reset_runtime_contract_ledger, expected_runtime_contract_ledger_digest=expected_runtime_contract_ledger_digest, runtime_contract_ledger_reset_reason=runtime_contract_ledger_reset_reason, publication_intent=publication_intent, expected_checkpoint_revision=expected_checkpoint_revision, expected_checkpoint_stage=expected_checkpoint_stage, expected_workflow_run_id=expected_workflow_run_id, workflow_run_id=workflow_run_id, terminal_gate_outcome=terminal_gate_outcome, review_attempt_journal=review_attempt_journal, identity_replan_history=identity_replan_history, candidate_artifact_hash=candidate_artifact_hash, candidate_manifest_digest=candidate_manifest_digest, charter_digest=charter_digest)
+    return _ckpt.write_pipeline_checkpoint(next_v=next_v, source_v=source_v, stage=stage, master_plan=master_plan, reviewer_feedback=reviewer_feedback, generation_attempt=generation_attempt, gate_results=gate_results, worker_failure_count=worker_failure_count, worker_invocation_count=worker_invocation_count, parent2_v=parent2_v, direction_audit=direction_audit, audit_context=audit_context, reset_generation_attempt=reset_generation_attempt, replace_audit_context=replace_audit_context, audit_context_replacement_reason=audit_context_replacement_reason, audit_attempt=audit_attempt, reset_audit_attempt=reset_audit_attempt, precommit_attempt=precommit_attempt, reset_precommit_attempt=reset_precommit_attempt, precommit_rework_count=precommit_rework_count, official_rework_count=official_rework_count, timeout_extensions=timeout_extensions, touch_stage_timestamp=touch_stage_timestamp, literature_probe=literature_probe, prepare_scope_files=prepare_scope_files, clear_reviewer_feedback=clear_reviewer_feedback, infra_failure=infra_failure, clear_infra_failure=clear_infra_failure, infra_failure_owner=infra_failure_owner, expected_infra_failure_digest=expected_infra_failure_digest, official_job=official_job, clear_official_job=clear_official_job, expected_official_job_id=expected_official_job_id, repair_baseline_artifact_hash=repair_baseline_artifact_hash, clear_repair_baseline_artifact_hash=clear_repair_baseline_artifact_hash, reset_runtime_contract_ledger=reset_runtime_contract_ledger, expected_runtime_contract_ledger_digest=expected_runtime_contract_ledger_digest, runtime_contract_ledger_reset_reason=runtime_contract_ledger_reset_reason, publication_intent=publication_intent, expected_checkpoint_revision=expected_checkpoint_revision, expected_checkpoint_stage=expected_checkpoint_stage, expected_workflow_run_id=expected_workflow_run_id, workflow_run_id=workflow_run_id, terminal_gate_outcome=terminal_gate_outcome, review_attempt_journal=review_attempt_journal, identity_replan_history=identity_replan_history, candidate_artifact_hash=candidate_artifact_hash, candidate_manifest_digest=candidate_manifest_digest, charter_digest=charter_digest, slot_id=slot_id)
 
 
 
-def read_pipeline_checkpoint():
+def read_pipeline_checkpoint(slot_id=None):
     """Delegate to evolution_infra_checkpoint_cas."""
-    return _ckpt.read_pipeline_checkpoint()
+    return _ckpt.read_pipeline_checkpoint(slot_id=slot_id)
 
 
 
@@ -622,6 +638,7 @@ def clear_pipeline_checkpoint(
     expected_source_v=None,
     expected_checkpoint_revision=None,
     expected_checkpoint_stage=None,
+    slot_id=None,
 ):
     """Delegate to evolution_infra_checkpoint_cas."""
     return _ckpt.clear_pipeline_checkpoint(
@@ -630,7 +647,29 @@ def clear_pipeline_checkpoint(
         expected_source_v=expected_source_v,
         expected_checkpoint_revision=expected_checkpoint_revision,
         expected_checkpoint_stage=expected_checkpoint_stage,
+        slot_id=slot_id,
     )
+
+
+def read_all_pipeline_checkpoints():
+    """Read all active checkpoint slots as {slot_id_or_'primary': dict}.
+
+    ``slot_id=None`` (the primary/canonical checkpoint) is returned under the
+    key ``"primary"``.  Any ``pipeline_state_<slot_id>.json`` files found in
+    ``RESULTS_DIR`` are returned keyed by their slot_id.  Missing or corrupt
+    slots are skipped.
+    """
+    result = {}
+    primary = read_pipeline_checkpoint()
+    if primary is not None:
+        result["primary"] = primary
+    for path in RESULTS_DIR.glob("pipeline_state_*.json"):
+        # Extract slot_id from filename (stem strips the .json suffix).
+        slot_id = path.stem.removeprefix("pipeline_state_")
+        ckpt = _ckpt.read_pipeline_checkpoint(slot_id=slot_id)
+        if ckpt is not None:
+            result[slot_id] = ckpt
+    return result
 
 
 
