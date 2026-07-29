@@ -681,6 +681,19 @@ first load (pure state machine `lib/controlFirstLoadState.ts`), not a red
 authority failure; only a genuine non-retryable error fails closed. Full
 analysis: `docs/observer-cache-availability-2026-07-28.md`.
 
+The blocking boundary used by all offloaded HTTP handlers
+(`run_blocking_isolated` in `web/core/blocking_runtime.py`) must await its
+owned worker future with a **single `add_done_callback` →
+`loop.call_soon_threadsafe` wakeup**, never a tight
+`while not done: await asyncio.sleep(0.001)` poll. The busy-poll form woke the
+event loop ~1000x/sec; for a slow barrier snapshot (~44s, called twice in
+`/start`'s `_reserve_runtime_launch_owner`) this starved every concurrent
+request and hung `/api/control/start` for 120s+ with HTTP 000. The single-
+wakeup form lets the loop sleep idle while the worker runs and is woken
+exactly once on completion, preserving the no-default-executor and
+worker-reclaim contracts. Regression test:
+`tests/test_blocking_runtime.py::test_slow_blocking_call_does_not_starve_the_event_loop`.
+
 An independently
 fetched pipeline checkpoint is rendered only when its schema-2 positive
 `checkpoint_revision` and full epoch/version/stage/run/workflow identity match
