@@ -1442,7 +1442,9 @@ def _cloud_epoch_ledger_archive_plan(published: int) -> dict:
     ledger_raw = _safe_read_bytes(LEDGER)
     legacy = _legacy_ledger_summary(ledger_raw)
     archive_digest = _hashlib.sha256(ledger_raw).hexdigest()[:12]
-    timestamp_hex = format(int(time.time()), "x")[:12]
+    # The _archive_root_from_relative regex requires exactly 12 hex chars for
+    # both segments.  Pad the timestamp to 12 hex chars.
+    timestamp_hex = format(int(time.time()), "x").zfill(12)[:12]
     archive_root = ARCHIVE_BASE / f"legacy-{archive_digest}-{timestamp_hex}"
     archive_root.mkdir(parents=True, exist_ok=False)
     archived_ledger = archive_root / "legacy_abandoned_versions.jsonl"
