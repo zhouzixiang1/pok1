@@ -18,10 +18,26 @@ from typing import Any, Iterable
 from bot_namespace import ACTIVE_TAG_PREFIX, bot_name, bot_tag, format_version, high_water_tag
 
 
-PUBLICATION_INTENT_SCHEMA_VERSION = 2
+PUBLICATION_INTENT_SCHEMA_VERSION = 3
 PUBLICATION_INTENT_KIND = "national-native-publication-intent"
+PUBLICATION_INTENT_KIND_STAGING = "national-staging-publication-intent"
+PUBLICATION_INTENT_KINDS = (
+    PUBLICATION_INTENT_KIND,
+    PUBLICATION_INTENT_KIND_STAGING,
+)
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+# Certificate-bound fields that are mandatory for the certified tier but
+# optional (nullable) for staging.  A staging intent publishes the bot bytes
+# without an official EXE certificate; certification runs asynchronously and
+# adds the certified-tier tag later.
+_CERTIFICATE_BOUND_FIELDS = (
+    "official_certificate_digest",
+    "official_status_digest",
+    "certificate_file_sha256",
+    "certificate_attestation_digest",
+)
 
 
 def canonical_digest(payload: Any) -> str:
@@ -138,32 +154,135 @@ def build_publication_intent(
 ) -> dict[str, Any]:
     """Build the immutable record persisted before the first Git mutation."""
 
+    return _build_intent(
+        kind=PUBLICATION_INTENT_KIND,
+        checkpoint=checkpoint,
+        candidate_artifact_hash=candidate_artifact_hash,
+        certificate_digest=certificate_digest,
+        certificate_policy_id=certificate_policy_id,
+        official_status=official_status,
+        certificate_relative_path=certificate_relative_path,
+        certificate_file_sha256=certificate_file_sha256,
+        certificate_attestation_digest=certificate_attestation_digest,
+        final_gate_ledger_digest=final_gate_ledger_digest,
+        strategy_tag=strategy_tag,
+        rating_info=rating_info,
+        baseline_head=baseline_head,
+        baseline_remote_main=baseline_remote_main,
+        baseline_remote_completion_refs=baseline_remote_completion_refs,
+        prepublication_strict_bots=prepublication_strict_bots,
+        remote_publication_required=remote_publication_required,
+        remote_publication_enabled=remote_publication_enabled,
+    )
+
+
+def build_staging_publication_intent(
+    *,
+    checkpoint: dict[str, Any],
+    candidate_artifact_hash: str,
+    final_gate_ledger_digest: str,
+    strategy_tag: str,
+    rating_info: str,
+    baseline_head: str,
+    baseline_remote_main: str,
+    baseline_remote_completion_refs: dict[str, str],
+    prepublication_strict_bots: Iterable[str],
+    remote_publication_required: bool,
+    remote_publication_enabled: bool,
+) -> dict[str, Any]:
+    """Build a staging-tier publication intent (no official certificate).
+
+    A staging intent publishes the bot bytes after quality/review/critic/
+    precommit gates pass, but BEFORE official EXE certification runs.  The
+    certificate-bound fields are empty strings; the commit/tag messages omit
+    the official-certificate lines.  Async certification later produces a
+    certified-tier tag at the same commit.
+    """
+
+    return _build_intent(
+        kind=PUBLICATION_INTENT_KIND_STAGING,
+        checkpoint=checkpoint,
+        candidate_artifact_hash=candidate_artifact_hash,
+        certificate_digest="",
+        certificate_policy_id="",
+        official_status={},
+        certificate_relative_path="",
+        certificate_file_sha256="",
+        certificate_attestation_digest="",
+        final_gate_ledger_digest=final_gate_ledger_digest,
+        strategy_tag=strategy_tag,
+        rating_info=rating_info,
+        baseline_head=baseline_head,
+        baseline_remote_main=baseline_remote_main,
+        baseline_remote_completion_refs=baseline_remote_completion_refs,
+        prepublication_strict_bots=prepublication_strict_bots,
+        remote_publication_required=remote_publication_required,
+        remote_publication_enabled=remote_publication_enabled,
+    )
+
+
+def _intent_is_staging(intent: Any) -> bool:
+    return isinstance(intent, dict) and intent.get("kind") == PUBLICATION_INTENT_KIND_STAGING
+
+
+def _build_intent(
+    *,
+    kind: str,
+    checkpoint: dict[str, Any],
+    candidate_artifact_hash: str,
+    certificate_digest: str,
+    certificate_policy_id: str,
+    official_status: dict[str, Any],
+    certificate_relative_path: str,
+    certificate_file_sha256: str,
+    certificate_attestation_digest: str,
+    final_gate_ledger_digest: str,
+    strategy_tag: str,
+    rating_info: str,
+    baseline_head: str,
+    baseline_remote_main: str,
+    baseline_remote_completion_refs: dict[str, str],
+    prepublication_strict_bots: Iterable[str],
+    remote_publication_required: bool,
+    remote_publication_enabled: bool,
+) -> dict[str, Any]:
+    """Shared builder for certified and staging publication intents."""
+
+    is_staging = kind == PUBLICATION_INTENT_KIND_STAGING
     version = int(checkpoint["next_v"])
     source_v = int(checkpoint["source_v"])
     parent2_raw = checkpoint.get("parent2_v")
     parent2_v = int(parent2_raw) if parent2_raw is not None else None
     strategy_tag = str(strategy_tag)
     rating_info = str(rating_info)
-    commit_message = publication_commit_message(
-        version,
-        source_v,
-        strategy_tag,
-        certificate_digest=certificate_digest,
-        candidate_hash=candidate_artifact_hash,
-        policy_id=certificate_policy_id,
-        rating_info=rating_info,
-        parent2_v=parent2_v,
-    )
-    tag_message = publication_tag_message(
-        version,
-        strategy_tag,
-        certificate_digest=certificate_digest,
-        candidate_hash=candidate_artifact_hash,
-        policy_id=certificate_policy_id,
-    )
+    if is_staging:
+        commit_message = _staging_publication_commit_message(
+            version, source_v, strategy_tag, candidate_artifact_hash, rating_info, parent2_v
+        )
+        tag_message = _staging_publication_tag_message(
+            version, strategy_tag, candidate_artifact_hash
+        )
+    else:
+        commit_message = publication_commit_message(
+            version,
+            source_v,
+            strategy_tag,
+            certificate_digest=certificate_digest,
+            candidate_hash=candidate_artifact_hash,
+            policy_id=certificate_policy_id,
+            rating_info=rating_info,
+            parent2_v=parent2_v,
+        )
+        tag_message = publication_tag_message(
+            version,
+            strategy_tag,
+            certificate_digest=certificate_digest,
+            candidate_hash=candidate_artifact_hash,
+            policy_id=certificate_policy_id,
+        )
     payload = {
         "schema_version": PUBLICATION_INTENT_SCHEMA_VERSION,
-        "kind": PUBLICATION_INTENT_KIND,
+        "kind": kind,
         "bot": bot_name(version),
         "version": version,
         "source_v": source_v,
@@ -207,6 +326,44 @@ def build_publication_intent(
     return {**payload, "publication_id": canonical_digest(payload)}
 
 
+def _staging_publication_commit_message(
+    version: int,
+    source_v: int,
+    strategy_tag: str,
+    candidate_hash: str,
+    rating_info: str,
+    parent2_v: int | None,
+) -> str:
+    """Staging-tier commit message — omits official-certificate lines."""
+
+    parts = [
+        f"National bot v{version}: {strategy_tag}",
+        "",
+        f"staging-candidate-hash: {candidate_hash}",
+        f"source: v{source_v}",
+    ]
+    if parent2_v is not None:
+        parts.append(f"parent2: v{parent2_v}")
+    if rating_info:
+        parts.append(rating_info)
+    parts.append("publication-tier: staging")
+    return "\n".join(parts)
+
+
+def _staging_publication_tag_message(
+    version: int,
+    strategy_tag: str,
+    candidate_hash: str,
+) -> str:
+    """Staging-tier tag annotation — omits official-certificate lines."""
+
+    return (
+        f"National bot v{version} (staging): {strategy_tag}\n\n"
+        f"staging-candidate-hash: {candidate_hash}\n"
+        f"publication-tier: staging"
+    )
+
+
 def publication_intent_structure_errors(intent: Any) -> list[str]:
     if not isinstance(intent, dict):
         return ["publication_intent_missing_or_not_object"]
@@ -214,8 +371,10 @@ def publication_intent_structure_errors(intent: Any) -> list[str]:
     unsigned = {key: value for key, value in intent.items() if key != "publication_id"}
     if intent.get("schema_version") != PUBLICATION_INTENT_SCHEMA_VERSION:
         errors.append("publication_intent_schema_mismatch")
-    if intent.get("kind") != PUBLICATION_INTENT_KIND:
+    intent_kind = intent.get("kind")
+    if intent_kind not in PUBLICATION_INTENT_KINDS:
         errors.append("publication_intent_kind_mismatch")
+    is_staging = intent_kind == PUBLICATION_INTENT_KIND_STAGING
     try:
         expected_digest = canonical_digest(unsigned)
     except Exception as exc:
@@ -240,17 +399,28 @@ def publication_intent_structure_errors(intent: Any) -> list[str]:
         errors.append("publication_intent_completion_tag_mismatch")
     if intent.get("high_water_tag") != high_water_tag(version):
         errors.append("publication_intent_high_water_tag_mismatch")
-    for field in (
-        "candidate_artifact_hash",
-        "official_certificate_digest",
-        "official_policy_id",
-        "official_status_digest",
-        "certificate_file_sha256",
-        "certificate_attestation_digest",
-        "final_gate_ledger_digest",
-        "commit_message_sha256",
-        "tag_message_sha256",
-    ):
+    # Certificate-bound fields are mandatory for the certified tier; for
+    # staging they are empty/absent and must NOT be hex-validated.
+    if is_staging:
+        hex_validated_fields = (
+            "candidate_artifact_hash",
+            "final_gate_ledger_digest",
+            "commit_message_sha256",
+            "tag_message_sha256",
+        )
+    else:
+        hex_validated_fields = (
+            "candidate_artifact_hash",
+            "official_certificate_digest",
+            "official_policy_id",
+            "official_status_digest",
+            "certificate_file_sha256",
+            "certificate_attestation_digest",
+            "final_gate_ledger_digest",
+            "commit_message_sha256",
+            "tag_message_sha256",
+        )
+    for field in hex_validated_fields:
         value = str(intent.get(field) or "")
         if field == "official_policy_id":
             if not value:
@@ -286,13 +456,18 @@ def publication_intent_structure_errors(intent: Any) -> list[str]:
                 errors.append("publication_intent_remote_completion_ref_invalid")
                 break
     relative = str(intent.get("certificate_relative_path") or "")
-    if (
-        not relative
-        or relative.startswith("/")
-        or ".." in Path(relative).parts
-        or relative != f"official_certificates/{bot_name(version)}.json"
-    ):
-        errors.append("publication_intent_certificate_path_invalid")
+    if is_staging:
+        # Staging intents have no certificate file; the path must be empty.
+        if relative:
+            errors.append("publication_intent_certificate_path_invalid")
+    else:
+        if (
+            not relative
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+            or relative != f"official_certificates/{bot_name(version)}.json"
+        ):
+            errors.append("publication_intent_certificate_path_invalid")
     if not str(intent.get("workflow_run_id") or ""):
         errors.append("publication_intent_workflow_run_id_missing")
     try:
@@ -300,10 +475,11 @@ def publication_intent_structure_errors(intent: Any) -> list[str]:
             errors.append("publication_intent_origin_revision_invalid")
     except (TypeError, ValueError):
         errors.append("publication_intent_origin_revision_invalid")
-    if intent.get("origin_checkpoint_stage") not in {
-        "verified",
-        "official_certifying",
-    }:
+    if is_staging:
+        allowed_origin_stages = {"precommit_passed", "staging_publishing"}
+    else:
+        allowed_origin_stages = {"verified", "official_certifying"}
+    if intent.get("origin_checkpoint_stage") not in allowed_origin_stages:
         errors.append("publication_intent_origin_stage_invalid")
     if not isinstance(intent.get("prepublication_strict_bots"), list):
         errors.append("publication_intent_strict_pool_invalid")

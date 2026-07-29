@@ -41,11 +41,20 @@ if os.environ.get("POK_CLOUD_RUNTIME", "").lower() in {"1", "true", "yes", "on"}
     os.environ.setdefault("POK_BOT_PREFIX", "national_cloud_v")
     os.environ.setdefault("POK_TAG_PREFIX", "national-cloud-bot-v")
     os.environ.setdefault("POK_HIGH_WATER_TAG_PREFIX", "national-cloud-high-water-v")
+    os.environ.setdefault("POK_CERTIFIED_TAG_PREFIX", "national-cloud-certified-v")
 ACTIVE_BOT_PREFIX = os.environ.get("POK_BOT_PREFIX", "national_v")
 ACTIVE_TAG_PREFIX = os.environ.get("POK_TAG_PREFIX", "national-bot-v")
 HIGH_WATER_TAG_PREFIX = os.environ.get(
     "POK_HIGH_WATER_TAG_PREFIX", "national-high-water-v"
 )
+# Two-tier publication: a staging bot is published with a paired
+# completion + high-water tag (existing semantics unchanged).  A certified
+# bot is a staging bot whose async official EXE certification subsequently
+# completed, gaining a THIRD annotated tag at the same commit.  The
+# certified prefix is a separate namespace so ``resolve_version_namespace_authority``
+# can distinguish "published (staging)" from "published + certified" without
+# altering the paired completion/high-water authority model.
+CERTIFIED_TAG_PREFIX = os.environ.get("POK_CERTIFIED_TAG_PREFIX", "national-certified-v")
 VERSION_WIDTH = 0
 
 # The canonical evolution publication branch. Configurable so a deployment can
@@ -122,6 +131,10 @@ def _active_tag_re() -> re.Pattern:
 
 def _high_water_tag_re() -> re.Pattern:
     return re.compile(rf"^{re.escape(HIGH_WATER_TAG_PREFIX)}([1-9][0-9]*)$")
+
+
+def _certified_tag_re() -> re.Pattern:
+    return re.compile(rf"^{re.escape(CERTIFIED_TAG_PREFIX)}([1-9][0-9]*)$")
 _GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_MANIFEST_KEYS = frozenset(
@@ -315,6 +328,29 @@ def high_water_tag_glob() -> str:
     return f"{HIGH_WATER_TAG_PREFIX}*"
 
 
+def certified_tag(version: int | str) -> str:
+    """Return the certified-tier tag label for a version.
+
+    A certified tag is created only after async official EXE certification of a
+    staging bot completes.  It shares the same commit as the paired
+    completion/high-water tags (created at staging publication time), so a
+    version is "certified" iff all three tags peel to the same commit.
+    """
+
+    return f"{CERTIFIED_TAG_PREFIX}{format_version(version)}"
+
+
+def certified_tag_glob() -> str:
+    return f"{CERTIFIED_TAG_PREFIX}*"
+
+
+def parse_certified_tag_version(tag: str | None) -> int | None:
+    if not isinstance(tag, str):
+        return None
+    match = _certified_tag_re().fullmatch(tag)
+    return int(match.group(1)) if match else None
+
+
 def parse_bot_version(name: str | None) -> int | None:
     """Parse only a canonical active-namespace bot label.
 
@@ -344,6 +380,15 @@ class VersionNamespaceAuthority:
     exact annotated tags peel to the same commit.  Strict-v143+ artifact and
     certificate eligibility remain a separate publication-authority check;
     callers must not treat this numeric namespace proof as executable bytes.
+
+    Two-tier publication adds ``certified_versions``: a strict subset of
+    ``paired_versions`` whose async official EXE certification subsequently
+    completed and gained a third annotated tag at the same commit.  A paired
+    but uncertified version is "staging" (published, awaiting/without cert);
+    a certified version has passed formal certification.  This distinction is
+    consumed by ``resolve_national_bot_spec`` and the active-pool discoverer
+    to enforce that rating/opponent roles require certification while parent
+    selection may accept staging.
     """
 
     high_water: int
@@ -351,6 +396,7 @@ class VersionNamespaceAuthority:
     paired_commits: tuple[tuple[int, str], ...]
     unpaired_completion_versions: tuple[int, ...]
     unpaired_high_water_versions: tuple[int, ...]
+    certified_versions: tuple[int, ...] = ()
 
 
 def resolve_version_namespace_authority(
@@ -369,11 +415,14 @@ def resolve_version_namespace_authority(
         "--format=%(objecttype)%09%(*objecttype)%09%(refname:short)",
         f"refs/tags/{bot_tag_glob()}",
         f"refs/tags/{high_water_tag_glob()}",
+        f"refs/tags/{certified_tag_glob()}",
     ) or "")
     completion: dict[int, str] = {}
     high_water: dict[int, str] = {}
+    certified: dict[int, str] = {}
     active_tag_pattern = _active_tag_re()
     high_water_pattern = _high_water_tag_re()
+    certified_pattern = _certified_tag_re()
     for row in rows.splitlines():
         parts = row.split("\t")
         if len(parts) != 3:
@@ -389,6 +438,10 @@ def resolve_version_namespace_authority(
         high_water_match = high_water_pattern.fullmatch(tag)
         if high_water_match is not None:
             high_water[int(high_water_match.group(1))] = tag
+            continue
+        certified_match = certified_pattern.fullmatch(tag)
+        if certified_match is not None:
+            certified[int(certified_match.group(1))] = tag
 
     paired_versions = tuple(sorted(set(completion).intersection(high_water)))
     if not paired_versions:
@@ -397,6 +450,7 @@ def resolve_version_namespace_authority(
         )
 
     paired_commits: list[tuple[int, str]] = []
+    paired_commit_lookup: dict[int, str] = {}
     for version in paired_versions:
         completion_commit = str(git(
             "rev-parse",
@@ -414,6 +468,28 @@ def resolve_version_namespace_authority(
                 f"paired version authority commit mismatch for v{version}"
             )
         paired_commits.append((version, completion_commit))
+        paired_commit_lookup[version] = completion_commit
+
+    # Certified versions are a strict subset of paired versions whose async
+    # official certification subsequently completed and gained a third
+    # annotated tag at the SAME commit.  A certified tag at a different commit
+    # (or an orphan certified tag without the paired staging tags) is treated
+    # as an interrupted effect and silently ignored, never as authority.
+    certified_versions_list: list[int] = []
+    for version in paired_versions:
+        ctag = certified.get(version)
+        if ctag is None:
+            continue
+        certified_commit = str(git(
+            "rev-parse",
+            f"refs/tags/{ctag}^{{commit}}",
+        ) or "").strip().lower()
+        if (
+            _GIT_OBJECT_ID_RE.fullmatch(certified_commit) is not None
+            and certified_commit == paired_commit_lookup[version]
+        ):
+            certified_versions_list.append(version)
+    certified_versions = tuple(sorted(set(certified_versions_list)))
 
     return VersionNamespaceAuthority(
         high_water=paired_versions[-1],
@@ -425,6 +501,7 @@ def resolve_version_namespace_authority(
         unpaired_high_water_versions=tuple(
             sorted(set(high_water).difference(completion))
         ),
+        certified_versions=certified_versions,
     )
 
 

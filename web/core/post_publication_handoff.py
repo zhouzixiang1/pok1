@@ -31,6 +31,7 @@ from bot_namespace import (
     high_water_tag,
 )
 from generation_evidence import build_generation_evidence_identity
+from publication_transaction import PUBLICATION_INTENT_KIND_STAGING
 
 
 SCHEMA_VERSION = 2
@@ -451,6 +452,7 @@ def _publication_identity(
         }
     artifact_hash = str(intent.get("candidate_artifact_hash") or "")
     certificate_digest = str(intent.get("official_certificate_digest") or "")
+    staging_intent = intent.get("kind") == PUBLICATION_INTENT_KIND_STAGING
     local_proof = publication_result.get("local_publication_proof")
     if not isinstance(local_proof, dict) or set(local_proof) != _LOCAL_PROOF_KEYS:
         raise PostPublicationHandoffError("local_publication_proof_shape_invalid")
@@ -462,7 +464,7 @@ def _publication_identity(
     completion_name = bot_tag(version)
     if (
         not _is_hex(artifact_hash, 64)
-        or not _is_hex(certificate_digest, 64)
+        or (not staging_intent and not _is_hex(certificate_digest, 64))
         or local_proof.get("schema_version") != 1
         or local_proof.get("kind")
         != "national-tcp-policy-pending-local-publication"
@@ -855,7 +857,7 @@ def validate_handoff_record(
     ):
         errors.append("handoff_workflow_identity_invalid")
         workflow_run_id = ""
-    for field, length in (
+    hex_fields = [
         ("publication_id", 64),
         ("commit_oid", 40),
         ("candidate_artifact_hash", 64),
@@ -863,7 +865,14 @@ def validate_handoff_record(
         ("source_binding_digest", 64),
         ("certificate_digest", 64),
         ("archive_base_snapshot_digest", 64),
-    ):
+    ]
+    if identity.get("certificate_digest") == "":
+        hex_fields = [
+            (field, length)
+            for field, length in hex_fields
+            if field != "certificate_digest"
+        ]
+    for field, length in hex_fields:
         if not _is_hex(identity.get(field), length):
             errors.append(f"handoff_{field}_invalid")
     expected_names = (
