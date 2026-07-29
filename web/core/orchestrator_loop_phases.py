@@ -661,6 +661,12 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                         advanced["terminal_action"]
                         == "publication_handoff_completed"
                     ):
+                        # Phase 3b: best-effort async certification for staging
+                        # publications. Non-fatal; runs in background.
+                        try:
+                            await _try_schedule_async_certification(ui, shutdown_mgr)
+                        except Exception:
+                            pass
                         if not _publication_accounting_allows_successor():
                             break
                     elif advanced["terminal_action"] is None:
@@ -1502,5 +1508,157 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count):
         except Exception:
             pass
         clear_pipeline_checkpoint(slot_id="draft")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b: async official certification for staging publications
+# ---------------------------------------------------------------------------
+#
+# When a staging-tier bot is published (commit_bot with is_staging_publication),
+# the ~77min official EXE certification runs ASYNCHRONOUSLY rather than
+# blocking the publication critical path.  This helper is called after the
+# post-publication handoff completes (publication_handoff_completed).  It
+# detects whether the just-published bot has a staging tag but no certified
+# tag, and if so, schedules the official certification job as a background
+# asyncio task.  On success, it creates the certified-tier annotated tag.
+
+
+async def _try_schedule_async_certification(ui, shutdown_mgr):
+    """Best-effort async official certification for a staging-published bot.
+
+    Called after publication_handoff_completed.  Checks the latest published
+    bot for a staging tier (staging tag present, certified tag absent).  If
+    staging, launches a background task that runs the official EXE certification
+    and, on success, creates the certified-tier annotated tag.
+
+    Non-fatal: any failure is logged and swallowed.  The certification can be
+    retried by a future tick or by the operator via scripts/official_certify.py.
+    """
+
+    try:
+        from bot_namespace import (
+            bot_name,
+            certified_tag,
+            parse_bot_version,
+        )
+        from epoch_authority import strict_epoch_projection
+        from evolution_infra import active_slot_override
+    except Exception:
+        return
+
+    try:
+        with _orch.contextlib.ExitStack():
+            projection = strict_epoch_projection(include_checkpoint=False)
+        published_versions = projection.get("published_versions") or []
+        if not published_versions:
+            return
+        latest_v = int(published_versions[-1])
+    except Exception:
+        return
+
+    # Check if this version has a staging tag but no certified tag.
+    try:
+        _ct = certified_tag(latest_v)
+        result = _orch._git("tag", "-l", _ct, check=False)
+        if result.strip():
+            return  # Already certified; nothing to do.
+    except Exception:
+        return
+
+    # Launch the async certification as a background task.
+    async def _cert_task():
+        try:
+            _orch.log_system_event(
+                "orchestrator.async_certification_started",
+                "info",
+                f"Async official certification started for v{latest_v} (staging tier)",
+                {"version": latest_v},
+            )
+            cert_result = await _run_async_official_certification(latest_v, ui)
+            if cert_result.get("passed"):
+                _create_certified_tag(latest_v, cert_result)
+                _orch.log_system_event(
+                    "orchestrator.async_certification_completed",
+                    "info",
+                    f"Async certification completed for v{latest_v}; certified tag created",
+                    {"version": latest_v},
+                )
+            else:
+                _orch.log_system_event(
+                    "orchestrator.async_certification_failed",
+                    "warn",
+                    f"Async certification did not pass for v{latest_v}: {cert_result.get('reason', 'unknown')}",
+                    {"version": latest_v, "result": cert_result},
+                )
+        except Exception as exc:
+            _orch.log_system_event(
+                "orchestrator.async_certification_error",
+                "error",
+                f"Async certification error for v{latest_v}: {type(exc).__name__}: {exc}",
+                {"version": latest_v},
+            )
+
+    try:
+        _orch.asyncio.create_task(_cert_task())
+    except Exception:
+        pass
+
+
+async def _run_async_official_certification(version, ui):
+    """Run official certification for a staging-published bot.
+
+    Delegates to the existing certification runner.  This is the ~77min EXE
+    job that runs in the background without blocking the pipeline.
+    """
+    try:
+        from official_certification import run_certification, CertificationSpec
+        from pathlib import Path as _Path
+        import json as _json
+
+        spec = CertificationSpec(
+            bot=bot_name(version),
+            mode="full",
+            policy_id="official-full-v5",
+        )
+        suite_dir = _orch.RESULTS_DIR / "official_certification"
+        result = run_certification(spec, suite_dir=suite_dir, force=False)
+        passed = bool(result.get("passed") or result.get("eligible"))
+        return {"passed": passed, "result": result, "certificate": result.get("certificate")}
+    except Exception as exc:
+        return {"passed": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _create_certified_tag(version, cert_result):
+    """Create the certified-tier annotated tag at the staging commit.
+
+    The certified tag points to the same commit as the staging completion tag,
+    marking that async official certification has passed.
+    """
+    try:
+        from bot_namespace import bot_tag, certified_tag
+
+        # Resolve the staging commit from the completion tag.
+        commit_oid = _orch._git(
+            "rev-parse", f"refs/tags/{bot_tag(version)}^{{commit}}"
+        ).strip()
+        if not commit_oid:
+            return
+
+        _ct = certified_tag(version)
+        # Create the certified tag (create-only, like the staging tag).
+        _orch._git(
+            "tag", "-a", _ct, commit_oid,
+            "-m", f"National bot v{version} (certified): async official certification passed\n\n"
+                  f"certified-version: {version}\n"
+                  f"publication-tier: certified",
+        )
+
+        # Push the certified tag if remote publication is enabled.
+        try:
+            _orch._git("push", "origin", _ct, check=False)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
