@@ -257,6 +257,14 @@ async def _project_durable_worker_output(worker_workflow, next_dir, state):
         expected_checkpoint_revision=int(contract.get("checkpoint_revision") or 0),
         expected_checkpoint_stage=str(contract.get("checkpoint_stage") or ""),
         expected_workflow_run_id=str(contract.get("workflow_run_id") or ""),
+        candidate_artifact_hash=current_artifact_hash,
+        candidate_manifest_digest=current_artifact_hash,
+        charter_digest=str(
+            ((checkpoint or {}).get("repo_baseline") or {})
+            .get("evaluation_contract", {})
+            .get("hash")
+            or ""
+        ),
     )
     if not projected:
         current_checkpoint = _tw._matching_checkpoint(next_v, source_v)

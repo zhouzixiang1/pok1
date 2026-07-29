@@ -668,7 +668,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                workflow_run_id=None,
                                terminal_gate_outcome=None,
                                review_attempt_journal=None,
-                               identity_replan_history=None):
+                               identity_replan_history=None,
+                               candidate_artifact_hash=None,
+                               candidate_manifest_digest=None,
+                               charter_digest=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -863,6 +866,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_terminal_gate_outcome = None
         existing_review_attempt_journal = []
         existing_identity_replan_history = []
+        existing_candidate_artifact_hash = None
+        existing_candidate_manifest_digest = None
+        existing_charter_digest = None
         existing_epoch_binding = None
         existing_workflow_run_id = ""
         requested_workflow_run_id = str(workflow_run_id or "").strip()
@@ -913,6 +919,13 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_repair_baseline_artifact_hash = existing.get(
                 "repair_baseline_artifact_hash"
             )
+            existing_candidate_artifact_hash = existing.get(
+                "candidate_artifact_hash"
+            )
+            existing_candidate_manifest_digest = existing.get(
+                "candidate_manifest_digest"
+            )
+            existing_charter_digest = existing.get("charter_digest")
             existing_publication_intent = existing.get("publication_intent")
             existing_terminal_gate_outcome = existing.get(
                 "terminal_gate_outcome"
@@ -1158,6 +1171,30 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 log.error("Invalid repair baseline artifact hash")
                 return False
             existing_repair_baseline_artifact_hash = repair_hash
+
+        # Slice 2b sealed-candidate identity digests.  These are content-bound
+        # sha256 projections written at workers_done so the producer-consumer
+        # seal seam can freeze an opaque draft for background gate validation.
+        # Like repair_baseline_artifact_hash they are preserved across generic
+        # checkpoint rewrites; a None argument leaves the existing value intact.
+        if candidate_artifact_hash is not None:
+            _h = str(candidate_artifact_hash).strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", _h):
+                log.error("Invalid candidate_artifact_hash digest")
+                return False
+            existing_candidate_artifact_hash = _h
+        if candidate_manifest_digest is not None:
+            _m = str(candidate_manifest_digest).strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", _m):
+                log.error("Invalid candidate_manifest_digest digest")
+                return False
+            existing_candidate_manifest_digest = _m
+        if charter_digest is not None:
+            _c = str(charter_digest).strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", _c):
+                log.error("Invalid charter_digest digest")
+                return False
+            existing_charter_digest = _c
 
         # Publication is a one-way, immutable transaction.  Persist its intent
         # under the same checkpoint CAS before any Git mutation, then preserve
@@ -1564,6 +1601,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "infra_failure": existing_infra_failure,
             "official_job": existing_official_job,
             "repair_baseline_artifact_hash": existing_repair_baseline_artifact_hash,
+            "candidate_artifact_hash": existing_candidate_artifact_hash,
+            "candidate_manifest_digest": existing_candidate_manifest_digest,
+            "charter_digest": existing_charter_digest,
             "publication_intent": existing_publication_intent,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,

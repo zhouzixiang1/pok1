@@ -45,7 +45,41 @@ from orchestrator_cost_policy import GenerationCostPolicy
 # registry on the orchestrator module so the loop, the consumer task and the
 # promotion barrier share one :class:`Slice2bActivation` instance.  These
 # accessors stay no-ops when slice2b is inactive.
-def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, outcome):
+def _slice2b_ensure_activation():
+    """Lazy-instantiate the process-wide activation registry when slice2b is on.
+
+    Production code never called ``activation_registry("set", ...)`` before, so
+    the seam's ``"get"`` always returned ``None`` and slice2b never fired even
+    with ``POK_SLICE2B_ENABLED=1``.  This helper closes that gap: when slice2b
+    is active and no activation is registered yet, it constructs the production
+    adapter (backed by the same sqlite kernel path the strict-authority workflow
+    uses) and registers it.  The adapter is idempotent -- a second call returns
+    the already-registered instance.
+    """
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return None
+    if not slice2b_active():
+        return None
+    activation = _o._slice2b_activation_registry("get")
+    if activation is not None:
+        return activation
+    try:
+        from pathlib import Path
+        from workflow_kernel import WorkflowStore
+        from producer_consumer_workflow_store import (
+            ProducerConsumerWorkflowAdapter,
+        )
+        from evolution_infra import RESULTS_DIR
+        store = WorkflowStore(Path(RESULTS_DIR) / "workflow" / "events.sqlite3")
+        adapter = ProducerConsumerWorkflowAdapter(store)
+        return _o._slice2b_activation_registry("set", adapter=adapter)
+    except Exception:
+        return None
+
+
+async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, outcome):
     """Seal the candidate and launch the background consumer gate chain.
 
     Returns True iff the Slice 2b one-ahead path handled this ``workers_done``
@@ -72,7 +106,7 @@ def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, outcome):
     if not slice2b_active():
         return False
 
-    activation = _o._slice2b_activation_registry("get")
+    activation = _slice2b_ensure_activation()
     if activation is None:
         return False
 
@@ -144,6 +178,13 @@ def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, outcome):
         candidate_id=candidate_id,
         gate_runner_factory=_o._slice2b_gate_runner_factory(next_v, source_v),
     )
+    # Launch the consumer task immediately so the gate chain starts running in
+    # the background while the producer advances to the next prepare.  This is
+    # the one-ahead parallelism the dual-line model exists for: without it the
+    # consumer only starts at the commit_bot promotion barrier (serial, not
+    # parallel).  The seam is now async (called from the async
+    # _try_deterministic_checkpoint_route), so we can await the launch here.
+    await activation.ensure_consumer_running(candidate_id)
 
     if outcome is not None:
         outcome.clear()
@@ -192,7 +233,7 @@ async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
         return False
     if not slice2b_active():
         return False
-    activation = _o._slice2b_activation_registry("get")
+    activation = _slice2b_ensure_activation()
     if activation is None:
         return False
     candidate_id = str(
@@ -272,7 +313,7 @@ async def _try_deterministic_checkpoint_route(
     if (
         next_tool == "run_quality_gates"
         and stage == "workers_done"
-        and _slice2b_seal_at_workers_done(
+        and await _slice2b_seal_at_workers_done(
             checkpoint, next_v, source_v, ui=ui, outcome=outcome
         )
     ):

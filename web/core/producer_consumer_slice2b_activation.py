@@ -349,7 +349,7 @@ class Slice2bActivation:
         *,
         candidate_id: str,
         poll_interval: float = 0.05,
-        timeout: float | None = None,
+        timeout: float = 3600.0,
     ) -> dict[str, Any]:
         """Block publication until the Consumer has promoted ``candidate_id``.
 
@@ -533,7 +533,43 @@ def canonical_gate_runner_factory(next_v, source_v):
                             "error": str(exc)[:240],
                         },
                     }
-                data = result if isinstance(result, dict) else {}
+                # A canonical handler must return a dict tool-result.  A non-dict
+                # return (None, tuple, str, ...) is a contract violation, not a
+                # candidate failure -- treat it as infrastructure so the barrier
+                # stays fail-closed and retryable rather than spuriously promoting.
+                if not isinstance(result, dict):
+                    return {
+                        "outcome": "infrastructure_failure",
+                        "result_digest": zero_digest,
+                        "detail": {
+                            "reason": (
+                                f"canonical_handler_non_dict_result:{type(result).__name__}"
+                            ),
+                            "name": name,
+                        },
+                    }
+                data = result
+                # Distinguish infrastructure-class failures (transient/retryable:
+                # the dispatcher pauses the ledger so a later run can recover)
+                # from genuine candidate failures (the candidate itself is bad
+                # and must be rejected).  Without this split, any handler that
+                # returns an error -- including a retryable infra pause like a
+                # quota wait or a sandbox hiccup -- would be misclassified as a
+                # permanent candidate failure and the candidate abandoned.
+                if (
+                    data.get("failure_class") == "infrastructure"
+                    or data.get("action") == "retry"
+                ):
+                    return {
+                        "outcome": "infrastructure_failure",
+                        "result_digest": zero_digest,
+                        "detail": {
+                            "reason": "canonical_handler_infrastructure_failure",
+                            "error": str(data.get("error"))[:240],
+                            "failure_class": data.get("failure_class"),
+                            "name": name,
+                        },
+                    }
                 if data.get("error") or data.get("success") is False:
                     return {
                         "outcome": "candidate_failure",
