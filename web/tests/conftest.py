@@ -43,6 +43,7 @@ from testclient_compat import backend_options_for_testclient
 import server.app  # noqa: F401
 from bot_namespace import (
     ACTIVE_BOT_PREFIX,
+    ACTIVE_TAG_PREFIX,
     ARCHIVED_VERSION_HIGH_WATER,
     FIRST_STRICT_POLICY_VERSION,
     NATIONAL_ENTRYPOINT,
@@ -54,6 +55,7 @@ from bot_namespace import (
     bot_tag,
     high_water_tag,
     parse_bot_version,
+    parse_tag_version,
     resolve_national_bot_spec,
 )
 
@@ -123,7 +125,7 @@ def _tagged_test_bot_versions() -> list[int]:
             "git",
             "for-each-ref",
             "--format=%(objecttype) %(refname:short)",
-            "refs/tags/national-bot-v*",
+            f"refs/tags/{ACTIVE_TAG_PREFIX}*",
         ],
         cwd=str(PROJECT_ROOT),
         capture_output=True,
@@ -138,10 +140,11 @@ def _tagged_test_bot_versions() -> list[int]:
         object_type, separator, tag = line.partition(" ")
         if object_type != "tag" or not separator:
             continue
-        version = parse_bot_version(tag.replace("national-bot-v", "national_v", 1))
+        # Use the branch-aware tag parser instead of a hardcoded prefix strip.
+        version = parse_tag_version(tag)
         if version is None or version < FIRST_STRICT_POLICY_VERSION:
             continue
-        bot_dir = PROJECT_ROOT / "bots" / f"national_v{version}"
+        bot_dir = PROJECT_ROOT / "bots" / bot_name(version)
         if resolve_national_bot_spec(bot_dir, repo_root=PROJECT_ROOT).eligible:
             versions.append(version)
     return sorted(set(versions))
@@ -226,18 +229,21 @@ def temp_prompt_dir(tmp_path):
 @pytest.fixture
 def sample_ratings():
     return {
-        "national_v145": {"r": 1600, "rd": 50, "sigma": 0.06, "last_period": "p10"},
-        "national_v144": {"r": 1550, "rd": 80, "sigma": 0.06, "last_period": "p10"},
-        "national_v143": {"r": 1500, "rd": 100, "sigma": 0.06, "last_period": "p9"},
+        bot_name(STRICT_TARGET_V + 2): {"r": 1600, "rd": 50, "sigma": 0.06, "last_period": "p10"},
+        bot_name(STRICT_TARGET_V + 1): {"r": 1550, "rd": 80, "sigma": 0.06, "last_period": "p10"},
+        bot_name(STRICT_TARGET_V): {"r": 1500, "rd": 100, "sigma": 0.06, "last_period": "p9"},
     }
 
 
 @pytest.fixture
 def sample_h2h():
+    _hi = bot_name(STRICT_TARGET_V + 2)
+    _mid = bot_name(STRICT_TARGET_V + 1)
+    _lo = bot_name(STRICT_TARGET_V)
     return {
-        "national_v145 vs national_v144": {"games": 50, "a_wins": 30, "b_wins": 20, "win_rate": 0.6},
-        "national_v145 vs national_v143": {"games": 50, "a_wins": 35, "b_wins": 15, "win_rate": 0.7},
-        "national_v144 vs national_v143": {"games": 50, "a_wins": 28, "b_wins": 22, "win_rate": 0.56},
+        f"{_hi} vs {_mid}": {"games": 50, "a_wins": 30, "b_wins": 20, "win_rate": 0.6},
+        f"{_hi} vs {_lo}": {"games": 50, "a_wins": 35, "b_wins": 15, "win_rate": 0.7},
+        f"{_mid} vs {_lo}": {"games": 50, "a_wins": 28, "b_wins": 22, "win_rate": 0.56},
     }
 
 
@@ -419,7 +425,7 @@ def isolate_state(tmp_path, monkeypatch):
     tagged_versions = _tagged_test_bot_versions()
     if tagged_versions:
         fixture_version = tagged_versions[-1]
-        source = real_bots / f"national_v{fixture_version}"
+        source = real_bots / bot_name(fixture_version)
         target = bots_dir / source.name
         target.mkdir()
         for filename in (
