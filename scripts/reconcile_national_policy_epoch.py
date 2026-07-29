@@ -1428,6 +1428,65 @@ def _validated_completed_receipt(path: Path) -> dict:
     return receipt
 
 
+def _cloud_epoch_ledger_archive_plan(published: int) -> dict:
+    """Build a reconciliation plan for a cloud epoch with a stale ledger.
+
+    When bots are already published (published > ARCHIVED_VERSION_HIGH_WATER)
+    and there is no live checkpoint, the only problem is a stale abandon ledger
+    whose pre-current-epoch entries have incomplete parent identities.  This
+    plan archives the stale ledger and writes a fresh empty one so the allocation
+    authority can compute next_v from the published high-water.
+    """
+    import hashlib as _hashlib
+
+    ledger_raw = _safe_read_bytes(LEDGER)
+    legacy = _legacy_ledger_summary(ledger_raw)
+    archive_digest = _hashlib.sha256(ledger_raw).hexdigest()[:12]
+    timestamp_hex = format(int(time.time()), "x")[:12]
+    archive_root = ARCHIVE_BASE / f"legacy-{archive_digest}-{timestamp_hex}"
+    archive_root.mkdir(parents=True, exist_ok=False)
+    archived_ledger = archive_root / "legacy_abandoned_versions.jsonl"
+    archived_ledger.write_bytes(ledger_raw)
+
+    inputs = {
+        "evaluation_epoch": EVALUATION_EPOCH,
+        "published_high_water": published,
+        "legacy_ledger": legacy,
+        "ledger_sha256": _hashlib.sha256(ledger_raw).hexdigest(),
+        "ledger_entry_count": legacy.get("row_count", 0),
+        "archive_root": str(archive_root.relative_to(ROOT)),
+    }
+    claim_payload = {
+        "schema_version": 1,
+        "kind": "national-policy-runtime-reconciliation-claim",
+        "evaluation_epoch": EVALUATION_EPOCH,
+        "git_head": _git("rev-parse", "HEAD"),
+        "checkout_role": "autonomous_evolution_runtime",
+        "action": "cloud_epoch_ledger_archive",
+        "archive_root": str(archive_root.relative_to(ROOT)),
+        "inputs": inputs,
+        "terminal_abandon": {
+            "reason": "operator_cloud_epoch_ledger_archive",
+            "infra_failure": {
+                "kind": "operator_cloud_epoch_ledger_archive",
+                "reconciliation_input_digest": canonical_digest(inputs),
+            },
+            "timestamp": time.time(),
+        },
+    }
+    claim = {**claim_payload, "claim_digest": canonical_digest(claim_payload)}
+    return {
+        "claim": claim,
+        "archive_root": archive_root,
+        "cloud_epoch_ledger_archive": True,
+        "checkpoint": None,
+        "upgraded_checkpoint": None,
+        "candidate_manifest": None,
+        "candidate": None,
+        "cost_scope": None,
+    }
+
+
 def _build_plan() -> dict:
     if os.path.lexists(LIVE_RECEIPT):
         return {"completed_receipt": _validated_completed_receipt(LIVE_RECEIPT)}
@@ -1437,6 +1496,16 @@ def _build_plan() -> dict:
     reset = _validated_reset_receipt()
     published = _version_authority_high_water()
     if published != ARCHIVED_VERSION_HIGH_WATER:
+        # Cloud epoch with already-published bots: the legacy quarantine path
+        # requires a live checkpoint + candidate to abandon, which does not
+        # apply when the only problem is a stale ledger with pre-current-epoch
+        # entries whose parent identity is incomplete.  In this state (no live
+        # checkpoint, bots already published), archive the stale ledger so a
+        # fresh allocation authority can compute next_v from the published
+        # high-water without the stale entries blocking the health projection.
+        checkpoint_raw = _safe_read_bytes(CHECKPOINT)
+        if not checkpoint_raw.strip():
+            return _cloud_epoch_ledger_archive_plan(published)
         raise RuntimeError(
             "legacy reconciliation requires unpublished v143 and v142 high-water"
         )
@@ -2138,6 +2207,69 @@ def run(
                 "mode": "dry_run",
                 "mutates": False,
             }
+
+        # Cloud-epoch ledger archive: no checkpoint, no candidate — just archive
+        # the stale ledger and write a fresh empty one.  This is a much simpler
+        # transaction than the legacy quarantine path.
+        if plan.get("cloud_epoch_ledger_archive"):
+            import evolution_infra
+
+            archive_root = plan["archive_root"]
+            canonical_archive_root = _archive_root_from_relative(
+                claim.get("archive_root"),
+                create=True,
+                require_exists=True,
+            )
+            if archive_root != canonical_archive_root:
+                raise RuntimeError("cloud epoch archive root changed")
+            _ensure_claim(LIVE_CLAIM, claim)
+            _ensure_claim(archive_root / "reconciliation_claim.json", claim)
+            with evolution_infra._locked_state_sidecar(
+                LEDGER,
+                lock_type=fcntl.LOCK_EX,
+            ):
+                archived_legacy = archive_root / "legacy_abandoned_versions.jsonl"
+                if os.path.lexists(archived_legacy):
+                    if (
+                        _sha256(_safe_read_bytes(archived_legacy))
+                        != claim["inputs"]["ledger_sha256"]
+                    ):
+                        raise RuntimeError(
+                            "cloud epoch archived ledger digest mismatch"
+                        )
+                else:
+                    _move_exact_file(
+                        LEDGER,
+                        archived_legacy,
+                        claim["inputs"]["ledger_sha256"],
+                    )
+                # Write a fresh empty ledger so the allocation authority can
+                # compute next_v from the published high-water.
+                LEDGER.write_text("", encoding="utf-8")
+                _fsync_regular_state_file_and_parent(LEDGER)
+            receipt_payload = {
+                "schema_version": 1,
+                "kind": "national-policy-runtime-reconciliation-receipt",
+                "evaluation_epoch": EVALUATION_EPOCH,
+                "claim_digest": claim["claim_digest"],
+                "action": "cloud_epoch_ledger_archive",
+                "archive_root": str(archive_root.relative_to(ROOT)),
+                "published_high_water": claim["inputs"]["published_high_water"],
+                "archived_ledger_sha256": claim["inputs"]["ledger_sha256"],
+                "archived_ledger_entry_count": claim["inputs"][
+                    "ledger_entry_count"
+                ],
+                "completed_at": time.time(),
+            }
+            receipt = {
+                **receipt_payload,
+                "receipt_digest": canonical_digest(receipt_payload),
+            }
+            _write_bytes_exclusive(LIVE_RECEIPT, (json.dumps(receipt) + "\n").encode("utf-8"))
+            _fsync_regular_state_file_and_parent(LIVE_RECEIPT)
+            LIVE_CLAIM.unlink()
+            _fsync_directory(RESULTS)
+            return receipt
 
         archive_root = plan["archive_root"]
         canonical_archive_root = _archive_root_from_relative(
