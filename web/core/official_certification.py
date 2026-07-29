@@ -177,7 +177,7 @@ class CertificationSpec:
     bootstrap_control_id: str | None = None
     # Normal manual full-v5 jobs carry a compact, content-bound admission from
     # the current checkpoint-owned dynamic quality/capability/probe ledger.
-    # It is deliberately absent for the explicit v143 first-strict control,
+    # It is deliberately absent for the explicit first-strict control,
     # whose separate operator authorization is the sole admissibility path.
     quality_admission: dict[str, Any] | None = None
 
@@ -189,8 +189,8 @@ def normal_full_quality_admission_required(
 
     The pre-strict namespace remains readable as historical certificate data,
     but it is not an executable source of current certification authority.
-    Every current strict normal full job (v143+) must carry the exact
-    checkpoint-owned receipt.  The explicit v143 bootstrap is intentionally
+    Every current strict normal full job must carry the exact
+    checkpoint-owned receipt.  The explicit first-strict bootstrap is intentionally
     the only branch that takes the separate operator authorization path.
     """
 

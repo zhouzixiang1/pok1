@@ -487,7 +487,7 @@ def _prepare_protocol_bootstrap_generation(
             log_system_event(
                 "pipeline.policy_bootstrap_version_mismatch",
                 "error",
-                "Fresh national policy bootstrap must create v143",
+                f"Fresh national policy bootstrap must create v{FIRST_STRICT_POLICY_VERSION}",
                 {"next_v": next_v, "expected": FIRST_STRICT_POLICY_VERSION},
             )
             return None
@@ -497,12 +497,12 @@ def _prepare_protocol_bootstrap_generation(
             log_system_event(
                 "pipeline.policy_epoch_reset_required",
                 "error",
-                "Fresh v143 is blocked until the one-time policy epoch reset is executed",
+                f"Fresh v{FIRST_STRICT_POLICY_VERSION} is blocked until the one-time policy epoch reset is executed",
                 {"issues": reset_errors[:10], "next_v": int(next_v)},
             )
             if ui:
                 ui.log_history(
-                    "Fresh v143 requires scripts/reset_national_tcp_policy_epoch.py "
+                    f"Fresh v{FIRST_STRICT_POLICY_VERSION} requires scripts/reset_national_tcp_policy_epoch.py "
                     "--execute --acknowledge-runtime-checkout from the stopped "
                     ".evolution_pok checkout",
                     "error",
@@ -565,9 +565,9 @@ def _prepare_protocol_bootstrap_generation(
         else "singleton_strict_bootstrap"
     )
     evidence_note = (
-        "No policy-epoch bot is published yet. v142 is version/tag/tree authority "
+        f"No policy-epoch bot is published yet. v{ARCHIVED_VERSION_HIGH_WATER} is version/tag/tree authority "
         "only: do not open, copy, import, execute, or mine its archived source. "
-        "Prepare v143 from the current system runtime and a fresh typed policy. "
+        f"Prepare v{FIRST_STRICT_POLICY_VERSION} from the current system runtime and a fresh typed policy. "
         "No pre-policy rating, replay, or strategy evidence is admissible."
         if mode == "fresh_national_policy_bootstrap"
         else

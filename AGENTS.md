@@ -494,7 +494,8 @@ Generation order:
 8. advisory schema-valid critic;
 9. native TCP precommit regression;
 10. signed official EXE full certification;
-11. commit and annotated `national-bot-v<N>` tag;
+11. commit and annotated `national-cloud-bot-v<N>` tag (branch-configurable
+    via `ACTIVE_TAG_PREFIX`; main uses `national-bot-v`);
 12. archivist/cleanup.
 
 Crossover is preparation only and never skips planning or gates. Every prepared
@@ -970,6 +971,14 @@ and retains the older operator-host epoch-2 narrative as historical context.
   `web/tests/conftest.py`) over hardcoded versions. Never preserve a green
   result by skipping, weakening, or reclassifying the affected test without an
   explicit fail-closed replacement and documented reason.
+  **Frontend TypeScript validators must follow the same rule**: never hardcode
+  `143`/`142` (main-branch literals) as the first-strict floor — use
+  `FIRST_STRICT_POLICY_VERSION` from `lib/canonicalGenerationIdentity.ts` and
+  validate the backend-provided `active_generation.{next_v,source_v}` /
+  `OperatorTransition.{candidate_version,source_v}` against each other rather
+  than against branch-specific literals. The `_tagged_test_bot_versions`
+  conftest helper must glob on `ACTIVE_TAG_PREFIX` (not a hardcoded
+  `national-bot-v*`), or `@requires_active_bot` tests are silently skipped.
 - **Synchronize documentation with every functional change.** A feature added,
   removed, or modified must update the relevant docs in the same change:
   `AGENTS.md` and `CLAUDE.md` for cross-cutting contracts, `docs/` for
