@@ -2250,7 +2250,7 @@ def run(
                 # Write a fresh empty ledger so the allocation authority can
                 # compute next_v from the published high-water.
                 LEDGER.write_text("", encoding="utf-8")
-                _fsync_regular_state_file_and_parent(LEDGER)
+                _fsync_directory(LEDGER.parent)
             receipt_payload = {
                 "schema_version": 1,
                 "kind": "national-policy-runtime-reconciliation-receipt",
@@ -2270,7 +2270,7 @@ def run(
                 "receipt_digest": canonical_digest(receipt_payload),
             }
             _write_bytes_exclusive(LIVE_RECEIPT, (json.dumps(receipt) + "\n").encode("utf-8"))
-            _fsync_regular_state_file_and_parent(LIVE_RECEIPT)
+            _fsync_directory(LIVE_RECEIPT.parent)
             LIVE_CLAIM.unlink()
             _fsync_directory(RESULTS)
             return receipt
