@@ -2247,9 +2247,14 @@ def run(
                         archived_legacy,
                         claim["inputs"]["ledger_sha256"],
                     )
-                # Write a fresh empty ledger so the allocation authority can
-                # compute next_v from the published high-water.
-                LEDGER.write_text("", encoding="utf-8")
+                # Remove the stale ledger entirely. For a cloud epoch with
+                # already-published bots, the correct state is "no abandon
+                # ledger" (as if no versions were ever abandoned). An empty
+                # file would be rejected by _decode_abandoned_version_receipts
+                # ("abandon receipt ledger is empty"), so the file must be
+                # deleted, not truncated.
+                if os.path.lexists(LEDGER):
+                    os.unlink(LEDGER)
                 _fsync_directory(LEDGER.parent)
             receipt_payload = {
                 "schema_version": 1,
