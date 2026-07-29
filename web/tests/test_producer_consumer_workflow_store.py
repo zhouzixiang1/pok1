@@ -764,12 +764,15 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
     }
     # The sanctioned activation bridge is the only production source allowed to
     # reference the dormant slice2b module.  It is default-off (env/context
-    # gated) and is the reviewed Section 13 cutover seam.  The orchestrator
-    # deterministic-route module is the sanctioned call site (the workers_done
-    # seam); every reference there is lazy and gated behind ``slice2b_active``.
+    # gated) and is the reviewed Section 13 cutover seam.  Two sanctioned call
+    # sites: the orchestrator deterministic-route module (the workers_done seal
+    # seam + promotion barrier) and the orchestrator loop-phases module (the
+    # one-ahead draft-prepare launch hook).  Every reference in both is lazy
+    # and gated behind ``slice2b_active``.
     sanctioned_activation_sources = {
         root / "web" / "core" / "producer_consumer_slice2b_activation.py",
         root / "web" / "core" / "orchestrator_deterministic_route.py",
+        root / "web" / "core" / "orchestrator_loop_phases.py",
     }
     # ``orchestrator.py`` itself must remain free of any slice2b reference --
     # it reaches the activation bridge only through the deterministic-route
