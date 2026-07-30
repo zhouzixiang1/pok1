@@ -174,6 +174,14 @@ constraint that we must not destabilize the 10-generation tracking run:
 - **Defer Tier B/C**: they need dedicated test coverage and could destabilize
   the tracking run. Track as follow-up wave after the 10-generation goal.
 
+### Follow-up (2026-07-30 Phase B): concurrency held at 2
+
+Tier A.1 was applied, then reversed: under Slice 2b one-ahead (primary
+consumer + draft producer overlapping) cap=3 increased GLM 429 pressure.
+Committed `deploy/tencent-cloud/env.runtime` and code default are again
+`POK_GLOBAL_LLM_CONCURRENCY=2`. Re-raise to 3 only after quota headroom is
+re-measured; restart is required for the env change to take effect.
+
 ## Validation plan for Tier A.1
 
 After raising the cap to 3:

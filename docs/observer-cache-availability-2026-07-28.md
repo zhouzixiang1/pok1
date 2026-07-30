@@ -186,7 +186,12 @@ banner on first load. A changed-key drift still returns the fail-closed 503.
 `infra.pipeline_state_path("draft")` (`pipeline_state_draft.json`). Without
 that token, a Slice-2b one-ahead draft stage move left the cached
 `active_generations` projection stale until primary checkpoint / TTL churn.
-Phase A control status blocks (`pipeline_mode`, `async_certification`,
-`eval_wait`, `feature_flags`, `version_authority`, daemon `pairs_drift`) are
+Phase A control status blocks (`active_generations`, `pipeline_mode`,
+`async_certification`, `eval_wait`, `feature_flags`, `version_authority`,
+daemon `configured_*` / `env_*` / `effective_*` / `pairs_drift`) are
 attached inside `_sync_evolution_fields`; Evolution SSE remains primary-slot
-poll-supplement only for multi-slot UI.
+poll-supplement only for multi-slot UI. Staging bots may project
+`formal_authority=staging_uncertified`; operator abandon is
+`POST /api/control/abandon` (`abandon_active_generation`). Cloud
+`POK_GLOBAL_LLM_CONCURRENCY=2` (Phase B) is unrelated to observer latency but
+is co-deployed with this projection in Phase E.

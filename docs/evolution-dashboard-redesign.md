@@ -308,6 +308,15 @@ fixtures：
 | 首代 operator certification | 一次性 system-control 5+3，只证明官方兼容 | 启动边界需要操作员；运行后不重复操作 |
 | blocked authority/identity | 说明阻断字段并停止猜测下一工具 | 需要操作员按诊断处理 |
 | publishing handoff / scheduler | 发布后收尾或准备下一代 | 正常时不需要 |
+| Slice 2b `consumer_parked` | 主槽旁路等待（非卡住）；草稿槽可并行 | 编排器在跑时不需要 |
+| `eval_wait.waiting` | 强度样本不足时的准备等待提示 | 不把等待当成恢复阻断 |
+| staging 父本（`staging_as_parent`） | 主父本尚未 certified 时明确提示 | 证书/tag 仍是发布权威 |
+
+Phase D（2026-07-30）在不重做视觉的前提下，把上述真值接到关键面板：
+`OperatorSituation` 双槽徽章与 context tips；`PipelineStatus` primary+draft 并行态；
+`ControlPanel` 受控放弃 / 异步认证队列 / daemon `effective_*`+`pairs_drift`；
+发布概览与 BotManager 统一 `certificationView` 的 `publicationTier`/`certifiedTag`；
+EvolutionMonitor 仅在 IO 事件带 `slot` 时标注 primary/draft。
 
 ### 14.3 七页文案与业务语义
 

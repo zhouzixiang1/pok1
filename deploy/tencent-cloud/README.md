@@ -207,6 +207,51 @@ prefix default to `national_v` and now fails fast at startup with an actionable
 [`docs/observer-cache-availability-2026-07-28.md`](../../docs/observer-cache-availability-2026-07-28.md)
 and [`proxy-timeout.md`](proxy-timeout.md).
 
+Phase A poll projection (status/health; Evolution SSE remains primary-slot
+only) also attaches cheap multi-slot / Slice-2b fields derived inside
+`_sync_evolution_fields`:
+
+| Field | Meaning |
+|---|---|
+| `active_generations` | primary + draft slots (`slot_id`, stage, `is_draft`, …) |
+| `pipeline_mode` | Slice 2b activation / one-ahead coordinator (incl. consumer park) |
+| `async_certification` | unpaired staging publications awaiting official cert |
+| `eval_wait` | prepare-time strength-sample wait when no active lease |
+| `feature_flags` | `POK_SLICE2B_ENABLED`, `POK_ALLOW_STAGING_AS_PARENT`, tag prefixes |
+| `version_authority` | high-water / paired / certified / unpaired |
+| daemon `configured_*` / `env_*` / `effective_*` / `pairs_drift` | rating-daemon identity |
+
+The observer content key also watches `pipeline_state_draft.json`, so a draft
+stage move invalidates the cache. Multi-slot UI must poll `/api/control/status`
+rather than infer draft state from SSE. Staging bots may project
+`formal_authority=staging_uncertified` / status `official-staging`; the
+frontend data-stream validator accepts those values so inventory rows are not
+dropped.
+
+Operator abandon for a stuck disposable generation (e.g. `workers_done` /
+`rework_running`) is `POST /api/control/abandon` (capability id
+`abandon_active_generation`). It stops the live orchestrator task first, then
+runs the same canonical `_do_abandon_generation` path as the MCP tool. Typed
+409 boundaries: `no_active_generation_to_abandon`, `stage_not_disposable`,
+`checkpoint_cas_mismatch`. Do **not** call this while intending to keep the
+runtime running — it leaves the service stopped until `/api/control/start`.
+
+### Slice 2b / staging publication env (Phase B)
+
+Relevant `env.runtime` knobs (defaults below match the committed cloud file):
+
+| Variable | Cloud default | Notes |
+|---|---|---|
+| `POK_SLICE2B_ENABLED` | `1` | one-ahead producer/consumer |
+| `POK_ALLOW_STAGING_AS_PARENT` | `1` | pure staging parents (empty cert digest) |
+| `POK_DEFAULT_PUBLICATION_TIER` | `staging` | async official cert after publish; first-strict stays certified |
+| `POK_GLOBAL_LLM_CONCURRENCY` | `2` | see LLM concurrency below |
+
+Draft checkpoints use shadow identity (`is_draft=True`): skip live floor+1
+allocation CAS, isolate under `RESULTS_DIR/draft_candidates/`, remap onto
+formal `next_v` after primary publish. Async cert scheduling keys off
+`strict_published_versions` (not a bare `published_versions` field).
+
 ## Sizing notes (4 vCPU / 3.6 GiB VM)
 
 `env.runtime` sets `POK_DAEMON_WORKERS=2` and `POK_DAEMON_PAIRS=2`
@@ -240,6 +285,16 @@ Configuration (in `env.runtime`, all env-overridable):
 - `POK_LLM_THINKING_BUDGET=64000` (GLM treats this as a soft target, not a cap)
 - `POK_LLM_EFFORT=max`
 
+### Global LLM concurrency (Phase B — held at 2)
+
+`env.runtime` sets `POK_GLOBAL_LLM_CONCURRENCY=2` (process-wide semaphore in
+`web/core/llm_concurrency.py`, acquired inside `run_claude_query`). The
+2026-07-27 Tier A.1 raise to 3 cut Master-ensemble wall-time but increased
+GLM 429 pressure under Slice 2b one-ahead overlap (primary consumer + draft
+producer). Cap=2 keeps the FIFO semaphore honest; `api_concurrency` adaptive
+backoff still halves further on 429. Raise back to 3 only after quota
+headroom is re-measured, then restart the runtime so the env is reloaded.
+
 ### GLM 429 quota exhaustion and recovery-window waiting
 
 GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the provider
@@ -255,22 +310,39 @@ The system handles this through the singleton `rate_limiter`
    at both `ClaudeSDKError` sites in `web/core/llm_query.py` (the
    signature-retry loop fallthrough and the `run_claude_query` outer
    handler). A bare 429 without an explicit reset timestamp does **not**
-   set the block — the existing bounded retry behavior is preserved.
-2. **Pipeline pause** — `rate_limiter.is_blocked()` returns `True`. The
-   orchestrator loop checks this every cycle and blocks the entire
-   evolution pipeline via `await rate_limiter.wait_until_reset()` until
-   the quota resets. Every `run_claude_query` entry also checks before
+   set the `rate_limiter` block.
+2. **Durable availability pause (P0-2)** — Independently,
+   `llm_availability.classify_llm_availability` treats bare 429 as
+   `resume_after_quota_reset` with a conservative fallback
+   `provider_reset_at = now + 5h + 60s` (`POK_QUOTA_FALLBACK_WINDOW_SEC`),
+   so `_reconcile_llm_pause` can auto-resume when the window elapses
+   instead of parking on `requires_manual_resume`.
+3. **Pipeline pause** — `rate_limiter.is_blocked()` (timestamped 429) or
+   the durable availability pause blocks the evolution pipeline until the
+   quota window ends. Every `run_claude_query` entry checks before
    dispatching.
-3. **Crash recovery** — The reset timestamp is persisted to
-   `web/core/results/rate_limit_state.json`. A service restart re-applies
-   the block until the reset time.
-4. **Operator visibility** — A `pipeline.llm_quota_exceeded_detected`
+4. **Crash recovery** — The rate-limiter reset timestamp is persisted to
+   `web/core/results/rate_limit_state.json`; the availability pause has
+   its own durable store. A service restart re-applies active blocks.
+5. **Operator visibility** — A `pipeline.llm_quota_exceeded_detected`
    event is emitted with the role and reset time. The UI status shows
    `⏳ 配额等待中 → <reset_time>`.
 
-No environment variable configures the 429 behavior — `rate_limiter` is
-always active. The `api_concurrency` adaptive backoff (which halves global
-LLM concurrency per 429) still fires as an immediate first reaction.
+The `api_concurrency` adaptive backoff (which halves global LLM concurrency
+per 429) still fires as an immediate first reaction.
+
+### Phase E deploy (operator → runtime)
+
+After verifying tests on this operator checkout (`/home/ubuntu/pok1`):
+
+1. Commit/push to `origin/tencent-cloud-runtime` (operator action).
+2. In `.evolution_pok`: `git pull --ff-only --tags` (Git sync only; never
+   copy files between checkouts).
+3. `pokctl restart` / `systemctl restart pok-evolution` so `env.runtime`
+   (`POK_GLOBAL_LLM_CONCURRENCY=2`, staging tier, Slice 2b flags) is
+   reloaded.
+4. Expect operator stability to reset to **0/10** after restart; schedule
+   the restart in a generation empty window when possible.
 
 ## What stays out of main
 

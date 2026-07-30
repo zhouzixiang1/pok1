@@ -347,24 +347,32 @@ The system handles this through the singleton `rate_limiter`
    body. Detection is wired at **both** `ClaudeSDKError` sites in
    `llm_query.py`: the signature-retry loop fallthrough (inner handler) and
    the `run_claude_query` outer handler. A bare 429 without an explicit
-   reset timestamp does **not** set the block — `parse_429` returns `False`
-   and the existing bounded retry behavior is preserved.
-2. **Pipeline pause**: Once `rate_limiter` has a future reset time,
+   reset timestamp does **not** set the `rate_limiter` block —
+   `parse_429` returns `False`.
+2. **Durable availability pause (P0-2)**: Independently,
+   `llm_availability.classify_llm_availability` maps bare 429 to
+   `resume_after_quota_reset` with a conservative fallback
+   `provider_reset_at = now + 5h + 60s` (env `POK_QUOTA_FALLBACK_WINDOW_SEC`)
+   so `_reconcile_llm_pause` auto-resumes when the window elapses instead of
+   parking on `requires_manual_resume`.
+3. **Pipeline pause**: Once `rate_limiter` has a future reset time,
    `rate_limiter.is_blocked()` returns `True`. The orchestrator loop checks
    this at the top of every cycle (`orchestrator.py` ~line 6013) and
    `await rate_limiter.wait_until_reset(shutdown_mgr)` blocks the entire
-   evolution pipeline until the quota resets. Every `run_claude_query`
-   entry point also checks `is_blocked()` before dispatching, so
-   background analysts and direct MCP calls cannot bypass the pause.
-3. **Crash recovery**: The reset timestamp is persisted to
-   `web/core/results/rate_limit_state.json`. A service restart re-loads it
-   and re-applies the block until the reset time, so a restart during a
-   quota window cannot accidentally burn more calls.
-4. **Operator visibility**: A `pipeline.llm_quota_exceeded_detected` event
+   evolution pipeline until the quota resets. The durable availability pause
+   is checked on the same cycle. Every `run_claude_query` entry point also
+   checks before dispatching, so background analysts and direct MCP calls
+   cannot bypass the pause.
+4. **Crash recovery**: The rate-limiter reset timestamp is persisted to
+   `web/core/results/rate_limit_state.json`; the availability pause has its
+   own durable store. A service restart re-loads active blocks until the
+   reset time, so a restart during a quota window cannot accidentally burn
+   more calls.
+5. **Operator visibility**: A `pipeline.llm_quota_exceeded_detected` event
    is emitted with the role and reset time, and the UI status shows
    `⏳ 配额等待中 → <reset_time>`. The orchestrator log shows
    `⏳ API 配额耗尽，暂停进化。将在 <reset_time> 自动恢复 (<seconds>s)`.
-5. **Graceful shutdown**: `wait_until_reset` checks `shutdown_mgr` every
+6. **Graceful shutdown**: `wait_until_reset` checks `shutdown_mgr` every
    30s, so the service can be stopped cleanly during a quota wait.
 
 The `api_concurrency` adaptive backoff (which halves the global LLM
@@ -738,7 +746,13 @@ Phase C mirrors those optional ControlStatus/ControlHealth fields,
 accepts `staging_uncertified` / `official-staging` in the bots data-stream
 validator, uses `active_generation.stage` for a read-only Pipeline stepper when
 the independent checkpoint poll is null, and exposes
-`POST /api/control/abandon` via `controlApi.abandon`.
+`POST /api/control/abandon` via `controlApi.abandon`. Phase D aligns key panels
+to the same truth without redesign: OperatorSituation dual-slot badges plus
+slice2b park / eval_wait / staging-parent tips; PipelineStatus primary+draft
+parallel state (consumer park is not “stuck”); ControlPanel abandon, async
+cert queue, and daemon effective pairs; Inventory/BotManager
+`publication_tier`/`certified_tag` via `certificationView`; EvolutionMonitor
+optional IO `slot` labels when present.
 
 The blocking boundary used by all offloaded HTTP handlers
 (`run_blocking_isolated` in `web/core/blocking_runtime.py`) must await its

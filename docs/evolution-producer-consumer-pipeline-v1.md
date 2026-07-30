@@ -591,6 +591,11 @@ the multi-slot authority: `active_generations`, `pipeline_mode`,
 `async_certification`, `eval_wait`, `feature_flags`, `version_authority`, and
 daemon `pairs_drift`. The observer cache key watches
 `pipeline_state_draft.json` so draft stage moves invalidate status/health.
+Staging publications may surface `formal_authority=staging_uncertified` /
+`official-staging`; async cert polls key off `strict_published_versions`.
+Operator abandon for disposable stages is `POST /api/control/abandon`
+(capability `abandon_active_generation`). Cloud LLM concurrency is held at
+`POK_GLOBAL_LLM_CONCURRENCY=2` under Slice 2b one-ahead overlap (Phase B).
 
 ## 14. Acceptance tests
 
