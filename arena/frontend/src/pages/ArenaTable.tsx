@@ -269,20 +269,20 @@ export default function ArenaTable() {
       <div
         className={`flex flex-col items-center gap-1 rounded-xl border p-4 transition ${
           acting
-            ? 'border-amber-400 bg-amber-400/10 shadow-[0_0_20px_rgba(251,191,36,0.3)]'
-            : 'border-slate-700 bg-slate-800/60'
+            ? 'border-brand-300 bg-white shadow-[0_0_0_3px_rgba(70,95,255,0.25)]'
+            : 'border-white/20 bg-white/95 shadow-theme-sm'
         } ${folded ? 'opacity-50' : ''}`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">{isLower ? '▼ 我方' : '▲ 对手'}</span>
+          <span className="text-xs text-gray-500">{isLower ? '▼ 我方' : '▲ 对手'}</span>
           {acting && (
-            <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-slate-900">行动中</span>
+            <span className="rounded bg-brand-500 px-1.5 py-0.5 text-[10px] font-bold text-white">行动中</span>
           )}
           {folded && (
-            <span className="rounded bg-slate-600 px-1.5 py-0.5 text-[10px] text-slate-200">已弃牌</span>
+            <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-800">已弃牌</span>
           )}
         </div>
-        <div className="text-lg font-semibold text-slate-100">{name}</div>
+        <div className="text-lg font-semibold text-gray-900">{name}</div>
         <div className="flex gap-1">
           {cards.length === 0 ? (
             <>
@@ -294,12 +294,12 @@ export default function ArenaTable() {
           )}
         </div>
         <div className="mt-1 text-sm">
-          <span className="text-slate-400">筹码 </span>
-          <span className="font-mono font-bold text-emerald-300">{chips.toLocaleString()}</span>
+          <span className="text-gray-500">筹码 </span>
+          <span className="font-mono font-bold text-success-600">{chips.toLocaleString()}</span>
         </div>
         <div className="text-xs">
-          <span className="text-slate-500">累计 </span>
-          <span className={`font-mono ${earnings >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+          <span className="text-gray-500">累计 </span>
+          <span className={`font-mono ${earnings >= 0 ? 'text-success-500' : 'text-error-500'}`}>
             {earnings >= 0 ? '+' : ''}
             {earnings.toLocaleString()}
           </span>
@@ -310,32 +310,32 @@ export default function ArenaTable() {
 
   return (
     <div className="mx-auto flex min-h-[80vh] max-w-6xl flex-col gap-3 p-4">
-      <header className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-3">
+      <header className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-200 bg-white/80 px-4 py-3">
         <div className="flex items-center gap-3">
           <span
-            className={`h-3 w-3 rounded-full ${state.connected ? 'bg-emerald-400' : 'bg-slate-500'}`}
+            className={`h-3 w-3 rounded-full ${state.connected ? 'bg-success-400' : 'bg-gray-400'}`}
             title={state.connected ? '已连接 SSE' : '断开'}
           />
-          <h1 className="text-lg font-bold text-slate-100">观赛大厅</h1>
-          <span className="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-200">
+          <h1 className="text-lg font-bold text-gray-900">观赛大厅</h1>
+          <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-800">
             {STATUS_LABEL[state.status] ?? state.status}
           </span>
         </div>
-        <div className="flex items-center gap-4 text-sm text-slate-300">
+        <div className="flex items-center gap-4 text-sm text-gray-700">
           <span>
-            第 <span className="font-mono font-bold text-amber-300">{state.handNum}</span> /{' '}
+            第 <span className="font-mono font-bold text-brand-500">{state.handNum}</span> /{' '}
             {state.handsPerMatch} 手
           </span>
           {state.matchId && (
-            <span className="hidden font-mono text-xs text-slate-500 md:inline">{state.matchId}</span>
+            <span className="hidden font-mono text-xs text-gray-500 md:inline">{state.matchId}</span>
           )}
         </div>
       </header>
 
       {/* 手动指定 match_id */}
       {!targetMatchId && (
-        <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
-          <div className="mb-2 text-sm text-slate-300">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-theme-sm">
+          <div className="mb-2 text-sm text-gray-700">
             {noMatch ? '当前没有进行中的对局。可粘贴 match_id 观看回放直播,或去发起对战:' : '加载中…'}
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -343,24 +343,24 @@ export default function ArenaTable() {
               value={manualMatchId}
               onChange={(e) => setManualMatchId(e.target.value)}
               placeholder="match_id(如 m-xxxx-a_vs_b)"
-              className="flex-1 rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+              className="flex-1 rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 placeholder:text-gray-500 focus:border-brand-300 focus:outline-none"
             />
             <button
               onClick={() => manualMatchId.trim() && setTargetMatchId(manualMatchId.trim())}
               disabled={!manualMatchId.trim()}
-              className="rounded bg-amber-400 px-4 py-1.5 text-sm font-bold text-slate-900 hover:bg-amber-300 disabled:opacity-50"
+              className="rounded bg-brand-500 px-4 py-1.5 text-sm font-bold text-white hover:bg-brand-600 disabled:opacity-50"
             >
               观赛
             </button>
             <a
               href="#/challenge"
-              className="rounded border border-amber-400/60 px-4 py-1.5 text-sm text-amber-300 hover:bg-slate-800"
+              className="rounded border border-brand-300 px-4 py-1.5 text-sm text-brand-500 hover:bg-white"
             >
               发起对战 →
             </a>
             <a
               href="#/history"
-              className="rounded border border-slate-600 px-4 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+              className="rounded border border-gray-300 px-4 py-1.5 text-sm text-gray-700 hover:bg-white"
             >
               看历史
             </a>
@@ -370,10 +370,10 @@ export default function ArenaTable() {
 
       {targetMatchId && (
         <main className="grid gap-3 lg:grid-cols-[1fr_320px]">
-          <section className="rounded-2xl border border-slate-700 bg-gradient-to-b from-emerald-950 to-slate-900 p-5">
+          <section className="rounded-2xl border border-gray-200 felt-table text-white p-5">
             {renderPlayer(1, false)}
             <div className="my-4 flex flex-col items-center gap-2">
-              <div className="text-xs uppercase tracking-wider text-emerald-300/70">
+              <div className="text-xs uppercase tracking-wider text-white/70">
                 {state.stage ? STAGE_LABEL[state.stage] ?? state.stage : '公共牌'}
               </div>
               <div className="flex min-h-[56px] items-center gap-1.5">
@@ -390,21 +390,21 @@ export default function ArenaTable() {
                 )}
               </div>
               <div className="flex items-center gap-4">
-                <div className="text-sm text-slate-400">
-                  底池 <span className="font-mono text-lg font-bold text-amber-300">{state.pot.toLocaleString()}</span>
+                <div className="text-sm text-white/70">
+                  底池 <span className="font-mono text-lg font-bold text-warning-500">{state.pot.toLocaleString()}</span>
                 </div>
               </div>
             </div>
             {renderPlayer(0, true)}
 
             {state.lastSettle && (
-              <div className="mt-3 rounded-lg border border-slate-600 bg-slate-800/80 p-3 text-sm">
-                <div className="font-semibold text-slate-200">
+              <div className="mt-3 rounded-lg border border-gray-300 bg-white/80 p-3 text-sm">
+                <div className="font-semibold text-gray-800">
                   第 {state.lastSettle.hand} 手结算:
                   {state.lastSettle.winnerIdx == null
                     ? '平局'
                     : `${state.names[state.lastSettle.winnerIdx] ?? `玩家${state.lastSettle.winnerIdx}`} 赢得底池`}
-                  <span className="ml-2 font-mono text-amber-300">{state.lastSettle.pot.toLocaleString()}</span>
+                  <span className="ml-2 font-mono text-brand-500">{state.lastSettle.pot.toLocaleString()}</span>
                 </div>
               </div>
             )}
@@ -413,8 +413,8 @@ export default function ArenaTable() {
               <div
                 className={`mt-3 rounded-lg p-3 text-center font-semibold ${
                   state.matchEndReason === 'completed'
-                    ? 'bg-emerald-700/40 text-emerald-200'
-                    : 'bg-rose-700/40 text-rose-200'
+                    ? 'bg-success-700/50 text-success-50'
+                    : 'bg-error-700/40 text-error-100'
                 }`}
               >
                 比赛结束 · {state.matchEndReason}
@@ -423,7 +423,7 @@ export default function ArenaTable() {
                 </span>
                 <a
                   href={`#/match/${state.matchId}`}
-                  className="ml-3 text-xs text-amber-300 underline hover:no-underline"
+                  className="ml-3 text-xs text-brand-500 underline hover:no-underline"
                 >
                   看完整回放 →
                 </a>
@@ -431,25 +431,25 @@ export default function ArenaTable() {
             )}
           </section>
 
-          <aside className="flex flex-col rounded-2xl border border-slate-700 bg-slate-900/80">
+          <aside className="flex flex-col rounded-2xl border border-gray-200 bg-white/80">
             <button
               onClick={() => setShowLog((v) => !v)}
-              className="flex items-center justify-between px-4 py-2 text-left text-sm font-semibold text-slate-200"
+              className="flex items-center justify-between px-4 py-2 text-left text-sm font-semibold text-gray-800"
             >
               <span>动作历史 ({state.actions.length})</span>
-              <span className="text-xs text-slate-500">{showLog ? '收起 ▲' : '展开 ▼'}</span>
+              <span className="text-xs text-gray-500">{showLog ? '收起 ▲' : '展开 ▼'}</span>
             </button>
             {showLog && (
               <div ref={logRef} className="max-h-[60vh] flex-1 overflow-y-auto px-3 pb-3 font-mono text-xs">
                 {state.actions.length === 0 ? (
-                  <div className="px-2 py-4 text-center text-slate-500">暂无动作</div>
+                  <div className="px-2 py-4 text-center text-gray-500">暂无动作</div>
                 ) : (
                   state.actions.map((a, i) => (
                     <div
                       key={i}
-                      className={`border-b border-slate-800 py-1 ${a.idx === 0 ? 'text-sky-300' : 'text-fuchsia-300'}`}
+                      className={`border-b border-gray-200 py-1 ${a.idx === 0 ? 'text-sky-300' : 'text-fuchsia-300'}`}
                     >
-                      <span className="text-slate-500">[H{a.hand} {STAGE_LABEL[a.stage] ?? a.stage}]</span>{' '}
+                      <span className="text-gray-500">[H{a.hand} {STAGE_LABEL[a.stage] ?? a.stage}]</span>{' '}
                       {state.names[a.idx] ?? `P${a.idx}`}: {a.text}
                     </div>
                   ))

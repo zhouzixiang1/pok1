@@ -102,13 +102,13 @@ export default function History() {
     <div className="mx-auto max-w-4xl p-4">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-100">对局历史</h1>
-          <p className="text-sm text-slate-400">
-            共 <span className="font-mono text-amber-300">{total.toLocaleString()}</span> 场
+          <h1 className="text-xl font-bold text-gray-900">对局历史</h1>
+          <p className="text-sm text-gray-500">
+            共 <span className="font-mono text-brand-500">{total.toLocaleString()}</span> 场
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1 text-xs text-slate-400">
+          <label className="flex flex-col gap-1 text-xs text-gray-500">
             状态
             <select
               value={statusFilter}
@@ -116,7 +116,7 @@ export default function History() {
                 setStatusFilter(e.target.value)
                 setOffset(0)
               }}
-              className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
+              className="rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-brand-300 focus:outline-none"
             >
               <option value="">全部</option>
               <option value="completed">已完成</option>
@@ -125,19 +125,19 @@ export default function History() {
               <option value="errored">出错</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-400">
+          <label className="flex flex-col gap-1 text-xs text-gray-500">
             按 bot 名筛
             <input
               value={botInput}
               onChange={(e) => setBotInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && onSearch()}
               placeholder="bot 名(任意一方)"
-              className="w-44 rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+              className="w-44 rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900 placeholder:text-gray-500 focus:border-brand-300 focus:outline-none"
             />
           </label>
           <button
             onClick={onSearch}
-            className="rounded bg-amber-400 px-4 py-1.5 text-sm font-bold text-slate-900 hover:bg-amber-300"
+            className="rounded bg-brand-500 px-4 py-1.5 text-sm font-bold text-white hover:bg-brand-600"
           >
             筛选
           </button>
@@ -145,11 +145,11 @@ export default function History() {
       </div>
 
       {loading ? (
-        <div className="py-12 text-center text-slate-400">加载…</div>
+        <div className="py-12 text-center text-gray-500">加载…</div>
       ) : err ? (
-        <div className="py-12 text-center text-rose-400">{err}</div>
+        <div className="py-12 text-center text-error-500">{err}</div>
       ) : matches.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">
+        <div className="py-12 text-center text-gray-500">
           {botFilter ? `没有匹配「${botFilter}」的对局` : '暂无对局'}
         </div>
       ) : (
@@ -161,21 +161,21 @@ export default function History() {
               <Link
                 key={mid(m)}
                 to={`/match/${mid(m)}`}
-                className="block rounded-xl border border-slate-700 bg-slate-800/60 p-4 transition hover:border-amber-400/60 hover:bg-slate-800"
+                className="block rounded-xl border border-gray-200 bg-white p-4 shadow-theme-sm transition hover:border-brand-300 hover:bg-white"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span
                     className={`min-w-0 flex-1 truncate font-semibold ${
-                      aWin ? 'text-amber-300' : 'text-slate-100'
+                      aWin ? 'text-brand-500' : 'text-gray-900'
                     }`}
                   >
                     {disp(m, 'a')}
                     {aWin && <span className="ml-1 text-xs">胜</span>}
                   </span>
-                  <span className="shrink-0 font-mono text-xs text-slate-500">vs</span>
+                  <span className="shrink-0 font-mono text-xs text-gray-500">vs</span>
                   <span
                     className={`min-w-0 flex-1 truncate text-right font-semibold ${
-                      bWin ? 'text-amber-300' : 'text-slate-100'
+                      bWin ? 'text-brand-500' : 'text-gray-900'
                     }`}
                   >
                     {bWin && <span className="mr-1 text-xs">胜</span>}
@@ -183,14 +183,14 @@ export default function History() {
                   </span>
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-2 text-sm">
-                  <span className={`font-mono ${m.earnings_a >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  <span className={`font-mono ${m.earnings_a >= 0 ? 'text-success-500' : 'text-error-500'}`}>
                     {earningsStr(m.earnings_a)}
                   </span>
-                  <span className={`font-mono ${m.earnings_b >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  <span className={`font-mono ${m.earnings_b >= 0 ? 'text-success-500' : 'text-error-500'}`}>
                     {earningsStr(m.earnings_b)}
                   </span>
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
                   <span className="font-mono">{(m.hands_played ?? 0).toLocaleString()} 手</span>
                   {m.status && (
                     <>
@@ -198,9 +198,9 @@ export default function History() {
                       <span
                         className={
                           m.status === 'running'
-                            ? 'text-emerald-400'
+                            ? 'text-success-500'
                             : m.status === 'errored'
-                              ? 'text-rose-400'
+                              ? 'text-error-500'
                               : ''
                         }
                       >
@@ -228,19 +228,19 @@ export default function History() {
           <button
             onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
             disabled={!hasPrev}
-            className="rounded border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded border border-gray-200 px-3 py-1 text-gray-800 hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             上一页
           </button>
-          <span className="text-slate-400">
-            <span className="font-mono text-slate-100">{from.toLocaleString()}</span> ~{' '}
-            <span className="font-mono text-slate-100">{to.toLocaleString()}</span> /{' '}
-            <span className="font-mono text-amber-300">{total.toLocaleString()}</span>
+          <span className="text-gray-500">
+            <span className="font-mono text-gray-900">{from.toLocaleString()}</span> ~{' '}
+            <span className="font-mono text-gray-900">{to.toLocaleString()}</span> /{' '}
+            <span className="font-mono text-brand-500">{total.toLocaleString()}</span>
           </span>
           <button
             onClick={() => setOffset((o) => Math.min(total - 1, o + PAGE_SIZE))}
             disabled={!hasNext}
-            className="rounded border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded border border-gray-200 px-3 py-1 text-gray-800 hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             下一页
           </button>

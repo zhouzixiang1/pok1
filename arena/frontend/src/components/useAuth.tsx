@@ -24,7 +24,12 @@ interface AuthState {
   user: CurrentUser | null
   loading: boolean // 初次 /me 校验中
   isLoggedIn: boolean
-  login: (username: string, password: string) => Promise<CurrentUser>
+  login: (
+    username: string,
+    password: string,
+    captchaId: string,
+    captchaAnswer: string,
+  ) => Promise<CurrentUser>
   logout: () => Promise<void>
   refresh: () => Promise<CurrentUser | null>
 }
@@ -62,11 +67,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   const login = useCallback(
-    async (username: string, password: string): Promise<CurrentUser> => {
+    async (
+      username: string,
+      password: string,
+      captchaId: string,
+      captchaAnswer: string,
+    ): Promise<CurrentUser> => {
       const d = await apiPost<{ user: CurrentUser; token: string }>(
         '/api/auth/login',
         'POST',
-        { username, password },
+        {
+          username,
+          password,
+          captcha_id: captchaId,
+          captcha_answer: captchaAnswer,
+        },
       )
       userToken.set(d.token)
       currentUserStore.set(d.user)

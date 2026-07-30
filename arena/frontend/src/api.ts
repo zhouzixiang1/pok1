@@ -18,6 +18,7 @@ export interface CurrentUser {
   role: 'user' | 'admin'
   display_name: string
   is_active: number
+  email_verified?: number
   created_at?: string
   last_login_at?: string
 }

@@ -200,13 +200,13 @@ export default function MyBots() {
   }
 
   if (authLoading) {
-    return <div className="p-8 text-center text-slate-400">加载中…</div>
+    return <div className="p-8 text-center text-gray-500">加载中…</div>
   }
   if (!user) {
     return (
       <div className="p-8 text-center">
-        <p className="mb-3 text-slate-300">请先登录</p>
-        <Link to="/login" className="text-amber-300 hover:underline">去登录 →</Link>
+        <p className="mb-3 text-gray-700">请先登录</p>
+        <Link to="/login" className="text-brand-500 hover:underline">去登录 →</Link>
       </div>
     )
   }
@@ -215,24 +215,24 @@ export default function MyBots() {
     <div className="mx-auto max-w-5xl p-4">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-100">我的 Bot</h1>
-          <p className="text-sm text-slate-400">上传 / 管理 / 上下架 你的对战程序</p>
+          <h1 className="text-xl font-bold text-gray-900">我的 Bot</h1>
+          <p className="text-sm text-gray-500">上传 / 管理 / 上下架 你的对战程序</p>
         </div>
         <button
           onClick={() => setShowUpload((v) => !v)}
-          className="rounded-lg bg-amber-400 px-4 py-2 text-sm font-bold text-slate-900 hover:bg-amber-300"
+          className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-bold text-white hover:bg-brand-600"
         >
           {showUpload ? '收起' : '+ 上传新 Bot'}
         </button>
       </div>
 
       {err && (
-        <div className="mb-4 rounded-lg border border-rose-800 bg-rose-900/30 px-3 py-2 text-sm text-rose-400">
+        <div className="mb-4 rounded-lg border border-error-200 bg-error-50 px-3 py-2 text-sm text-error-500">
           {err}
         </div>
       )}
       {msg && (
-        <div className="mb-4 rounded-lg border border-emerald-800 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-300">
+        <div className="mb-4 rounded-lg border border-success-200 bg-success-50 px-3 py-2 text-sm text-success-600">
           {msg}
         </div>
       )}
@@ -240,9 +240,9 @@ export default function MyBots() {
       {showUpload && (
         <form
           onSubmit={submitCreate}
-          className="mb-6 rounded-xl border border-slate-700 bg-slate-800/60 p-5"
+          className="mb-6 rounded-xl border border-gray-200 bg-white p-5 shadow-theme-sm"
         >
-          <h2 className="mb-3 font-semibold text-amber-300">上传新 Bot(.zip 包)</h2>
+          <h2 className="mb-3 font-semibold text-brand-500">上传新 Bot(.zip 包)</h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <L label="Bot name(同一用户内唯一)">
               <input
@@ -295,9 +295,9 @@ export default function MyBots() {
                 accept=".zip,application/zip"
                 onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
                 required
-                className="block w-full text-sm text-slate-300 file:mr-3 file:rounded file:border-0 file:bg-amber-400 file:px-3 file:py-1.5 file:font-bold file:text-slate-900 hover:file:bg-amber-300"
+                className="block w-full text-sm text-gray-700 file:mr-3 file:rounded file:border-0 file:bg-brand-500 file:px-3 file:py-1.5 file:font-bold file:text-white hover:file:bg-brand-600"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-gray-500">
                 zip 根目录需含入口文件(如 main.py)。构建会跑 docker build。
               </p>
             </L>
@@ -305,7 +305,7 @@ export default function MyBots() {
           <button
             type="submit"
             disabled={busy || !uploadFile || !form.name.trim()}
-            className="mt-4 rounded-lg bg-amber-400 px-5 py-2 font-bold text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-4 rounded-lg bg-brand-500 px-5 py-2 font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? '上传构建中…' : '上传并构建'}
           </button>
@@ -313,56 +313,56 @@ export default function MyBots() {
       )}
 
       {loading ? (
-        <div className="py-12 text-center text-slate-400">加载…</div>
+        <div className="py-12 text-center text-gray-500">加载…</div>
       ) : bots.length === 0 ? (
-        <div className="rounded-xl border border-slate-700 bg-slate-800/40 py-12 text-center text-slate-400">
+        <div className="rounded-xl border border-gray-200 bg-gray-50 py-12 text-center text-gray-500">
           你还没有 bot,点击右上「上传新 Bot」开始。
         </div>
       ) : (
         <div className="flex flex-col gap-3">
           {bots.map((b) => (
-            <div key={b.id} className="rounded-xl border border-slate-700 bg-slate-800/60">
+            <div key={b.id} className="rounded-xl border border-gray-200 bg-white">
               {/* 头部 */}
               <div className="flex flex-wrap items-center justify-between gap-3 p-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-lg font-bold text-slate-100">
+                    <span className="text-lg font-bold text-gray-900">
                       {b.display_name || b.name}
                     </span>
                     {b.is_builtin && (
                       <span className="rounded bg-sky-500/20 px-1.5 text-xs text-sky-300">内置</span>
                     )}
                     {b.is_active ? (
-                      <span className="rounded bg-emerald-500/20 px-1.5 text-xs text-emerald-300">上架</span>
+                      <span className="rounded bg-success-500/20 px-1.5 text-xs text-success-600">上架</span>
                     ) : (
-                      <span className="rounded bg-slate-600/30 px-1.5 text-xs text-slate-400">下架</span>
+                      <span className="rounded bg-gray-100 px-1.5 text-xs text-gray-500">下架</span>
                     )}
                     {b.is_public ? (
-                      <span className="rounded bg-amber-500/20 px-1.5 text-xs text-amber-300">公开</span>
+                      <span className="rounded bg-brand-500/20 px-1.5 text-xs text-brand-500">公开</span>
                     ) : (
-                      <span className="rounded bg-slate-600/30 px-1.5 text-xs text-slate-400">私有</span>
+                      <span className="rounded bg-gray-100 px-1.5 text-xs text-gray-500">私有</span>
                     )}
                     {!b.has_image && (
-                      <span className="rounded bg-rose-500/20 px-1.5 text-xs text-rose-300">无镜像</span>
+                      <span className="rounded bg-error-500/20 px-1.5 text-xs text-error-600">无镜像</span>
                     )}
                   </div>
-                  <div className="mt-1 font-mono text-xs text-slate-500">
+                  <div className="mt-1 font-mono text-xs text-gray-500">
                     {b.name} · {b.protocol} · v{b.current_version} · {b.entry_file}
                   </div>
                   {b.description && (
-                    <p className="mt-1 text-sm text-slate-400">{b.description}</p>
+                    <p className="mt-1 text-sm text-gray-500">{b.description}</p>
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     onClick={() => toggleExpand(b.id)}
-                    className="rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                    className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-100"
                   >
                     {expanded === b.id ? '收起 ▲' : '版本 ▼'}
                   </button>
                   <button
                     onClick={() => startEdit(b)}
-                    className="rounded border border-amber-500/60 px-2.5 py-1 text-xs text-amber-300 hover:bg-slate-700"
+                    className="rounded border border-brand-300 px-2.5 py-1 text-xs text-brand-500 hover:bg-gray-100"
                   >
                     编辑
                   </button>
@@ -371,8 +371,8 @@ export default function MyBots() {
                     disabled={busy}
                     className={`rounded border px-2.5 py-1 text-xs ${
                       b.is_active
-                        ? 'border-slate-500 text-slate-300 hover:bg-slate-700'
-                        : 'border-emerald-500/60 text-emerald-300 hover:bg-slate-700'
+                        ? 'border-gray-400 text-gray-700 hover:bg-gray-100'
+                        : 'border-success-500 text-success-600 hover:bg-gray-100'
                     } disabled:opacity-50`}
                   >
                     {b.is_active ? '下架' : '上架'}
@@ -380,7 +380,7 @@ export default function MyBots() {
                   <button
                     onClick={() => remove(b)}
                     disabled={busy}
-                    className="rounded border border-rose-600/60 px-2.5 py-1 text-xs text-rose-400 hover:bg-slate-700 disabled:opacity-50"
+                    className="rounded border border-error-500 px-2.5 py-1 text-xs text-error-500 hover:bg-gray-100 disabled:opacity-50"
                   >
                     删除
                   </button>
@@ -389,7 +389,7 @@ export default function MyBots() {
 
               {/* 编辑表单 */}
               {editingBot === b.id && (
-                <div className="border-t border-slate-700 p-4">
+                <div className="border-t border-gray-200 p-4">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <L label="展示名">
                       <input
@@ -421,13 +421,13 @@ export default function MyBots() {
                     <button
                       onClick={() => saveEdit(b)}
                       disabled={busy}
-                      className="rounded bg-emerald-500 px-3 py-1.5 text-xs font-bold text-slate-900 hover:bg-emerald-400 disabled:opacity-50"
+                      className="rounded bg-success-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-success-600 disabled:opacity-50"
                     >
                       保存
                     </button>
                     <button
                       onClick={() => setEditingBot(null)}
-                      className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-300"
+                      className="rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700"
                     >
                       取消
                     </button>
@@ -437,9 +437,9 @@ export default function MyBots() {
 
               {/* 版本历史 */}
               {expanded === b.id && (
-                <div className="border-t border-slate-700 p-4">
+                <div className="border-t border-gray-200 p-4">
                   <div className="mb-3 flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-slate-200">版本历史</h3>
+                    <h3 className="text-sm font-semibold text-gray-800">版本历史</h3>
                     <div className="flex items-center gap-2">
                       <input
                         type="file"
@@ -447,38 +447,38 @@ export default function MyBots() {
                         onChange={(e) =>
                           setVersionUpload((v) => ({ ...v, [b.id]: e.target.files?.[0] ?? null }))
                         }
-                        className="text-xs text-slate-300 file:mr-2 file:rounded file:border-0 file:bg-amber-400 file:px-2 file:py-1 file:font-bold file:text-slate-900"
+                        className="text-xs text-gray-700 file:mr-2 file:rounded file:border-0 file:bg-brand-500 file:px-2 file:py-1 file:font-bold file:text-white"
                       />
                       <button
                         onClick={() => submitVersion(b.id)}
                         disabled={busy || !versionUpload[b.id]}
-                        className="rounded bg-amber-400 px-2.5 py-1 text-xs font-bold text-slate-900 disabled:opacity-50"
+                        className="rounded bg-brand-500 px-2.5 py-1 text-xs font-bold text-white disabled:opacity-50"
                       >
                         上传新版本
                       </button>
                     </div>
                   </div>
                   {(versions[b.id] || []).length === 0 ? (
-                    <div className="py-3 text-center text-sm text-slate-500">暂无版本</div>
+                    <div className="py-3 text-center text-sm text-gray-500">暂无版本</div>
                   ) : (
                     <div className="flex flex-col gap-1 font-mono text-xs">
                       {versions[b.id]!.map((v) => (
                         <div
                           key={v.id}
-                          className={`flex items-center justify-between rounded border border-slate-800 px-3 py-1.5 ${
-                            v.version === b.current_version ? 'bg-amber-400/10' : ''
+                          className={`flex items-center justify-between rounded border border-gray-200 px-3 py-1.5 ${
+                            v.version === b.current_version ? 'bg-brand-500/10' : ''
                           }`}
                         >
                           <span>
                             v{v.version}
                             {v.version === b.current_version && (
-                              <span className="ml-1 text-amber-300">(当前)</span>
+                              <span className="ml-1 text-brand-500">(当前)</span>
                             )}
                           </span>
-                          <span className="truncate text-slate-500" title={v.upload_note}>
+                          <span className="truncate text-gray-500" title={v.upload_note}>
                             {v.upload_note || '—'}
                           </span>
-                          <span className="text-slate-600">{v.created_at}</span>
+                          <span className="text-gray-400">{v.created_at}</span>
                         </div>
                       ))}
                     </div>
@@ -494,7 +494,7 @@ export default function MyBots() {
 }
 
 const inputCls =
-  'w-full rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none'
+  'w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-500 focus:border-brand-300 focus:outline-none'
 
 function L({
   label,
@@ -506,7 +506,7 @@ function L({
   full?: boolean
 }) {
   return (
-    <label className={`flex flex-col gap-1 text-xs text-slate-400 ${full ? 'sm:col-span-2' : ''}`}>
+    <label className={`flex flex-col gap-1 text-xs text-gray-500 ${full ? 'sm:col-span-2' : ''}`}>
       {label}
       {children}
     </label>

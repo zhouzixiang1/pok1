@@ -7,7 +7,7 @@
  * - 整数对 ``[suit, rank]``
  * - 整数(单值 0-51)
  *
- * 红色(♥♦)用 rose-500,黑色(♠♣)在深色背景下用 slate-100 区分。
+ * 红色(♥♦)用 error-600,黑色(♠♣)用 gray-900(浅色牌面)。
  */
 
 export interface CardData {
@@ -133,16 +133,16 @@ export default function CardView({
   if (hidden) {
     return (
       <span
-        className={`inline-flex ${dims} items-center justify-center rounded-md border border-slate-500 bg-gradient-to-b from-slate-700 to-slate-900 shadow ${className}`}
+        className={`inline-flex ${dims} items-center justify-center rounded-md border border-gray-400 bg-gradient-to-b from-gray-200 to-gray-100 shadow ${className}`}
       >
-        <span className="text-slate-400">🂠</span>
+        <span className="text-gray-500">🂠</span>
       </span>
     )
   }
   if (empty) {
     return (
       <span
-        className={`inline-flex ${dims} items-center justify-center rounded-md border border-dashed border-slate-600/60 text-slate-600 ${className}`}
+        className={`inline-flex ${dims} items-center justify-center rounded-md border border-dashed border-gray-300/60 text-gray-400 ${className}`}
       >
         —
       </span>
@@ -152,7 +152,7 @@ export default function CardView({
   if (!c) {
     return (
       <span
-        className={`inline-flex ${dims} items-center justify-center rounded-md border border-dashed border-slate-600 text-slate-500 ${className}`}
+        className={`inline-flex ${dims} items-center justify-center rounded-md border border-dashed border-gray-300 text-gray-500 ${className}`}
         title={String(card ?? '?')}
       >
         ?
@@ -162,8 +162,8 @@ export default function CardView({
   return (
     <span
       className={`inline-flex ${dims} flex-col items-center justify-center rounded-md border bg-white font-bold shadow transition ${
-        highlight ? 'border-amber-400 ring-2 ring-amber-400/50' : 'border-slate-300'
-      } ${c.red ? 'text-rose-600' : 'text-slate-900'} ${className}`}
+        highlight ? 'border-brand-300 ring-2 ring-brand-300/50' : 'border-gray-300'
+      } ${c.red ? 'text-error-600' : 'text-gray-900'} ${className}`}
     >
       <span className="leading-none">{c.rankName}</span>
       <span className="text-base leading-none">{c.symbol}</span>
