@@ -90,6 +90,10 @@ class DockerRunner:
             "--network", NETWORK_MODE,  # 隔离网络
             "--memory", MEMORY_LIMIT,
             "--cpus", CPU_LIMIT,
+            "--pids-limit", "128",
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+            "--tmpfs", "/tmp:rw,size=64m,mode=1777",
             "--name", container_name,
             image,
         ]

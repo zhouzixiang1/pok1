@@ -90,6 +90,7 @@ class MatchOrchestrator:
         hands_per_match: int = DEFAULT_HANDS_PER_MATCH,
         action_timeout: float = 60.0,
         bot_manager: Any = None,
+        max_concurrent: int = 2,
     ) -> None:
         self.store = store
         self.runner = runner
@@ -98,6 +99,7 @@ class MatchOrchestrator:
         # BotManager(可选):内置 bot 无镜像时懒构建用。
         # main.create_platform_app 注入。None 时内置 bot 无镜像则报错。
         self.bot_manager = bot_manager
+        self.max_concurrent = max(1, int(max_concurrent))
 
         # SSE 订阅者(同 loop asyncio.Queue)
         self._subscribers: list[asyncio.Queue[str]] = []
@@ -134,6 +136,13 @@ class MatchOrchestrator:
         """
         if challenger_bot_id == opponent_bot_id:
             raise ValueError("不能与自己对战")
+
+        # 并发上限:正在跑的后台任务数
+        alive = {t for t in self._tasks if not t.done()}
+        self._tasks = alive
+        if len(alive) >= self.max_concurrent:
+            raise ValueError(
+                f"当前对战已满({self.max_concurrent} 场并发上限),请稍后再试")
 
         bot_a = self._require_playable_bot(challenger_bot_id)
         bot_b = self._require_playable_bot(opponent_bot_id)
@@ -221,6 +230,10 @@ class MatchOrchestrator:
         winner = result.get("winner")
         ended_at = datetime.now().isoformat(timespec="seconds")
         net_bb_a = float(earnings[0]) / BIG_BLIND if earnings else 0.0
+        if result.get("aborted"):
+            reason = f"bot_session_dead:{result.get('abort_reason') or 'unknown'}"
+        else:
+            reason = "completed"
 
         self.store.update_match(
             match_id,
@@ -229,7 +242,7 @@ class MatchOrchestrator:
             earnings_a=int(earnings[0]) if earnings else 0,
             earnings_b=int(earnings[1]) if len(earnings) > 1 else 0,
             winner=winner,
-            reason="completed",
+            reason=reason,
             net_bb_a=net_bb_a,
             ended_at=ended_at,
         )

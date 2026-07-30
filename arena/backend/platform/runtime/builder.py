@@ -7,7 +7,7 @@
   ``CMD ["python", "main.py"]``。平台与 bot 用 stdin/stdout JSON 通信。
 - **TCP bot**(protocol='tcp'):在 JSON 镜像基础上,额外打入 ``tcp_bridge.py``
   (里程碑 4),启动时先起桥监听 127.0.0.1:50101,再起 bot 连桥。
-  用户 bot 代码零改动(``--host 127.0.0.1 --port 50101`` 在容器内回环成立)。
+  用户 bot 代码零改动(``host port name`` 位置参数 + GUOSAI_* 环境变量,容器内回环)。
 
 镜像命名:``arena-bot-<bot_id>:v<version>``
 
@@ -100,19 +100,26 @@ def _dockerfile_tcp(entry_file: str, runtime_lang: str = "python") -> str:
     用户 bot 代码零改动。
 
     多语言:python 用 ``python entry.py``;cpp/java 编译后桥用二进制/java 命令。
-    桥通过 ``--bot-cmd`` 接收完整的启动命令(JSON 数组)。
+    桥通过 ``--bot-cmd`` 接收完整的启动命令(JSON 数组**字符串**)。
+
+    注意:Dockerfile EXEC 形式 ``ENTRYPOINT [...]`` 要求数组元素**全是字符串**,
+    因此 ``--bot-cmd`` 的值必须是转义后的 JSON 字符串字面量,不能内嵌裸数组。
     """
+    import json as _json
     base, bot_cmd_json = _tcp_bot_base_and_cmd(entry_file, runtime_lang)
+    # bot_cmd_json 形如 '["python","national_bot.py"]';再 dumps 一次变成
+    # Dockerfile JSON 数组里的字符串元素: "[\"python\", \"national_bot.py\"]"
+    bot_cmd_literal = _json.dumps(bot_cmd_json)
     bridge_dir = "/app/_bridge"
     return f"""{base}
 # 桥代理(里程碑 4 提供,构建时从 platform/runtime/ 复制)
 COPY tcp_bridge.py {bridge_dir}/tcp_bridge.py
 RUN useradd -m botuser && chown -R botuser:botuser /app
 USER botuser
-# 桥先起(后台监听 50101),bot 再连回环 --host 127.0.0.1 --port 50101
+# 桥先起(后台监听 50101),bot 再连回环 host/port/name(位置参数)
 # 平台只与桥 stdin/stdout 通信(JSON),桥翻译成 TCP 喂给 bot
-# --bot-cmd 传完整启动命令(JSON 数组),桥 spawn 它
-ENTRYPOINT ["python", "{bridge_dir}/tcp_bridge.py", "--bot-entry", "{entry_file}", "--bot-cmd", {bot_cmd_json}]
+# --bot-cmd 传完整启动命令(JSON 数组的字符串形式,Docker EXEC 只能含字符串)
+ENTRYPOINT ["python", "{bridge_dir}/tcp_bridge.py", "--bot-entry", "{entry_file}", "--bot-cmd", {bot_cmd_literal}]
 """
 
 

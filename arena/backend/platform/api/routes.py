@@ -118,6 +118,8 @@ async def challenge(req: ChallengeReq, request: Request,
         # bot 不存在 → 404;其余(下架/无镜像/自打自)→ 400
         if "不存在" in msg:
             raise HTTPException(status_code=404, detail=msg)
+        if "并发" in msg or "已满" in msg:
+            raise HTTPException(status_code=429, detail=msg)
         raise HTTPException(status_code=400, detail=msg)
     return JSONResponse({"match_id": match_id, "status": "pending"})
 

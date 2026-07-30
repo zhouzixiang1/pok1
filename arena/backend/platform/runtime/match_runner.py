@@ -117,6 +117,9 @@ class MatchRunner:
         self.hand_num = 0
         self.total_earnings = [0, 0]
         self.events: list[dict[str, Any]] = []
+        # bot 容器崩溃 / stdout 关闭等不可恢复通信错误 → 本手结束后终止对局
+        self._abort_match = False
+        self._abort_reason = ""
 
     # ── 主入口 ─────────────────────────────────────────────
 
@@ -160,6 +163,11 @@ class MatchRunner:
                     break
                 self.total_earnings[0] += result.earnings[0]
                 self.total_earnings[1] += result.earnings[1]
+                if self._abort_match:
+                    logger.warning(
+                        "abort match after hand %d: %s",
+                        hand_num, self._abort_reason or "bot session dead")
+                    break
         finally:
             # 对战结束停 session(即使异常也清理)
             for p in self.players:
@@ -178,6 +186,8 @@ class MatchRunner:
             "names": [p.name for p in self.players],
             "hands_played": self.hand_num,
             "winner": winner,
+            "aborted": self._abort_match,
+            "abort_reason": self._abort_reason or None,
         })
         return {
             "winner": winner,
@@ -185,6 +195,8 @@ class MatchRunner:
             "hands_played": self.hand_num,
             "events": self.events,
             "names": [name_a, name_b],
+            "aborted": self._abort_match,
+            "abort_reason": self._abort_reason or None,
         }
 
     # ── 单手流程(借鉴 game.py _run_hand)─────────────────────
@@ -537,6 +549,10 @@ class MatchRunner:
         except (asyncio.TimeoutError, RuntimeError, OSError) as exc:
             logger.info("[H%d] %s: bot 通信异常 %s → fold",
                         self.hand_num, current.name, type(exc).__name__)
+            # RuntimeError / OSError 通常表示容器已死,继续打满 70 手无意义
+            if isinstance(exc, (RuntimeError, OSError)):
+                self._abort_match = True
+                self._abort_reason = f"{current.name}:{type(exc).__name__}"
             return ("timeout", None, {
                 "decision_wait_sec": round(time.perf_counter() - t0, 6),
                 "timeout_budget_sec": self.action_timeout,

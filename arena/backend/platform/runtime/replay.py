@@ -198,6 +198,8 @@ def build_hand_snapshots(events: list[dict]) -> list[dict]:
                 snap["initial_chips"] = list(chips)
                 # initial_chips 也是「当前筹码」的初值,后续 action 会更新
                 snap["_current_chips"] = list(chips)
+            if ev.get("pot") is not None:
+                snap["initial_pot"] = ev.get("pot")
 
         elif etype == "cards_dealt":
             hole = ev.get("hole_cards")
@@ -266,6 +268,7 @@ def _new_snapshot(hand: int) -> dict[str, Any]:
         "bb_idx": None,
         "names": [],
         "initial_chips": None,
+        "initial_pot": 0,
         "hole_cards": [[], []],
         "community": [],
         "actions": [],

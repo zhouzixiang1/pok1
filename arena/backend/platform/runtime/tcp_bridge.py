@@ -6,7 +6,7 @@
 **流程**(见 CONTRACT.md 第三节):
 
 1. 桥启动 → 监听 ``127.0.0.1:50101``。
-2. spawn 用户 bot(``python <entry> --host 127.0.0.1 --port 50101 --name <name>``)。
+2. spawn 用户 bot(``python <entry> <host> <port> <name>``,并设 GUOSAI_* 环境变量)。
 3. 等 bot 连入,收 name 握手(裸队名)。
 4. 主循环:
    - 读平台 stdin 一行(JSON request)→ 翻译成国赛文本序列
@@ -299,8 +299,7 @@ class TCPBridge:
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.bot_cwd = bot_cwd
-        # bot 启动命令(基础部分)。None 时默认 ["python", bot_entry]。
-        # 桥自动追加国赛协议参数:--host/--port/--name。
+        # 桥自动追加国赛协议位置参数:host port name,并设 GUOSAI_* 环境变量。
         # 多语言:C++/Java 编译后传 ["./bot_bin"] / ["java","Main"]。
         self.bot_cmd = bot_cmd
         self.state = BridgeState()
@@ -330,7 +329,8 @@ class TCPBridge:
         try:
             await asyncio.wait_for(self._bot_connected.wait(), timeout=30.0)
         except asyncio.TimeoutError:
-            logger.error("bot 连接超时,exit")
+            stderr_tail = await self._read_bot_stderr_tail()
+            logger.error("bot 连接超时,exit; bot stderr: %s", stderr_tail)
             await self._cleanup()
             return 3
 
@@ -362,22 +362,34 @@ class TCPBridge:
     async def _spawn_bot(self) -> None:
         """spawn 用户 bot 子进程。
 
-        默认 ``python <bot_entry> --host <listen_host> --port <listen_port> --name <name>``。
+        默认 ``python <bot_entry> <host> <port> <name>``(国赛经典位置参数)。
         若设置了 ``bot_cmd``(多语言:C++/Java 编译后的命令),用它作基础命令。
-        国赛协议参数(--host/--port/--name)统一追加到基础命令后。
+
+        同时写入 ``GUOSAI_HOST`` / ``GUOSAI_PORT`` / ``GUOSAI_NAME`` 环境变量,
+        兼容只读环境变量、不读 argv 的 bot。
+
+        注意:不要传 ``--host/--port/--name`` 旗标。不少国赛 bot 把 argv 当
+        位置参数解析(``host=args[0]; port=int(args[1])``),旗标形式会直接
+        ``ValueError`` 崩溃,表现为「bot 连接超时」。
         """
         base_cmd = self.bot_cmd if self.bot_cmd else [sys.executable, self.bot_entry]
         cmd = list(base_cmd) + [
-            "--host", self.listen_host,
-            "--port", str(self.listen_port),
-            "--name", self.bot_name,
+            self.listen_host,
+            str(self.listen_port),
+            self.bot_name,
         ]
+        env = os.environ.copy()
+        env["GUOSAI_HOST"] = self.listen_host
+        env["GUOSAI_PORT"] = str(self.listen_port)
+        env["GUOSAI_NAME"] = self.bot_name
         logger.info("spawning bot: %s (cwd=%s)", " ".join(cmd), self.bot_cwd)
+        # stderr 保留管道,连接失败时可读出 bot 崩溃信息
         self._bot_proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.bot_cwd,
+            env=env,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
 
     async def _do_name_handshake(self) -> None:
@@ -477,6 +489,19 @@ class TCPBridge:
                 value = tcp_action_to_json_int(action)
             sys.stdout.write(json.dumps({"response": int(value)}) + "\n")
             sys.stdout.flush()
+
+    async def _read_bot_stderr_tail(self, limit: int = 800) -> str:
+        """读取 bot 子进程 stderr 尾部(连接失败诊断用)。"""
+        if self._bot_proc is None or self._bot_proc.stderr is None:
+            return ""
+        try:
+            data = await asyncio.wait_for(self._bot_proc.stderr.read(), timeout=1.0)
+        except (asyncio.TimeoutError, Exception):
+            return ""
+        text = data.decode("utf-8", "replace").strip()
+        if len(text) > limit:
+            return text[-limit:]
+        return text
 
     async def _cleanup(self) -> None:
         """清理:停 bot 子进程,关 socket server,关 bot 连接。"""

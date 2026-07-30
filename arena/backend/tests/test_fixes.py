@@ -46,21 +46,35 @@ def test_dockerfile_java_json():
 
 
 def test_dockerfile_cpp_tcp():
-    """C++ TCP bot:含桥代理 + bot-cmd 指向二进制。"""
+    """C++ TCP bot:含桥代理 + bot-cmd 指向二进制(且 ENTRYPOINT 全为字符串)。"""
+    import json
+    import re
     df = make_dockerfile(protocol="tcp", entry_file="bot.cpp", runtime_lang="cpp")
     assert "gcc:13-slim" in df
     assert "tcp_bridge.py" in df  # 含桥
     assert "--bot-cmd" in df
     assert "./bot_bin" in df  # 桥 spawn 二进制
+    m = re.search(r"ENTRYPOINT\s+(\[.*\])", df)
+    assert m
+    arr = json.loads(m.group(1))
+    assert all(isinstance(x, str) for x in arr), arr
+    assert json.loads(arr[arr.index("--bot-cmd") + 1]) == ["./bot_bin"]
 
 
 def test_dockerfile_java_tcp():
     """Java TCP bot:含桥代理 + bot-cmd 指向 java 命令。"""
+    import json
+    import re
     df = make_dockerfile(protocol="tcp", entry_file="Main.java", runtime_lang="java")
     assert "eclipse-temurin" in df
     assert "tcp_bridge.py" in df
     assert "--bot-cmd" in df
     assert "java" in df and "Main" in df
+    m = re.search(r"ENTRYPOINT\s+(\[.*\])", df)
+    assert m
+    arr = json.loads(m.group(1))
+    assert all(isinstance(x, str) for x in arr), arr
+    assert json.loads(arr[arr.index("--bot-cmd") + 1]) == ["java", "Main"]
 
 
 def test_dockerfile_unsupported_lang_still_errors():

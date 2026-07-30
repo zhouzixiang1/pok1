@@ -104,7 +104,7 @@ class DockerRunner:
 
 ### 流程
 1. 桥启动 → 监听 `127.0.0.1:50101`。
-2. fork/spawn 用户 bot(`--host 127.0.0.1 --port 50101 --name $BOT_NAME`)。
+2. fork/spawn 用户 bot(`python entry host port name`,并设 `GUOSAI_*` 环境变量)。
 3. bot 连入桥 → 桥收 name(裸队名)。
 4. 循环:
    - 读平台 stdin 一行(JSON request)→ 翻译成国赛文本序列(preflop|/flop|/.../转发对手动作)→ 发给 bot socket。
