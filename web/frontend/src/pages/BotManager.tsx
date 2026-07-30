@@ -161,7 +161,7 @@ function BotCard({
   };
 
   return (
-    <article className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+    <article className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
       <button
         onClick={() => setExpanded((value) => !value)}
         className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/40"

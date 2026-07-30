@@ -2,11 +2,17 @@ import { useControlStatus } from "../hooks/useControlStatus";
 import { useOfficialCertificationJobs } from "../hooks/useOfficialCertificationJobs";
 import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import PageMeta from "../components/common/PageMeta";
-import { Badge } from "../components/shared/Badge";
-import { Card, CardHeader, EmptyState } from "../components/shared";
-import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { EmptyState } from "../components/shared";
+import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
+import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
 import { OfficialCertificationProgressView } from "../components/evolution/OfficialCertificationProgress";
 import { OperatorSituation } from "../components/evolution/OperatorSituation";
+import {
+  EvolutionSection,
+  EvolutionStatusBadge,
+  EvolutionSurface,
+} from "../components/evolution/ui";
+import type { EvolutionStatusTone } from "../components/evolution/ui";
 import { agentActivityView } from "../domain/agentActivityView";
 import {
   evidenceTierForGate,
@@ -15,6 +21,7 @@ import {
   EVIDENCE_TIER_LABELS,
   type EvidenceAuthorityLabel,
 } from "../domain/evidenceAuthority";
+import { operatorSituationView } from "../domain/operatorSituationView";
 import { cn } from "../lib/utils";
 import {
   isOfficialCertificationStage,
@@ -64,36 +71,50 @@ export default function EvidenceGates() {
     && officialJobsBindingIssues(jobsProjection, gen).length === 0
     ? jobsProjection
     : null;
+  const situation = operatorSituationView(status, health);
 
   return (
-    <>
+    <div className="space-y-4">
       <PageMeta title="发布资格 — Bot 自进化" description="哪些门已通过、还缺什么证据" />
-      <EpochAuthorityStatus status={status} loading={loading} error={error} className="mb-4" />
-      <OperatorSituation status={status} health={health} className="mb-4" />
+      <EvolutionPageHeader
+        title="发布资格"
+        subtitle="官方兼容、真实强度、建议与诊断分轨"
+        status={status}
+        health={health}
+        loading={loading}
+        error={error}
+        variant="compact"
+      />
+      <PhaseAProjectionStrip
+        status={status}
+        manualRequired={situation?.manualRequired === true}
+      />
+      <OperatorSituation status={status} health={health} />
 
       {!status?.epoch_initialized ? (
         <EmptyState message="严格进化尚未初始化；当前没有可验证的发布资格证据。" />
       ) : (
-        <div className="space-y-4">
-          {/* Authority tier legend */}
-          <Card>
-            <CardHeader title="不同证据能证明什么" subtitle="官方兼容、真实强度、建议和诊断不能互相替代" />
-            <div className="p-3 flex flex-wrap gap-2">
+        <>
+          <EvolutionSurface padding="sm">
+            <EvolutionSection
+              title="不同证据能证明什么"
+              subtitle="官方兼容、真实强度、建议和诊断不能互相替代"
+            />
+            <div className="mt-3 flex flex-wrap gap-2">
               {(Object.values(EVIDENCE_TIER_LABELS) as EvidenceAuthorityLabel[]).map((tier) => (
-                <span key={tier.tier} className={cn("rounded border px-2 py-0.5 text-xs", TONE_CLASS[tier.tone])}>
+                <span key={tier.tier} className={cn("rounded-md border px-2 py-0.5 text-xs", TONE_CLASS[tier.tone])}>
                   {tier.label}
                 </span>
               ))}
             </div>
-            <div className="px-3 pb-3 text-xs text-gray-500 dark:text-gray-400">
+            <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
               Official 5+3 只决定官方平台兼容与发布资格，强度权重始终为 0；只有当前评测身份绑定的完整 70 手 native TCP 样本才能证明强度。
             </div>
-          </Card>
+          </EvolutionSurface>
 
-          {/* Generation identity */}
-          <Card>
-            <CardHeader title="本次发布对象" subtitle="用户看到的代次与不可改写的真实发布身份" />
-            <div className="p-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+          <EvolutionSurface padding="sm">
+            <EvolutionSection title="本次发布对象" subtitle="用户看到的代次与不可改写的真实发布身份" />
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
               <Field label="网页代次" value={gen?.generation_ordinal != null ? `第 ${gen.generation_ordinal} 代` : "—"} />
               <Field label="真实版本" value={gen?.canonical_version != null ? `v${gen.canonical_version}` : "—"} />
               <Field label="Bot 名称" value={gen?.canonical_bot_name ?? "—"} mono />
@@ -103,12 +124,11 @@ export default function EvidenceGates() {
               <Field label="主父本" value={gen?.source_v != null ? `v${gen.source_v}` : "无（greenfield）"} mono />
               <Field label="第二父本" value={gen?.parent2_v != null ? `v${gen.parent2_v}` : "无"} mono />
             </div>
-          </Card>
+          </EvolutionSurface>
 
-          {/* Gates */}
-          <Card>
-            <CardHeader title="离发布还差哪些门" subtitle="Critic 只给建议；其余门按状态机合同决定是否继续" />
-            <div className="p-3 space-y-2">
+          <EvolutionSurface padding="sm">
+            <EvolutionSection title="离发布还差哪些门" subtitle="Critic 只给建议；其余门按状态机合同决定是否继续" />
+            <div className="mt-3 space-y-2">
               {!view || !view.available ? (
                 <p className="text-xs text-gray-400">当前没有可验证的严格工作流或门禁记录。</p>
               ) : (
@@ -121,12 +141,14 @@ export default function EvidenceGates() {
                 </>
               )}
             </div>
-          </Card>
+          </EvolutionSurface>
 
-          {/* Official certification progress */}
-          <Card>
-            <CardHeader title="官方平台兼容认证" subtitle="每轮 70 手；首代为 5 自对弈 + 3 system-control，后续为 5 自对弈 + 3 合格 strict 对手；强度权重为 0" />
-            <div className="p-3">
+          <EvolutionSurface padding="sm">
+            <EvolutionSection
+              title="官方平台兼容认证"
+              subtitle="每轮 70 手；首代为 5 自对弈 + 3 system-control，后续为 5 自对弈 + 3 合格 strict 对手；强度权重为 0"
+            />
+            <div className="mt-3">
               <OfficialCertificationProgressView
                 status={status}
                 jobsProjection={boundJobsProjection}
@@ -134,29 +156,28 @@ export default function EvidenceGates() {
                 error={jobsError}
               />
               {boundJobsProjection && boundJobsProjection.jobs.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 space-y-1">
+                <div className="mt-3 space-y-1 border-t border-gray-100 pt-3 dark:border-gray-800">
                   {boundJobsProjection.jobs.filter((job) => (
                     job.workflow_run_id === gen?.workflow_run_id
                     && job.candidate_version === gen?.next_v
                   )).map((job) => {
                     const tier = evidenceTierForBootstrapJob(job);
                     return (
-                      <div key={job.job_id} className="text-xs flex items-center gap-2">
-                        <Badge variant="neutral" size="sm">{job.state}</Badge>
-                        <span className={cn("rounded border px-1.5 py-0.5", TONE_CLASS[tier.tone])}>{tier.label}</span>
-                        <span className="font-mono text-gray-500 truncate">{job.job_id}</span>
+                      <div key={job.job_id} className="flex items-center gap-2 text-xs">
+                        <EvolutionStatusBadge tone="neutral">{job.state}</EvolutionStatusBadge>
+                        <span className={cn("rounded-md border px-1.5 py-0.5", TONE_CLASS[tier.tone])}>{tier.label}</span>
+                        <span className="truncate font-mono text-gray-500">{job.job_id}</span>
                       </div>
                     );
                   })}
                 </div>
               )}
             </div>
-          </Card>
+          </EvolutionSurface>
 
-          {/* Pipeline recovery evidence */}
-          <Card>
-            <CardHeader title="恢复与身份核对" subtitle="只有这里无冲突，状态机才允许继续" />
-            <div className="p-3 space-y-1 text-xs">
+          <EvolutionSurface padding="sm">
+            <EvolutionSection title="恢复与身份核对" subtitle="只有这里无冲突，状态机才允许继续" />
+            <div className="mt-3 space-y-1 text-xs">
               <Field label="权威来源" value={pipeline?.authority ?? "—"} mono />
               <Field label="恢复被阻断" value={(pipeline?.recovery_blocked ?? false) ? "是" : "否"} />
               <Field label="身份发生变化" value={(pipeline?.identity_changed ?? false) ? "是" : "否"} />
@@ -166,7 +187,7 @@ export default function EvidenceGates() {
                 </div>
               )}
               {pipeline?.gate_outcome && (
-                <div className="rounded border border-error-300 dark:border-error-800 bg-error-50 dark:bg-error-950/30 p-2 mt-1">
+                <div className="mt-1 rounded-md border border-error-300 bg-error-50 p-2 dark:border-error-800 dark:bg-error-950/30">
                   <div className="font-semibold text-error-700 dark:text-error-300">
                     本次尝试被终局门拒绝：{pipeline.gate_outcome.gate_name}
                   </div>
@@ -176,12 +197,11 @@ export default function EvidenceGates() {
                 </div>
               )}
             </div>
-          </Card>
+          </EvolutionSurface>
 
-          {/* Strength evidence summary */}
-          <Card>
-            <CardHeader title="真实强度证据" subtitle="只认完整 70 手 native TCP 的不可变评分周期" />
-            <div className="p-3 space-y-1 text-xs">
+          <EvolutionSurface padding="sm">
+            <EvolutionSection title="真实强度证据" subtitle="只认完整 70 手 native TCP 的不可变评分周期" />
+            <div className="mt-3 space-y-1 text-xs">
               <Field label="已发布 Bot 数" value={String(status?.active_bots.length ?? 0)} />
               <Field label="已发布严格代次" value={String(status?.strict_generation_count ?? 0)} />
               <Field label="连续稳定代次" value={stability ? `${stability.count}/${stability.target}` : "—"} />
@@ -190,21 +210,21 @@ export default function EvidenceGates() {
                 value={(stability?.strength_cycle?.ready ?? false) ? "是" : "否"}
               />
               {stability?.strength_cycle?.reason && (
-                <p className="text-gray-500 dark:text-gray-400 italic">{stability.strength_cycle.reason}</p>
+                <p className="italic text-gray-500 dark:text-gray-400">{stability.strength_cycle.reason}</p>
               )}
             </div>
-          </Card>
-        </div>
+          </EvolutionSurface>
+        </>
       )}
-    </>
+    </div>
   );
 }
 
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex justify-between gap-2 border-b border-gray-50 dark:border-gray-900 py-0.5">
-      <span className="text-gray-500 dark:text-gray-400 shrink-0">{label}</span>
-      <span className={cn("text-gray-800 dark:text-gray-200 truncate text-right", mono && "font-mono")}>{value}</span>
+    <div className="flex justify-between gap-2 border-b border-gray-50 py-0.5 dark:border-gray-900">
+      <span className="shrink-0 text-gray-500 dark:text-gray-400">{label}</span>
+      <span className={cn("truncate text-right text-gray-800 dark:text-gray-200", mono && "font-mono")}>{value}</span>
     </div>
   );
 }
@@ -218,9 +238,9 @@ function GateRow({ label, gateName, gate, advisory }: {
   if (!gate) {
     return (
       <div className="flex items-center gap-2 text-xs">
-        <Badge variant="neutral" size="sm">未运行</Badge>
+        <EvolutionStatusBadge tone="neutral">未运行</EvolutionStatusBadge>
         <span className="text-gray-600 dark:text-gray-300">{label}</span>
-        <span className="text-gray-400 ml-auto">尚未到达</span>
+        <span className="ml-auto text-gray-400">尚未到达</span>
       </div>
     );
   }
@@ -230,15 +250,16 @@ function GateRow({ label, gateName, gate, advisory }: {
   const verdict = advisory && !historical
     ? criticAdvisoryVerdictLabel({ ...projectedGate, name: "critic" })
     : null;
+  const tone: EvolutionStatusTone = historical ? "error" : gate.complete ? "ok" : "warn";
   return (
     <div className="flex items-center gap-2 text-xs">
-      <Badge variant={historical ? "error" : gate.complete ? "success" : "warning"} size="sm">
+      <EvolutionStatusBadge tone={tone}>
         {historical ? "历史记录已失效" : gate.complete ? "完成" : "未完成"}
-      </Badge>
-      <span className={cn("rounded border px-1.5 py-0.5", TONE_CLASS[tier.tone])}>{tier.label}</span>
+      </EvolutionStatusBadge>
+      <span className={cn("rounded-md border px-1.5 py-0.5", TONE_CLASS[tier.tone])}>{tier.label}</span>
       <span className="text-gray-600 dark:text-gray-300">{label}</span>
-      {verdict && <span className="text-gray-500 ml-2">{verdict.verdict}</span>}
-      <span className="text-gray-400 ml-auto truncate">
+      {verdict && <span className="ml-2 text-gray-500">{verdict.verdict}</span>}
+      <span className="ml-auto truncate text-gray-400">
         {historical ? "候选正在修复，必须重新运行此门" : summaryOfGate(gate.fields)}
       </span>
     </div>

@@ -17,8 +17,7 @@ import {
   type TransientStatusTask,
 } from "../lib/evolutionStreamController";
 import PageMeta from "../components/common/PageMeta";
-import { Badge } from "../components/shared/Badge";
-import { CardHeader, EmptyState } from "../components/shared";
+import { EmptyState } from "../components/shared";
 import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
 import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
 import { EvolutionStreamPanel } from "../components/evolution/EvolutionStreamPanel";
@@ -29,16 +28,21 @@ import { CopyIcon, CrossIcon } from "../components/evolution/icons";
 import { agentActivityView, type AgentRoleSummary } from "../domain/agentActivityView";
 import { operatorSituationView } from "../domain/operatorSituationView";
 import { cn } from "../lib/utils";
-import { EvolutionSurface } from "../components/evolution/ui";
+import {
+  EvolutionSection,
+  EvolutionStatusBadge,
+  EvolutionSurface,
+} from "../components/evolution/ui";
+import type { EvolutionStatusTone } from "../components/evolution/ui";
 
 let _msgId = 0;
 const nextId = () => ++_msgId + Date.now();
 
-const ROLE_TONE: Record<AgentRoleSummary["state"], { variant: "success" | "warning" | "neutral" | "info"; dot: string }> = {
-  running: { variant: "info", dot: "bg-brand-400" },
-  terminal: { variant: "success", dot: "bg-success-400" },
-  not_reached: { variant: "neutral", dot: "bg-gray-400" },
-  unknown: { variant: "warning", dot: "bg-warning-400" },
+const ROLE_TONE: Record<AgentRoleSummary["state"], { tone: EvolutionStatusTone; dot: string }> = {
+  running: { tone: "info", dot: "bg-brand-400" },
+  terminal: { tone: "ok", dot: "bg-success-400" },
+  not_reached: { tone: "neutral", dot: "bg-gray-400" },
+  unknown: { tone: "warn", dot: "bg-warning-400" },
 };
 
 const transientStatusFallback = (task: TransientStatusTask | null): string => (
@@ -427,8 +431,8 @@ export default function AgentActivity() {
         {/* Structured agent roles */}
         <div className="space-y-4 lg:col-span-1">
           <EvolutionSurface padding="sm">
-            <CardHeader title="谁正在做什么" subtitle="只显示当前这次研发任务绑定的角色" />
-            <div className="space-y-2 pt-2">
+            <EvolutionSection title="谁正在做什么" subtitle="只显示当前这次研发任务绑定的角色" />
+            <div className="mt-3 space-y-2">
               {!epochReady && <p className="text-xs text-gray-400">严格进化尚未初始化，当前没有研发角色。</p>}
               {epochReady && !view && <p className="text-xs text-gray-400">当前没有可验证的研发工作流。</p>}
               {view && !view.available && (
@@ -438,7 +442,9 @@ export default function AgentActivity() {
                 <>
                   <div className="mb-1 text-xs text-gray-500">
                     当前内部阶段：<span className="font-mono text-gray-800 dark:text-gray-200">{view.stage ?? "(无)"}</span>
-                    {view.stageIsTimeoutLease && <Badge variant="error" size="sm" className="ml-2">超时恢复</Badge>}
+                    {view.stageIsTimeoutLease && (
+                      <EvolutionStatusBadge tone="error" className="ml-2">超时恢复</EvolutionStatusBadge>
+                    )}
                   </div>
                   {view.roles.map((role) => {
                     const tone = ROLE_TONE[role.state];
@@ -447,9 +453,9 @@ export default function AgentActivity() {
                         <div className="flex items-center gap-2">
                           <span className={cn("inline-block h-1.5 w-1.5 rounded-full", tone.dot, role.state === "running" && authoritativeWorking && "animate-pulse")} />
                           <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">{role.label}</span>
-                          <Badge variant={tone.variant} size="sm" className="ml-auto">
+                          <EvolutionStatusBadge tone={tone.tone} className="ml-auto">
                             {role.state === "running" ? "运行中" : role.state === "terminal" ? "已完成" : role.state === "not_reached" ? "未到达" : "未知"}
-                          </Badge>
+                          </EvolutionStatusBadge>
                         </div>
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{role.detail}</p>
                       </div>

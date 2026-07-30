@@ -455,6 +455,29 @@ def test_evolution_ui_primitives_and_handoff_eight_step_exist():
     )
     assert "def project_handoff_steps" in helpers
     assert '"completed_count"' in helpers or "completed_count" in helpers
+    for page_name in (
+        "Overview.tsx",
+        "EvidenceGates.tsx",
+        "FailuresRecovery.tsx",
+        "BackgroundStrength.tsx",
+        "PipelineMap.tsx",
+        "AgentActivity.tsx",
+        "BotManager.tsx",
+        "ControlPanel.tsx",
+    ):
+        page = (FRONTEND / "pages" / page_name).read_text(encoding="utf-8")
+        assert "EvolutionPageHeader" in page, page_name
+        assert "PhaseAProjectionStrip" in page, page_name
+    for page_name in (
+        "EvidenceGates.tsx",
+        "FailuresRecovery.tsx",
+        "BackgroundStrength.tsx",
+    ):
+        page = (FRONTEND / "pages" / page_name).read_text(encoding="utf-8")
+        assert "EvolutionSurface" in page, page_name
+        assert "EpochAuthorityStatus" not in page, page_name
+        assert 'from "../components/shared/Badge"' not in page
+        assert "CardHeader" not in page
 
 
 def test_dashboard_redesign_api_clients_validate_and_fail_closed():

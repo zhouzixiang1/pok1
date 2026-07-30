@@ -13,7 +13,7 @@ import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
 import { EmptyState } from "../components/shared/EmptyState";
 import { PipelineStatus } from "../components/evolution/PipelineStatus";
-import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
 import { OperatorSituation } from "../components/evolution/OperatorSituation";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
@@ -278,22 +278,25 @@ export default function Overview() {
     <>
       <PageMeta title="运行总览 — Bot 自进化" description="现在发生什么、已发布什么、真实强度如何" />
 
-      <EpochAuthorityStatus
+      <EvolutionPageHeader
+        title="运行总览"
+        subtitle="精简态势 · Phase A 摘要 · 流水线链到本代进度"
         status={controlStatus}
+        health={controlHealth}
         loading={controlLoading}
         error={controlError}
-        className="mb-4"
+        variant="full"
+      />
+
+      <PhaseAProjectionStrip
+        status={controlStatus}
+        manualRequired={operatorSituationView(controlStatus, controlHealth)?.manualRequired === true}
       />
 
       <OperatorSituation
         status={controlStatus}
         health={controlHealth}
         className="mb-4"
-      />
-
-      <PhaseAProjectionStrip
-        status={controlStatus}
-        manualRequired={operatorSituationView(controlStatus, controlHealth)?.manualRequired === true}
       />
 
       {/* 429 rate-limit warning banner */}

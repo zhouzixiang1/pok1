@@ -764,6 +764,7 @@ primitives live under `web/frontend/src/components/evolution/ui/`.
 bodies). Park/eval_wait/handoff “not stuck” copy uses
 `web/frontend/src/lib/notStuckReasons.ts`. Details:
 `docs/evolution-dashboard-redesign.md` §2.3–2.4.
+
 The blocking boundary used by all offloaded HTTP handlers
 (`run_blocking_isolated` in `web/core/blocking_runtime.py`) must await its
 owned worker future with a **single `add_done_callback` →
