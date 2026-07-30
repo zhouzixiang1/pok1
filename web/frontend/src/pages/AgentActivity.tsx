@@ -18,14 +18,18 @@ import {
 } from "../lib/evolutionStreamController";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
-import { Card, CardHeader, EmptyState } from "../components/shared";
-import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { CardHeader, EmptyState } from "../components/shared";
+import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
+import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
+import { EvolutionStreamPanel } from "../components/evolution/EvolutionStreamPanel";
 import { OperatorSituation } from "../components/evolution/OperatorSituation";
 import { ToolCard, ThinkingBlock } from "../components/evolution/ToolCard";
 import type { ConvMsg } from "../components/evolution/ToolCard";
 import { CopyIcon, CrossIcon } from "../components/evolution/icons";
 import { agentActivityView, type AgentRoleSummary } from "../domain/agentActivityView";
+import { operatorSituationView } from "../domain/operatorSituationView";
 import { cn } from "../lib/utils";
+import { EvolutionSurface } from "../components/evolution/ui";
 
 let _msgId = 0;
 const nextId = () => ++_msgId + Date.now();
@@ -402,17 +406,29 @@ export default function AgentActivity() {
   const authoritativeWorking = Boolean(epochReady && status?.running && taskActive && isWorking);
 
   return (
-    <>
+    <div className="space-y-4">
       <PageMeta title="研发协作 — Bot 自进化" description="本代各研发角色正在做什么" />
-      <EpochAuthorityStatus status={status} loading={loading} error={error} className="mb-4" />
-      <OperatorSituation status={status} health={health} className="mb-4" />
+      <EvolutionPageHeader
+        title="研发协作"
+        subtitle="唯一实时 SSE；/evolution 已重定向到此页"
+        status={status}
+        health={health}
+        loading={loading}
+        error={error}
+        variant="compact"
+      />
+      <PhaseAProjectionStrip
+        status={status}
+        manualRequired={operatorSituationView(status, health)?.manualRequired === true}
+      />
+      <OperatorSituation status={status} health={health} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Structured agent roles */}
-        <div className="lg:col-span-1 space-y-4">
-          <Card>
+        <div className="space-y-4 lg:col-span-1">
+          <EvolutionSurface padding="sm">
             <CardHeader title="谁正在做什么" subtitle="只显示当前这次研发任务绑定的角色" />
-            <div className="p-3 space-y-2">
+            <div className="space-y-2 pt-2">
               {!epochReady && <p className="text-xs text-gray-400">严格进化尚未初始化，当前没有研发角色。</p>}
               {epochReady && !view && <p className="text-xs text-gray-400">当前没有可验证的研发工作流。</p>}
               {view && !view.available && (
@@ -420,40 +436,40 @@ export default function AgentActivity() {
               )}
               {view && view.available && (
                 <>
-                  <div className="text-xs text-gray-500 mb-1">
+                  <div className="mb-1 text-xs text-gray-500">
                     当前内部阶段：<span className="font-mono text-gray-800 dark:text-gray-200">{view.stage ?? "(无)"}</span>
                     {view.stageIsTimeoutLease && <Badge variant="error" size="sm" className="ml-2">超时恢复</Badge>}
                   </div>
                   {view.roles.map((role) => {
                     const tone = ROLE_TONE[role.state];
                     return (
-                      <div key={role.role} className="rounded border border-gray-100 dark:border-gray-800 p-2">
+                      <div key={role.role} className="rounded-md border border-gray-100 p-2 dark:border-gray-800">
                         <div className="flex items-center gap-2">
-                          <span className={cn("inline-block w-1.5 h-1.5 rounded-full", tone.dot, role.state === "running" && authoritativeWorking && "animate-pulse")} />
+                          <span className={cn("inline-block h-1.5 w-1.5 rounded-full", tone.dot, role.state === "running" && authoritativeWorking && "animate-pulse")} />
                           <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">{role.label}</span>
                           <Badge variant={tone.variant} size="sm" className="ml-auto">
                             {role.state === "running" ? "运行中" : role.state === "terminal" ? "已完成" : role.state === "not_reached" ? "未到达" : "未知"}
                           </Badge>
                         </div>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{role.detail}</p>
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{role.detail}</p>
                       </div>
                     );
                   })}
                   {view.master.tasks.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-800">
-                      <p className="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">实现任务</p>
+                    <div className="mt-2 border-t border-gray-100 pt-2 dark:border-gray-800">
+                      <p className="mb-1 text-xs font-semibold text-gray-600 dark:text-gray-300">实现任务</p>
                       {view.master.tasks.map((t, i) => (
-                        <div key={i} className="text-xs text-gray-600 dark:text-gray-400 pl-2 border-l-2 border-brand-300 mb-1">
+                        <div key={i} className="mb-1 border-l-2 border-brand-300 pl-2 text-xs text-gray-600 dark:text-gray-400">
                           <span className="font-medium">#{t.worker_id} {t.role}</span>
                           {t.skill_layer && <span className="ml-1 text-gray-400">· {t.skill_layer}</span>}
-                          {t.difficulty && <span className="ml-1 px-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-500">{t.difficulty}</span>}
+                          {t.difficulty && <span className="ml-1 rounded bg-gray-100 px-1 text-gray-500 dark:bg-gray-800">{t.difficulty}</span>}
                         </div>
                       ))}
                     </div>
                   )}
                   {view.workerFailures.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-800">
-                      <p className="text-xs font-semibold text-error-600 dark:text-error-400 mb-1">本工作流历史失败记录（不代表当前仍失败）</p>
+                    <div className="mt-2 border-t border-gray-100 pt-2 dark:border-gray-800">
+                      <p className="mb-1 text-xs font-semibold text-error-600 dark:text-error-400">本工作流历史失败记录（不代表当前仍失败）</p>
                       {view.workerFailures.slice(0, 5).map((f, i) => (
                         <div key={i} className="text-xs text-error-700 dark:text-error-300">
                           #{f.worker_id} ({f.role})：{f.error}
@@ -464,58 +480,85 @@ export default function AgentActivity() {
                 </>
               )}
             </div>
-          </Card>
+          </EvolutionSurface>
         </div>
 
-        {/* Live LLM conversation stream */}
-        <div className="lg:col-span-2 rounded-2xl border border-gray-800 bg-[#0d1117] overflow-hidden flex flex-col">
-          <div className="flex items-center justify-between border-b border-gray-800 bg-[#161b22] px-4 py-2">
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-medium text-gray-400">模型执行输出</span>
-              <Badge variant={authoritativeWorking ? "success" : "neutral"} size="sm" pulse={authoritativeWorking}>
-                {!epochReady ? "等待初始化" : authoritativeWorking ? "模型正在输出" : status2 === "连接中..." ? "连接中" : taskActive ? "等待下一次输出" : "当前无任务"}
-              </Badge>
-              {!authoritativeWorking && epochReady && status?.running && taskActive && (
-                <span className="text-xs text-warning-500">编排器任务仍在；可能处于局部重试、阶段切换或等待模型</span>
+        {/* Live LLM conversation stream via unified EvolutionStreamPanel */}
+        <div className="lg:col-span-2">
+          <EvolutionStreamPanel
+            connected={epochReady && status2 !== "连接中..."}
+            statusText={
+              !epochReady
+                ? "等待初始化"
+                : authoritativeWorking
+                  ? "模型正在输出"
+                  : status2 === "连接中..."
+                    ? "连接中"
+                    : taskActive
+                      ? "等待下一次输出"
+                      : "当前无任务"
+            }
+            isWorking={authoritativeWorking}
+            actions={
+              <>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(messages.map((m) => m.type === "tool_call" ? `[tool: ${m.toolName}]` : m.type === "thinking" ? `[thinking] ${m.text}` : m.text).join("\n")).catch(() => {});
+                  }}
+                  title="复制"
+                  className="rounded p-1 text-gray-500 hover:bg-gray-800 hover:text-gray-300"
+                >
+                  <CopyIcon />
+                </button>
+                <button
+                  onClick={() => setAutoScroll(!autoScroll)}
+                  className={cn("rounded px-2 py-1 text-[10px]", autoScroll ? "bg-brand-500/20 text-brand-400" : "text-gray-500 hover:text-gray-300")}
+                >
+                  {autoScroll ? "自动滚动:开" : "自动滚动:关"}
+                </button>
+              </>
+            }
+            bodyClassName="h-[500px] overflow-y-auto custom-scrollbar"
+          >
+            <div ref={ioRef}>
+              {!epochReady && (
+                <EmptyState message="严格进化尚未初始化；不会把旧模型输出混入当前代次。" />
               )}
-            </div>
-            <div className="flex items-center gap-2">
-              <button onClick={() => { navigator.clipboard.writeText(messages.map((m) => m.type === "tool_call" ? `[tool: ${m.toolName}]` : m.type === "thinking" ? `[thinking] ${m.text}` : m.text).join("\n")).catch(() => {}); }} title="复制" className="p-1 rounded hover:bg-gray-800 text-gray-500 hover:text-gray-300">
-                <CopyIcon />
-              </button>
-              <button onClick={() => setAutoScroll(!autoScroll)} className={cn("rounded px-2 py-1 text-[10px]", autoScroll ? "bg-brand-500/20 text-brand-400" : "text-gray-500 hover:text-gray-300")}>
-                {autoScroll ? "自动滚动:开" : "自动滚动:关"}
-              </button>
-            </div>
-          </div>
-          <div ref={ioRef} className="h-[500px] overflow-y-auto p-4 font-mono text-[13px] leading-relaxed custom-scrollbar">
-            {!epochReady && (
-              <EmptyState message="严格进化尚未初始化；不会把旧模型输出混入当前代次。" />
-            )}
-            {epochReady && messages.length === 0 && (
-              <EmptyState message={taskActive ? "当前没有新的模型输出；请以上方状态机的下一步为准。" : "当前没有活跃模型任务。"} />
-            )}
-            {messages.map((msg) => (
-              <div key={msg.id}>
-                {msg.type === "tool_call" ? <ToolCard msg={msg} />
-                  : msg.type === "thinking" ? <ThinkingBlock text={msg.text} done={msg.toolDone} />
-                  : msg.type === "error" ? (
-                    <div className="my-0.5 border-l-2 border-red-500 rounded px-2 py-0.5 font-medium text-red-400 bg-red-950/40">
-                      <CrossIcon className="inline mr-1 w-3 h-3" /> {msg.text}
-                    </div>
-                  ) : (
-                    msg.text.split("\n").map((textLine, j) => (
-                      <div key={`${msg.id}-${j}`} className={cn("animate-fade-in-up", msg.type === "claude" ? "text-gray-200" : "text-gray-500")}>
-                        {msg.type === "claude" ? <span className="text-emerald-500 opacity-50">▸ </span> : "  "}{textLine}
-                      </div>
-                    ))
+              {epochReady && messages.length === 0 && (
+                <EmptyState message={taskActive ? "当前没有新的模型输出；请以上方状态机的下一步为准。" : "当前没有活跃模型任务。"} />
+              )}
+              {messages.map((msg) => (
+                <div key={msg.id}>
+                  {msg.slot && (
+                    <span className={cn(
+                      "mb-0.5 inline-block rounded-md px-1.5 py-0.5 text-[9px] font-medium",
+                      msg.slot === "primary"
+                        ? "bg-brand-900/40 text-brand-300"
+                        : "bg-violet-900/40 text-violet-300",
+                    )}>
+                      {msg.slot}
+                    </span>
                   )}
-              </div>
-            ))}
-            {authoritativeWorking && <span className="inline-block w-2 h-4 bg-indigo-400 animate-cursor-blink ml-1" />}
-          </div>
+                  {msg.type === "tool_call" ? <ToolCard msg={msg} />
+                    : msg.type === "thinking" ? <ThinkingBlock text={msg.text} done={msg.toolDone} />
+                    : msg.type === "error" ? (
+                      <div className="my-0.5 rounded border-l-2 border-red-500 bg-red-950/40 px-2 py-0.5 font-medium text-red-400">
+                        <CrossIcon className="mr-1 inline h-3 w-3" /> {msg.text}
+                      </div>
+                    ) : (
+                      msg.text.split("\n").map((textLine, j) => (
+                        <div key={`${msg.id}-${j}`} className={cn("animate-fade-in-up", msg.type === "claude" ? "text-gray-200" : "text-gray-500")}>
+                          {msg.type === "claude" ? <span className="text-emerald-500 opacity-50">▸ </span> : "  "}{textLine}
+                        </div>
+                      ))
+                    )}
+                </div>
+              ))}
+              {authoritativeWorking && <span className="ml-1 inline-block h-4 w-2 animate-cursor-blink bg-indigo-400" />}
+            </div>
+          </EvolutionStreamPanel>
         </div>
       </div>
-    </>
+    </div>
   );
 }

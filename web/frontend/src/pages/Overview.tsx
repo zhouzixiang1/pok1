@@ -16,6 +16,9 @@ import { PipelineStatus } from "../components/evolution/PipelineStatus";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
 import { OperatorSituation } from "../components/evolution/OperatorSituation";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
+import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
+import { EvolutionSurface, EvolutionStatusBadge } from "../components/evolution/ui";
+import { operatorSituationView } from "../domain/operatorSituationView";
 import { stabilityPresentation } from "../lib/stabilityView";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
 import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
@@ -288,6 +291,11 @@ export default function Overview() {
         className="mb-4"
       />
 
+      <PhaseAProjectionStrip
+        status={controlStatus}
+        manualRequired={operatorSituationView(controlStatus, controlHealth)?.manualRequired === true}
+      />
+
       {/* 429 rate-limit warning banner */}
       {controlStatus?.epoch_initialized && rateLimit?.blocked && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5 mb-4 flex items-center gap-3">
@@ -465,18 +473,21 @@ export default function Overview() {
             })}
           </div>
 
-          {/* Pipeline status bar */}
+          {/* Slim pipeline summary → /pipeline owns the full stepper + handoff */}
           {controlStatus && (
             controlStatus.active_generation
             || controlStatus.post_publication_handoff.status !== "none"
             || schedulerOwnsPrepare
           ) && (
-            <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
-              <div className="flex items-center justify-between mb-3">
+            <EvolutionSurface className="mt-4 space-y-3" padding="sm">
+              <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <Badge variant={orchestratorHealthy ? "success" : taskStopping ? "warning" : controlStatus?.running || orchestratorOrphan ? "error" : "neutral"} size="sm" pulse={orchestratorHealthy}>
+                  <EvolutionStatusBadge
+                    tone={orchestratorHealthy ? "ok" : taskStopping ? "warn" : controlStatus?.running || orchestratorOrphan ? "error" : "neutral"}
+                    pulse={orchestratorHealthy}
+                  >
                     {orchestratorHealthy ? "任务健康运行" : taskStopping ? "正在安全停止，等待任务退出" : orchestratorOrphan ? "孤立任务仍活动" : controlStatus?.running ? "运行标志异常" : "已停止"}
-                  </Badge>
+                  </EvolutionStatusBadge>
                   <span className="text-sm text-gray-500 dark:text-gray-400">
                     {controlStatus.active_generation
                       ? `${activeIdentityLabel ?? "代次与真实标签无法配对"} · 主父本 ${controlStatus.active_generation.source_v == null ? "无" : `v${controlStatus.active_generation.source_v}`}`
@@ -485,6 +496,12 @@ export default function Overview() {
                         : `scheduler target ${nextAuthorityVersion == null ? "待恢复" : `v${nextAuthorityVersion}`}`}
                   </span>
                 </div>
+                <Link
+                  to="/pipeline"
+                  className="shrink-0 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
+                >
+                  打开完整流水线 →
+                </Link>
               </div>
               <PipelineStatus
                 checkpoint={checkpoint}
@@ -498,7 +515,7 @@ export default function Overview() {
                 schedulerActive={schedulerOwnsPrepare}
                 route={controlHealth?.pipeline?.route ?? null}
               />
-            </div>
+            </EvolutionSurface>
           )}
         </div>
 

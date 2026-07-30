@@ -54,21 +54,45 @@
 概览
   - 运行总览                     /
 进化
-  - 本代进度                      /pipeline
-  - 研发协作                      /agents
+  - 本代进度                      /pipeline   ← 唯一完整 stepper + handoff 八步
+  - 研发协作                      /agents     ← 唯一实时 SSE
   - 发布资格                      /evidence
   - 异常与恢复                    /failures
   - 后台 70 手评测                /strength
-  - 发布概览                      /bots-inventory
-  - 技术执行流（兼容）             /evolution
+  - 发布池                        /bots       ← Inventory + Manager 合并
 对局（保留）
   - 对局回放 / 国赛对弈 / 评分趋势 / 对局矩阵
 管理（保留只读契约）
   - 迭代日志 / 控制面板 / 严格发布 Bot / 提示词契约
 ```
 
+Redirects（保留 path 字符串供契约测试）：
+
+- `/evolution` → `/agents`
+- `/bots-inventory` → `/bots`
+
 被 `test_frontend_contract_closure.py` 守护的字符串（`"严格发布 Bot"`、`"提示词契约"`）
-与旧路由（`/evolution`、`/bots`、`/prompts`）全部保留，向后兼容且守护不弱化。
+与旧路由 path（`/evolution`、`/bots`、`/prompts`）全部保留；兼容页入口从侧栏移除。
+
+### 2.4 视觉契约 + handoff 八步投影（2026-07-30）
+
+Evolution 局部设计原语在 `web/frontend/src/components/evolution/ui/`：
+
+- `EvolutionSurface` / `EvolutionSection` / `EvolutionStatusBadge` / `EvolutionStepperTrack` / `EvolutionStreamShell`
+- 令牌：`rounded-2xl` 表面、`rounded-md` badge、语义色 ok/warn/error/info/neutral/park
+- 页头：`EvolutionPageHeader`（full|compact）+ `usePipelineCheckpoint`
+- 契约条：`PhaseAProjectionStrip` + `AsyncCertificationQueue`；`manualRequired` 深链 `/control#abandon`
+- Pipeline：`HandoffEightStep` + `PipelineDiagnostics`；Overview 只保留摘要链到 `/pipeline`
+- 「非卡住」字典：`lib/notStuckReasons.ts`（consumer_parked / eval_wait / handoff / async cert）
+
+后端 `post_publication_handoff_projection` 在 pending/running/blocked 时投影白名单：
+
+```text
+steps: [{ id, ordinal, status, plan_digest, receipt_digest, updated_at }, ...]
+current_step / completed_count
+```
+
+计入 `projection_digest`；SSE `post_publication_handoff` 同形。永不透出 plan/receipt 体。
 
 ## 3. 数据 authority / normalization 矩阵
 

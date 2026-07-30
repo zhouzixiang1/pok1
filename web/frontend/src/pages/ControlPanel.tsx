@@ -16,6 +16,10 @@ import type { PipelineCheckpoint } from "../api/types";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
 import { OfficialCertificationProgress } from "../components/evolution/OfficialCertificationProgress";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
+import { AsyncCertificationQueue } from "../components/evolution/AsyncCertificationQueue";
+import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
+import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
+import { operatorSituationView } from "../domain/operatorSituationView";
 import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
 import { getOperatorControlToken, setOperatorControlToken } from "../api/operatorControl";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
@@ -234,18 +238,29 @@ export default function ControlPanel() {
   );
   const abandonAvailable = controlAbandonAvailable(status);
   const asyncCert = status?.async_certification;
-  const asyncPending = asyncCert?.items.filter((item) => item.state === "pending" || item.state === "running") ?? [];
-  const asyncPassed = asyncCert?.items.filter((item) => item.state === "passed") ?? [];
   const daemonEffective = health?.daemon;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-white">控制面板</h1>
-        <button onClick={() => void Promise.all([refresh(), refreshStatus(), refreshCheckpoint()])} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1">
+      <div className="flex items-center justify-between gap-3">
+        <EvolutionPageHeader
+          title="控制面板"
+          subtitle="启停 / abandon / config / async 队列 / daemon pairs — 唯一突变入口"
+          status={status}
+          health={health}
+          loading={statusLoading}
+          error={statusError}
+          variant="compact"
+          className="mb-0 flex-1"
+        />
+        <button onClick={() => void Promise.all([refresh(), refreshStatus(), refreshCheckpoint()])} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1 shrink-0">
           <RefreshIcon /> 刷新
         </button>
       </div>
+      <PhaseAProjectionStrip
+        status={status}
+        manualRequired={operatorSituationView(status, health)?.manualRequired === true}
+      />
 
       <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} />
 
@@ -321,6 +336,7 @@ export default function ControlPanel() {
             )}
             {abandonAvailable && (
               <button
+                id="abandon"
                 onClick={handleAbandon}
                 disabled={loading === "abandon" || loading === "stop" || taskStopping}
                 title="停止编排器并受控放弃当前活跃代次；完成后保持停止"
@@ -379,40 +395,7 @@ export default function ControlPanel() {
         </div>
       )}
 
-      {asyncCert && (
-        <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
-          <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-white">异步官方认证队列</h2>
-          {asyncCert.items.length === 0 ? (
-            <p className="text-xs text-gray-500">当前没有 staging→certified 异步认证条目。</p>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xs text-gray-500">
-                待处理 {asyncPending.length} · 已通过 {asyncPassed.length} · 合计 {asyncCert.items.length}
-                {asyncCert.any_pending ? " · 仍有进行中任务" : ""}
-              </p>
-              <div className="max-h-36 space-y-1 overflow-y-auto">
-                {asyncCert.items.slice(0, 12).map((item) => (
-                  <div key={`${item.version}-${item.staging_tag}-${item.job_id ?? item.state}`} className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="font-mono text-gray-700 dark:text-gray-200">{item.bot_name}</span>
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${
-                      item.state === "passed"
-                        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                        : item.state === "running" || item.state === "pending"
-                          ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
-                          : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-                    }`}>{item.state}</span>
-                    <span className="font-mono text-[10px] text-gray-400">{item.staging_tag}</span>
-                    {item.certified_tag && (
-                      <span className="font-mono text-[10px] text-emerald-600 dark:text-emerald-400">→ {item.certified_tag}</span>
-                    )}
-                    <span className="text-[10px] text-gray-400">{item.formal_authority}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      <AsyncCertificationQueue projection={asyncCert} />
 
       {/* Provider-history recovery boundary */}
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">

@@ -57,6 +57,107 @@ def stable_epoch_handoff_sample(
     return latest_epoch, latest_handoff, False
 
 
+def _handoff_digest_or_none(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) != 64:
+        return None
+    if any(char not in "0123456789abcdef" for char in value):
+        return None
+    return value
+
+
+def project_handoff_steps(
+    record: dict[str, Any] | None,
+    *,
+    handoff_status: str,
+) -> dict[str, Any]:
+    """Whitelist the eight post-publication steps for UI/SSE.
+
+    Never exposes plan/receipt bodies — only ids, ordinals, status, and digests.
+    Included in ``projection_digest`` whenever status is pending/running/blocked.
+    """
+    from post_publication_handoff import REQUIRED_STEPS
+
+    empty = {
+        "steps": [],
+        "current_step": None,
+        "completed_count": 0,
+    }
+    if handoff_status not in {"pending", "running", "blocked"}:
+        return empty
+
+    steps_raw = record.get("steps") if isinstance(record, dict) else None
+    record_updated_at = (
+        record.get("updated_at") if isinstance(record, dict) else None
+    )
+    if not isinstance(record_updated_at, (int, float)):
+        record_updated_at = None
+
+    steps: list[dict[str, Any]] = []
+    completed_count = 0
+    current_step: str | None = None
+
+    for ordinal, step_id in enumerate(REQUIRED_STEPS, start=1):
+        row = steps_raw.get(step_id) if isinstance(steps_raw, dict) else None
+        status = "pending"
+        plan_digest = None
+        receipt_digest = None
+        updated_at = record_updated_at
+        if isinstance(row, dict):
+            raw_status = row.get("status")
+            if raw_status in {"pending", "planned", "completed"}:
+                status = str(raw_status)
+            plan_digest = _handoff_digest_or_none(row.get("plan_digest"))
+            receipt = row.get("receipt")
+            if isinstance(receipt, dict):
+                receipt_digest = _handoff_digest_or_none(
+                    receipt.get("receipt_digest")
+                )
+                completed_at = receipt.get("completed_at")
+                if isinstance(completed_at, (int, float)):
+                    updated_at = completed_at
+        if status == "completed":
+            completed_count += 1
+        elif current_step is None:
+            current_step = step_id
+        # UI treats planned as the active (running) step while handoff runs.
+        ui_status = (
+            "running" if status == "planned" and handoff_status == "running"
+            else status
+        )
+        if ui_status == "planned":
+            ui_status = "running"
+        steps.append({
+            "id": step_id,
+            "ordinal": ordinal,
+            "status": ui_status,
+            "plan_digest": plan_digest,
+            "receipt_digest": receipt_digest,
+            "updated_at": updated_at,
+        })
+
+    if handoff_status == "blocked" and completed_count == 0 and not steps_raw:
+        # Blocked without a readable journal still projects the eight ids so
+        # the UI can render a stable empty track rather than inventing progress.
+        steps = [
+            {
+                "id": step_id,
+                "ordinal": ordinal,
+                "status": "pending",
+                "plan_digest": None,
+                "receipt_digest": None,
+                "updated_at": None,
+            }
+            for ordinal, step_id in enumerate(REQUIRED_STEPS, start=1)
+        ]
+        current_step = REQUIRED_STEPS[0] if REQUIRED_STEPS else None
+
+    return {
+        "steps": steps,
+        "current_step": current_step,
+        "completed_count": completed_count,
+    }
+
+
 def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
     """Return the bounded UI/API projection of the durable Archivist route.
 
@@ -85,7 +186,11 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
         "owner_scope": "none",
         "next_tool": None,
         "issues": [],
+        "steps": [],
+        "current_step": None,
+        "completed_count": 0,
     }
+    record_for_steps: dict[str, Any] | None = None
     if enabled:
         try:
             from post_publication_handoff import pending_handoff_route
@@ -102,6 +207,9 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
         if route_status == "none":
             pass
         elif route_status == "blocked":
+            record = route.get("record")
+            if isinstance(record, dict):
+                record_for_steps = record
             base.update({
                 "status": "blocked",
                 "state": "blocked",
@@ -149,6 +257,8 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
                 )
             )
             if valid:
+                if isinstance(record, dict):
+                    record_for_steps = record
                 base.update({
                     "status": state,
                     "state": state,
@@ -175,6 +285,13 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
                 "blocked": True,
                 "issues": ["post_publication_handoff_status_invalid"],
             })
+        if base["status"] in {"pending", "running", "blocked"}:
+            base.update(
+                project_handoff_steps(
+                    record_for_steps,
+                    handoff_status=str(base["status"]),
+                )
+            )
     encoded = json.dumps(
         base,
         ensure_ascii=False,

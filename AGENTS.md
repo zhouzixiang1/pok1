@@ -754,6 +754,16 @@ cert queue, and daemon effective pairs; Inventory/BotManager
 `publication_tier`/`certified_tag` via `certificationView`; EvolutionMonitor
 optional IO `slot` labels when present.
 
+Dashboard IA merge (2026-07-30): `/pipeline` is the sole full generation
+stepper plus handoff eight-step UI; `/agents` is the sole research SSE
+(`EvolutionStreamPanel`); `/bots` merges Inventory+Manager (`?v=` expands);
+`/evolution` → `/agents` and `/bots-inventory` → `/bots`. Evolution visual
+primitives live under `web/frontend/src/components/evolution/ui/`.
+`post_publication_handoff_projection` whitelists `steps[]` /
+`current_step` / `completed_count` into `projection_digest` (no plan/receipt
+bodies). Park/eval_wait/handoff “not stuck” copy uses
+`web/frontend/src/lib/notStuckReasons.ts`. Details:
+`docs/evolution-dashboard-redesign.md` §2.3–2.4.
 The blocking boundary used by all offloaded HTTP handlers
 (`run_blocking_isolated` in `web/core/blocking_runtime.py`) must await its
 owned worker future with a **single `add_done_callback` →

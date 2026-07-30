@@ -45,6 +45,15 @@ def test_handoff_projection_is_whitelisted_and_revision_bound(monkeypatch):
     assert "record" not in first
     assert "private_checkpoint_and_receipts" not in str(first)
     assert len(first["projection_digest"]) == 64
+    assert len(first["steps"]) == 8
+    assert first["current_step"] == "stability_observation"
+    assert first["completed_count"] == 0
+    assert all(step["status"] == "pending" for step in first["steps"])
+    for step in first["steps"]:
+        assert "plan" not in step  # no plan body key
+        assert set(step) == {
+            "id", "ordinal", "status", "plan_digest", "receipt_digest", "updated_at",
+        }
 
     monkeypatch.setattr(
         post_publication_handoff,
@@ -55,6 +64,70 @@ def test_handoff_projection_is_whitelisted_and_revision_bound(monkeypatch):
     assert second["status"] == "running"
     assert second["owner_scope"] == "current_process"
     assert second["projection_digest"] != first["projection_digest"]
+
+
+def test_handoff_projection_includes_whitelisted_steps(monkeypatch):
+    import post_publication_handoff
+    from post_publication_handoff import REQUIRED_STEPS
+    from server.routes._helpers import (
+        post_publication_handoff_projection,
+        project_handoff_steps,
+    )
+
+    plan_digest = "c" * 64
+    receipt_digest = "d" * 64
+    steps = {
+        name: {"status": "pending"} for name in REQUIRED_STEPS
+    }
+    steps["stability_observation"] = {
+        "status": "completed",
+        "plan_digest": plan_digest,
+        "plan": {"secret": "must-not-leak"},
+        "receipt": {
+            "receipt_digest": receipt_digest,
+            "completed_at": 100.0,
+            "output": {"secret": "must-not-leak"},
+        },
+    }
+    steps["reap_signal"] = {
+        "status": "planned",
+        "plan_digest": "e" * 64,
+        "plan": {"inner": True},
+    }
+    route = _route(state="running", revision=4)
+    route["record"] = {
+        **route["record"],
+        "steps": steps,
+        "updated_at": 200.0,
+    }
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: route,
+    )
+    projection = post_publication_handoff_projection()
+
+    assert projection["completed_count"] == 1
+    assert projection["current_step"] == "reap_signal"
+    assert len(projection["steps"]) == len(REQUIRED_STEPS)
+    first = projection["steps"][0]
+    assert first["id"] == "stability_observation"
+    assert first["ordinal"] == 1
+    assert first["status"] == "completed"
+    assert first["plan_digest"] == plan_digest
+    assert first["receipt_digest"] == receipt_digest
+    assert first["updated_at"] == 100.0
+    assert "secret" not in str(projection)
+    assert "plan" not in first
+    assert "receipt" not in first
+    second = projection["steps"][1]
+    assert second["id"] == "reap_signal"
+    assert second["status"] == "running"
+    assert second["plan_digest"] == "e" * 64
+    assert second["receipt_digest"] is None
+
+    empty = project_handoff_steps(None, handoff_status="none")
+    assert empty == {"steps": [], "current_step": None, "completed_count": 0}
 
 
 def test_pipeline_health_projects_handoff_when_checkpoint_is_cleared():

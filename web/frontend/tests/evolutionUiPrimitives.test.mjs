@@ -1,0 +1,53 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+
+test("evolution ui primitives export surface language", () => {
+  const index = readFileSync(join(root, "components/evolution/ui/index.ts"), "utf8");
+  for (const name of [
+    "EvolutionSurface",
+    "EvolutionSection",
+    "EvolutionStatusBadge",
+    "EvolutionStepperTrack",
+    "EvolutionStreamShell",
+    "STATUS_TONE_CLASSES",
+  ]) {
+    assert.match(index, new RegExp(name));
+  }
+  const tokens = readFileSync(join(root, "components/evolution/ui/tokens.ts"), "utf8");
+  assert.match(tokens, /park/);
+  assert.match(tokens, /rounded-2xl/);
+});
+
+test("App redirects evolution and bots-inventory", () => {
+  const app = readFileSync(join(root, "App.tsx"), "utf8");
+  assert.match(app, /path="\/evolution".*Navigate to="\/agents"/s);
+  assert.match(app, /path="\/bots-inventory".*Navigate to="\/bots"/s);
+});
+
+test("HandoffEightStep lists Chinese step names", () => {
+  const src = readFileSync(join(root, "components/evolution/HandoffEightStep.tsx"), "utf8");
+  for (const label of [
+    "稳定性观察",
+    "回收信号",
+    "优先评测",
+    "归档轮转",
+    "日志清理",
+    "池回收",
+    "周期标注",
+    "管家收尾",
+  ]) {
+    assert.match(src, new RegExp(label));
+  }
+});
+
+test("notStuckReasons covers park and eval_wait", () => {
+  const src = readFileSync(join(root, "lib/notStuckReasons.ts"), "utf8");
+  assert.match(src, /consumer_parked/);
+  assert.match(src, /eval_wait/);
+  assert.match(src, /post_publication_handoff_running/);
+});

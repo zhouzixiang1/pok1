@@ -225,6 +225,16 @@ export interface StabilityObservation {
   };
 }
 
+/** Whitelisted post-publication step row (no plan/receipt bodies). */
+export interface HandoffStepProjection {
+  id: string;
+  ordinal: number;
+  status: "pending" | "planned" | "running" | "completed";
+  plan_digest: string | null;
+  receipt_digest: string | null;
+  updated_at: number | null;
+}
+
 export interface PostPublicationHandoffStatus {
   schema_version: 1;
   authority: "post_publication_handoff_journal";
@@ -241,6 +251,10 @@ export interface PostPublicationHandoffStatus {
   next_tool: "run_archivist" | null;
   issues: string[];
   projection_digest: string;
+  /** Present when status is pending/running/blocked; empty when none. */
+  steps?: HandoffStepProjection[];
+  current_step?: string | null;
+  completed_count?: number;
 }
 
 export interface ControlStatus {

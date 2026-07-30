@@ -14,15 +14,13 @@ type NavItem = {
 const navItems: NavItem[] = [
   // Command Center / overview (enhanced Overview, retains guarded strings).
   { icon: <GridIcon />, name: "运行总览", path: "/", group: "概览" },
-  // New structured evolution views from the dashboard redesign.
+  // Evolution views — single SSE on /agents; bots merged on /bots.
   { icon: <BoltIcon />, name: "本代进度", path: "/pipeline", group: "进化" },
   { icon: <ChatIcon />, name: "研发协作", path: "/agents", group: "进化" },
   { icon: <PageIcon />, name: "发布资格", path: "/evidence", group: "进化" },
   { icon: <BoxIcon />, name: "异常与恢复", path: "/failures", group: "进化" },
   { icon: <PieChartIcon />, name: "后台 70 手评测", path: "/strength", group: "进化" },
-  { icon: <GridIcon />, name: "发布概览", path: "/bots-inventory", group: "进化" },
-  // Legacy evolution console (guarded by contract tests).
-  { icon: <BoltIcon />, name: "技术执行流（兼容）", path: "/evolution", group: "进化" },
+  { icon: <GridIcon />, name: "发布池", path: "/bots", group: "进化" },
   // Matches / arena (unchanged).
   { icon: <ChatIcon />, name: "对局回放", path: "/matches", group: "对局" },
   { icon: <VideoIcon />, name: "国赛对弈", path: "/arena", group: "对局" },

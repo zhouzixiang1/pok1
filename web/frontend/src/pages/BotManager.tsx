@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 import { api } from "../api/client";
 import type { BotDetail, BotSummary, H2HEntry } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
-import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
+import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
+import { EvolutionSection, EvolutionStatusBadge, EvolutionSurface } from "../components/evolution/ui";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { useBots, useH2H, useUpdateData } from "../context/DataProvider";
@@ -13,6 +16,7 @@ import {
   sameCanonicalGenerationIdentity,
 } from "../lib/canonicalGenerationIdentity";
 import { certificationView } from "../domain/certificationView";
+import { operatorSituationView } from "../domain/operatorSituationView";
 
 const CheckIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
@@ -65,13 +69,15 @@ function BotCard({
   identity,
   h2hData,
   onMessage,
+  defaultExpanded = false,
 }: {
   bot: BotSummary;
   identity: CanonicalGenerationIdentity | null;
   h2hData: Record<string, H2HEntry>;
   onMessage: (message: string) => void;
+  defaultExpanded?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [detail, setDetail] = useState<BotDetail | null>(null);
   const [selectedFile, setSelectedFile] = useState("");
   const [code, setCode] = useState("");
@@ -210,22 +216,47 @@ function BotCard({
                   <span>{certView.detail}</span>
                 </div>
                 {certification && (
-                  <div className="mt-2 grid gap-1 font-mono text-[11px] sm:grid-cols-2">
-                    <span>mode: {certification.mode ?? "—"}</span>
-                    <span>policy: {certification.policy_id ?? "—"}</span>
-                    <span>schema: {certification.certificate_schema_version ?? "—"}</span>
-                    <span>publication_tier: {certView.publicationTier ?? certification.publication_tier ?? "—"}</span>
-                    <span>certified_tag: {certView.certifiedTag ?? "—"}</span>
-                    <span>rounds: {formalSummary?.self_play_rounds ?? "—"}+{formalSummary?.opponent_rounds ?? "—"} × {formalSummary?.target_hands ?? "—"} hands</span>
-                    <span>profile: {certification.certification_profile ?? "权威投影不可用"}</span>
-                    <span>opponent authority: {certification.opponent_authority ?? "权威投影不可用"}</span>
-                    <span>strength weight: {certification.strength_evidence_weight ?? "不可用"}</span>
-                    <span>strategy weight: {certification.strategy_evidence_weight ?? "不可用"}</span>
-                    <span className="break-all sm:col-span-2">certificate: {certification.certificate_digest ?? "—"}</span>
-                    <span className="break-all sm:col-span-2">signature sha256: {certification.certificate_signature_sha256 ?? "—"}</span>
-                    <span className="break-all sm:col-span-2">published attestation: {certification.published_attestation_digest ?? "权威投影不可用"}</span>
-                    <span className="break-all sm:col-span-2">verdict-ledger identity: {ledgerIdentity != null ? String(ledgerIdentity) : "权威投影不可用"}</span>
-                  </div>
+                  <>
+                    {certification.certification_profile === "first_strict_control_v1" && (
+                      <p className="mt-2 text-[11px] text-amber-800 dark:text-amber-200">
+                        first_strict_control_v1：system-control 仅证明官方协议合规；强度与策略证据权重均为 0。
+                      </p>
+                    )}
+                    {certification.certification_profile === "official-full-v5"
+                      && certification.opponent_authority === "strict_published_pool" && (
+                      <p className="mt-2 text-[11px] text-emerald-800 dark:text-emerald-200">
+                        signed official-full-v5 · opponent_authority=strict_published_pool
+                      </p>
+                    )}
+                    {certView.label === "正式证书身份投影不完整" && (
+                      <p className="mt-2 text-[11px] text-red-700 dark:text-red-300">
+                        formal_certified 存在，但 profile、对手权威、5/3/70 或零权重字段不匹配；不显示为正式通过，也不猜测为普通 5+3。
+                      </p>
+                    )}
+                    <div className="mt-2 grid gap-1 font-mono text-[11px] sm:grid-cols-2">
+                      <span>mode: {certification.mode ?? "—"}</span>
+                      <span>policy: {certification.policy_id ?? "—"}</span>
+                      <span>schema: {certification.certificate_schema_version ?? "—"}</span>
+                      <span>publication_tier: {certView.publicationTier ?? certification.publication_tier ?? "—"}</span>
+                      <span>certified_tag: {certView.certifiedTag ?? "—"}</span>
+                      <span>rounds: {formalSummary?.self_play_rounds ?? "—"}+{formalSummary?.opponent_rounds ?? "—"} × {formalSummary?.target_hands ?? "—"} hands</span>
+                      <span>profile: {certification.certification_profile ?? "权威投影不可用"}</span>
+                      <span>opponent authority: {certification.opponent_authority ?? "权威投影不可用"}</span>
+                      <span>strength weight: {certification.strength_evidence_weight ?? "不可用"}</span>
+                      <span>strategy weight: {certification.strategy_evidence_weight ?? "不可用"}</span>
+                      <span className="break-all sm:col-span-2">certificate: {certification.certificate_digest ?? "—"}</span>
+                      <span className="break-all sm:col-span-2">signature sha256: {certification.certificate_signature_sha256 ?? "—"}</span>
+                      <span className="break-all sm:col-span-2">published attestation: {certification.published_attestation_digest ?? "权威投影不可用"}</span>
+                      <span className="break-all sm:col-span-2">verdict-ledger identity: {ledgerIdentity != null ? String(ledgerIdentity) : "权威投影不可用"}</span>
+                      {ledgerEntry
+                        && ledgerEntry?.certificate_digest === certification.certificate_digest
+                        && ledgerEntry?.outcome === "official-certified" && (
+                        <span className="sm:col-span-2 text-emerald-700 dark:text-emerald-300">
+                          ledger binds certificate_digest + official-certified
+                        </span>
+                      )}
+                    </div>
+                  </>
                 )}
                 {(certification?.issues?.length ?? 0) > 0 && (
                   <ul className="mt-2 space-y-1 font-mono text-[11px]">
@@ -295,7 +326,14 @@ export default function BotManager() {
   const { active: streamedBots } = useBots();
   const h2hData = useH2H();
   const updateData = useUpdateData();
-  const { status, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const { status, health, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const [searchParams] = useSearchParams();
+  const expandVersion = (() => {
+    const raw = searchParams.get("v");
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
+  })();
   const [loaded, setLoaded] = useState(false);
   const [sortMode, setSortMode] = useState<BotSortMode>("selection");
   const [message, setMessage] = useState("");
@@ -345,34 +383,74 @@ export default function BotManager() {
     });
   }, [publishedBots, sortMode]);
 
+  const inventoryRows = useMemo(() => {
+    const identities = status?.strict_published_bot_identities ?? [];
+    const activeSet = new Set(status?.active_bots ?? []);
+    return streamedBots.map((bot) => {
+      const identity = identities.find((id) => id.canonical_version === bot.version) ?? null;
+      return { bot, identity, inPool: activeSet.has(bot.name) };
+    });
+  }, [streamedBots, status]);
+
   return (
-    <>
-      <PageMeta title="严格发布 Bot — Bot 自进化" description="查看严格国赛发布 Bot、签名证书和源码" />
+    <div className="space-y-4">
+      <PageMeta title="发布池 — Bot 自进化" description="已发布 Bot 清单、签名证书与源码（合并 Inventory + Manager）" />
 
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800 dark:text-white">严格发布 Bot</h1>
-          <p className="mt-1 text-xs text-gray-500">只读页面：代次序号与 canonical Bot/tag 均由后端 epoch 权威投影；排序和过滤不会重编号。</p>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span>排序</span>
-          {(["selection", "h2h", "version"] as BotSortMode[]).map((mode) => (
-            <button
-              key={mode}
-              onClick={() => setSortMode(mode)}
-              className={`rounded px-2 py-1 ${sortMode === mode ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
-            >
-              {mode === "selection" ? "选择分" : mode === "h2h" ? "H2H" : "版本"}
-            </button>
-          ))}
-          <button onClick={refresh} className="rounded bg-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">刷新</button>
-        </div>
-      </div>
+      <EvolutionPageHeader
+        title="发布池"
+        subtitle="Inventory + Manager 合并；?v= 展开详情；/bots-inventory 已重定向到此页"
+        status={status}
+        health={health}
+        loading={statusLoading}
+        error={statusError}
+        variant="compact"
+      />
+      <PhaseAProjectionStrip
+        status={status}
+        manualRequired={operatorSituationView(status, health)?.manualRequired === true}
+      />
 
-      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} className="mb-4" />
+      <EvolutionSurface padding="sm" className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <EvolutionSection
+            title="已发布概览"
+            subtitle="只读页面：代次序号与 canonical Bot/tag 均由后端 epoch 权威投影；排序和过滤不会重编号。"
+          />
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <span>排序</span>
+            {(["selection", "h2h", "version"] as BotSortMode[]).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setSortMode(mode)}
+                className={`rounded-md px-2 py-1 ${sortMode === mode ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
+              >
+                {mode === "selection" ? "选择分" : mode === "h2h" ? "H2H" : "版本"}
+              </button>
+            ))}
+            <button onClick={refresh} className="rounded-md bg-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">刷新</button>
+          </div>
+        </div>
+        {!status?.epoch_initialized ? (
+          <p className="text-xs text-gray-400">严格进化尚未初始化；当前没有可验证的发布清单。</p>
+        ) : (
+          <p className="text-xs text-gray-500">
+            已发布 {inventoryRows.length} 个 · 评分池 {publishedBots.length} 个
+            {expandVersion != null ? ` · 展开 v${expandVersion}` : ""}
+          </p>
+        )}
+        {inventoryRows.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {inventoryRows.map(({ bot, inPool }) => (
+              <EvolutionStatusBadge key={bot.name} tone={inPool ? "ok" : "neutral"}>
+                {bot.name}{inPool ? "" : " · 不在池"}
+              </EvolutionStatusBadge>
+            ))}
+          </div>
+        )}
+      </EvolutionSurface>
 
       {message && (
-        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+        <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
           {message}
           <button onClick={() => setMessage("")} className="ml-2 text-xs underline">清除</button>
         </div>
@@ -381,13 +459,13 @@ export default function BotManager() {
       {!loaded || statusLoading ? (
         <Skeleton.Card count={2} />
       ) : bots.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+        <EvolutionSurface>
           <EmptyState
             message={status?.epoch_initialized
               ? "当前严格发布池为空；未发布候选和历史目录不会出现在这里。"
-              : "epoch 尚未初始化；v155 等未发布目录是残骸，不是可管理候选。"}
+              : "epoch 尚未初始化；未发布目录是残骸，不是可管理候选。"}
           />
-        </div>
+        </EvolutionSurface>
       ) : (
         <div className="space-y-2">
           {bots.map((bot) => (
@@ -397,10 +475,11 @@ export default function BotManager() {
               identity={displayIdentityByName.get(bot.name) ?? null}
               h2hData={h2hData}
               onMessage={setMessage}
+              defaultExpanded={expandVersion === bot.version}
             />
           ))}
         </div>
       )}
-    </>
+    </div>
   );
 }

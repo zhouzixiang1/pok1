@@ -401,13 +401,60 @@ def test_dashboard_redesign_adds_structured_evolution_views():
     app = (FRONTEND / "App.tsx").read_text(encoding="utf-8")
     sidebar = (FRONTEND / "layout" / "AppSidebar.tsx").read_text(encoding="utf-8")
 
-    for route in ("/pipeline", "/agents", "/evidence", "/bots-inventory", "/failures", "/strength"):
+    for route in ("/pipeline", "/agents", "/evidence", "/failures", "/strength"):
         assert f'path="{route}"' in app, f"missing redesigned view route {route}"
-    for route in ("/", "/evolution", "/bots", "/prompts"):
+    # Legacy routes remain as Navigate redirects (IA merge).
+    assert 'path="/bots-inventory"' in app
+    assert 'Navigate to="/bots"' in app
+    assert 'path="/evolution"' in app
+    assert 'Navigate to="/agents"' in app
+    for route in ("/", "/bots", "/prompts"):
         assert f'path="{route}"' in app
     assert 'group: "进化"' in sidebar
     assert 'name: "严格发布 Bot"' in sidebar
     assert 'name: "提示词契约"' in sidebar
+    assert 'name: "发布池"' in sidebar
+    assert 'path: "/bots"' in sidebar
+    # Compatibility entries removed from sidebar after merge.
+    assert 'path: "/evolution"' not in sidebar
+    assert 'path: "/bots-inventory"' not in sidebar
+
+
+def test_evolution_ui_primitives_and_handoff_eight_step_exist():
+    ui_dir = FRONTEND / "components" / "evolution" / "ui"
+    for name in (
+        "EvolutionSurface.tsx",
+        "EvolutionSection.tsx",
+        "EvolutionStatusBadge.tsx",
+        "EvolutionStepperTrack.tsx",
+        "EvolutionStreamShell.tsx",
+        "tokens.ts",
+    ):
+        assert (ui_dir / name).is_file(), f"missing evolution ui primitive {name}"
+    for name in (
+        "EvolutionPageHeader.tsx",
+        "PhaseAProjectionStrip.tsx",
+        "AsyncCertificationQueue.tsx",
+        "EvolutionStreamPanel.tsx",
+        "HandoffEightStep.tsx",
+        "PipelineDiagnostics.tsx",
+    ):
+        assert (FRONTEND / "components" / "evolution" / name).is_file(), name
+    eight = (FRONTEND / "components" / "evolution" / "HandoffEightStep.tsx").read_text(
+        encoding="utf-8"
+    )
+    for label in (
+        "稳定性观察", "回收信号", "优先评测", "归档轮转",
+        "日志清理", "池回收", "周期标注", "管家收尾",
+    ):
+        assert label in eight
+    assert (FRONTEND / "hooks" / "usePipelineCheckpoint.ts").is_file()
+    assert (FRONTEND / "lib" / "notStuckReasons.ts").is_file()
+    helpers = (ROOT / "web" / "server" / "routes" / "_helpers.py").read_text(
+        encoding="utf-8"
+    )
+    assert "def project_handoff_steps" in helpers
+    assert '"completed_count"' in helpers or "completed_count" in helpers
 
 
 def test_dashboard_redesign_api_clients_validate_and_fail_closed():
