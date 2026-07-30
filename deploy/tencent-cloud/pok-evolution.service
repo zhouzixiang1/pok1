@@ -20,6 +20,11 @@ Description=national TCP poker evolution control plane (tencent-cloud-runtime)
 Documentation=file:///home/ubuntu/pok1/deploy/tencent-cloud/README.md
 After=network-online.target
 Wants=network-online.target
+# Rate-limit Restart=on-failure. These MUST live in [Unit] (systemd silently
+# ignores them in [Service] with "Unknown key name ... ignoring"), otherwise a
+# crash loop is unbounded.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -56,8 +61,6 @@ TimeoutStopSec=45
 
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Standard output/error -> journald (view with: journalctl -u pok-evolution -f).
 # The app also writes rotating logs to web/logs/app.log and server.stdout.log
