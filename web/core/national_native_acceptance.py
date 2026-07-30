@@ -9,6 +9,7 @@ and helpers are also accessed via ``_nn.``.
 from __future__ import annotations
 
 import asyncio
+import os
 import statistics
 import threading
 import time
@@ -45,20 +46,55 @@ async def run_native_tcp_smoke(
     timeout_sec: float | None = 90.0,
     timing_plan: _nn.NativeMatchTimingPlan | dict[str, Any] | None = None,
     progress_callback: Any = None,
+    in_flight_candidate_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run a minimal direct-TCP national smoke match for a candidate bot."""
+    """Run a minimal direct-TCP national smoke match for a candidate bot.
+
+    ``in_flight_candidate_dir`` is an opt-in for the single in-flight crossover
+    candidate that has not yet been materialized under ``bots/``: the candidate
+    is validated structurally (the five strict ABI files must be present) and
+    run from its transient workspace directory, bypassing the strict-namespace
+    ``resolve_bot`` (which requires ``bots/``). The opponent is still resolved
+    through ``resolve_bot`` so a transient candidate can never masquerade as a
+    published strict artifact. The synthetic label is namespaced so it can
+    never collide with a real ``national_cloud_v*`` bot.
+    """
     hands = max(1, min(70, int(hands)))
-    try:
-        candidate_label, candidate_dir = _nn.resolve_bot(candidate_token)
-    except Exception as exc:
-        return {
-            "passed": False,
-            "execution_mode": "native_tcp",
-            "hands": hands,
-            "issues": [f"native_smoke_candidate_error={type(exc).__name__}: {str(exc)[:300]}"],
-            "outcome": "candidate_failure",
-            "failure_side": "candidate",
-        }
+    if in_flight_candidate_dir is not None:
+        from bot_namespace import STRICT_ARTIFACT_FILES
+
+        candidate_dir = Path(in_flight_candidate_dir).expanduser()
+        candidate_dir = Path(os.path.abspath(os.fspath(candidate_dir)))
+        missing = [
+            name
+            for name in STRICT_ARTIFACT_FILES
+            if not (candidate_dir / name).is_file()
+        ]
+        if missing:
+            return {
+                "passed": False,
+                "execution_mode": "native_tcp",
+                "hands": hands,
+                "issues": [
+                    f"native_smoke_candidate_error=missing_strict_artifacts:"
+                    f"{','.join(sorted(missing))}"
+                ],
+                "outcome": "candidate_failure",
+                "failure_side": "candidate",
+            }
+        candidate_label = f"in_flight_crossover_smoke:{candidate_dir.name}"
+    else:
+        try:
+            candidate_label, candidate_dir = _nn.resolve_bot(candidate_token)
+        except Exception as exc:
+            return {
+                "passed": False,
+                "execution_mode": "native_tcp",
+                "hands": hands,
+                "issues": [f"native_smoke_candidate_error={type(exc).__name__}: {str(exc)[:300]}"],
+                "outcome": "candidate_failure",
+                "failure_side": "candidate",
+            }
 
     if self_play and opponent_token is not None:
         return {

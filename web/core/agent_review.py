@@ -1324,6 +1324,7 @@ async def _run_crossover(
             source_v=parent_a_v,
             opponent_token=frozen_parent_a_dir,
             hands=1,
+            in_flight_candidate_dir=target_dir,
         )
         smoke_errors = (
             []
