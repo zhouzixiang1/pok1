@@ -8,6 +8,57 @@ import pytest
 from bot_namespace import bot_name
 
 
+def test_re_selected_abandoned_version_gets_fresh_workflow_attempt(monkeypatch):
+    """Fix A: every re-selected version advances its workflow-v{K} attempt.
+
+    The scheduler allocates ``generation_workflow_id(next_v, attempt=
+    abandoned_version_attempt_count(next_v) + 1)`` for ALL versions.  A version
+    abandoned once is re-prepared under ``workflow-v2`` with a fresh
+    Worker/strict journal, instead of reusing the dead ``workflow-v1`` instance
+    (which surfaced as ``WorkflowConflict: workflow instance is not running``
+    on crossover, and as the infinite ``frozen_rework_*`` state-guard loop when
+    a terminal journal was replayed while the outer checkpoint was re-created at
+    ``master_planned``).  This is the durable per-version retry that the
+    ledger's ``workflow-vK`` naming already encodes (see
+    ``test_failed_reserved_v143_attempt_is_audited_but_does_not_burn_label`` in
+    test_epoch_authority.py).  A future regression that re-gates this bump on
+    ``FIRST_STRICT_POLICY_VERSION`` must update this test with an explicit
+    fail-closed reason.
+    """
+    import abandoned_version_ledger as ledger
+    import evolution_infra
+    from orchestrator_cost_policy import generation_workflow_id
+
+    re_selected_v = 17
+    receipts = [
+        {
+            "version": re_selected_v,
+            "receipt_digest": "a" * 64,
+            "workflow_run_id": f"generation:{re_selected_v}:workflow-v1",
+        }
+    ]
+    monkeypatch.setattr(
+        evolution_infra,
+        "load_abandoned_version_receipts",
+        lambda **_kwargs: list(receipts),
+    )
+    # This is the exact formula the scheduler now uses for every version.
+    prior_attempt = ledger.abandoned_version_attempt_count(re_selected_v)
+    fresh_id = generation_workflow_id(re_selected_v, attempt=prior_attempt + 1)
+
+    assert prior_attempt == 1
+    assert fresh_id == f"generation:{re_selected_v}:workflow-v2"
+
+    # A never-abandoned version keeps workflow-v1 (history / first attempts
+    # unchanged).
+    fresh_v = 99
+    assert ledger.abandoned_version_attempt_count(fresh_v) == 0
+    assert (
+        generation_workflow_id(fresh_v, attempt=ledger.abandoned_version_attempt_count(fresh_v) + 1)
+        == f"generation:{fresh_v}:workflow-v1"
+    )
+
+
 def test_prepare_generation_blocks_legacy_adapter_workflow(monkeypatch):
     import epoch_authority
     import generation_scheduler

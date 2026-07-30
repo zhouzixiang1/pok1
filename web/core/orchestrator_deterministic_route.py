@@ -772,6 +772,40 @@ async def _try_deterministic_checkpoint_route(
                 abandon_reason = "worker_circuit_breaker"
             else:
                 abandon_reason = _o._worker_terminal_abandon_reason(data)
+            # Defect D fix: a terminal Worker journal may store a reason that is
+            # only authorized at REWORK stages (e.g. ``frozen_rework_*``) while
+            # the outer checkpoint sits at an INITIAL worker stage
+            # (``master_planned``/``workers_done``/``quality_failed``) -- the
+            # classic trigger is re-creating the checkpoint for an abandoned
+            # version that reuses the dead workflow_run_id.  The generic_abandon
+            # state guard would refuse that reason forever and the router would
+            # re-dispatch ``execute_workers`` by stage on every cycle, producing
+            # an unbounded loop with zero LLM/probe progress.  At an initial
+            # worker stage the durable journal is genuinely terminal while the
+            # outer checkpoint is still active, which is exactly the
+            # ``worker_terminal_abandon`` classification the guard authorizes
+            # (pipeline_state.py forced_rules).  Translate to that abstract
+            # classification here; the concrete journal reason is already
+            # persisted in the durable Worker tombstone and recorded in the
+            # ``result`` payload below, so no audit detail is lost.  Rework
+            # stages keep the concrete journal reason, which is authorized
+            # there and carries useful repair provenance.
+            _REWORK_STAGES = frozenset(
+                {
+                    "precommit_failed",
+                    "repair_planned",
+                    "rework_running",
+                    "official_failed",
+                }
+            )
+            if worker_terminal_abandon and stage not in _REWORK_STAGES:
+                _journal_reason = abandon_reason
+                abandon_reason = "worker_terminal_abandon"
+                data = {
+                    **data,
+                    "worker_abandon_reason_classified": abandon_reason,
+                    "worker_abandon_reason_journal": _journal_reason,
+                }
             if (
                 _o._is_official_rework_circuit_breaker_result(data)
                 and data.get("abandoned") is True
@@ -792,6 +826,32 @@ async def _try_deterministic_checkpoint_route(
                     **expected_abandon_identity(read_pipeline_checkpoint()),
                 )
                 abandoned = bool(abandon_result.get("abandoned"))
+                # Bounded fallback (defect D): if the classified reason was
+                # refused solely because it is not authorized at this stage
+                # (``forced_abandon_reason_stage_not_allowed``), retry exactly
+                # once with the always-allowed generic ``abandon_generation``
+                # reason.  This guarantees the router can never loop forever on
+                # a refused forced-abandon: the durable Worker journal is
+                # terminal while the outer checkpoint is active, so the
+                # generation genuinely cannot advance and must be abandoned.
+                # The concrete reason stays in the Worker tombstone + the
+                # ``result`` payload for audit; the generic reason only governs
+                # the control-plane state-guard transition.  A non-stage-guard
+                # refusal (e.g. publication_or_certification_stage_not_disposable)
+                # is NOT retried -- those stages require genuine reconciliation.
+                if (
+                    not abandoned
+                    and abandon_result.get("blocked") is True
+                    and abandon_result.get("reason")
+                    == "forced_abandon_reason_stage_not_allowed"
+                ):
+                    abandon_result = await _do_abandon_generation(
+                        reason="abandon_generation",
+                        **expected_abandon_identity(
+                            read_pipeline_checkpoint()
+                        ),
+                    )
+                    abandoned = bool(abandon_result.get("abandoned"))
             if outcome is not None:
                 outcome["router_abandon_result"] = abandon_result
                 outcome["terminal_abandon_result"] = (

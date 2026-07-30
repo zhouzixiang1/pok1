@@ -1072,11 +1072,27 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     # analysis.  The selected checkpoint below adopts this exact id, so prepare
     # retries, SDK session replacement, and process restart cannot split or
     # leak one generation's bill into another.
-    _workflow_attempt = 1
-    if _planned_next_v == FIRST_STRICT_POLICY_VERSION and _abandoned_floor < FIRST_STRICT_POLICY_VERSION:
-        from evolution_infra import abandoned_version_attempt_count
+    #
+    # The attempt suffix is advanced for EVERY re-selected version, not only the
+    # first-strict bootstrap.  A re-selection happens when this label has prior
+    # validated abandon receipts but the allocation floor has not advanced past
+    # it (the high-water/floor window leaves the same label allocatable again).
+    # `abandoned_version_attempt_count` returns the greatest prior attempt for
+    # this exact version (0 when it was never abandoned), so:
+    #   * a never-abandoned version keeps workflow-v1 (v1/v11 history, and every
+    #     normal first attempt, is byte-identical);
+    #   * a version abandoned once is re-prepared under workflow-v2 with a fresh
+    #     Worker/strict journal, instead of reusing the dead `workflow-v1`
+    #     instance -- which previously surfaced as either `WorkflowConflict:
+    #     workflow instance is not running` (crossover effect prepare) or an
+    #     infinite `frozen_rework_*` state-guard loop (terminal journal replayed
+    #     while the outer checkpoint was re-created at master_planned).  This is
+    #     the durable per-version retry that the ledger's `workflow-vK` naming
+    #     already encodes (see test_failed_reserved_v143_attempt_is_audited_but_
+    #     does_not_burn_label in test_epoch_authority.py).
+    from evolution_infra import abandoned_version_attempt_count
 
-        _workflow_attempt = abandoned_version_attempt_count(FIRST_STRICT_POLICY_VERSION) + 1
+    _workflow_attempt = abandoned_version_attempt_count(_planned_next_v) + 1
     _prepare_workflow_run_id = _bind_prepare_generation_cost_scope(
         _planned_next_v,
         ui,

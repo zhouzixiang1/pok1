@@ -172,9 +172,17 @@ def test_capability_catalog_describes_token_header_without_leaking_secret(
     assert "catalog-must-not-leak-this" not in response.text
 
 
-def test_control_gets_never_persist_events_or_files(client, monkeypatch):
+def test_control_gets_never_persist_events_or_files(client, monkeypatch, tmp_path):
     import server.routes.control as control
     import system_log
+
+    # Isolate RESULTS_DIR to a temp dir so a concurrently-running production
+    # runtime (e.g. the live elo daemon writing bot_stats.json.lock /
+    # match_history.jsonl) cannot make the before/after file snapshot diverge
+    # and false-fail this read-only invariant.
+    isolated_results = tmp_path / "results"
+    isolated_results.mkdir()
+    monkeypatch.setattr(control, "RESULTS_DIR", isolated_results)
 
     monkeypatch.setattr(
         system_log,

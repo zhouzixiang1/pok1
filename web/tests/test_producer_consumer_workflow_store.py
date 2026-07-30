@@ -773,6 +773,15 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
         root / "web" / "core" / "producer_consumer_slice2b_activation.py",
         root / "web" / "core" / "orchestrator_deterministic_route.py",
         root / "web" / "core" / "orchestrator_loop_phases.py",
+        # The control-status HTTP projection surfaces the Slice-2b one-ahead
+        # coordinator state (pipeline_mode: enabled/consumer_parked/
+        # producer_may_advance/in_flight_count) and the feature_flags block
+        # (slice2b_enabled) for the Phase-A multi-slot dashboard poll.  Like the
+        # two orchestrator seams, its only slice2b references are lazy try/except
+        # imports of the activation bridge gated behind slice2b_active; it never
+        # imports the dormant producer_consumer_slice2b module.  Added by the
+        # P0-2 quota-fallback + slice2b staging-publication commit (61b97a40).
+        root / "web" / "server" / "routes" / "control.py",
     }
     # ``orchestrator.py`` itself must remain free of any slice2b reference --
     # it reaches the activation bridge only through the deterministic-route
@@ -791,7 +800,11 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
             and path not in sanctioned_activation_sources
             and "results" not in path.parts
         ),
-        *sorted((root / "web" / "server").rglob("*.py")),
+        *sorted(
+            path
+            for path in (root / "web" / "server").rglob("*.py")
+            if path not in sanctioned_activation_sources
+        ),
         *sorted((root / "scripts").rglob("*.py")),
         root / "sever" / "main.py",
         *sorted((root / "sever" / "engine").rglob("*.py")),

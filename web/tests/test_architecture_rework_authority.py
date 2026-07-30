@@ -163,3 +163,112 @@ def test_quality_failed_with_reviewer_feedback_synthesizes_rework_task():
     assert task["must_change_files"] == ["policy.py"]
     # The task carries a repair contract, not a bare feedback echo.
     assert task.get("repair_contract") is not None
+
+
+# --- Defect-C hardening: capability-only fallback when transition is absent ---
+
+
+def _capability(failing_ids):
+    """Build a failing flat ``national_capability_contract`` (no transition)."""
+    checks_by_id = {}
+    required_failures = []
+    for check_id in failing_ids:
+        required_failures.append({"check_id": check_id})
+        checks_by_id[check_id] = {
+            "required": True,
+            "skill_layer": "runtime_architecture",
+            "guidance": "Satisfy this capability with code consumed by the decision path.",
+            "evidence": {
+                "summary": f"{check_id} failed under the deterministic typed probe",
+                "locations": ["policy.py"],
+            },
+        }
+    return {
+        "ok": False,
+        "checks_by_id": checks_by_id,
+        "required_failures": required_failures,
+        "policy": {},
+    }
+
+
+def test_capability_only_fallback_synthesizes_policy_contract_when_transition_absent():
+    """Defect-C hardening: a flat capability failure with NO transition object
+    must still synthesize a policy.py repair contract instead of dead-ending on
+    ``system_repair_task_synthesis_empty``."""
+    quality = {"national_capability_contract": _capability(["typed_runtime_probe"])}
+    contracts = _architecture_contracts(quality, {"next_v": STRICT_TARGET_V + 1})
+    assert len(contracts) == 1, (
+        "a flat typed_runtime_probe policy.py failure must synthesize a repair "
+        "contract even when national_architecture_transition is absent"
+    )
+    contract = contracts[0]
+    assert contract["file"] == "policy.py"
+    assert contract["must_change_files"] == ["policy.py"]
+    assert "typed_runtime_probe" in contract["required_checks"]
+
+
+def test_capability_only_fallback_synthesizes_policy_contract_when_transition_ok():
+    """The fallback also fires when the transition is present but ok/skipped."""
+    quality = {
+        "national_capability_contract": _capability(["precompute_runtime_influence"]),
+        "national_architecture_transition": {"ok": True, "skipped": True},
+    }
+    contracts = _architecture_contracts(quality, {"next_v": STRICT_TARGET_V + 1})
+    assert len(contracts) == 1
+    assert contracts[0]["file"] == "policy.py"
+    assert "precompute_runtime_influence" in contracts[0]["required_checks"]
+
+
+def test_capability_only_fallback_is_fail_closed_for_non_policy_py_failure():
+    """A failing check that is NOT policy.py-repairable must still return [].
+
+    Fail-closed: a check_id absent from _ARCHITECTURE_CHECK_FILES, or one whose
+    flat-contract evidence.locations do not include policy.py, must NOT be
+    repaired via the fallback -- it stays a terminal abandon (unchanged
+    behavior for genuinely non-repairable failures)."""
+    capability = {
+        "ok": False,
+        "checks_by_id": {
+            "some_socket_reducer_failure": {
+                "required": True,
+                "skill_layer": "reducer",
+                "guidance": "x",
+                "evidence": {"summary": "failed", "locations": ["national_bot.py"]},
+            },
+        },
+        "required_failures": [{"check_id": "some_socket_reducer_failure"}],
+        "policy": {},
+    }
+    quality = {"national_capability_contract": capability}
+    contracts = _architecture_contracts(quality, {"next_v": STRICT_TARGET_V + 1})
+    assert contracts == [], (
+        "a non-policy.py failure must NOT be repaired by the fallback; terminal "
+        "abandon is the correct behavior for reducer/socket/tracker failures"
+    )
+
+
+def test_capability_only_fallback_requires_flat_evidence_corroboration():
+    """Even a mapped check_id must corroborate policy.py via its own flat
+    evidence.locations; a mapped check whose evidence points elsewhere is
+    fail-closed (returns [])."""
+    capability = {
+        "ok": False,
+        "checks_by_id": {
+            # Mapped to policy.py in _ARCHITECTURE_CHECK_FILES, but its flat
+            # evidence.locations do NOT include policy.py -> fail closed.
+            "typed_runtime_probe": {
+                "required": True,
+                "skill_layer": "runtime_architecture",
+                "guidance": "x",
+                "evidence": {"summary": "failed", "locations": ["national_bot.py"]},
+            },
+        },
+        "required_failures": [{"check_id": "typed_runtime_probe"}],
+        "policy": {},
+    }
+    quality = {"national_capability_contract": capability}
+    contracts = _architecture_contracts(quality, {"next_v": STRICT_TARGET_V + 1})
+    assert contracts == [], (
+        "the fallback must require BOTH the static map AND the flat contract's "
+        "own evidence.locations to corroborate policy.py"
+    )

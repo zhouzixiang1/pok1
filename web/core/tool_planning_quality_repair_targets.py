@@ -1121,7 +1121,18 @@ def _architecture_contracts(quality, ckpt):
     """
     transition = quality.get("national_architecture_transition") or {}
     if not isinstance(transition, dict) or transition.get("ok", True):
-        return []
+        # Defect-C hardening: when the transition evaluator is absent/skipped/ok
+        # but the flat national_capability_contract already proves a policy.py-
+        # repairable failure, synthesize a policy.py repair contract from the
+        # flat contract alone.  Without this the rework synthesizer dead-ends on
+        # ``system_repair_task_synthesis_empty`` and the generation terminal-
+        # abandons (observed for v12/v13 under a different gate shape; the same
+        # dead-end recurs whenever the transition object is missing but the flat
+        # contract carries the evidence).  Fail-closed: only check_ids that the
+        # _ARCHITECTURE_CHECK_FILES map AND the flat contract's own
+        # evidence.locations both corroborate as policy.py are repaired; a non-
+        # policy.py failure still returns [] (terminal abandon, unchanged).
+        return _architecture_contracts_from_capability_only(quality, ckpt)
     if transition.get("runtime_probe_infra"):
         return []
     if transition.get("policy_identity_errors"):
@@ -1185,6 +1196,102 @@ def _architecture_contracts(quality, ckpt):
         precompute_owner,
         required_checks=failing_ids,
         candidate_capabilities=candidate,
+    )
+    runtime_contract = _qc._merge_runtime_contract_floor(inherited_contract, floor_contract)
+    validated_runtime_contract = RuntimeContract.model_validate(runtime_contract)
+    primary_checks = (
+        list(validated_runtime_contract.state_learning.primary_checks())
+        if validated_runtime_contract.state_learning is not None
+        else []
+    )
+    task_required_checks = list(dict.fromkeys([
+        *failing_ids,
+        *primary_checks,
+    ]))
+    return [{
+        "blocker": "runtime_architecture",
+        "file": primary,
+        "files": target_files,
+        "must_change_files": [primary],
+        "focus_id": focus_id,
+        "required_checks": task_required_checks,
+        "preserve_checks": list(policy.get("baseline_passed_checks") or []),
+        "skill_layer": skill_layer,
+        "evidence": "\n".join(evidence_lines),
+        "architecture_policy": policy,
+        "runtime_contract": runtime_contract,
+    }]
+
+
+def _architecture_contracts_from_capability_only(quality, ckpt):
+    """Synthesize a policy.py repair contract from the flat capability contract.
+
+    Used only when ``national_architecture_transition`` is absent/skipped/ok but
+    the flat ``national_capability_contract`` carries policy.py-repairable
+    failures (defect-C hardening).  Fail-closed: a failing check is repaired only
+    if BOTH (a) ``_ARCHITECTURE_CHECK_FILES`` maps it to ``policy.py`` AND (b)
+    the flat contract's own ``evidence.locations`` corroborate ``policy.py``.
+    Returns ``[]`` (terminal abandon) for genuinely non-policy.py failures,
+    matching the pre-existing behavior for those cases.
+    """
+    capability = quality.get("national_capability_contract") or {}
+    if not isinstance(capability, dict) or capability.get("ok", True):
+        return []
+    checks_by_id = capability.get("checks_by_id") or {}
+    if not isinstance(checks_by_id, dict) or not checks_by_id:
+        return []
+    required_failures = capability.get("required_failures") or []
+    candidate_failing = []
+    for entry in required_failures:
+        check_id = str((entry or {}).get("check_id") or "") if isinstance(entry, dict) else str(entry or "")
+        if check_id:
+            candidate_failing.append(check_id)
+    if not candidate_failing:
+        return []
+    # Fail-closed guard: require BOTH the static map AND the flat contract's own
+    # evidence.locations to corroborate policy.py for each repaired check_id.
+    repairable = []
+    for check_id in candidate_failing:
+        mapped_files = _qc._ARCHITECTURE_CHECK_FILES.get(check_id, ())
+        if "policy.py" not in mapped_files:
+            continue
+        check = checks_by_id.get(check_id) or {}
+        locations = [str(item) for item in (check.get("evidence") or {}).get("locations") or []]
+        if "policy.py" in locations:
+            repairable.append(check_id)
+    if not repairable:
+        return []
+    failing_ids = repairable
+    policy = capability.get("policy") or {}
+    focus_id = ""
+    skill_layer = ""
+    for check_id in failing_ids:
+        candidate_layer = str((checks_by_id.get(check_id) or {}).get("skill_layer") or "")
+        if candidate_layer:
+            skill_layer = candidate_layer
+            break
+    skill_layer = skill_layer or "runtime_architecture"
+    inherited_layer, inherited_contract = _qc._architecture_repair_context(ckpt, focus_id)
+    if inherited_layer:
+        skill_layer = inherited_layer
+    evidence_lines = []
+    for check_id in failing_ids:
+        check = checks_by_id.get(check_id) or {}
+        evidence = check.get("evidence") or {}
+        guidance = check.get("guidance") or "Satisfy this capability with code consumed by the decision path."
+        locations = [str(item) for item in evidence.get("locations") or []]
+        summary = str(evidence.get("summary") or "no detector summary")
+        location_text = f"; locations={locations[:3]}" if locations else ""
+        evidence_lines.append(f"{check_id}: {summary}; required={guidance}{location_text}")
+    target_files = ["policy.py"]
+    primary = target_files[0]
+    precompute_owner = "precompute.py"
+    floor_contract = _qc._architecture_default_runtime_contract(
+        focus_id,
+        skill_layer,
+        precompute_owner,
+        required_checks=failing_ids,
+        candidate_capabilities=capability,
     )
     runtime_contract = _qc._merge_runtime_contract_floor(inherited_contract, floor_contract)
     validated_runtime_contract = RuntimeContract.model_validate(runtime_contract)

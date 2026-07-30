@@ -2684,6 +2684,250 @@ def test_deterministic_route_reconciles_abandoned_worker_journal(
     assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
 
 
+def test_master_planned_terminal_journal_replay_translates_to_authorized_abandon(
+    monkeypatch,
+):
+    """Defect D: a terminal journal reason unauthorized at an initial worker
+    stage (``frozen_rework_*`` at ``master_planned``) must be translated to the
+    ``worker_terminal_abandon`` classification the state guard authorizes.
+
+    Without this, the router re-dispatches ``execute_workers`` by stage every
+    cycle while the durable journal stays terminal, producing an unbounded loop
+    (observed for v17: ``frozen_rework_repo_baseline_head_mismatch`` replayed at
+    ``master_planned``).  The concrete reason stays in the Worker tombstone and
+    the routed ``result`` payload for audit.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    events = []
+    abandoned = []
+    routed_result = {}
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": "WORKER_WORKFLOW_ABANDONED",
+                        "success": False,
+                        "failure_class": "infrastructure",
+                        "action": "abandon_generation",
+                        "worker_abandon_reason": (
+                            "frozen_rework_repo_baseline_head_mismatch: "
+                            "official_certification.py rename invalidated "
+                            "the v17 baseline"
+                        ),
+                    }),
+                }]
+            }
+        )
+    )
+
+    async def _fake_abandon(reason="abandon_generation", **_identity):
+        abandoned.append(reason)
+        return {"abandoned": True, "reason": reason, "abandoned_v": 17}
+
+    def _capture_event(event_type, severity, message, data=None):
+        events.append((event_type, severity, message, data or {}))
+        if event_type == "pipeline.deterministic_route_abandoned":
+            routed_result.update((data or {}).get("result") or {})
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(orchestrator, "log_system_event", _capture_event)
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_bot_management",
+        SimpleNamespace(
+            _do_abandon_generation=_fake_abandon,
+            expected_abandon_identity=lambda _checkpoint: {},
+        ),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "stage": "master_planned",
+            "next_v": 17,
+            "source_v": 1,
+        },
+    }
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    # Translated to the authorized classification; NOT the raw frozen_rework_ reason.
+    assert abandoned == ["worker_terminal_abandon"]
+    # The concrete journal reason is preserved for audit on the routed result.
+    assert (
+        routed_result.get("worker_abandon_reason_journal")
+        == "frozen_rework_repo_baseline_head_mismatch: "
+        "official_certification.py rename invalidated the v17 baseline"
+    )
+    assert routed_result.get("worker_abandon_reason_classified") == "worker_terminal_abandon"
+    assert any(e[0] == "pipeline.deterministic_route_abandoned" for e in events)
+
+
+def test_repeated_forced_abandon_refusal_falls_through_to_generic_abandon(monkeypatch):
+    """Defect D bounded fallback: a stage-guard refusal must fall through to the
+    always-allowed generic ``abandon_generation`` reason instead of looping."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    abandoned = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": "WORKER_WORKFLOW_ABANDONED",
+                        "success": False,
+                        "failure_class": "infrastructure",
+                        "action": "abandon_generation",
+                        "worker_abandon_reason": "some_future_unauthorized_reason",
+                    }),
+                }]
+            }
+        )
+    )
+
+    async def _fake_abandon(reason="abandon_generation", **_identity):
+        abandoned.append(reason)
+        if reason == "worker_terminal_abandon":
+            # Stage guard refuses the translated reason (hypothetical future case).
+            return {
+                "abandoned": False,
+                "blocked": True,
+                "reason": "forced_abandon_reason_stage_not_allowed",
+            }
+        return {"abandoned": True, "reason": reason, "abandoned_v": 17}
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda *a, **kw: None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_bot_management",
+        SimpleNamespace(
+            _do_abandon_generation=_fake_abandon,
+            expected_abandon_identity=lambda _checkpoint: {},
+        ),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {"stage": "master_planned", "next_v": 17, "source_v": 1},
+    }
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    assert handled is True
+    # First the translated reason (refused), then the generic fallthrough.
+    assert abandoned == ["worker_terminal_abandon", "abandon_generation"]
+
+
+def test_non_stage_guard_refusal_is_not_retried(monkeypatch):
+    """A refusal whose reason is not ``forced_abandon_reason_stage_not_allowed``
+    must NOT fall through to generic abandon -- only that exact stage-guard
+    reason triggers the bounded retry.  Other blocks require genuine
+    reconciliation."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    abandoned = []
+    fake_execute = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": "WORKER_WORKFLOW_ABANDONED",
+                        "success": False,
+                        "failure_class": "infrastructure",
+                        "action": "abandon_generation",
+                        "worker_abandon_reason": "worker_terminal_abandon",
+                    }),
+                }]
+            }
+        )
+    )
+
+    async def _fake_abandon(reason="abandon_generation", **_identity):
+        abandoned.append(reason)
+        # A hypothetical different block reason (not the stage-guard reason).
+        return {
+            "abandoned": False,
+            "blocked": True,
+            "reason": "checkpoint_cas_mismatch",
+        }
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *a, **kw: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "execute_workers"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(execute_workers=fake_execute),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_bot_management",
+        SimpleNamespace(
+            _do_abandon_generation=_fake_abandon,
+            expected_abandon_identity=lambda _checkpoint: {},
+        ),
+    )
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {"stage": "master_planned", "next_v": 17, "source_v": 1},
+    }
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(recovery, _FakeUI())
+    )
+
+    # The route did not complete the abandon (handled=False) and did NOT retry
+    # with the generic reason for a non-stage-guard refusal.
+    assert handled is False
+    assert abandoned == ["worker_terminal_abandon"]
+
+
 def test_deterministic_route_abandons_after_precommit_rework_circuit_breaker(monkeypatch):
     """Precommit repair loop breaker should force abandon through recovery."""
     from types import SimpleNamespace

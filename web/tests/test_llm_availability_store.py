@@ -115,21 +115,39 @@ def test_transient_pause_auto_resumes_only_after_system_cooldown(isolated_store)
     assert audit["resume_source"] == "bounded_cooldown_elapsed"
 
 
-def test_bare_429_is_manual_and_never_uses_a_guessed_five_minute_resume(
+def test_bare_429_auto_resumes_after_conservative_fallback_window(
     isolated_store,
 ):
-    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
-    issue = _quota_issue()
-    state = store.persist_llm_pause(issue, now=now)
+    """A bare 429 without a provider timestamp auto-resumes after a conservative
+    fallback window (5h + 60s), rather than leaving the pipeline dead for hours.
 
-    assert issue.requires_manual_resume is True
-    assert state["requires_manual_resume"] is True
-    assert state["provider_reset_at"] is None
-    assert state["auto_resume_at"] is None
-    assert store.pause_wait_seconds(
-        state, now=now + timedelta(days=1)
-    ) is None
-    assert store.active_llm_pause(now=now + timedelta(days=1))["active"] is True
+    Previously a bare 429 required manual operator intervention, but GLM enforces
+    a documented 5-hour rolling cap, so commit 61b97a40 (P0-2) replaced the
+    manual-resume dead-end with ``resume_after_quota_reset`` + a conservative
+    fallback window (POK_QUOTA_FALLBACK_WINDOW_SEC) so ``_reconcile_llm_pause``
+    auto-resumes once the window elapses instead of parking indefinitely on
+    ``requires_manual_resume``.  The fallback is conservative (the full window,
+    not a guessed short value) so it never burns guaranteed-to-fail retries
+    against a still-exhausted quota.
+
+    Note: the fallback reset timestamp is computed from real wall-clock time at
+    classification (the quota window is wall-clock, not test-frozen), so this
+    test asserts the structural contract (auto-resume, not manual; a fallback
+    reset is set; the policy is resume_after_quota_reset).  The explicit-reset
+    auto-resume timing is covered by
+    ``test_429_auto_resumes_at_explicit_provider_reset_only``.
+    """
+    issue = _quota_issue()
+    state = store.persist_llm_pause(issue)
+
+    # The bare-429 fallback is auto-resume (NOT manual), with a conservative
+    # fallback reset timestamp set.
+    assert issue.requires_manual_resume is False
+    assert issue.retry_policy == "resume_after_quota_reset"
+    assert issue.provider_reset_at is not None
+    assert state["requires_manual_resume"] is False
+    assert state["provider_reset_at"] is not None
+    assert state["auto_resume_at"] == state["provider_reset_at"]
 
 
 def test_429_auto_resumes_at_explicit_provider_reset_only(isolated_store):

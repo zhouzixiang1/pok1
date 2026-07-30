@@ -669,7 +669,17 @@ Git state. After both the transaction claim and live launch barrier are durable,
 the outer Worker journal is terminally fenced and the strict-authority child
 gets an `abandoned` tombstone even when no provider effect has yet been
 dispatched. Real and replay dispatch both require a running child journal, so a
-stale descriptor cannot recreate a child after abandonment. The runtime then
+stale descriptor cannot recreate a child after abandonment. A re-selected
+version number (the high-water floor leaves the same label allocatable again)
+therefore advances its `workflow-v{attempt}` suffix
+(`abandoned_version_attempt_count(version) + 1`, applied to every version, not
+only the first-strict bootstrap) so a fresh journal is allocated instead of
+reusing the dead `workflow-v1` instance — otherwise a terminal Worker journal
+replayed at an initial worker stage (`master_planned`/`workers_done`) cannot be
+force-abandoned and the deterministic router loops forever. Refused
+forced-abandons of class `forced_abandon_reason_stage_not_allowed` fall through
+to the always-allowed generic `abandon_generation`; see
+`docs/abandon-death-loop-and-workflow-id-reuse-2026-07-30.md`. The runtime then
 must revalidate those complete live facts before appending the
 irreversible abandon receipt. It then atomically moves only the claim-bound,
 untracked and unpublished candidate into the transaction quarantine, syncs both
