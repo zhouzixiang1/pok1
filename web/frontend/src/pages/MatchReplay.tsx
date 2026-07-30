@@ -9,8 +9,7 @@ import type {
 import { api } from "../api/client";
 import PageMeta from "../components/common/PageMeta";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
-import { useRecentMatches } from "../context/DataProvider";
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useRecentMatches, useControlStatusValue } from "../context/DataProvider";
 import { compactBotName } from "../lib/utils";
 
 const STREET_LABELS: Record<NativeStreet, string> = {
@@ -105,7 +104,7 @@ const PauseIcon = () => (
 
 export default function MatchReplay() {
   const matches = useRecentMatches();
-  const { status, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const { status, loading: statusLoading, error: statusError } = useControlStatusValue();
   const [selectedMatch, setSelectedMatch] = useState<MatchReplayData | null>(null);
   const [loadError, setLoadError] = useState("");
   const [currentHand, setCurrentHand] = useState(0);

@@ -47,33 +47,33 @@ export function PhaseAProjectionStrip({
         </EvolutionStatusBadge>
         {mode?.enabled ? (
           <EvolutionStatusBadge tone={mode.consumer_parked ? "park" : "ok"} pulse={mode.consumer_parked}>
-            slice2b · in_flight={mode.in_flight_count}
-            {mode.consumer_parked ? " · parked" : ""}
+            并行车道 · 在飞数 {mode.in_flight_count}
+            {mode.consumer_parked ? " · 停泊" : ""}
           </EvolutionStatusBadge>
         ) : (
-          <EvolutionStatusBadge tone="neutral">slice2b 关</EvolutionStatusBadge>
+          <EvolutionStatusBadge tone="neutral">并行车道关</EvolutionStatusBadge>
         )}
         {evalWait?.waiting ? (
           <EvolutionStatusBadge tone="park" pulse>
-            eval_wait · {evalWait.bot ?? "?"} · {evalWait.games ?? 0}/{evalWait.min_games}
+            评测等待 · {evalWait.bot ?? "?"} · {evalWait.games ?? 0}/{evalWait.min_games}
           </EvolutionStatusBadge>
         ) : (
-          <EvolutionStatusBadge tone="neutral">eval_wait 无</EvolutionStatusBadge>
+          <EvolutionStatusBadge tone="neutral">无评测等待</EvolutionStatusBadge>
         )}
         {va && (
           <EvolutionStatusBadge tone="info">
-            权威 hw={va.high_water} · paired={va.paired_versions?.length ?? 0}
+            版本高水位 v{va.high_water} · 已配对 {va.paired_versions?.length ?? 0}
           </EvolutionStatusBadge>
         )}
         {flags?.staging_as_parent && (
-          <EvolutionStatusBadge tone="warn">staging parent 允许</EvolutionStatusBadge>
+          <EvolutionStatusBadge tone="warn">允许暂存父本</EvolutionStatusBadge>
         )}
         {manualRequired && (
           <Link
             to="/control#abandon"
             className="rounded-md bg-error-50 px-2 py-0.5 text-[10px] font-medium text-error-700 hover:underline dark:bg-error-900/30 dark:text-error-400"
           >
-            需人工 → Control abandon
+            需人工 → 控制面板放弃
           </Link>
         )}
       </div>

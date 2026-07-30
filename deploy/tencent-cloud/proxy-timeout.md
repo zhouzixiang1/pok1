@@ -158,3 +158,79 @@ Final fix (this branch):
    `POK_CLOUD_RUNTIME=1` now fails fast at startup with an actionable
    "namespace mismatch" error instead of crashing inside `save_cycle` with an
    indirect `stored_h2h_raw_history_mismatch`.
+
+## The actual 502 mechanism: backend down (`Connection refused`), not timeout
+
+A live audit of the deployed nginx error log (2026-07-30) corrected the earlier
+hypothesis that 502 = `proxy_read_timeout` too short. The deployed proxy
+**already** runs `proxy_read_timeout 300s` / `proxy_send_timeout 300s`, yet 502s
+still occur. The real 502 signature is:
+
+```
+[error] ... connect() failed (111: Connection refused) while connecting to
+upstream, ... upstream: "http://127.0.0.1:8000/api/control/health"
+```
+
+That is **`Connection refused`** — uvicorn is not listening on `127.0.0.1:8000`
+because the `pok-evolution.service` unit is **stopped / restarting / crashed**.
+The proxy never gets to the read-timeout window because the TCP connect itself
+fails. Observed bursts coincide exactly with service downtime windows (e.g. a
+host reboot, or a `systemctl restart` after code/env changes). During such a
+window the frontend's ~5s `/health` poll hits `Connection refused` → nginx
+returns **502 Bad Gateway** to the browser.
+
+So the 502 root cause is **backend service availability**, not the proxy
+window. The 300s timeout settings remain correct (they prevent a *busy*
+backend from being cut off), but they do not and cannot address a *down*
+backend.
+
+### Verification (run on the host)
+
+```bash
+# 1. Is the timeout actually 300s on the live proxy?
+sudo nginx -T 2>/dev/null | grep -iE 'proxy_(read|send)_timeout'
+
+# 2. Is a 502 actually a Connection-refused (backend down), not a timeout?
+sudo tail -500 /var/log/nginx/error.log | grep -iE 'connect\(\) failed|upstream timed out' | tail
+#   connect() failed (111: Connection refused)   -> backend DOWN (502)
+#   upstream timed out (110: Connection timed out)-> backend BUSY (502/504)
+
+# 3. Is the service up?
+sudo systemctl status pok-evolution --no-pager | head -5
+sudo ss -ltnp | grep ':8000'   # uvicorn must be LISTEN on 127.0.0.1:8000
+
+# 4. 503 (not 502) is the app's intended fail-closed observer projection:
+sudo tail -1000 /var/log/nginx/access.log | awk '{print $9}' | sort | grep -E '502|503|504' | sort | uniq -c
+```
+
+### Operator guidance
+
+- A **502** during/after a restart or crash is expected and self-heals once
+  `pok-evolution.service` reaches `active (running)` and uvicorn binds
+  `127.0.0.1:8000`. No code change is required; verify with step 3 above.
+- A **503** (`observer_projection_refreshing`, with `Retry-After: 1`) is the
+  intended fail-closed during an authority change; the frontend renders it as a
+  neutral "正在刷新…" state, not an error.
+- A **persistent 502 while the service shows active** would indicate uvicorn
+  failed to bind (port conflict / crash in startup) — check
+  `journalctl -u pok-evolution -f` for the bind error rather than the proxy.
+
+## The same-key /health 503 (resolved 2026-07-30)
+
+Even after the 2026-07-28 cooperative-await fix, a same-key `/health` follower
+during a ~76s build could still occasionally surface a retryable 503, because
+the **health** cache (`_OBSERVER_HEALTH_CACHE`) was instantiated with
+`stale_while_revalidate_sec=0.0` while the **status** cache had `60.0`. Health
+is the more frequently polled endpoint (every observer page), and its builder
+re-derives from the same ~76s status projection, so the asymmetry meant a
+same-key `/health` read during a build parked on the 90s cooperative await
+instead of serving the prior proof.
+
+Fix (`web/server/routes/control.py`): `_OBSERVER_HEALTH_CACHE` now carries
+`stale_while_revalidate_sec=60.0`, symmetric with status. A same-key `/health`
+read during a build serves the stale prior projection immediately and triggers
+one background refresh; a **changed-key** read still fails closed immediately
+(`observer_projection_authority_changed_during_refresh`) — the
+never-serve-stale-authority invariant is unchanged. Regression:
+`tests/test_control_observer_cache.py::test_production_health_cache_serves_stale_same_key_during_build`.
+

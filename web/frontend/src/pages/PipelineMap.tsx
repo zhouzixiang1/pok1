@@ -1,4 +1,4 @@
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useControlStatusValue } from "../context/DataProvider";
 import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import { usePipelineCheckpoint } from "../hooks/usePipelineCheckpoint";
 import {
@@ -30,7 +30,7 @@ import {
  * Pipeline Map — sole full generation stepper + handoff eight-step + diagnostics.
  */
 export default function PipelineMap() {
-  const { status, health, loading, error } = useControlStatus(5_000);
+  const { status, health, loading, error } = useControlStatusValue();
   const { checkpoint } = usePipelineCheckpoint(5_000);
   const { agents } = useBoundAgentActivity(
     status?.active_generation,

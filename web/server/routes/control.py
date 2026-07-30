@@ -328,10 +328,22 @@ class _ObserverSingleflightCache:
         return copy.deepcopy(frozen)
 
 
+# Both caches serve the same content-bound authority key
+# (_observer_cache_key), and the /health builder derives from the same ~76s
+# status projection (_fresh_control_health_snapshot calls
+# _control_status_snapshot).  An asymmetric zero-stale health cache forced a
+# same-key /health follower during an active build onto the 90s cooperative
+# await (and an occasional retryable 503) while /status served stale
+# immediately.  Health is the more frequently polled endpoint (every observer
+# page reads /health), so it must share the same bounded stale-while-revalidate
+# semantics: a same-key read during a build reuses the prior proof and triggers
+# one background refresh; a changed key still fails closed immediately.
 _OBSERVER_STATUS_CACHE = _ObserverSingleflightCache(
     stale_while_revalidate_sec=60.0,
 )
-_OBSERVER_HEALTH_CACHE = _ObserverSingleflightCache()
+_OBSERVER_HEALTH_CACHE = _ObserverSingleflightCache(
+    stale_while_revalidate_sec=60.0,
+)
 
 
 def _invalidate_observer_projection_cache() -> None:

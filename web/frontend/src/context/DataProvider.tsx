@@ -12,9 +12,29 @@ import { epochStreamAuthorityKey } from "../lib/epochStreamAuthority";
 const DataContext = createContext<DataStore>(initialDataStore);
 const SetDataContext = createContext<((partial: Partial<DataStore>) => void) | null>(null);
 
+// Single shared /health poll.  Previously every evolution page mounted its own
+// useControlStatus() instance (~13 independent polls plus this one), so a
+// single read-only control surface hammered the backend with 15× /health
+// traffic every 5s (3s on ControlPanel) and amplified the observer-cache load
+// exactly during the ~76s projection build that the cache exists to absorb.
+// The control projection is the same for every page, so one poll is correct;
+// pages consume it via useControlStatusValue().
+type ControlStatusValue = ReturnType<typeof useControlStatus>;
+const ControlStatusContext = createContext<ControlStatusValue>({
+  status: null,
+  health: null,
+  loading: true,
+  error: null,
+  refresh: () => Promise.resolve(),
+});
+
 export function DataProvider({ children }: { children: ReactNode }) {
   const [store, setStore] = useState<DataStore>(initialDataStore);
-  const { status: epochStatus } = useControlStatus(5_000);
+  // The one and only /health poll.  epochStatus feeds the stream-authority key
+  // below; the full value (status/health/loading/error/refresh) is shared with
+  // every page through ControlStatusContext.
+  const controlStatusValue = useControlStatus(5_000);
+  const { status: epochStatus } = controlStatusValue;
   const streamAuthorityKey = epochStreamAuthorityKey(epochStatus);
 
   useLayoutEffect(() => {
@@ -45,10 +65,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   return (
     <SetDataContext.Provider value={updateData}>
-      <DataContext.Provider value={store}>{children}</DataContext.Provider>
+      <DataContext.Provider value={store}>
+        <ControlStatusContext.Provider value={controlStatusValue}>
+          {children}
+        </ControlStatusContext.Provider>
+      </DataContext.Provider>
     </SetDataContext.Provider>
   );
 }
+
+// Shared /health control projection.  Prefer this over useControlStatus() from
+// a page: a direct hook call would re-instate an independent poll and defeat
+// the single-poll convergence.
+export const useControlStatusValue = () => useContext(ControlStatusContext);
 
 export const useRatings = () => useContext(DataContext).ratings;
 export const useMatchStats = () => useContext(DataContext).stats;

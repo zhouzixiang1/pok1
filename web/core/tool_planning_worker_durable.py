@@ -607,12 +607,51 @@ async def _run_durable_worker_effect(
             })
 
     lease_owner = f"pid:{_tw.os.getpid()}"
+    # The Worker effect lease must outlive the longest single Worker attempt
+    # (600s, QUALITY_REWORK_WORKER_TIMEOUT) but stay well under the 4h cycle
+    # timeout. A 1h lease created an oversized dead-owner window: a host crash
+    # mid-attempt left the effect row "running" under a dead PID until
+    # wall-clock expiry, forcing every resumed cycle into the busy branch for
+    # up to an hour. 900s covers the 600s attempt plus scheduling/jitter while
+    # bounding the dead-owner window to ~15 minutes.
+    try:
+        from workflow_kernel import WorkflowBusy as _WorkerEffectWorkflowBusy
+    except Exception:  # pragma: no cover - defensive import
+        _WorkerEffectWorkflowBusy = None
     try:
         lease = worker_workflow.request_or_claim(
             owner=lease_owner,
-            lease_seconds=3600,
+            lease_seconds=900,
         )
     except Exception as exc:
+        # A transient WorkflowBusy (effect lease still active, typically held by
+        # a dead owner after a crash/reboot until its wall-clock lease expires)
+        # must NOT collapse into the generic infrastructure
+        # DURABLE_WORKER_EFFECT_CLAIM_FAILED bucket: that result is classified
+        # as retry_same_tool and re-dispatches execute_workers every cycle until
+        # the lease expires, producing a noisy unbounded loop with no LLM burn.
+        # Surface it as a distinct transient busy result so the router waits
+        # for the lease window instead of hammering the claim. Mirrors the
+        # WORKER_COMMAND_BUSY handling already used at the command-lock site.
+        if (
+            _WorkerEffectWorkflowBusy is not None
+            and isinstance(exc, _WorkerEffectWorkflowBusy)
+        ):
+            return _tw._json_tool_result({
+                "error": "WORKER_EFFECT_LEASE_BUSY",
+                "failure_class": "infrastructure",
+                "action": "retry_same_tool",
+                "transient": True,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "next_v": next_v,
+                "source_v": source_v,
+                "directive": (
+                    "The Worker effect lease is still active (commonly held by "
+                    "a dead owner after a crash/reboot until its wall-clock "
+                    "expiry). Retry without editing the candidate; the lease "
+                    "self-expires and the next claim succeeds."
+                ),
+            })
         return _tw._json_tool_result({
             "error": "DURABLE_WORKER_EFFECT_CLAIM_FAILED",
             "failure_class": "infrastructure",

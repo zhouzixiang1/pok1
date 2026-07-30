@@ -1010,7 +1010,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/frontend/src/lib/evolutionStreamController.ts",
                 "loseTransientStatusTaskAuthority",
             ),
-            _ref("web/frontend/src/pages/EvolutionMonitor.tsx", "acceptTransientStatus"),
+            _ref("web/frontend/src/pages/AgentActivity.tsx", "acceptTransientStatus"),
             _ref(
                 "web/frontend/scripts/static-build-receipt.mjs",
                 "verifyReceipt",

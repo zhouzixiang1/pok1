@@ -2,11 +2,10 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { api } from "../api/client";
 import type { OrchestratorLogFile } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
-import { useGenerations } from "../context/DataProvider";
+import { useGenerations, useControlStatusValue } from "../context/DataProvider";
 import { Skeleton } from "../components/shared/Skeleton";
 import { EmptyState } from "../components/shared/EmptyState";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
-import { useControlStatus } from "../hooks/useControlStatus";
 import SystemLogTab from "../components/logs/SystemLogTab";
 import WorkerFailuresTab from "../components/logs/WorkerFailuresTab";
 
@@ -246,7 +245,7 @@ export default function Logs() {
   const [tab, setTab] = useState<Tab>("generation");
 
   const generations = useGenerations();
-  const { status, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const { status, loading: statusLoading, error: statusError } = useControlStatusValue();
   const visibleGenerations = useMemo(
     () => status?.epoch_initialized ? generations : [],
     [generations, status?.epoch_initialized],

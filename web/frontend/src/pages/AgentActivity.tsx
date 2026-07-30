@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { useEvolutionSSE } from "../api/evolution";
 import type { IOLine } from "../api/evolution";
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useControlStatusValue } from "../context/DataProvider";
 import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import { agentWorkflowIdentityKey } from "../api/agentActivity";
 import { epochStreamAuthorityKey } from "../lib/epochStreamAuthority";
@@ -60,11 +60,11 @@ const transientStatusFallback = (task: TransientStatusTask | null): string => (
  *
  * The left panel consumes /api/pipeline/agents (checkpoint-derived).  The
  * right panel reuses the evolution SSE stream; it never reveals model tokens,
- * full sensitive prompts, or private reasoning — only the same role/tool/text
- * projections the existing EvolutionMonitor exposes.
+ * full sensitive prompts, or private reasoning — only role/tool/text
+ * projections.
  */
 export default function AgentActivity() {
-  const { status, health, loading, error } = useControlStatus(5_000);
+  const { status, health, loading, error } = useControlStatusValue();
   const streamAuthorityKey = epochStreamAuthorityKey(status);
   const epochReady = streamAuthorityKey !== null;
   const { agents } = useBoundAgentActivity(
@@ -408,13 +408,21 @@ export default function AgentActivity() {
     && streamTaskOwner.shutdown_requested === false
     && streamTaskOwner.status_eligible === true;
   const authoritativeWorking = Boolean(epochReady && status?.running && taskActive && isWorking);
+  // Fail-closed liveness: the stream panel must never paint a healthy "working"
+  // state from a bare run flag with no live task, nor silently pretend a
+  // dropped stream is connected.  These flags feed the operator-visible
+  // statusText below; they exist so a dropped stream or a run-flag-without-task
+  // is surfaced instead of greenwashed.  (Migrated from the retired
+  // EvolutionMonitor page during the 2026-07-30 dead-code cleanup.)
+  const runFlagWithoutTask = Boolean(status?.running && !taskActive);
+  const streamInterrupted = epochReady && !authoritativeWorking && status2 === "连接中..." && messages.length === 0;
 
   return (
     <div className="space-y-4">
       <PageMeta title="研发协作 — Bot 自进化" description="本代各研发角色正在做什么" />
       <EvolutionPageHeader
         title="研发协作"
-        subtitle="唯一实时 SSE；/evolution 已重定向到此页"
+        subtitle="本代各研发角色的实时协作过程"
         status={status}
         health={health}
         loading={loading}
@@ -498,11 +506,15 @@ export default function AgentActivity() {
                 ? "等待初始化"
                 : authoritativeWorking
                   ? "模型正在输出"
-                  : status2 === "连接中..."
-                    ? "连接中"
-                    : taskActive
-                      ? "等待下一次输出"
-                      : "当前无任务"
+                  : runFlagWithoutTask
+                    ? "运行标志存在但任务未活动"
+                    : streamInterrupted
+                      ? "状态未知（流中断）"
+                      : status2 === "连接中..."
+                        ? "连接中"
+                        : taskActive
+                          ? "等待下一次输出"
+                          : "当前无任务"
             }
             isWorking={authoritativeWorking}
             actions={

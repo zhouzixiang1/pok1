@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { StrengthJobsResponse } from "../api/types";
 import { strengthJobsBindingIssues } from "../api/strengthJobs";
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useControlStatusValue } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 import { EmptyState } from "../components/shared";
 import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
@@ -34,7 +34,7 @@ import { cn } from "../lib/utils";
  * configuration intent from live process availability.
  */
 export default function BackgroundStrength() {
-  const { status, health, loading, error } = useControlStatus(5_000);
+  const { status, health, loading, error } = useControlStatusValue();
   const [jobs, setJobs] = useState<StrengthJobsResponse | null>(null);
   const strengthAuthorityKey = status?.epoch_initialized
     ? `${status.reset_receipt_digest ?? "missing"}:${status.active_bots.join("|")}`
@@ -119,7 +119,7 @@ export default function BackgroundStrength() {
               <p className="text-gray-700 dark:text-gray-200">当前工作：{daemonActivityLabel(view.daemon.activityState)}</p>
               {health?.daemon?.pairs_drift ? (
                 <p className="text-warning-600 dark:text-warning-400">
-                  pairs_drift：effective={health.daemon.effective_pairs ?? "?"} · configured={health.daemon.configured_pairs ?? "?"}
+                  后台对数不一致：实际 {health.daemon.effective_pairs ?? "?"} · 配置 {health.daemon.configured_pairs ?? "?"}
                 </p>
               ) : null}
               <p className="mt-1 text-gray-500 dark:text-gray-400">

@@ -1,18 +1,13 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useRecentMatches, useH2H, useGenerations, useDataStreamStatus } from "../context/DataProvider";
+import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useRecentMatches, useH2H, useGenerations, useDataStreamStatus, useControlStatusValue } from "../context/DataProvider";
 import { api } from "../api/client";
 import {
-  controlPipelineBlocked,
-  controlPipelineIssues,
   controlSchedulerOwnsPrepareBoundary,
-  draftGenerations,
 } from "../api/control";
-import type { PipelineCheckpoint } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
 import { EmptyState } from "../components/shared/EmptyState";
-import { PipelineStatus } from "../components/evolution/PipelineStatus";
 import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
 import { OperatorSituation } from "../components/evolution/OperatorSituation";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
@@ -21,7 +16,7 @@ import { EvolutionSurface, EvolutionStatusBadge } from "../components/evolution/
 import { operatorSituationView } from "../domain/operatorSituationView";
 import { stabilityPresentation } from "../lib/stabilityView";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
-import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
+import { authorityNextVersion } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
 import { canonicalGenerationLabel } from "../lib/canonicalGenerationIdentity";
 
@@ -124,11 +119,9 @@ export default function Overview() {
   const daemon = useDaemonStatus();
   const dataStream = useDataStreamStatus();
   const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
-  const { status: controlStatus, health: controlHealth, loading: controlLoading, error: controlError } = useControlStatus(5_000);
-  const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
+  const { status: controlStatus, health: controlHealth, loading: controlLoading, error: controlError } = useControlStatusValue();
   const [localElapsed, setLocalElapsed] = useState(0);
   const lastDaemonAgeRef = useRef<number | undefined>(undefined);
-  const checkpointRequestSequence = useRef(0);
   const rateLimit = useRateLimit();
 
   useEffect(() => {
@@ -141,33 +134,6 @@ export default function Overview() {
       api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
     }, 15000);
     return () => clearInterval(id);
-  }, [controlStatus?.epoch_initialized]);
-
-  useEffect(() => {
-    const requestSequenceRef = checkpointRequestSequence;
-    if (!controlStatus?.epoch_initialized) {
-      ++requestSequenceRef.current;
-      setCheckpoint(null);
-      return;
-    }
-    const refresh = () => {
-      const requestSequence = ++checkpointRequestSequence.current;
-      api.pipelineCheckpoint().then((value) => {
-        if (requestSequence === checkpointRequestSequence.current) {
-          setCheckpoint(value);
-        }
-      }).catch((e) => {
-        if (requestSequence !== checkpointRequestSequence.current) return;
-        setCheckpoint(null);
-        console.error("[Overview] API error:", e);
-      });
-    };
-    refresh();
-    const id = setInterval(refresh, 5000);
-    return () => {
-      ++requestSequenceRef.current;
-      clearInterval(id);
-    };
   }, [controlStatus?.epoch_initialized]);
 
   // Reset the local timer when SSE pushes a new daemon heartbeat age. Strength
@@ -253,8 +219,6 @@ export default function Overview() {
     && !taskStopping,
   );
   const orchestratorOrphan = Boolean(taskActive && !taskStopping && !controlStatus?.running);
-  const pipelineBlocked = controlPipelineBlocked(controlHealth?.pipeline);
-  const pipelineIssues = controlPipelineIssues(controlHealth?.pipeline);
   const schedulerOwnsPrepare = controlSchedulerOwnsPrepareBoundary(
     controlStatus,
     controlHealth,
@@ -506,18 +470,6 @@ export default function Overview() {
                   打开完整流水线 →
                 </Link>
               </div>
-              <PipelineStatus
-                checkpoint={checkpoint}
-                activeGeneration={controlStatus.active_generation}
-                drafts={draftGenerations(controlStatus)}
-                pipelineMode={controlStatus.pipeline_mode ?? null}
-                handoff={controlStatus.post_publication_handoff}
-                handoffBlocked={controlStatus.post_publication_handoff.status !== "none" && pipelineBlocked}
-                activeBlocked={Boolean(controlStatus.active_generation && pipelineBlocked)}
-                activeIssues={pipelineIssues}
-                schedulerActive={schedulerOwnsPrepare}
-                route={controlHealth?.pipeline?.route ?? null}
-              />
             </EvolutionSurface>
           )}
         </div>

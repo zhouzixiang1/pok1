@@ -228,6 +228,55 @@ def test_unexpected_worker_sigterm_consumes_infrastructure_attempt(
     )
 
 
+def test_dead_owner_lease_claim_surfaces_transient_busy_not_infrastructure_loop(
+    tmp_path,
+    monkeypatch,
+):
+    """A crash/reboot leaves the Worker effect lease held by a dead owner until
+    its wall-clock expiry. The resumed orchestrator must surface that as a
+    distinct transient ``WORKER_EFFECT_LEASE_BUSY`` (retry_same_tool, transient)
+    rather than collapsing the WorkflowBusy into the generic
+    ``DURABLE_WORKER_EFFECT_CLAIM_FAILED`` infrastructure bucket, which the
+    deterministic router re-dispatches every cycle until the lease expires — a
+    noisy unbounded loop with no LLM burn. Regression for the
+    tool_planning_worker_durable lease-claim special-case.
+    """
+    workflow, checkpoint, envelope = _prepared_worker(tmp_path)
+    _install_execution_boundary(
+        monkeypatch,
+        tmp_path,
+        checkpoint,
+        envelope,
+        shutdown_requested=False,
+    )
+    # Simulate the dead owner: a prior process already claimed the cycle-1
+    # effect with a long lease (as the pre-fix 3600s default would leave it).
+    workflow.request_or_claim(owner="pid:dead-owner", lease_seconds=3600)
+    dead_owner_effect_id = workflow.state()["effect_id"]
+
+    result = _payload(asyncio.run(tool_planning._run_durable_worker_effect(
+        workflow,
+        envelope,
+        tmp_path / "canonical-unused",
+        "worker-template",
+    )))
+
+    assert result["error"] == "WORKER_EFFECT_LEASE_BUSY"
+    assert result["failure_class"] == "infrastructure"
+    assert result["action"] == "retry_same_tool"
+    assert result["transient"] is True
+    assert result["next_v"] == checkpoint["next_v"]
+    # The original generic infrastructure error must NOT be emitted for a busy
+    # lease, so the deterministic router stops treating it as a hard infra
+    # failure and simply waits for the lease window.
+    assert "directive" in result
+    # No Worker attempt was consumed (the claim never succeeded): the dead
+    # owner's lease is untouched.
+    effect = workflow.store.effect(dead_owner_effect_id)
+    assert effect["status"] == "running"
+    assert effect["lease_owner"] == "pid:dead-owner"
+
+
 def test_controlled_shutdown_journal_failure_preserves_running_lease_fail_closed(
     tmp_path,
     monkeypatch,

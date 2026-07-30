@@ -1,12 +1,11 @@
 import { useState, useMemo } from "react";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
-import { useHistory } from "../context/DataProvider";
+import { useHistory, useControlStatusValue } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 import { SegmentedControl } from "../components/shared/SegmentedControl";
 import { EmptyState } from "../components/shared/EmptyState";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
-import { useControlStatus } from "../hooks/useControlStatus";
 import { compactBotName } from "../lib/utils";
 
 const COLORS = [
@@ -20,7 +19,7 @@ type MetricMode = "glicko" | "h2h_wr";
 
 export default function RatingTrends() {
   const history = useHistory();
-  const { status, loading, error } = useControlStatus(5_000);
+  const { status, loading, error } = useControlStatusValue();
   const [showConfidence, setShowConfidence] = useState(false);
   const [metric, setMetric] = useState<MetricMode>("h2h_wr");
 

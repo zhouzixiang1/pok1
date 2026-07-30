@@ -3,7 +3,7 @@ import type { ControlHealth, ControlStatus } from "../../api/control";
 import { draftGenerations, primaryGenerationSlot } from "../../api/control";
 import { EvolutionSurface, EvolutionStatusBadge } from "./ui";
 import { cn } from "../../lib/utils";
-import { notStuckLabel } from "../../lib/notStuckReasons";
+import { epochStateLabels } from "./EpochAuthorityStatus";
 
 interface EvolutionPageHeaderProps {
   title: string;
@@ -25,7 +25,6 @@ export function EvolutionPageHeader({
   title,
   subtitle,
   status,
-  health = null,
   loading = false,
   error = null,
   variant = "full",
@@ -34,7 +33,6 @@ export function EvolutionPageHeader({
   const primary = primaryGenerationSlot(status);
   const drafts = draftGenerations(status);
   const handoff = status?.post_publication_handoff;
-  const daemon = health?.daemon;
 
   if (!status) {
     return (
@@ -81,9 +79,6 @@ export function EvolutionPageHeader({
                 </EvolutionStatusBadge>
               ))
             )}
-            {daemon?.pairs_drift ? (
-              <EvolutionStatusBadge tone="warn">pairs_drift</EvolutionStatusBadge>
-            ) : null}
           </div>
         </div>
       </EvolutionSurface>
@@ -105,7 +100,7 @@ export function EvolutionPageHeader({
       </div>
       <div className="flex flex-wrap gap-2 text-xs">
         <EvolutionStatusBadge tone={status.epoch_initialized ? "ok" : "warn"}>
-          {status.epoch_state}
+          {epochStateLabels[status.epoch_state] ?? status.epoch_state}
         </EvolutionStatusBadge>
         <EvolutionStatusBadge tone={status.running ? "ok" : "neutral"}>
           {status.running ? "编排运行中" : "编排已停止"}
@@ -126,20 +121,4 @@ export function EvolutionPageHeader({
       {error && <p className="text-xs text-amber-600">{error}</p>}
     </EvolutionSurface>
   );
-}
-
-/** Helper: resolve a not-stuck tip from Phase A fields. */
-export function evolutionHeaderNotStuckTip(status: ControlStatus | null): string | null {
-  if (!status) return null;
-  if (status.pipeline_mode?.enabled && status.pipeline_mode.consumer_parked) {
-    return notStuckLabel("consumer_parked");
-  }
-  if (status.eval_wait?.waiting) {
-    return notStuckLabel(status.eval_wait.degraded ? "eval_wait_degraded" : "eval_wait");
-  }
-  const h = status.post_publication_handoff;
-  if (h?.status === "pending") return notStuckLabel("post_publication_handoff_pending");
-  if (h?.status === "running") return notStuckLabel("post_publication_handoff_running");
-  if (status.async_certification?.any_pending) return notStuckLabel("staging_async_cert");
-  return null;
 }

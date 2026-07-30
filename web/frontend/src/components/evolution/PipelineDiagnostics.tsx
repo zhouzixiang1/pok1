@@ -29,29 +29,29 @@ export function PipelineDiagnostics({
     <EvolutionSurface className={cn("space-y-3", className)} padding="sm">
       <EvolutionSection
         title="流水线诊断"
-        subtitle="route / owner / daemon effective — 不从 stage 猜测下一工具"
+        subtitle="下一动作 / 任务归属 / 后台实际对数 — 不从阶段猜测下一工具"
       />
       <div className="flex flex-wrap gap-2 text-xs">
         <EvolutionStatusBadge tone={blocked ? "error" : "ok"}>
-          {blocked ? "route 阻断" : "route 可用"}
+          {blocked ? "下一动作阻断" : "下一动作可用"}
         </EvolutionStatusBadge>
         {route?.next_tool && (
           <span className="font-mono text-gray-600 dark:text-gray-300">
-            next_tool={route.next_tool}
+            下一动作={route.next_tool}
           </span>
         )}
         {handoff && handoff.status !== "none" && (
           <EvolutionStatusBadge
             tone={handoff.owner_scope === "foreign_process" ? "error" : "info"}
           >
-            handoff owner={handoff.owner_scope}
+            交接归属={handoff.owner_scope}
           </EvolutionStatusBadge>
         )}
         {daemon && (
           <EvolutionStatusBadge tone={daemon.pairs_drift ? "warn" : "neutral"}>
-            daemon pairs cfg={daemon.configured_pairs ?? "?"}
-            {" · "}eff={daemon.effective_pairs ?? "?"}
-            {daemon.pairs_drift ? " · drift" : ""}
+            后台对数：配置 {daemon.configured_pairs ?? "?"}
+            {" · "}实际 {daemon.effective_pairs ?? "?"}
+            {daemon.pairs_drift ? " · 不一致" : ""}
           </EvolutionStatusBadge>
         )}
       </div>

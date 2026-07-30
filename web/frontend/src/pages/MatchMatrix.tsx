@@ -1,12 +1,11 @@
 import { useMemo, useState } from "react";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
-import { useMatchMatrix, useH2H } from "../context/DataProvider";
+import { useMatchMatrix, useH2H, useControlStatusValue } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 import { SegmentedControl } from "../components/shared/SegmentedControl";
 import { EmptyState } from "../components/shared/EmptyState";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
-import { useControlStatus } from "../hooks/useControlStatus";
 import { compactBotName } from "../lib/utils";
 
 type ViewMode = "winrate" | "count";
@@ -14,7 +13,7 @@ type ViewMode = "winrate" | "count";
 export default function MatchMatrix() {
   const data = useMatchMatrix();
   const h2hRaw = useH2H();
-  const { status, loading, error } = useControlStatus(5_000);
+  const { status, loading, error } = useControlStatusValue();
   const [viewMode, setViewMode] = useState<ViewMode>("winrate");
 
   const { series, options } = useMemo(() => {

@@ -14,13 +14,13 @@ import {
 import { api } from "../api/client";
 import type { PipelineCheckpoint } from "../api/types";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
-import { OfficialCertificationProgress } from "../components/evolution/OfficialCertificationProgress";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { AsyncCertificationQueue } from "../components/evolution/AsyncCertificationQueue";
 import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
 import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
 import { operatorSituationView } from "../domain/operatorSituationView";
-import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
+import { authorityNextVersion } from "../hooks/useControlStatus";
+import { useControlStatusValue } from "../context/DataProvider";
 import { getOperatorControlToken, setOperatorControlToken } from "../api/operatorControl";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
 import { canonicalGenerationLabel } from "../lib/canonicalGenerationIdentity";
@@ -33,7 +33,7 @@ const RefreshIcon = ({ className }: { className?: string }) => (
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export default function ControlPanel() {
-  const { status, health, loading: statusLoading, error: statusError, refresh: refreshStatus } = useControlStatus(3_000);
+  const { status, health, loading: statusLoading, error: statusError, refresh: refreshStatus } = useControlStatusValue();
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
@@ -263,8 +263,6 @@ export default function ControlPanel() {
       />
 
       <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} />
-
-      <OfficialCertificationProgress status={status} />
 
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-sm font-semibold text-gray-800 dark:text-white">操作员授权</h2>

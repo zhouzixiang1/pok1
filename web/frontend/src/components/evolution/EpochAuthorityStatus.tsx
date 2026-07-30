@@ -4,7 +4,7 @@ import { authorityNextVersion } from "../../hooks/useControlStatus";
 import { cn } from "../../lib/utils";
 import { canonicalGenerationLabel } from "../../lib/canonicalGenerationIdentity";
 
-const stateLabels: Record<EpochState, string> = {
+export const epochStateLabels: Record<EpochState, string> = {
   reset_required: "严格进化需要一次性初始化",
   reset_evidence_requires_recovery: "初始化证据需要人工恢复",
   version_authority_requires_recovery: "真实版本身份需要人工恢复",
@@ -75,7 +75,7 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold text-gray-900 dark:text-white">{stateLabels[status.epoch_state]}</h2>
+            <h2 className="text-sm font-semibold text-gray-900 dark:text-white">{epochStateLabels[status.epoch_state]}</h2>
             <span className="rounded bg-white/70 px-2 py-0.5 font-mono text-[10px] text-gray-600 dark:bg-black/20 dark:text-gray-300">
               {status.evaluation_epoch}
             </span>

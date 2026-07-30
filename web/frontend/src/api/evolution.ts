@@ -52,8 +52,6 @@ export interface EvolutionState {
   transient_status_task: TransientStatusTask | null;
 }
 
-const BASE = "/api";
-
 export function useEvolutionSSE(
   handlers: EvolutionHandlers,
   authorityKey: string | null,
@@ -79,8 +77,7 @@ export function useEvolutionSSE(
   return connect;
 }
 
-export async function fetchEvolutionState(): Promise<EvolutionState> {
-  const res = await fetch(`${BASE}/evolution/state`, { signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
+// The one-shot GET /evolution/state fetcher was only consumed by the retired
+// EvolutionMonitor page; the live Agents page consumes the stream via
+// useEvolutionSSE above. EvolutionState (the typed contract) is retained as a
+// documented production-owner symbol in national_alignment_matrix_data.

@@ -802,6 +802,30 @@ bodies). Park/eval_wait/handoff “not stuck” copy uses
 `web/frontend/src/lib/notStuckReasons.ts`. Details:
 `docs/evolution-dashboard-redesign.md` §2.3–2.4.
 
+Dashboard consistency/polling cleanup (2026-07-30): the `/health` control
+projection is polled **once** app-wide. `DataProvider` owns the single
+`useControlStatus(5_000)` and exposes the full value (status/health/loading/
+error/refresh) via `useControlStatusValue()`; pages must consume that context
+hook and **must not** instantiate their own `useControlStatus(...)` (a direct
+call re-instates an independent poll — previously ~13 pages plus the provider =
+15× /health every 5s, amplifying load during the ~76s observer build).
+`EvolutionMonitor.tsx` / `BotInventory.tsx` (orphaned by the IA merge) and
+their dead chain (`CostBreakdown`, `WorkerProgress`/`parseWorkerStatus`,
+`api/evolution.ts::fetchEvolutionState`) are deleted; the SSE liveness
+contract they carried (`acceptTransientStatus`, run-flag-without-task,
+stream-interrupted fail-closed copy) lives on the live `/agents` page
+(`AgentActivity.tsx`). Operator-facing copy is pure Chinese
+(`notStuckReasons`, `PhaseAProjectionStrip` badges, `epochStateLabels`, daemon
+"配置对数/实际对数/不一致"); `notStuckReasons.ts` carries only reason codes
+the backend actually emits (the fabricated `quota_wait`/`draft_preparing`
+entries were removed). The observer **health** cache is symmetric with
+**status** (`stale_while_revalidate_sec=60.0`), so a same-key `/health` read
+during a build serves the prior proof instead of parking on the cooperative
+await (changed-key still fails closed). Full write-up:
+`docs/dashboard-consistency-cleanup-2026-07-30.md`; 502/503 root causes
+documented in `deploy/tencent-cloud/proxy-timeout.md`.
+
+
 The blocking boundary used by all offloaded HTTP handlers
 (`run_blocking_isolated` in `web/core/blocking_runtime.py`) must await its
 owned worker future with a **single `add_done_callback` →

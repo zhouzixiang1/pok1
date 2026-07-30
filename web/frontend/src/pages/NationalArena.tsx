@@ -17,7 +17,7 @@ import { actionLabel, buildArenaView } from "../lib/arenaViewModel";
 import { BoltIcon, CloseIcon, DownloadIcon, PlugInIcon } from "../icons";
 import { cn } from "../lib/utils";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useControlStatusValue } from "../context/DataProvider";
 import { getOperatorControlToken, setOperatorControlToken } from "../api/operatorControl";
 
 const ACTIVE = new Set(["starting", "listening", "waiting_for_players", "ready", "running", "stopping", "finalizing", "quarantined"]);
@@ -73,7 +73,7 @@ function ConfigLabel({ children }: { children: React.ReactNode }) {
 }
 
 export default function NationalArena() {
-  const { status: controlStatus, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const { status: controlStatus, loading: statusLoading, error: statusError } = useControlStatusValue();
   const [mode, setMode] = useState<ArenaMode>("managed_bots");
   const [bots, setBots] = useState<ArenaBot[]>([]);
   const [sessions, setSessions] = useState<ArenaSession[]>([]);

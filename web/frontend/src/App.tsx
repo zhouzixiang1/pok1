@@ -22,7 +22,7 @@ import LlmMetrics from "./pages/LlmMetrics";
  * IA (2026-07 dashboard redesign pass):
  *   /              Overview (slim + PhaseA strip + pipeline link)
  *   /pipeline      sole full stepper + handoff eight-step
- *   /agents        sole research SSE (EvolutionMonitor absorbed)
+ *   /agents        sole research SSE
  *   /bots          Inventory + Manager merge (?v= expand)
  *   /control       start/stop/abandon/async/daemon
  *   /evolution     → /agents

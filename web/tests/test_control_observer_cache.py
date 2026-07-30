@@ -445,11 +445,18 @@ def test_control_health_remains_responsive_during_slow_status_refresh(
 ):
     from server.routes import control
 
+    # Mirrors the production cache config: both /status and /health carry the
+    # same bounded stale_while_revalidate window so a same-key /health read
+    # during an active build serves the prior proof immediately instead of
+    # waiting behind the slow status projection.
     status_cache = control._ObserverSingleflightCache(
         ttl_sec=0.01,
         stale_while_revalidate_sec=1.0,
     )
-    health_cache = control._ObserverSingleflightCache(ttl_sec=0.01)
+    health_cache = control._ObserverSingleflightCache(
+        ttl_sec=0.01,
+        stale_while_revalidate_sec=1.0,
+    )
     entered = threading.Event()
     release = threading.Event()
     completed = threading.Event()
@@ -490,6 +497,72 @@ def test_control_health_remains_responsive_during_slow_status_refresh(
     assert completed.wait(timeout=2)
 
 
+def test_production_health_cache_serves_stale_same_key_during_build(
+    monkeypatch,
+):
+    """Regression: the production /health cache must reuse a prior same-key
+    projection during an active build instead of parking the read on the 90s
+    cooperative await.  The two production caches are symmetric; this guards
+    against regressing _OBSERVER_HEALTH_CACHE back to stale_while_revalidate=0.
+    """
+    from server.routes import control
+
+    assert (
+        control._OBSERVER_HEALTH_CACHE.stale_while_revalidate_sec
+        == control._OBSERVER_STATUS_CACHE.stale_while_revalidate_sec
+        > 0
+    )
+
+    health_cache = control._ObserverSingleflightCache(
+        ttl_sec=0.01,
+        stale_while_revalidate_sec=1.0,
+    )
+    status_cache = control._ObserverSingleflightCache(
+        ttl_sec=0.01,
+        stale_while_revalidate_sec=1.0,
+    )
+    status_entered = threading.Event()
+    status_release = threading.Event()
+    status_completed = threading.Event()
+    status_calls = 0
+
+    def status_builder():
+        nonlocal status_calls
+        status_calls += 1
+        if status_calls > 1:
+            status_entered.set()
+            assert status_release.wait(timeout=2)
+            status_completed.set()
+        return {"revision": status_calls}
+
+    monkeypatch.setattr(control, "_OBSERVER_STATUS_CACHE", status_cache)
+    monkeypatch.setattr(control, "_OBSERVER_HEALTH_CACHE", health_cache)
+    monkeypatch.setattr(control, "_observer_cache_key", lambda **_kwargs: "same")
+    monkeypatch.setattr(control, "_observer_control_status_snapshot", status_builder)
+    monkeypatch.setattr(
+        control,
+        "_health_summary",
+        lambda status: {"overall": "healthy", "revision": status["revision"]},
+    )
+
+    # Prime both caches.
+    assert asyncio.run(control.control_health())["revision"] == 1
+    time.sleep(0.02)
+
+    # A second /health read while the underlying status build is blocked must
+    # return the prior same-key proof immediately (stale-while-revalidate),
+    # never wait behind the build, and never raise 503.
+    started = time.monotonic()
+    result = asyncio.run(control.control_health())
+    assert result == {"overall": "healthy", "revision": 1}
+    assert time.monotonic() - started < 0.1
+    assert status_entered.wait(timeout=1)
+    # The background refresh is exactly one build; no follower parked.
+    assert health_cache._inflight is False
+    status_release.set()
+    assert status_completed.wait(timeout=2)
+
+
 def test_control_health_maps_expected_authority_drift_to_retryable_503(
     monkeypatch,
     client,
@@ -500,7 +573,12 @@ def test_control_health_maps_expected_authority_drift_to_retryable_503(
         ttl_sec=0.01,
         stale_while_revalidate_sec=1.0,
     )
-    health_cache = control._ObserverSingleflightCache(ttl_sec=0.01)
+    # Production config: health is symmetric with status. A changed-key read
+    # must still fail closed even with the same-key stale window enabled.
+    health_cache = control._ObserverSingleflightCache(
+        ttl_sec=0.01,
+        stale_while_revalidate_sec=1.0,
+    )
     current_key = ["content-a"]
     old_entered = threading.Event()
     old_release = threading.Event()

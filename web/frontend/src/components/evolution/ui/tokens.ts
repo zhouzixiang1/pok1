@@ -59,10 +59,13 @@ export const STATUS_TONE_CLASSES: Record<
     dot: "bg-gray-400",
   },
   park: {
-    badge: "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
-    border: "border-amber-300 dark:border-amber-800",
-    text: "text-amber-800 dark:text-amber-300",
-    dot: "bg-amber-500",
+    // Parked / not-stuck must read as a calm "waiting" state, distinct from the
+    // warning tone (warning-*/amber-* resolve to the same hue).  Violet keeps
+    // "停泊 / 不是卡住" visually separate from a real warning.
+    badge: "bg-violet-50 text-violet-800 dark:bg-violet-950/40 dark:text-violet-300",
+    border: "border-violet-300 dark:border-violet-800",
+    text: "text-violet-800 dark:text-violet-300",
+    dot: "bg-violet-500",
   },
 };
 

@@ -8,8 +8,7 @@ import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionS
 import { EvolutionSection, EvolutionStatusBadge, EvolutionSurface } from "../components/evolution/ui";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
-import { useBots, useH2H, useUpdateData } from "../context/DataProvider";
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useBots, useH2H, useUpdateData, useControlStatusValue } from "../context/DataProvider";
 import type { CanonicalGenerationIdentity } from "../api/control";
 import {
   canonicalGenerationIdentityIssues,
@@ -326,7 +325,7 @@ export default function BotManager() {
   const { active: streamedBots } = useBots();
   const h2hData = useH2H();
   const updateData = useUpdateData();
-  const { status, health, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const { status, health, loading: statusLoading, error: statusError } = useControlStatusValue();
   const [searchParams] = useSearchParams();
   const expandVersion = (() => {
     const raw = searchParams.get("v");

@@ -1,4 +1,4 @@
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useControlStatusValue } from "../context/DataProvider";
 import { useOfficialCertificationJobs } from "../hooks/useOfficialCertificationJobs";
 import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import PageMeta from "../components/common/PageMeta";
@@ -44,7 +44,7 @@ const TONE_CLASS: Record<EvidenceAuthorityLabel["tone"], string> = {
  * verdict or a diagnostic Arena run for compliance or strength authority.
  */
 export default function EvidenceGates() {
-  const { status, health, loading, error } = useControlStatus(5_000);
+  const { status, health, loading, error } = useControlStatusValue();
   const { agents } = useBoundAgentActivity(
     status?.active_generation,
     status?.epoch_initialized === true,

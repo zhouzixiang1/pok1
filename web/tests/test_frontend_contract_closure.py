@@ -109,14 +109,16 @@ def test_operator_token_is_memory_only_and_shared_across_mutations():
 def test_frontend_drops_stream_and_cycle_state_instead_of_merging_stale_authority():
     provider = (FRONTEND / "context" / "DataProvider.tsx").read_text(encoding="utf-8")
     evolution_api = (FRONTEND / "api" / "evolution.ts").read_text(encoding="utf-8")
-    monitor = (FRONTEND / "pages" / "EvolutionMonitor.tsx").read_text(encoding="utf-8")
     logs = (FRONTEND / "pages" / "Logs.tsx").read_text(encoding="utf-8")
 
     assert 'addEventListener("epoch_blocked"' in provider
     assert "if (authorityBlocked) return" in provider
     assert "if (authorityBlocked) return" in evolution_api
-    assert "existing?.selection_score" not in monitor
-    assert "existing?.leaderboard_score" not in monitor
+    # The retired EvolutionMonitor page (sole carrier of the legacy
+    # selection_score / leaderboard_score merge path) was deleted in the
+    # 2026-07-30 dead-code cleanup; the live Agents page consumes the stream
+    # via useEvolutionSSE and never merged those stale cycle fields, so the
+    # negative monitor assertions no longer apply to any file.
     assert "!visibleGenerations.some" in logs
     assert 'setLogContent("")' in logs
     assert "if (!cancelled) setLogContent(res.content)" in logs
@@ -125,7 +127,12 @@ def test_frontend_drops_stream_and_cycle_state_instead_of_merging_stale_authorit
 def test_active_navigation_describes_read_only_contracts():
     sidebar = (FRONTEND / "layout" / "AppSidebar.tsx").read_text(encoding="utf-8")
 
-    assert 'name: "严格发布 Bot"' in sidebar
+    # The 2026-07-30 sidebar cleanup collapsed the duplicate /bots entries
+    # (evolution 发布池 + management 严格发布 Bot) into the single evolution
+    # 发布池 entry that renders the merged BotManager.
+    assert sidebar.count('path: "/bots"') == 1
+    assert 'name: "发布池"' in sidebar
+    assert 'name: "严格发布 Bot"' not in sidebar
     assert 'name: "提示词契约"' in sidebar
     assert "提示词编辑器" not in sidebar
     assert 'name: "Bot 管理"' not in sidebar
@@ -178,7 +185,12 @@ def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():
     api = (FRONTEND / "api" / "control.ts").read_text(encoding="utf-8")
     provider = (FRONTEND / "context" / "DataProvider.tsx").read_text(encoding="utf-8")
     overview = (FRONTEND / "pages" / "Overview.tsx").read_text(encoding="utf-8")
-    monitor = (FRONTEND / "pages" / "EvolutionMonitor.tsx").read_text(encoding="utf-8")
+    # The SSE liveness contract is now asserted on the live Agents page
+    # (AgentActivity.tsx), the sole research-SSE home since the 2026-07-30
+    # dead-code cleanup retired EvolutionMonitor.tsx.  AgentActivity surfaces
+    # the same fail-closed liveness cases via operator-visible statusText
+    # instead of the retired monitor's internal state tokens.
+    agents = (FRONTEND / "pages" / "AgentActivity.tsx").read_text(encoding="utf-8")
     evolution_api = (FRONTEND / "api" / "evolution.ts").read_text(encoding="utf-8")
     tool_card = (FRONTEND / "components" / "evolution" / "ToolCard.tsx").read_text(encoding="utf-8")
 
@@ -191,13 +203,15 @@ def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():
     assert "process_identity" in api
     assert "配置意图：" in overview and "实际进程：" in overview
     assert "onDisconnect" in evolution_api
-    assert "streamState !== \"connected\"" in monitor
-    assert "运行标志存在但任务未活动" in monitor
-    assert "编排器运行，等待下一动作" in monitor
-    assert "interrupted: true" in monitor
+    # Live Agents page fail-closed liveness: a run flag without an active task,
+    # and a dropped/interrupted stream, are surfaced as distinct states rather
+    # than greenwashed as "working".
+    assert "runFlagWithoutTask" in agents
+    assert "运行标志存在但任务未活动" in agents
+    assert "streamInterrupted" in agents
+    assert "状态未知（流中断）" in agents
     assert "状态未知（流中断）" in tool_card
-    assert "最近一次发布完成" in monitor
-    assert ">成功率<" not in monitor
+    assert ">成功率<" not in agents
 
 
 def test_pipeline_component_validates_identity_and_does_not_greenwash_repair_or_critic():
@@ -411,10 +425,13 @@ def test_dashboard_redesign_adds_structured_evolution_views():
     for route in ("/", "/bots", "/prompts"):
         assert f'path="{route}"' in app
     assert 'group: "进化"' in sidebar
-    assert 'name: "严格发布 Bot"' in sidebar
     assert 'name: "提示词契约"' in sidebar
+    # /bots is a single merged entry (发布池, the merged BotManager). The
+    # duplicate 严格发布 Bot nav entry was removed in the 2026-07-30 sidebar
+    # cleanup so there is exactly one /bots link.
     assert 'name: "发布池"' in sidebar
-    assert 'path: "/bots"' in sidebar
+    assert sidebar.count('path: "/bots"') == 1
+    assert 'name: "严格发布 Bot"' not in sidebar
     # Compatibility entries removed from sidebar after merge.
     assert 'path: "/evolution"' not in sidebar
     assert 'path: "/bots-inventory"' not in sidebar

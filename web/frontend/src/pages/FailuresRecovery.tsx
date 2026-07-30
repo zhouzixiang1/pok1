@@ -1,4 +1,4 @@
-import { useControlStatus } from "../hooks/useControlStatus";
+import { useControlStatusValue } from "../context/DataProvider";
 import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import PageMeta from "../components/common/PageMeta";
 import { EmptyState } from "../components/shared";
@@ -47,7 +47,7 @@ const DISPOSITION_LABEL: Record<RecoveryDisposition, string> = {
  * terminal/abandon.  Never renders a single opaque spinner that hides these.
  */
 export default function FailuresRecovery() {
-  const { status, health, loading, error } = useControlStatus(5_000);
+  const { status, health, loading, error } = useControlStatusValue();
   const { agents } = useBoundAgentActivity(
     status?.active_generation,
     status?.epoch_initialized === true,

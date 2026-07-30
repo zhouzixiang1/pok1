@@ -15,12 +15,12 @@ interface EvolutionStreamPanelProps {
 }
 
 /**
- * Shared evolution SSE stream panel. Agents is the sole live route; legacy
+ * Shared evolution stream panel. Agents is the sole live route; legacy
  * /evolution redirects here. Visual language goes through EvolutionStreamShell.
  */
 export function EvolutionStreamPanel({
   title = "研发执行流",
-  subtitle = "唯一实时 SSE；slot 标注区分 primary / draft",
+  subtitle = "本代各研发角色的实时协作过程",
   connected,
   statusText,
   isWorking = false,
