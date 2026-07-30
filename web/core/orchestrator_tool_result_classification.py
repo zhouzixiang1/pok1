@@ -91,11 +91,14 @@ def _worker_terminal_abandon_reason(data):
         # forwards it as worker_abandon_reason, so that the strict-authority
         # fence can reproduce the exact tombstone originally written by the
         # worker executor.  Falls back to the abstract routing constant only if
-        # the worker result omitted the field.  Bounded to match the fence's
-        # own reason[:1000] truncation and the historical control-plane cap.
-        return str(
-            data.get("worker_abandon_reason") or "worker_workflow_abandoned"
-        )[:160]
+        # the worker result omitted the field.  MUST be bound to the SAME limit
+        # the tombstone writers and the completed-abandon proof use
+        # (_TERMINAL_REASON_MAX_CHARS = 1000, tool_bot_management): a smaller cap
+        # truncates a long executor reason below the persisted tombstone length
+        # and makes the completed-abandon outer-reason proof irreproducible.
+        return str(data.get("worker_abandon_reason") or "worker_workflow_abandoned")[
+            :1000
+        ]
     return "worker_terminal_abandon"
 
 
