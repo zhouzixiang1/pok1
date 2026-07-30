@@ -20,6 +20,16 @@ live through ``_ed.<name>``.  This is required because those globals are
 populated by ``main()`` long after this module is first imported; reading
 them at import time would freeze a stale snapshot.
 
+Script-launch alias (load-bearing)
+----------------------------------
+Production starts the daemon as ``python …/elo_daemon.py`` (see
+``daemon_management.start_daemon``), so the parent file is ``__main__``.
+``elo_daemon.py`` must register ``sys.modules["elo_daemon"]`` to that same
+object **before** importing this companion; otherwise ``import elo_daemon``
+here dual-loads a twin whose ``daemon_evaluation_identity_digest`` stays
+``None`` and every completed match raises
+``staged match identity no longer matches the daemon evaluation epoch``.
+
 Intra-cluster helpers that ``admit_internal_match_result`` calls
 (``_discard_staged_match``, ``process_result``, ``_ensure_safe_replay_directory``)
 remain in the parent module and are reached through ``_ed.<name>`` so existing

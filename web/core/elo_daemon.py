@@ -25,6 +25,18 @@ import threading
 from collections import Counter, deque
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+
+# Script launch (`python web/core/elo_daemon.py`, used by daemon_management)
+# binds this file as `__main__`. Companions do `import elo_daemon as _ed`;
+# without an early alias that second import dual-loads a twin module whose
+# `daemon_evaluation_identity_digest` stays None, so every completed match
+# fails admission with "staged match identity no longer matches the daemon
+# evaluation epoch". Register before companion imports so they share this
+# object. Import-style launches (`import elo_daemon`) already occupy the
+# name; setdefault is a no-op then.
+if __name__ == "__main__":
+    sys.modules.setdefault("elo_daemon", sys.modules[__name__])
+
 import elo_daemon_replay_store as _edrs  # noqa: E402,F401  (replay-store cluster)
 import elo_daemon_persistence as _edp  # noqa: E402,F401  (persistence/state-IO cluster)
 import elo_daemon_admission as _eda  # noqa: E402,F401  (internal-match admission cluster)

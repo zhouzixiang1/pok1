@@ -474,7 +474,14 @@ Active implementation is under `web/core/`. Major responsibilities include:
   which would otherwise silently validate zero `national_cloud_v*` replays and
   crash inside `save_cycle` with an indirect `stored_h2h_raw_history_mismatch`),
   then `require_policy_epoch_initialized`; an empty bot pool (the first-strict
-  state) is allowed through;
+  state) is allowed through. Production launches the daemon as a script
+  (`python …/elo_daemon.py` via `daemon_management.start_daemon`); the file must
+  register `sys.modules["elo_daemon"]` onto that `__main__` object before
+  importing companions (`elo_daemon_admission` / persistence / replay_store).
+  Without the alias, companions dual-load a twin module whose
+  `daemon_evaluation_identity_digest` stays `None` and every completed match
+  fails admission with `staged match identity no longer matches the daemon
+  evaluation epoch`;
 - `tool_gates.py`, `tool_eval.py`, `tool_commit.py` — quality, precommit, signed
   publication;
 - `post_publication_handoff.py`, `cycle_archivist.py` — publication-linearized,
