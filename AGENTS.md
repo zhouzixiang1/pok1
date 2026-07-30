@@ -516,6 +516,19 @@ Active implementation is under `web/core/`. Major responsibilities include:
   abandons a generation when the same identity error fingerprint survives
   repeated recovery attempts, so a frozen-vs-recomputed mismatch cannot loop
   forever burning LLM budget;
+  `_PROBE_FAIL_CLOSED_CHECKS` (`precompute_runtime_influence`) names typed-probe
+  checks whose dynamic state is a conservative "no digest-bound variant exists"
+  fail-closed value, NOT a real probe outcome. `_apply_typed_runtime_probe`
+  records that value as `evidence.dynamic_passed` but does NOT overwrite the
+  static `passed` for them — otherwise a candidate that statically demonstrates
+  the capability (e.g. `import precompute`) is force-flipped to False and, since
+  the static-only source baseline records it as passed, every candidate
+  descended from that source "regresses" it forever, dead-locking the
+  quality-rework loop. A genuine capability drop (static `passed` False) is still
+  caught by the same regression gate. Regression:
+  `tests/test_architecture_transition_regressions.py`.
+  repeated recovery attempts, so a frozen-vs-recomputed mismatch cannot loop
+  forever burning LLM budget;
 - `national_native.py`, `national_game_runtime.py`, and
   `sever/server/transport.py` — strict raw TCP runtime with one shared stream
   parser. `national_native.py` has two re-export companions extracted for

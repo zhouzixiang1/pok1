@@ -609,6 +609,23 @@ def _causal_line_counterfactual_passed(value: Any) -> bool:
     )
 
 
+# Typed-probe dynamic states for these checks are a conservative "no
+# digest-bound variant exists" fail-closed value (see ``_dynamic_probe_states``:
+# ``precompute_runtime_influence`` is hardcoded False because the typed probe
+# has no precompute counterfactual variant). They are NOT a real probe outcome
+# and must NOT overwrite the static ``passed`` value during
+# ``_apply_typed_runtime_probe``: otherwise a candidate that statically
+# demonstrates the capability (e.g. ``import precompute``) is force-flipped to
+# False, and — because the static-only source baseline records it as passed —
+# every candidate descended from that source "regresses" it forever, dead-
+# locking the quality-rework loop. The "block only when selected as focus"
+# intent is enforced separately via ``selected_dynamic_failures`` reading the
+# recorded ``dynamic_passed`` evidence (see ``evaluate_architecture_transition``).
+# Keep this frozenset in lockstep with the hardcoded False entries in
+# ``_dynamic_probe_states``.
+_PROBE_FAIL_CLOSED_CHECKS = frozenset({"precompute_runtime_influence"})
+
+
 def _dynamic_probe_states(probe: dict[str, Any]) -> dict[str, bool]:
     rows = [
         row
@@ -780,6 +797,22 @@ def _apply_typed_runtime_probe(
     for item in checks:
         check_id = str(item.get("check_id") or "")
         if check_id not in dynamic_states:
+            continue
+        # A fail-closed "no probe variant" check (e.g. precompute_runtime_influence)
+        # has a conservative dynamic value, not a real probe outcome. Record the
+        # dynamic evidence (so the ledger-selected-focus gate below can still
+        # block when it is the chosen primary) but do NOT overwrite the static
+        # ``passed`` — otherwise a candidate that statically demonstrates the
+        # capability regresses it forever against a static-only baseline.
+        if check_id in _PROBE_FAIL_CLOSED_CHECKS:
+            evidence = dict(item.get("evidence") or {})
+            evidence.update({
+                "summary": "managed typed-policy counterfactual evidence",
+                "probe_identity_digest": probe.get("probe_identity_digest"),
+                "managed_isolation_digest": probe.get("managed_isolation_digest"),
+                "dynamic_passed": dynamic_states[check_id],
+            })
+            item["evidence"] = evidence
             continue
         item["passed"] = dynamic_states[check_id]
         evidence = dict(item.get("evidence") or {})
@@ -1188,6 +1221,30 @@ def _selected_dynamic_probe_checks(
     return selected, list(dict.fromkeys(errors))
 
 
+def _selected_dynamic_check_passes(
+    check_id: str,
+    candidate_cap: dict[str, Any],
+    candidate_state: dict[str, bool],
+) -> bool:
+    """Whether a ledger-selected dynamic probe check passes for acceptance.
+
+    For a real (probed) check the merged ``candidate_state`` is authoritative.
+    For a fail-closed "no probe variant" check (see
+    ``_PROBE_FAIL_CLOSED_CHECKS``) the static ``passed`` is deliberately
+    preserved during ``_apply_typed_runtime_probe`` so it does not fabricate a
+    baseline regression — but the "block when selected as focus" intent still
+    holds, so when such a check is the ledger-selected primary its recorded
+    ``dynamic_passed`` evidence (the conservative fail-closed value) gates
+    acceptance here rather than the preserved static truth.
+    """
+    if check_id not in _PROBE_FAIL_CLOSED_CHECKS:
+        return bool(candidate_state.get(check_id, False))
+    evidence = (candidate_cap.get("checks_by_id") or {}).get(check_id, {}).get("evidence") or {}
+    if "dynamic_passed" in evidence:
+        return bool(evidence["dynamic_passed"])
+    return bool(candidate_state.get(check_id, False))
+
+
 def evaluate_architecture_transition(
     source_bot_dir: str | Path | None,
     candidate_bot_dir: str | Path,
@@ -1294,7 +1351,9 @@ def evaluate_architecture_transition(
     selected_dynamic_failures = [
         check_id
         for check_id in sorted(selected_dynamic_checks)
-        if not candidate_state.get(check_id, False)
+        if not _selected_dynamic_check_passes(
+            check_id, candidate_cap, candidate_state
+        )
     ]
     typed_runtime_failures = [
         str(item)
