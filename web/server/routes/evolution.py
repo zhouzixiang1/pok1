@@ -1,4 +1,12 @@
-"""Evolution SSE stream and state endpoints."""
+"""Evolution SSE stream and state endpoints.
+
+Multi-slot authority (primary + draft ``active_generations``, Slice-2b
+``pipeline_mode``, async certification / eval-wait blocks) is owned by
+``GET /api/control/status`` and ``/health`` poll projections.  This SSE stream
+still validates and forwards primary-slot ``status`` ring events only; clients
+must not treat SSE as the multi-slot source of truth until an explicit
+``active_generations`` event is added.
+"""
 
 import asyncio
 import json

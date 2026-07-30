@@ -291,6 +291,9 @@ def test_control_status_fails_closed_on_torn_epoch_handoff_sample(monkeypatch):
     assert snapshot["epoch_state"] == "epoch_authority_unavailable"
     assert snapshot["epoch_initialized"] is False
     assert snapshot["stream_authority_digest"] is None
+    assert snapshot["active_generations"] == []
+    assert snapshot["pipeline_mode"]["in_flight_count"] == 0
+    assert snapshot["async_certification"]["items"] == []
     assert "canonical_epoch_changed_during_handoff_projection" in snapshot[
         "status_sync_error"
     ]

@@ -43,6 +43,26 @@ export function OperatorSituation({
           </Badge>
         </div>
 
+        {view.slotBadges.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {view.slotBadges.map((badge) => (
+              <span
+                key={`${badge.slot}-${badge.label}`}
+                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+                  badge.slot === "primary"
+                    ? "border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-800 dark:bg-brand-950/30 dark:text-brand-300"
+                    : "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-300"
+                }`}
+                title={badge.detail}
+              >
+                <span className="uppercase tracking-wide opacity-70">{badge.slot === "primary" ? "primary" : "draft"}</span>
+                <span className="font-mono">{badge.label}</span>
+                <span className="text-[9px] font-normal opacity-80">{badge.detail}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
           <SituationField label="当前发生什么" value={view.what} />
           <SituationField label="为什么" value={view.why} />
@@ -57,6 +77,19 @@ export function OperatorSituation({
           <span className="font-semibold">{view.manualRequired ? "人工处理：需要。" : "人工处理：不需要。"}</span>{" "}
           {view.manualDetail}
         </div>
+
+        {view.contextNotes.length > 0 && (
+          <ul className="mt-2 space-y-1">
+            {view.contextNotes.map((note) => (
+              <li
+                key={note}
+                className="rounded-lg border border-gray-100 bg-gray-50/80 px-3 py-1.5 text-xs text-gray-600 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-300"
+              >
+                {note}
+              </li>
+            ))}
+          </ul>
+        )}
 
         {view.continuityNote && (
           <p className="mt-2 rounded-lg border border-brand-100 bg-brand-50/50 px-3 py-2 text-xs text-brand-700 dark:border-brand-900 dark:bg-brand-950/20 dark:text-brand-300">

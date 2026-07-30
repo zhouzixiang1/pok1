@@ -47,6 +47,8 @@ export interface IOLine {
   streamType: StreamType;
   ts: number;
   role?: string;
+  /** Optional multi-slot label when the backend attaches one; absent is fine. */
+  slot?: "primary" | "draft";
 }
 
 /**
@@ -676,7 +678,8 @@ export function validateEvolutionStreamEvent(eventType: string, value: unknown):
         && typeof value.stream_type === "string"
         && STREAM_TYPES.has(value.stream_type as StreamType)
         && isNumber(value.ts)
-        && optionalString(value.role);
+        && optionalString(value.role)
+        && (value.slot == null || value.slot === "primary" || value.slot === "draft");
     case "clear_io":
       return isNumber(value.ts);
     case "eval_table":
@@ -766,6 +769,9 @@ export function createEvolutionStreamController(
             streamType: data.stream_type as StreamType,
             ts: data.ts as number,
             role: data.role as string | undefined,
+            slot: data.slot === "primary" || data.slot === "draft"
+              ? data.slot
+              : undefined,
           });
           break;
         case "clear_io":

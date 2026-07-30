@@ -1572,7 +1572,7 @@ async def _try_schedule_async_certification(ui, shutdown_mgr):
     try:
         with _orch.contextlib.ExitStack():
             projection = strict_epoch_projection(include_checkpoint=False)
-        published_versions = projection.get("published_versions") or []
+        published_versions = projection.get("strict_published_versions") or []
         if not published_versions:
             return
         latest_v = int(published_versions[-1])
@@ -1628,25 +1628,78 @@ async def _try_schedule_async_certification(ui, shutdown_mgr):
 
 
 async def _run_async_official_certification(version, ui):
-    """Run official certification for a staging-published bot.
+    """Run official certification for a staging-published bot without blocking.
 
-    Delegates to the existing certification runner.  This is the ~77min EXE
-    job that runs in the background without blocking the pipeline.
+    Mirrors ``tool_commit_official_gate``: use ``start_or_poll_job`` (subprocess
+    worker) via ``asyncio.to_thread``, polling until the job leaves ``pending``.
+    Never call sync ``run_certification(mode=full)`` on the event-loop thread —
+    that API raises for full mode and would block the loop for the EXE duration.
     """
     try:
-        from official_certification import run_certification, CertificationSpec
         from pathlib import Path as _Path
-        import json as _json
 
-        spec = CertificationSpec(
-            bot=bot_name(version),
-            mode="full",
-            policy_id="official-full-v5",
+        from bot_namespace import bot_name
+        from evolution_infra import get_active_bots, get_bot_dir
+        from official_certification import (
+            build_spec,
+            official_full_certified,
+            select_official_opponent,
         )
-        suite_dir = _orch.RESULTS_DIR / "official_certification"
-        result = run_certification(spec, suite_dir=suite_dir, force=False)
-        passed = bool(result.get("passed") or result.get("eligible"))
-        return {"passed": passed, "result": result, "certificate": result.get("certificate")}
+        from official_certification_job import start_or_poll_job
+
+        bot_dir = get_bot_dir(version)
+        if not _Path(bot_dir).is_dir():
+            return {"passed": False, "reason": "candidate_dir_missing"}
+
+        opponent_selection = select_official_opponent(
+            bot_dir,
+            get_active_bots(),
+            preferred=None,
+            allow_bootstrap_grandfather=False,
+        )
+        if not opponent_selection.get("selected"):
+            return {
+                "passed": False,
+                "reason": "no_eligible_official_opponent",
+                "opponent_selection": opponent_selection,
+            }
+        opponent_path = opponent_selection["opponent"]["path"]
+        spec = build_spec("full", bot_dir, opponent=opponent_path)
+
+        # Poll the non-blocking job manager until terminal.  Each poll runs in a
+        # worker thread so the orchestrator event loop stays responsive.
+        poll_delay_sec = 30.0
+        max_polls = 200  # ~100 minutes upper bound for a 77min EXE job
+        for _ in range(max_polls):
+            job = await _orch.asyncio.to_thread(
+                start_or_poll_job,
+                spec,
+                opponent_selection=opponent_selection,
+                source_v=None,
+            )
+            if job.get("pending"):
+                await _orch.asyncio.sleep(poll_delay_sec)
+                continue
+            if job.get("state") == "completed" and isinstance(job.get("status"), dict):
+                status = job["status"]
+                passed = bool(official_full_certified(status, bot_dir))
+                return {
+                    "passed": passed,
+                    "result": status,
+                    "certificate": status.get("certificate"),
+                    "certificate_digest": status.get("certificate_digest"),
+                    "job": job,
+                }
+            return {
+                "passed": False,
+                "reason": str(
+                    job.get("failure_class")
+                    or job.get("state")
+                    or "official_job_failed"
+                ),
+                "job": job,
+            }
+        return {"passed": False, "reason": "async_certification_poll_exhausted"}
     except Exception as exc:
         return {"passed": False, "reason": f"{type(exc).__name__}: {exc}"}
 

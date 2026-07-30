@@ -585,6 +585,13 @@ Rollback stops new dispatch, cancels/drains through fenced receipts and retains
 the DB/artifacts; it never deletes state. Canonical runtime remains on the
 legacy single-slot path until the shadow projection and crash tests are green.
 
+Control-plane Phase A poll projection (`GET /api/control/status` /
+`/health`) exposes Slice 2b / multi-slot UI fields without making Evolution SSE
+the multi-slot authority: `active_generations`, `pipeline_mode`,
+`async_certification`, `eval_wait`, `feature_flags`, `version_authority`, and
+daemon `pairs_drift`. The observer cache key watches
+`pipeline_state_draft.json` so draft stage moves invalidate status/health.
+
 ## 14. Acceptance tests
 
 Required positives:
@@ -630,7 +637,13 @@ wait for this refactor.
   when activated (`POK_SLICE2B_ENABLED=1`), the consumer runs quality through
   precommit only, the primary lane parks on those gates, ``commit_bot`` stays
   on the primary path behind the promotion barrier, and
-  ``producer_may_prepare_next()`` gates the gen N+1 draft prepare after seal;
+  ``producer_may_prepare_next()`` gates the gen N+1 draft prepare after seal.
+  Draft checkpoints use shadow identity (`is_draft=True`): they skip live
+  floor+1 allocation CAS, isolate candidates under `draft_candidates/`, and
+  promotion remaps onto the formal `next_v`. Selected checkpoints persist
+  `publication_tier` (`POK_DEFAULT_PUBLICATION_TIER`, defaulting to staging
+  under slice2b); staging publications schedule async official certification
+  via `start_or_poll_job` keyed off `strict_published_versions`;
 - Slice 3, Quality/native fork/join: another 2–3 days;
 - Slice 4, official/rating/restart canary and frontend: another 1–2 days.
 

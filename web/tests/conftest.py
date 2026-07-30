@@ -262,6 +262,15 @@ def synthetic_checkpoint_authority(monkeypatch):
     from types import SimpleNamespace
 
     def resolve(*, expected_next_v=None):
+        # Draft shadow writes skip the live floor+1 successor CAS and therefore
+        # call allocation authority with expected_next_v=None.
+        if expected_next_v is None:
+            return {
+                "published_high_water": 9,
+                "abandoned_receipt_floor": 0,
+                "abandoned_receipt_head_digest": None,
+                "allocation_floor": 9,
+            }
         if type(expected_next_v) is not int or expected_next_v <= 1:
             raise AssertionError("synthetic checkpoint target must be explicit")
         published = expected_next_v - 1

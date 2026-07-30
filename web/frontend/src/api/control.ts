@@ -40,6 +40,8 @@ export interface CanonicalGenerationIdentity {
 }
 
 export interface ActiveGeneration extends CanonicalGenerationIdentity {
+  /** Primary-slot marker when projected inside ``active_generations``. */
+  slot_id?: "primary";
   next_v: number;
   source_v: number | null;
   parent2_v: number | null;
@@ -58,7 +60,7 @@ export interface ActiveGeneration extends CanonicalGenerationIdentity {
   };
 }
 
-/** A draft-slot generation running concurrently with the primary (Phase 4b). */
+/** A draft-slot generation running concurrently with the primary (Phase 4b / Slice 2b). */
 export interface DraftGeneration {
   slot_id: "draft";
   next_v: number;
@@ -66,8 +68,66 @@ export interface DraftGeneration {
   parent2_v: number | null;
   stage: string;
   workflow_run_id: string | null;
-  checkpoint_revision: number;
+  /** Backend may omit or null a draft revision before first durable write. */
+  checkpoint_revision: number | null;
   is_draft: true;
+}
+
+/** Multi-slot control projection: primary first, then optional draft. */
+export type GenerationSlot =
+  | (ActiveGeneration & { slot_id: "primary" })
+  | DraftGeneration;
+
+export interface PipelineModeProjection {
+  enabled: boolean;
+  consumer_parked: boolean;
+  producer_may_prepare_next: boolean;
+  producer_may_advance: boolean;
+  in_flight_count: number;
+  sealed_candidates: string[];
+}
+
+export interface FeatureFlagsProjection {
+  slice2b_enabled: boolean;
+  staging_as_parent: boolean;
+  certified_tag_prefix: string;
+  tag_prefix: string;
+}
+
+export interface VersionAuthorityProjection {
+  high_water: number;
+  paired_versions: number[];
+  certified_versions: number[];
+  unpaired_completion_versions: number[];
+  unpaired_high_water_versions: number[];
+}
+
+export interface AsyncCertificationItem {
+  version: number;
+  bot_name: string;
+  state: "passed" | "pending" | "running" | string;
+  staging_tag: string;
+  certified_tag: string | null;
+  job_id: string | null;
+  formal_authority: "signed_full_v5" | "staging_uncertified" | string;
+}
+
+export interface AsyncCertificationProjection {
+  items: AsyncCertificationItem[];
+  any_pending: boolean;
+}
+
+export interface EvalWaitProjection {
+  waiting: boolean;
+  bot: string | null;
+  games: number | null;
+  min_games: number;
+  rd: number | null;
+  rd_threshold: number;
+  rd_min_games: number;
+  daemon_alive: boolean | null;
+  consecutive_prep_fails: number | null;
+  degraded: boolean;
 }
 
 export interface PipelineRoute {
@@ -224,6 +284,17 @@ export interface ControlStatus {
   stability_observation_digest: string;
   operator_transition?: OperatorTransition | null;
   status_sync_error?: string;
+  /**
+   * Phase A multi-slot / slice2b / cert / eval-wait blocks. Optional for
+   * backward compatibility with pre-Phase-A observers; missing means empty /
+   * unavailable, never a fail-closed unknown-field rejection.
+   */
+  active_generations?: GenerationSlot[];
+  pipeline_mode?: PipelineModeProjection;
+  async_certification?: AsyncCertificationProjection;
+  eval_wait?: EvalWaitProjection;
+  feature_flags?: FeatureFlagsProjection;
+  version_authority?: VersionAuthorityProjection;
 }
 
 export interface ControlTaskHealth {
@@ -257,6 +328,14 @@ export interface ControlDaemonHealth {
   heartbeat_stale?: boolean;
   heartbeat_age_sec?: number | null;
   health_error?: string | null;
+  /** AppState / env / live cmdline pair-worker projection (Phase A). */
+  configured_workers?: number;
+  configured_pairs?: number;
+  env_workers?: number | null;
+  env_pairs?: number | null;
+  effective_workers?: number | null;
+  effective_pairs?: number | null;
+  pairs_drift?: boolean;
 }
 
 export interface ControlPipelineHealth {
@@ -317,10 +396,22 @@ export interface ControlHealth {
   status: ControlStatus;
   running: boolean;
   active_generation: ActiveGeneration | null;
+  /** Mirrored Phase A multi-slot list (same bytes as ``status.active_generations``). */
+  active_generations?: GenerationSlot[];
   task: ControlTaskHealth;
   daemon: ControlDaemonHealth;
   pipeline: ControlPipelineHealth;
   checked_at: number;
+}
+
+export interface ControlAbandonResult {
+  status: "abandoned" | string;
+  operation: "control_abandon_generation" | string;
+  transaction_id?: string | null;
+  abandoned_v?: number | null;
+  abandon_receipt_digest?: string | null;
+  message?: string;
+  [key: string]: unknown;
 }
 
 export function controlPipelineBlocked(
@@ -528,6 +619,55 @@ export function controlSchedulerOwnsPrepareBoundary(
   );
 }
 
+/** Primary slot from ``active_generations``, else legacy ``active_generation``. */
+export function primaryGenerationSlot(
+  status: ControlStatus | null | undefined,
+): (ActiveGeneration & { slot_id: "primary" }) | null {
+  const slots = status?.active_generations;
+  if (Array.isArray(slots)) {
+    const primary = slots.find(
+      (slot): slot is ActiveGeneration & { slot_id: "primary" } => slot.slot_id === "primary",
+    );
+    if (primary) return primary;
+  }
+  if (status?.active_generation) {
+    return { ...status.active_generation, slot_id: "primary" };
+  }
+  return null;
+}
+
+/** Draft slots from Phase A ``active_generations`` (empty when absent/legacy). */
+export function draftGenerations(
+  status: ControlStatus | null | undefined,
+): DraftGeneration[] {
+  const slots = status?.active_generations;
+  if (!Array.isArray(slots)) return [];
+  return slots.filter(
+    (slot): slot is DraftGeneration => (
+      slot.slot_id === "draft" && (slot as DraftGeneration).is_draft === true
+    ),
+  );
+}
+
+/** Stages where HTTP/MCP generic abandon is refused (mirrors backend never_disposable). */
+export const CONTROL_NEVER_DISPOSABLE_STAGES = new Set([
+  "verified",
+  "official_bootstrap_required",
+  "official_certifying",
+  "official_inconclusive",
+  "publishing",
+  "archived",
+]);
+
+/** True when control status projects an active primary that may accept operator abandon. */
+export function controlAbandonAvailable(
+  status: ControlStatus | null | undefined,
+): boolean {
+  const active = primaryGenerationSlot(status) ?? status?.active_generation ?? null;
+  if (!active?.stage) return false;
+  return !CONTROL_NEVER_DISPOSABLE_STAGES.has(active.stage);
+}
+
 export interface Decision {
   tool: string;
   summary: string;
@@ -606,6 +746,13 @@ export const controlApi = {
     method: "POST",
     headers: withOperatorControlHeader(),
   }),
+  /** Operator escape hatch: stop runtime then canonical abandon (leave stopped). */
+  abandon: (body?: { reason?: string }) =>
+    fetchJSON<ControlAbandonResult>(`${BASE}/abandon`, {
+      method: "POST",
+      headers: withOperatorControlHeader({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body ?? {}),
+    }),
   listTools: () => fetchJSON<{
     tools: string[];
     enabled_tools?: string[];

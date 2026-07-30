@@ -392,6 +392,10 @@ def _observer_authority_content_key() -> tuple:
 
     results_paths = (
         infra.PIPELINE_STATE_FILE,
+        # Draft one-ahead checkpoint must invalidate the observer cache the
+        # same way the primary does; otherwise multi-slot UI can serve a
+        # stale ``active_generations`` projection after draft stage moves.
+        infra.pipeline_state_path("draft"),
         infra.ABANDONED_VERSIONS_FILE,
         infra.REAPED_BOTS_FILE,
         Path(infra.RESULTS_DIR) / POLICY_EPOCH_RESET_RECEIPT_FILENAME,
@@ -921,6 +925,104 @@ def _read_pipeline_health(status: dict) -> dict:
     return snapshot
 
 
+def _optional_env_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if value < 1:
+        return None
+    return value
+
+
+def _parse_daemon_effective_argv(pid: Any) -> tuple[int | None, int | None]:
+    """Read live ``--workers`` / ``--pairs`` from ``/proc/<pid>/cmdline``."""
+
+    try:
+        process_id = int(pid)
+    except (TypeError, ValueError):
+        return None, None
+    if process_id <= 1:
+        return None, None
+    try:
+        argv = [
+            os.fsdecode(item)
+            for item in (Path("/proc") / str(process_id) / "cmdline").read_bytes().split(b"\0")
+            if item
+        ]
+    except (OSError, RuntimeError, ValueError):
+        return None, None
+    workers = None
+    pairs = None
+    for index, token in enumerate(argv):
+        if token == "--workers" and index + 1 < len(argv):
+            try:
+                workers = int(argv[index + 1])
+            except (TypeError, ValueError):
+                workers = None
+        elif token == "--pairs" and index + 1 < len(argv):
+            try:
+                pairs = int(argv[index + 1])
+            except (TypeError, ValueError):
+                pairs = None
+    if workers is not None and workers < 1:
+        workers = None
+    if pairs is not None and pairs < 1:
+        pairs = None
+    return workers, pairs
+
+
+def _daemon_config_drift_fields(data: dict) -> dict:
+    """AppState / env / live cmdline pair-worker projection for health/status."""
+
+    cfg = app_state.get_config()
+    try:
+        configured_workers = int(cfg.get("daemon_workers") or 0)
+    except (TypeError, ValueError):
+        configured_workers = 0
+    try:
+        configured_pairs = int(cfg.get("daemon_pairs") or 0)
+    except (TypeError, ValueError):
+        configured_pairs = 0
+    env_workers = _optional_env_int("POK_DAEMON_WORKERS")
+    env_pairs = _optional_env_int("POK_DAEMON_PAIRS")
+    effective_workers = None
+    effective_pairs = None
+    if data.get("alive") and data.get("pid") is not None:
+        effective_workers, effective_pairs = _parse_daemon_effective_argv(
+            data.get("pid")
+        )
+    pairs_drift = bool(
+        (
+            effective_pairs is not None
+            and configured_pairs > 0
+            and effective_pairs != configured_pairs
+        )
+        or (
+            env_pairs is not None
+            and configured_pairs > 0
+            and env_pairs != configured_pairs
+        )
+    )
+    return {
+        "configured_workers": configured_workers,
+        "configured_pairs": configured_pairs,
+        "env_workers": env_workers,
+        "env_pairs": env_pairs,
+        "effective_workers": effective_workers,
+        "effective_pairs": effective_pairs,
+        "pairs_drift": pairs_drift,
+    }
+
+
+def _with_daemon_config_projection(data: dict) -> dict:
+    data.update(_daemon_config_drift_fields(data))
+    return data
+
+
 def _daemon_health_snapshot() -> dict:
     data = _read_pid_info(RESULTS_DIR / ".daemon_pid")
     try:
@@ -942,7 +1044,7 @@ def _daemon_health_snapshot() -> dict:
             # state; the lifecycle reader's fail-closed missing-file error is
             # only applicable when a daemon is configured.
             data["health_error"] = None
-        return data
+        return _with_daemon_config_projection(data)
     if not data.get("alive"):
         data["heartbeat_status"] = "invalid" if data.get("exists") else "missing"
         if not data.get("health_error"):
@@ -951,13 +1053,13 @@ def _daemon_health_snapshot() -> dict:
                 if data.get("exists")
                 else "daemon_pid_file_missing"
             )
-        return data
+        return _with_daemon_config_projection(data)
 
     raw_heartbeat = data.get("last_heartbeat")
     if raw_heartbeat is None:
         data["heartbeat_status"] = "missing"
         data["health_error"] = "daemon_heartbeat_missing"
-        return data
+        return _with_daemon_config_projection(data)
     try:
         if isinstance(raw_heartbeat, bool):
             raise ValueError("boolean heartbeat")
@@ -967,7 +1069,7 @@ def _daemon_health_snapshot() -> dict:
     except (TypeError, ValueError, OverflowError):
         data["heartbeat_status"] = "invalid"
         data["health_error"] = "daemon_heartbeat_invalid"
-        return data
+        return _with_daemon_config_projection(data)
     age = time.time() - heartbeat
     data["heartbeat_age_sec"] = round(age, 2)
     if age < -5.0:
@@ -980,7 +1082,325 @@ def _daemon_health_snapshot() -> dict:
     else:
         data["heartbeat_status"] = "fresh"
         data["health_error"] = None
-    return data
+    return _with_daemon_config_projection(data)
+
+
+def _pipeline_mode_projection() -> dict[str, Any]:
+    """Cheap Slice-2b one-ahead coordinator projection for control status."""
+
+    try:
+        from producer_consumer_slice2b_activation import (
+            activation_registry,
+            slice2b_active,
+        )
+    except Exception:
+        return {
+            "enabled": False,
+            "consumer_parked": False,
+            "producer_may_prepare_next": False,
+            "producer_may_advance": False,
+            "in_flight_count": 0,
+            "sealed_candidates": [],
+        }
+    enabled = bool(slice2b_active())
+    if not enabled:
+        return {
+            "enabled": False,
+            "consumer_parked": False,
+            "producer_may_prepare_next": False,
+            "producer_may_advance": False,
+            "in_flight_count": 0,
+            "sealed_candidates": [],
+        }
+    activation = activation_registry("get")
+    if activation is None:
+        return {
+            "enabled": True,
+            "consumer_parked": False,
+            "producer_may_prepare_next": False,
+            "producer_may_advance": True,
+            "in_flight_count": 0,
+            "sealed_candidates": [],
+        }
+    try:
+        in_flight = dict(activation.coordinator.in_flight())
+        may_prepare = bool(activation.producer_may_prepare_next())
+        may_advance = bool(activation.producer_may_advance())
+    except Exception:
+        return {
+            "enabled": True,
+            "consumer_parked": False,
+            "producer_may_prepare_next": False,
+            "producer_may_advance": False,
+            "in_flight_count": 0,
+            "sealed_candidates": [],
+        }
+    in_flight_count = len(in_flight)
+    return {
+        "enabled": True,
+        "consumer_parked": in_flight_count == 1,
+        "producer_may_prepare_next": may_prepare,
+        "producer_may_advance": may_advance,
+        "in_flight_count": in_flight_count,
+        "sealed_candidates": list(in_flight.keys()),
+    }
+
+
+def _feature_flags_projection() -> dict[str, Any]:
+    try:
+        from bot_namespace import (
+            ACTIVE_TAG_PREFIX,
+            ALLOW_STAGING_AS_PARENT,
+            CERTIFIED_TAG_PREFIX,
+        )
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return {
+            "slice2b_enabled": False,
+            "staging_as_parent": False,
+            "certified_tag_prefix": "",
+            "tag_prefix": "",
+        }
+    return {
+        "slice2b_enabled": bool(slice2b_active()),
+        "staging_as_parent": bool(ALLOW_STAGING_AS_PARENT),
+        "certified_tag_prefix": str(CERTIFIED_TAG_PREFIX),
+        "tag_prefix": str(ACTIVE_TAG_PREFIX),
+    }
+
+
+def _version_authority_projection(epoch: dict[str, Any]) -> dict[str, Any]:
+    paired = list(epoch.get("strict_published_versions") or [])
+    unpaired_completion = list(epoch.get("unpaired_completion_versions") or [])
+    unpaired_high_water = list(epoch.get("unpaired_high_water_versions") or [])
+    try:
+        high_water = int(epoch.get("version_authority_high_water") or 0)
+    except (TypeError, ValueError):
+        high_water = 0
+    certified: list[int] = []
+    try:
+        import evolution_infra as infra
+
+        namespace = infra.version_namespace_authority()
+        certified = [int(v) for v in (namespace.certified_versions or ())]
+        if not paired:
+            paired = [int(v) for v in (namespace.paired_versions or ())]
+        if not unpaired_completion:
+            unpaired_completion = [
+                int(v) for v in (namespace.unpaired_completion_versions or ())
+            ]
+        if not unpaired_high_water:
+            unpaired_high_water = [
+                int(v) for v in (namespace.unpaired_high_water_versions or ())
+            ]
+        if high_water <= 0 and getattr(namespace, "high_water", None) is not None:
+            high_water = int(namespace.high_water)
+    except Exception:
+        certified = []
+    certified_set = set(certified)
+    # Certified tags are a strict subset of paired publication authority.
+    certified = [v for v in paired if v in certified_set] or [
+        v for v in certified if v in set(paired)
+    ]
+    return {
+        "high_water": high_water,
+        "paired_versions": paired,
+        "certified_versions": certified,
+        "unpaired_completion_versions": unpaired_completion,
+        "unpaired_high_water_versions": unpaired_high_water,
+    }
+
+
+def _async_certification_projection(
+    version_authority: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive staging-vs-certified items from tag authority (no heavy job poll)."""
+
+    try:
+        from bot_namespace import bot_name, bot_tag, certified_tag
+    except Exception:
+        return {"items": [], "any_pending": False}
+    paired = list(version_authority.get("paired_versions") or [])
+    certified = set(version_authority.get("certified_versions") or [])
+    items: list[dict[str, Any]] = []
+    for version in paired:
+        try:
+            version_i = int(version)
+        except (TypeError, ValueError):
+            continue
+        name = bot_name(version_i)
+        if version_i in certified:
+            items.append({
+                "version": version_i,
+                "bot_name": name,
+                "state": "passed",
+                "staging_tag": bot_tag(version_i),
+                "certified_tag": certified_tag(version_i),
+                "job_id": None,
+                "formal_authority": "signed_full_v5",
+            })
+        else:
+            items.append({
+                "version": version_i,
+                "bot_name": name,
+                "state": "pending",
+                "staging_tag": bot_tag(version_i),
+                "certified_tag": None,
+                "job_id": None,
+                "formal_authority": "staging_uncertified",
+            })
+    any_pending = any(item.get("state") in {"pending", "running"} for item in items)
+    return {"items": items, "any_pending": any_pending}
+
+
+def _eval_wait_projection(
+    *,
+    active_generation: Any,
+    active_bots: list[Any] | None,
+    daemon_alive: bool | None,
+) -> dict[str, Any]:
+    """Project prepare-time eval wait when no generation is actively leased."""
+
+    try:
+        from workflow_profiles import get_workflow_profile
+
+        profile = get_workflow_profile()
+        min_games = int(getattr(profile, "eval_wait_min_games", 24) or 24)
+        rd_threshold = float(getattr(profile, "eval_wait_rd_threshold", 110.0) or 110.0)
+        rd_min_games = int(getattr(profile, "eval_wait_rd_min_games", 12) or 12)
+    except Exception:
+        min_games = 24
+        rd_threshold = 110.0
+        rd_min_games = 12
+
+    base = {
+        "waiting": False,
+        "bot": None,
+        "games": None,
+        "min_games": min_games,
+        "rd": None,
+        "rd_threshold": rd_threshold,
+        "rd_min_games": rd_min_games,
+        "daemon_alive": daemon_alive,
+        # Loop-local only; cross-process observer cannot observe it.
+        "consecutive_prep_fails": None,
+        "degraded": False,
+    }
+    if isinstance(active_generation, dict):
+        return base
+
+    bots = [str(name) for name in (active_bots or []) if name]
+    if not bots:
+        return base
+    bot = bots[-1]
+    games = None
+    rd = None
+    try:
+        import evolution_infra as infra
+
+        stats = infra.read_locked_json(infra.BOT_STATS_FILE, default={}) or {}
+        row = stats.get(bot) if isinstance(stats, dict) else None
+        if isinstance(row, dict) and row.get("games") is not None:
+            games = int(row.get("games") or 0)
+        ratings = infra.read_locked_json(infra.RATINGS_FILE, default={}) or {}
+        rating_row = ratings.get(bot) if isinstance(ratings, dict) else None
+        if isinstance(rating_row, dict) and rating_row.get("rd") is not None:
+            rd = float(rating_row.get("rd"))
+    except Exception:
+        games = games
+        rd = rd
+
+    ready_by_games = games is not None and games >= min_games
+    ready_by_rd = (
+        games is not None
+        and rd is not None
+        and games >= rd_min_games
+        and rd < rd_threshold
+    )
+    waiting = not (ready_by_games or ready_by_rd)
+    return {
+        **base,
+        "waiting": waiting,
+        "bot": bot,
+        "games": games,
+        "rd": None if rd is None else round(rd, 2),
+    }
+
+
+def _phase_a_unavailable_projection() -> dict[str, Any]:
+    """Fail-closed Phase A blocks when epoch projection is unavailable."""
+
+    return {
+        "active_generations": [],
+        "pipeline_mode": {
+            "enabled": False,
+            "consumer_parked": False,
+            "producer_may_prepare_next": False,
+            "producer_may_advance": False,
+            "in_flight_count": 0,
+            "sealed_candidates": [],
+        },
+        "async_certification": {"items": [], "any_pending": False},
+        "eval_wait": {
+            "waiting": False,
+            "bot": None,
+            "games": None,
+            "min_games": 24,
+            "rd": None,
+            "rd_threshold": 110.0,
+            "rd_min_games": 12,
+            "daemon_alive": None,
+            "consecutive_prep_fails": None,
+            "degraded": False,
+        },
+        "feature_flags": {
+            "slice2b_enabled": False,
+            "staging_as_parent": False,
+            "certified_tag_prefix": "",
+            "tag_prefix": "",
+        },
+        "version_authority": {
+            "high_water": 0,
+            "paired_versions": [],
+            "certified_versions": [],
+            "unpaired_completion_versions": [],
+            "unpaired_high_water_versions": [],
+        },
+    }
+
+
+def _attach_phase_a_projections(state: dict[str, Any], *, epoch: dict[str, Any] | None) -> None:
+    """Attach multi-slot / slice2b / cert / eval-wait control projection blocks."""
+
+    if epoch is None:
+        state.update(_phase_a_unavailable_projection())
+        # Feature flags and pipeline mode remain readable even when epoch fails.
+        try:
+            state["feature_flags"] = _feature_flags_projection()
+        except Exception:
+            pass
+        try:
+            state["pipeline_mode"] = _pipeline_mode_projection()
+        except Exception:
+            pass
+        return
+
+    state["active_generations"] = list(epoch.get("active_generations") or [])
+    state["pipeline_mode"] = _pipeline_mode_projection()
+    state["feature_flags"] = _feature_flags_projection()
+    version_authority = _version_authority_projection(epoch)
+    state["version_authority"] = version_authority
+    state["async_certification"] = _async_certification_projection(version_authority)
+    daemon_alive = None
+    try:
+        daemon_alive = bool(_daemon_health_snapshot().get("alive"))
+    except Exception:
+        daemon_alive = None
+    state["eval_wait"] = _eval_wait_projection(
+        active_generation=state.get("active_generation"),
+        active_bots=list(state.get("active_bots") or []),
+        daemon_alive=daemon_alive,
+    )
 
 
 def _health_summary(status: dict) -> dict:
@@ -1060,6 +1480,7 @@ def _health_summary(status: dict) -> dict:
         "status": status,
         "running": status.get("running"),
         "active_generation": status.get("active_generation"),
+        "active_generations": list(status.get("active_generations") or []),
         "task": task,
         "daemon": daemon,
         "pipeline": pipeline,
@@ -1233,6 +1654,7 @@ def _sync_evolution_fields(
     from a read-only endpoint.
     """
     sampled_stream_authority_digest = None
+    phase_a_epoch: dict[str, Any] | None = None
     try:
         from epoch_authority import (
             epoch_stream_authority_digest,
@@ -1319,17 +1741,20 @@ def _sync_evolution_fields(
             ledger_fresh=ledger_fresh,
         )
         state["post_publication_handoff"] = handoff
+        phase_a_epoch = epoch
     except Exception as exc:
         # Never fall back to AppState's bootstrap counters: those values may
         # have been initialized from a retired checkpoint or abandoned bot
         # directory.  Return a complete, explicitly unavailable projection so
         # browser clients can render a recovery state without guessing fields
         # or accidentally presenting stale version authority.
+        phase_a_epoch = None
         state.update({
             "current_v": 0,
             "next_v": 0,
             "generation_count": 0,
             "active_generation": None,
+            "active_generations": [],
             "evaluation_epoch": "national_tcp_policy_v1",
             "epoch_state": "epoch_authority_unavailable",
             "epoch_initialized": False,
@@ -1367,6 +1792,15 @@ def _sync_evolution_fields(
         state["post_publication_handoff"] = (
             post_publication_handoff_projection(enabled=False)
         )
+    # Phase A blocks are non-authoritative overlays: attach after the epoch
+    # bracket so a helper failure cannot wipe a proven epoch sample.
+    try:
+        _attach_phase_a_projections(state, epoch=phase_a_epoch)
+    except Exception:
+        try:
+            _attach_phase_a_projections(state, epoch=None)
+        except Exception:
+            state.update(_phase_a_unavailable_projection())
     try:
         from stability_observation import stability_observation_cached_projection
 

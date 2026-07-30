@@ -397,16 +397,22 @@ def _promote_draft_to_primary(published_next_v):
         published_v = int(published_next_v)
     except (TypeError, ValueError):
         return False
-    if draft_next_v != published_v + 1:
-        # The draft targets a different generation than the one-ahead slot;
-        # do not promote a stale/mismatched draft.
+    formal_next_v = published_v + 1
+    # Shadow drafts may hold a provisional next_v; remap onto formal successor.
+    if draft.get("is_draft") is not True and draft_next_v != formal_next_v:
+        # Non-shadow mismatch: do not promote a stale draft.
         return False
-    # Build a minimal promote payload from the draft fields.  We re-write the
-    # draft's exact state into the primary slot at workers_done so the primary
-    # loop's deterministic recovery picks up at run_quality_gates.  The CAS
-    # refuses if the primary is still active, which is the correct behaviour.
+    try:
+        from generation_scheduler import _relocate_draft_candidate_to_live
+
+        _relocate_draft_candidate_to_live(draft_next_v, formal_next_v)
+    except Exception:
+        pass
+    # Build a minimal promote payload from the draft fields.  Remap onto the
+    # formal next_v so the primary loop's deterministic recovery picks up at
+    # run_quality_gates.  The CAS refuses if the primary is still active.
     promote_fields = {
-        "next_v": draft_next_v,
+        "next_v": formal_next_v,
         "source_v": int(draft.get("source_v") or 0),
         "stage": "workers_done",
         "master_plan": draft.get("master_plan"),
@@ -434,6 +440,7 @@ def _promote_draft_to_primary(published_next_v):
         ),
         "review_attempt_journal": draft.get("review_attempt_journal"),
         "identity_replan_history": draft.get("identity_replan_history"),
+        "publication_tier": draft.get("publication_tier"),
     }
     # Write to primary with the override bypassed (force primary slot).
     with no_slot_override():
@@ -447,8 +454,12 @@ def _promote_draft_to_primary(published_next_v):
         _o.log_system_event(
             "orchestrator.slice2b_draft_promoted",
             "info",
-            f"One-ahead draft promoted to primary at v{draft_next_v}",
-            {"next_v": draft_next_v, "published_v": published_v},
+            f"One-ahead draft promoted to primary at v{formal_next_v}",
+            {
+                "next_v": formal_next_v,
+                "published_v": published_v,
+                "provisional_next_v": draft_next_v,
+            },
         )
     except Exception:
         pass

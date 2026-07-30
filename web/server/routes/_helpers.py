@@ -328,15 +328,26 @@ def build_bot_summary(
         formal_authority = "signed_full_v5" if formal else (
             "staging_uncertified" if publication_tier == "staging" else "none"
         )
+        certified_tag_value = None
+        try:
+            from bot_namespace import certified_tag, parse_bot_version
+
+            _bv = parse_bot_version(bot_name)
+            if _bv is not None and publication_tier == "certified":
+                certified_tag_value = certified_tag(_bv)
+        except Exception:
+            certified_tag_value = None
         certification.update({
             "formal_certified": formal,
             "formal_authority": formal_authority,
             "publication_tier": publication_tier,
+            "certified_tag": certified_tag_value,
             "formal_summary": None,
             **profile,
         })
         summary["official_certification"] = certification
         summary["publication_tier"] = publication_tier
+        summary["certified_tag"] = certified_tag_value
     except Exception:
         summary["official_certification"] = {
             "bot": bot_name,
@@ -345,9 +356,13 @@ def build_bot_summary(
             "issues": ["certification_status_unavailable"],
             "formal_certified": False,
             "formal_authority": "none",
-            "publication_tier": "certified",
+            # Unknown — never default to "certified" (would lie about authority).
+            "publication_tier": None,
+            "certified_tag": None,
             "formal_summary": None,
         }
+        summary["publication_tier"] = None
+        summary["certified_tag"] = None
     for key in (
         "leaderboard_score", "rank_basis", "strength_confidence", "h2h_coverage",
         "h2h_games", "h2h_opponents", "h2h_opponents_total", "h2h_source",

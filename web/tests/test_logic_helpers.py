@@ -241,6 +241,57 @@ class TestBuildBotSummary:
         result = build_bot_summary(bot_dir, "bot_alpha", {}, {}, {})
         assert result["version"] == 0
 
+    def test_certification_unavailable_does_not_default_tier_to_certified(
+        self, tmp_path, monkeypatch
+    ):
+        import official_certification
+        from server.routes._helpers import build_bot_summary
+
+        bot_dir = tmp_path / "national_cloud_v1"
+        bot_dir.mkdir()
+
+        def _boom(_path):
+            raise RuntimeError("certification unavailable")
+
+        monkeypatch.setattr(official_certification, "status_payload", _boom)
+        result = build_bot_summary(bot_dir, "national_cloud_v1", {}, {}, {})
+        assert result["publication_tier"] is None
+        assert result["certified_tag"] is None
+        assert result["official_certification"]["publication_tier"] is None
+        assert result["official_certification"]["certified_tag"] is None
+
+    def test_formal_certified_summary_exposes_certified_tag(
+        self, tmp_path, monkeypatch
+    ):
+        import official_certification
+        from bot_namespace import CERTIFIED_TAG_PREFIX
+        from server.routes._helpers import build_bot_summary
+
+        bot_dir = tmp_path / "national_cloud_v1"
+        bot_dir.mkdir()
+        status = {
+            "bot": "national_cloud_v1",
+            "status": "official-certified",
+            "mode": "full",
+            "policy_id": "official-full-v5",
+        }
+        monkeypatch.setattr(official_certification, "status_payload", lambda _path: status)
+        monkeypatch.setattr(
+            official_certification,
+            "official_certification_profile_projection",
+            lambda payload, candidate, *, require_published: {
+                "certification_profile": "official-full-v5",
+                "opponent_authority": "strict_published_pool",
+                "strength_evidence_weight": 0,
+                "strategy_evidence_weight": 0,
+                "formal_summary": None,
+            },
+        )
+        result = build_bot_summary(bot_dir, "national_cloud_v1", {}, {}, {})
+        assert result["publication_tier"] == "certified"
+        assert result["certified_tag"] == f"{CERTIFIED_TAG_PREFIX}1"
+        assert result["official_certification"]["certified_tag"] == result["certified_tag"]
+
     def test_no_py_files(self, tmp_path):
         from server.routes._helpers import build_bot_summary
         bot_dir = tmp_path / "national_v143"

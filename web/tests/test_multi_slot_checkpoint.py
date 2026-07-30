@@ -31,6 +31,25 @@ from evolution_infra import (
 )
 
 
+def test_publication_tier_persisted_and_preserved():
+    """selected writes can set publication_tier; later merges preserve it."""
+    assert write_pipeline_checkpoint(
+        next_v=10,
+        source_v=9,
+        stage="selected",
+        publication_tier="staging",
+    )
+    ckpt = read_pipeline_checkpoint()
+    assert ckpt["publication_tier"] == "staging"
+    # Generic stage advance without an explicit tier keeps the prior value.
+    assert write_pipeline_checkpoint(
+        next_v=10, source_v=9, stage="preparing"
+    )
+    ckpt = read_pipeline_checkpoint()
+    assert ckpt["publication_tier"] == "staging"
+    assert ckpt["stage"] == "preparing"
+
+
 def test_path_resolver_primary_is_canonical_constant():
     """slot_id=None must resolve to the exact PIPELINE_STATE_FILE constant."""
     assert pipeline_state_path(None) is evolution_infra.PIPELINE_STATE_FILE
@@ -85,10 +104,12 @@ def test_secondary_slot_isolated_file():
     primary = read_pipeline_checkpoint()
     assert primary["next_v"] == 10
     assert primary["stage"] == "testing"
-    # Secondary reads back independently.
+    # Secondary reads back independently and carries shadow identity.
     draft = read_pipeline_checkpoint(slot_id="draft")
     assert draft["next_v"] == 20
     assert draft["stage"] == "evaluation"
+    assert draft.get("is_draft") is True
+    assert primary.get("is_draft") is not True
 
 
 def test_slots_are_independent_reads():

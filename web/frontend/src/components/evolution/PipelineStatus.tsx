@@ -1,6 +1,12 @@
 import { useState } from "react";
 import type { MasterPlanTask, PipelineCheckpoint, PipelineGateResult } from "../../api/types";
-import type { ActiveGeneration, PipelineRoute, PostPublicationHandoffStatus } from "../../api/control";
+import type {
+  ActiveGeneration,
+  DraftGeneration,
+  PipelineModeProjection,
+  PipelineRoute,
+  PostPublicationHandoffStatus,
+} from "../../api/control";
 import {
   PIPELINE_STAGE_CONTRACT,
   PIPELINE_STAGES,
@@ -16,20 +22,24 @@ import {
   criticAdvisoryComplete,
   criticAdvisoryVerdict,
   pipelineCheckpointIdentityIssues,
+  pipelineStepperStage,
   reviewerRetryPending,
 } from "../../lib/pipelinePresentation";
 import { CheckIcon, CrossIcon } from "./icons";
 
 export function PipelineStepper({
-  checkpoint,
+  checkpoint = null,
+  stage: stageProp = null,
   nextTool = null,
 }: {
-  checkpoint: PipelineCheckpoint | null;
+  checkpoint?: PipelineCheckpoint | null;
+  /** When checkpoint poll is null, pass ``active_generation.stage`` for read-only progress. */
+  stage?: string | null;
   nextTool?: string | null;
 }) {
-  if (!checkpoint) return null;
+  const rawStage = pipelineStepperStage(checkpoint, stageProp ? { stage: stageProp } : null) ?? "";
+  if (!rawStage) return null;
 
-  const rawStage = checkpoint.stage ?? "";
   if (isPipelineTimeoutLeaseStage(rawStage)) {
     const lease = PIPELINE_TIMEOUT_LEASES[rawStage];
     return (
@@ -123,6 +133,8 @@ export function PipelineStepper({
 export function PipelineStatus({
   checkpoint,
   activeGeneration = null,
+  drafts = [],
+  pipelineMode = null,
   handoff,
   handoffBlocked = false,
   activeBlocked = false,
@@ -132,6 +144,10 @@ export function PipelineStatus({
 }: {
   checkpoint: PipelineCheckpoint | null;
   activeGeneration?: ActiveGeneration | null;
+  /** Optional draft slots from ``active_generations`` (Phase A / Slice 2b). */
+  drafts?: DraftGeneration[];
+  /** Slice 2b park/prepare projection; consumer park must not look like stuck. */
+  pipelineMode?: PipelineModeProjection | null;
   handoff?: PostPublicationHandoffStatus | null;
   handoffBlocked?: boolean;
   activeBlocked?: boolean;
@@ -144,6 +160,7 @@ export function PipelineStatus({
     ? canonicalGenerationLabel(activeGeneration, activeGeneration.next_v)
     : null;
   const activeIdentityText = activeIdentityLabel ?? "双身份投影不可用";
+  const consumerParked = Boolean(pipelineMode?.enabled && pipelineMode.consumer_parked);
   const boundRoute = activeGeneration
     && route
     && route.stage === activeGeneration.stage
@@ -153,10 +170,37 @@ export function PipelineStatus({
     ? route
     : null;
 
+  const dualSlotBanner = (drafts.length > 0 || consumerParked) ? (
+    <div className="mb-2 space-y-1">
+      {consumerParked && (
+        <p className="rounded border border-brand-200 bg-brand-50 px-2 py-1.5 text-[10px] text-brand-800 dark:border-brand-800 dark:bg-brand-950/25 dark:text-brand-200">
+          主槽旁路等待（Slice 2b consumer park）：后台正在跑 quality→precommit，这不是卡住或恢复阻断。
+        </p>
+      )}
+      {drafts.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          <span className="rounded border border-brand-200 bg-brand-50 px-1.5 py-0.5 text-[10px] text-brand-700 dark:border-brand-800 dark:bg-brand-950/20 dark:text-brand-300">
+            primary · {activeGeneration ? `v${activeGeneration.next_v}` : "—"} · {activeGeneration?.stage ?? "—"}
+          </span>
+          {drafts.map((draft) => (
+            <span
+              key={`draft-${draft.next_v}-${draft.workflow_run_id ?? draft.stage}`}
+              className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700 dark:border-violet-800 dark:bg-violet-950/20 dark:text-violet-300"
+            >
+              draft · v{draft.next_v} · {draft.stage}
+              {draft.checkpoint_revision != null ? ` · rev ${draft.checkpoint_revision}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  ) : null;
+
   if (handoff && handoff.status !== "none") {
     const blocked = handoff.status === "blocked" || handoff.blocked || handoffBlocked;
     return (
       <div className="p-3">
+        {dualSlotBanner}
         <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">
           发布后交接{handoff.version != null ? ` v${handoff.version}` : ""}
         </h3>
@@ -187,9 +231,10 @@ export function PipelineStatus({
     );
   }
 
-  if (activeGeneration && activeBlocked) {
+  if (activeGeneration && activeBlocked && !consumerParked) {
     return (
       <div className="p-3">
+        {dualSlotBanner}
         <h3 className="mb-1 text-xs font-semibold uppercase text-red-700 dark:text-red-300">
           流水线 {activeIdentityText} 恢复已阻断
         </h3>
@@ -206,6 +251,7 @@ export function PipelineStatus({
   if (!activeGeneration) {
     return (
       <div className="p-3">
+        {dualSlotBanner}
         <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">流水线</h3>
         <p className={cn(
           "text-xs",
@@ -220,15 +266,22 @@ export function PipelineStatus({
   }
 
   if (!checkpoint) {
+    const stage = pipelineStepperStage(null, activeGeneration);
     return (
       <div className="p-3">
+        {dualSlotBanner}
         <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">
           流水线 {activeIdentityText}
           {activeGeneration.source_v != null ? ` · source_v=v${activeGeneration.source_v}` : ""}
         </h3>
-        <p className="text-xs text-amber-600 dark:text-amber-300">
-          已知 checkpoint 边界为 {activeGeneration.stage}，但详细 checkpoint 暂不可用；
-          下一动作：{boundRoute?.next_tool ?? "等待配对 health route"}。
+        <PipelineStepper
+          checkpoint={null}
+          stage={stage}
+          nextTool={boundRoute?.next_tool ?? null}
+        />
+        <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+          详细 checkpoint 暂不可用；进度仅按 active_generation.stage 只读展示。
+          下一动作：{consumerParked ? "consumer 旁路等待（非卡住）" : (boundRoute?.next_tool ?? "等待配对 health route")}。
         </p>
       </div>
     );
@@ -238,6 +291,7 @@ export function PipelineStatus({
   if (identityIssues.length > 0) {
     return (
       <div className="p-3">
+        {dualSlotBanner}
         <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">流水线权威不可用</h3>
         <p className="text-xs text-red-600 dark:text-red-300">
           checkpoint 与 control active_generation 的 {identityIssues.join("、")} 不一致；不显示旧流程进度。
@@ -259,11 +313,13 @@ export function PipelineStatus({
 
   return (
     <div className="p-3">
+      {dualSlotBanner}
       <button onClick={() => setExpanded(!expanded)} className="w-full text-left flex items-center justify-between mb-2">
         <h3 className="text-xs font-semibold uppercase text-gray-500">
           流水线 {activeIdentityText}
           {activeGeneration.source_v != null ? ` · source_v=v${activeGeneration.source_v}` : ""}
           {activeGeneration.attempt.generation ? ` (尝试 ${activeGeneration.attempt.generation})` : ""}
+          {consumerParked ? " · consumer park" : ""}
         </h3>
         <span className="text-[10px] text-gray-400">{expanded ? "▲" : "▼"}</span>
       </button>

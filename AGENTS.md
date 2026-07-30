@@ -313,11 +313,20 @@ kwarg into `llm_query_retry` or every role fails before the stream starts
 
 When `POK_ALLOW_STAGING_AS_PARENT=1`, `ROLE_PARENT_SOURCE` may omit a
 certificate, but `resolve_national_bot_spec` still **best-effort loads** any
-live signed digest and marks the parent `publication_tier=certified`. Epoch
-checkpoint binding still requires a valid `certificate_digest` for published
-parents; skipping the load causes
-`checkpoint_parent_publication_identity_incomplete` even for already-certified
-bots. Rating pool / official opponent remain certificate-mandatory.
+live signed digest and marks the parent `publication_tier=certified`. Pure
+staging parents (no digest) are allowed through checkpoint epoch binding:
+`_published_parent_identity` stores an empty-string `certificate_digest`
+sentinel while still binding staging completion/high-water tag authority.
+Certified parents still require a digest-bound certificate. Rating pool /
+official opponent remain certificate-mandatory.
+
+Selected checkpoints persist `publication_tier` (`staging` or `certified`) via
+`write_pipeline_checkpoint`; `commit_bot` consumes that field and does not
+recompute it. Default comes from `POK_DEFAULT_PUBLICATION_TIER`, else
+`staging` when `POK_SLICE2B_ENABLED` else `certified`; first-strict always
+stays on the certified (inline official) path. Staging publications schedule
+async official certification through `official_certification_job.start_or_poll_job`
+(non-blocking poll), keyed off `strict_published_versions`.
 
 ### GLM 429 quota exhaustion and recovery-window waiting
 
@@ -366,14 +375,13 @@ fail retry during a multi-hour quota window.
 
 ### Global LLM concurrency (producer-consumer model)
 
-All sub-agent LLM calls are capped at **3 simultaneous in-flight streams**
+All sub-agent LLM calls are capped at **2 simultaneous in-flight streams**
 via a process-wide `asyncio.Semaphore` in
 `web/core/llm_concurrency.py` (`GLOBAL_LLM_CONCURRENCY=2` default in code,
 env-overridable via `POK_GLOBAL_LLM_CONCURRENCY`; production
-`deploy/tencent-cloud/env.runtime` sets it to `3` as of 2026-07-27 per
-`docs/llm-utilization-investigation-2026-07-27.md` Tier A.1, so the 3 Master
-Scouts and 2 Master critics each run in a single concurrent round instead of
-queueing 2-wide). The semaphore is acquired inside `run_claude_query` (the
+`deploy/tencent-cloud/env.runtime` sets it to `2` as of 2026-07-30 Phase B,
+after the 2026-07-27 Tier A.1 raise to 3 increased GLM 429 pressure under
+slice2b one-ahead overlap). The semaphore is acquired inside `run_claude_query` (the
 single chokepoint for all 17+ LLM call sites: Master Scouts/Critics/final,
 Workers, Review, Critic, direction_audit, crossover, etc.) just before the
 actual provider dispatch.
@@ -393,7 +401,10 @@ background consumer runs the canonical LLM gate chain through
 gates and ``commit_bot`` runs once behind the promotion barrier. After seal at
 ``workers_done``, ``producer_may_prepare_next()`` is true (exactly one sealed
 in-flight candidate) and the loop may launch the gen N+1 draft prepare while
-the consumer validates gen N.
+the consumer validates gen N. Draft checkpoints use shadow identity
+(``is_draft=True``): they skip live floor+1 allocation CAS, isolate candidates
+under ``RESULTS_DIR/draft_candidates/``, and promotion remaps them onto the
+formal ``next_v`` after the primary publishes.
 
 ### CLAUDE.md / AGENTS.md memory injection
 
@@ -706,10 +717,28 @@ follower's own off-loop worker thread (one isolated
 `ThreadPoolExecutor(max_workers=1)` per request), so the ASGI loop is never
 blocked. The cache is synchronously invalidated on every mutation, so its TTL
 (`_OBSERVER_CACHE_TTL_SEC`) never serves stale data across a write. The
-frontend treats a retryable observer 503 as a neutral "refreshing" state on
-first load (pure state machine `lib/controlFirstLoadState.ts`), not a red
-authority failure; only a genuine non-retryable error fails closed. Full
-analysis: `docs/observer-cache-availability-2026-07-28.md`.
+observer authority content key also watches the draft checkpoint
+(`pipeline_state_path("draft")` → `pipeline_state_draft.json`) so one-ahead
+multi-slot stage moves invalidate the same cache. The frontend treats a
+retryable observer 503 as a neutral "refreshing" state on first load (pure
+state machine `lib/controlFirstLoadState.ts`), not a red authority failure;
+only a genuine non-retryable error fails closed. Full analysis:
+`docs/observer-cache-availability-2026-07-28.md`.
+
+Control status/health Phase A projection blocks (poll authority; Evolution SSE
+still primary-slot only) include: `active_generations` (primary + draft slots
+from `epoch_authority`), `pipeline_mode` (Slice 2b activation / one-ahead
+coordinator), `async_certification` (paired vs certified tags), `eval_wait`
+(prepare-time strength sample wait when no active lease), `feature_flags`
+(`POK_SLICE2B_ENABLED`, `POK_ALLOW_STAGING_AS_PARENT`, tag prefixes),
+`version_authority` (high-water / paired / certified / unpaired), and daemon
+`configured_*` / `env_*` / `effective_*` / `pairs_drift`. Multi-slot UI must
+poll `/api/control/status` rather than infer draft state from SSE. Frontend
+Phase C mirrors those optional ControlStatus/ControlHealth fields,
+accepts `staging_uncertified` / `official-staging` in the bots data-stream
+validator, uses `active_generation.stage` for a read-only Pipeline stepper when
+the independent checkpoint poll is null, and exposes
+`POST /api/control/abandon` via `controlApi.abandon`.
 
 The blocking boundary used by all offloaded HTTP handlers
 (`run_blocking_isolated` in `web/core/blocking_runtime.py`) must await its

@@ -8,6 +8,8 @@ export interface ConvMsg {
   type: MsgType;
   text: string;
   role?: string;
+  /** Optional generation slot from IO events; omit when unknown. */
+  slot?: "primary" | "draft";
   toolName?: string;
   toolArgs?: Record<string, unknown>;
   toolOutput: string[];

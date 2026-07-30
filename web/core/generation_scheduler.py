@@ -29,17 +29,65 @@ OSCILLATION_BREAKOUT_SCORE_TOLERANCE = 0.02
 OSCILLATION_BREAKOUT_MIN_MARGIN = 0.01
 
 
+def _default_publication_tier(*, next_v: int) -> str:
+    """Resolve the checkpoint publication_tier for a newly selected generation.
+
+    First-strict always stays on the certified (inline official) path.
+    Otherwise ``POK_DEFAULT_PUBLICATION_TIER`` wins when set to staging/certified;
+    when unset, Slice 2b (``POK_SLICE2B_ENABLED``) defaults to staging so async
+    official certification can run after publish, else certified.
+    """
+    if int(next_v) == FIRST_STRICT_POLICY_VERSION:
+        return "certified"
+    env = str(os.environ.get("POK_DEFAULT_PUBLICATION_TIER") or "").strip().lower()
+    if env in {"staging", "certified"}:
+        return env
+    slice2b = str(os.environ.get("POK_SLICE2B_ENABLED") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    return "staging" if slice2b else "certified"
+
+
+def _relocate_draft_candidate_to_live(provisional_v: int, formal_v: int) -> None:
+    """Move an isolated draft candidate tree onto the live bots/ path.
+
+    Best-effort: missing source or occupied destination is a no-op so promotion
+    can still rewrite the primary checkpoint when workers already wrote live.
+    """
+    import shutil
+
+    from evolution_infra import BOTS_DIR, RESULTS_DIR
+
+    src_name = bot_name(provisional_v)
+    dst_name = bot_name(formal_v)
+    src = RESULTS_DIR / "draft_candidates" / src_name
+    dst = BOTS_DIR / dst_name
+    if not src.is_dir():
+        return
+    if dst.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if provisional_v != formal_v:
+        # Remap version directory name when shadow provisional != formal.
+        tmp = RESULTS_DIR / "draft_candidates" / dst_name
+        if src != tmp and not tmp.exists():
+            src.rename(tmp)
+            src = tmp
+    shutil.move(str(src), str(dst))
+
+
 def _maybe_promote_draft_to_primary():
     """Promote a one-ahead draft checkpoint to the primary slot if eligible.
 
     Called at the top of the primary ``prepare_generation`` (after gen N has
     fully published and the primary loop returns to prepare gen N+1).  If a
-    draft sits at ``workers_done`` in ``pipeline_state_draft.json`` and its
-    ``next_v`` equals the canonical next allocation (``published_high_water +
-    1``), the draft is moved to the primary slot and the draft slot cleared.
-    The canonical CAS refuses if the primary is still active, so this is
-    naturally safe and idempotent.  Returns True iff a promotion happened.
-    Best-effort: callers swallow exceptions.
+    draft sits at ``workers_done`` in ``pipeline_state_draft.json``, remap its
+    shadow provisional ``next_v`` onto the canonical live successor
+    (``published_high_water + 1``), move any isolated draft candidate tree onto
+    ``bots/``, write the primary slot, and clear the draft.  The canonical CAS
+    refuses if the primary is still active, so this is naturally safe and
+    idempotent.  Returns True iff a promotion happened.  Best-effort: callers
+    swallow exceptions.
     """
     try:
         from evolution_infra import (
@@ -59,22 +107,33 @@ def _maybe_promote_draft_to_primary():
         draft_next_v = int(draft.get("next_v") or 0)
     except (TypeError, ValueError):
         return False
-    # Confirm the draft targets the canonical next allocation by consulting
-    # the epoch projection (override-bypassed so it reads the real published
-    # high-water, not the draft slot).
+    # Confirm the formal live successor by consulting the epoch projection
+    # (override-bypassed so it reads the real published high-water).
     try:
         from epoch_authority import strict_epoch_projection
 
         with no_slot_override():
             projection = strict_epoch_projection()
-        expected_next_v = int(projection.get("next_v") or 0)
+        formal_next_v = int(projection.get("next_v") or 0)
     except Exception:
-        expected_next_v = 0
-    if expected_next_v <= 0 or draft_next_v != expected_next_v:
-        # Stale or mismatched draft; leave it for reaping/retry.
+        formal_next_v = 0
+    if formal_next_v <= 0:
         return False
+    # Shadow drafts may hold a provisional next_v (historically floor+2 while
+    # primary owned floor+1).  After the primary publishes, remap onto the
+    # formal successor.  Refuse only when a non-shadow draft targets a
+    # different live version.
+    if (
+        draft.get("is_draft") is not True
+        and draft_next_v != formal_next_v
+    ):
+        return False
+    try:
+        _relocate_draft_candidate_to_live(draft_next_v, formal_next_v)
+    except Exception:
+        pass
     promote_fields = {
-        "next_v": draft_next_v,
+        "next_v": formal_next_v,
         "source_v": int(draft.get("source_v") or 0),
         "stage": "workers_done",
         "master_plan": draft.get("master_plan"),
@@ -102,6 +161,7 @@ def _maybe_promote_draft_to_primary():
         ),
         "review_attempt_journal": draft.get("review_attempt_journal"),
         "identity_replan_history": draft.get("identity_replan_history"),
+        "publication_tier": draft.get("publication_tier"),
     }
     with no_slot_override():
         ok = bool(write_pipeline_checkpoint(**promote_fields))
@@ -112,9 +172,9 @@ def _maybe_promote_draft_to_primary():
         log_system_event(
             "pipeline.draft_promoted_to_primary",
             "info",
-            f"One-ahead draft promoted to primary at v{draft_next_v} "
-            f"(skipping re-prepare)",
-            {"next_v": draft_next_v},
+            f"One-ahead draft promoted to primary at v{formal_next_v} "
+            f"(skipping re-prepare; provisional was v{draft_next_v})",
+            {"next_v": formal_next_v, "provisional_next_v": draft_next_v},
         )
     except Exception:
         pass
@@ -705,6 +765,7 @@ def _prepare_protocol_bootstrap_generation(
             "master_context": master_context,
         },
         workflow_run_id=workflow_run_id,
+        publication_tier=_default_publication_tier(next_v=next_v),
         slot_id=slot_id,
     )
     if not ok:
@@ -741,13 +802,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
 
     ``slot_id`` (Phase 5b one-ahead draft) routes the two selected-checkpoint
     writes to a per-slot file instead of the primary.  When ``slot_id`` is not
-    None the caller is the one-ahead draft task, which must compute its own
-    one-ahead target rather than reusing the primary projection's ``next_v``
-    (the primary checkpoint is still occupied by the sealed generation N).
-    The draft target is ``primary_next_v + 1`` (i.e. ``published_high_water +
-    2``), derived by reading the PRIMARY checkpoint with the slot override
-    bypassed.  Everything else — workflow contract, runtime guard, source
-    selection — runs unchanged because the draft is a real generation.
+    None the caller is the one-ahead draft task: it builds a *shadow* identity
+    (``is_draft=True``) with a provisional ``next_v`` label derived from the
+    primary target + 1.  That provisional is **not** a live allocation claim
+    (floor+1 CAS / bots/national_cloud_v{floor+2} are skipped); the candidate
+    worktree is isolated under ``draft_candidates/``, and promotion remaps the
+    draft onto the formal live successor after the primary publishes.
     """
     from evolution_infra import (
         MAX_ACTIVE_BOTS, find_latest_active_v, get_active_bots,
@@ -845,7 +905,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
             )
         return None
     _existing_generation = _epoch_projection.get("active_generation")
-    if isinstance(_existing_generation, dict):
+    # Only the primary prepare path may early-return an existing in-flight
+    # generation.  A draft prepare (slot_id set) must continue so it can build
+    # its shadow identity even while the primary checkpoint is past preparing.
+    if slot_id is None and isinstance(_existing_generation, dict):
         if _existing_generation.get("stage") not in (
             None, "selected", "preparing",
         ):
@@ -964,13 +1027,11 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     _abandoned_floor = int(_epoch_projection["abandoned_receipt_floor"])
     allocation_floor = int(_epoch_projection["allocation_floor"])
     _planned_next_v = int(_epoch_projection["next_v"])
-    # Phase 5b one-ahead draft: the draft slot projection does not see the
-    # primary's sealed generation N, so its ``next_v`` would collide with the
-    # primary target.  Derive the one-ahead target from the PRIMARY checkpoint
-    # (slot override bypassed): primary_next_v + 1.  Falls back to
-    # ``published_high_water + 2`` when the primary checkpoint is absent or
-    # unreadable, which keeps the draft one ahead of the published tag
-    # high-water regardless of primary state.
+    # Phase 5b one-ahead draft: shadow provisional label only.  Derive
+    # primary_next_v + 1 so planning/logs have a stable intended successor, but
+    # do NOT treat it as a live floor+2 allocation (checkpoint write sets
+    # is_draft=True, skips floor+1 CAS, and isolates the candidate worktree).
+    # Promotion remaps onto the formal next_v after the primary publishes.
     if slot_id is not None:
         from evolution_infra import no_slot_override, read_pipeline_checkpoint
 
@@ -987,7 +1048,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         _planned_next_v = _draft_floor + 1
         allocation_floor = _draft_floor
         log.info(
-            "One-ahead draft slot=%s target v%d (primary high-water v%d)",
+            "One-ahead draft slot=%s shadow provisional v%d (primary high-water v%d)",
             slot_id,
             _planned_next_v,
             current_v,
@@ -1593,6 +1654,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                 # digest-bound copy instead of trusting an LLM transcription.
                 "master_context": master_context,
             },
+            publication_tier=_default_publication_tier(next_v=_final_next_v),
             slot_id=slot_id,
         )
     except Exception as exc:

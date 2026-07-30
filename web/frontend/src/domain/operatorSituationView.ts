@@ -1,12 +1,15 @@
 import type {
   ControlHealth,
   ControlStatus,
+  DraftGeneration,
   PipelineRoute,
 } from "../api/control.js";
 import {
   controlPipelineBlocked,
   controlPipelineIssues,
   controlStartBlockedReason,
+  draftGenerations,
+  primaryGenerationSlot,
 } from "../api/control.js";
 import {
   PIPELINE_TIMEOUT_LEASES,
@@ -19,6 +22,12 @@ import {
 
 export type OperatorSituationTone = "success" | "info" | "warning" | "error" | "neutral";
 
+export interface OperatorSlotBadge {
+  slot: "primary" | "draft";
+  label: string;
+  detail: string;
+}
+
 export interface OperatorSituationView {
   tone: OperatorSituationTone;
   headline: string;
@@ -30,7 +39,13 @@ export interface OperatorSituationView {
   manualDetail: string;
   continuityNote: string | null;
   technical: Array<{ label: string; value: string }>;
+  /** Dual-slot badges (primary + optional drafts); empty when no active slots. */
+  slotBadges: OperatorSlotBadge[];
+  /** Slice2b park / eval_wait / staging-parent tips; never inferred from logs. */
+  contextNotes: string[];
 }
+
+type OperatorSituationCore = Omit<OperatorSituationView, "slotBadges" | "contextNotes">;
 
 const TOOL_LABELS: Record<string, string> = {
   run_direction_audit: "重新核对研发方向",
@@ -132,15 +147,105 @@ function successorNote(status: ControlStatus): string | null {
 }
 
 function technicalRows(status: ControlStatus | null, health: ControlHealth | null): Array<{ label: string; value: string }> {
-  const active = status?.active_generation;
+  const active = primaryGenerationSlot(status) ?? status?.active_generation ?? null;
   const route = health?.pipeline?.route;
-  return [
+  const drafts = status ? draftGenerations(status) : [];
+  const rows = [
     { label: "用户代次 / 真实标签", value: active ? `第 ${active.generation_ordinal} 代 / ${active.canonical_tag}` : "—" },
     { label: "workflow", value: active?.workflow_run_id ?? "—" },
     { label: "raw stage", value: active?.stage ?? health?.pipeline?.stage ?? "—" },
     { label: "route", value: route ? `${route.intent} → ${route.next_tool ?? "none"}` : "—" },
     { label: "checkpoint revision", value: String(active?.checkpoint_revision ?? health?.pipeline?.checkpoint_revision ?? "—") },
   ];
+  if (drafts.length > 0) {
+    rows.push({
+      label: "draft slots",
+      value: drafts.map((d) => `v${d.next_v}@${d.stage}`).join(", "),
+    });
+  }
+  if (status?.pipeline_mode?.enabled) {
+    rows.push({
+      label: "pipeline_mode",
+      value: [
+        status.pipeline_mode.consumer_parked ? "consumer_parked" : "consumer_active",
+        `in_flight=${status.pipeline_mode.in_flight_count}`,
+      ].join(" · "),
+    });
+  }
+  return rows;
+}
+
+function buildSlotBadges(status: ControlStatus | null): OperatorSlotBadge[] {
+  if (!status) return [];
+  const badges: OperatorSlotBadge[] = [];
+  const primary = primaryGenerationSlot(status);
+  if (primary) {
+    badges.push({
+      slot: "primary",
+      label: `主槽 v${primary.next_v}`,
+      detail: stageLabel(primary.stage),
+    });
+  }
+  for (const draft of draftGenerations(status)) {
+    badges.push({
+      slot: "draft",
+      label: `草稿 v${draft.next_v}`,
+      detail: stageLabel(draft.stage),
+    });
+  }
+  return badges;
+}
+
+function buildContextNotes(status: ControlStatus | null): string[] {
+  if (!status) return [];
+  const notes: string[] = [];
+  const mode = status.pipeline_mode;
+  if (mode?.enabled && mode.consumer_parked) {
+    notes.push(
+      "Slice 2b：主槽在 consumer 门链旁路等待（quality→precommit 由后台消费）；这不是卡住或失败。",
+    );
+  } else if (mode?.enabled && mode.producer_may_prepare_next) {
+    notes.push("Slice 2b：已密封候选允许生产者准备下一代草稿。");
+  }
+
+  const evalWait = status.eval_wait;
+  if (evalWait?.waiting) {
+    const bot = evalWait.bot ? `（${evalWait.bot}）` : "";
+    const games = evalWait.games != null ? `${evalWait.games}/${evalWait.min_games}` : `需 ≥${evalWait.min_games}`;
+    const rd = typeof evalWait.rd === "number"
+      ? ` · RD ${evalWait.rd.toFixed(1)}/${evalWait.rd_threshold}`
+      : "";
+    notes.push(
+      `强度样本等待中${bot}：完整 70 手样本 ${games}${rd}${evalWait.degraded ? " · 已降级继续" : ""}。`,
+    );
+  }
+
+  const flags = status.feature_flags;
+  const primary = primaryGenerationSlot(status) ?? status.active_generation;
+  const sourceV = primary?.source_v ?? null;
+  if (flags?.staging_as_parent && sourceV != null) {
+    const certified = status.version_authority?.certified_versions ?? [];
+    if (!certified.includes(sourceV)) {
+      notes.push(
+        `允许 staging 父本：当前主父本 v${sourceV} 尚未进入 certified 集合；发布权威仍以证书/tag 为准。`,
+      );
+    } else {
+      notes.push(`staging 父本策略已开启；当前主父本 v${sourceV} 已有 certified 身份。`);
+    }
+  }
+
+  return notes;
+}
+
+function withPhaseDContext(
+  core: OperatorSituationCore,
+  status: ControlStatus | null,
+): OperatorSituationView {
+  return {
+    ...core,
+    slotBadges: buildSlotBadges(status),
+    contextNotes: buildContextNotes(status),
+  };
 }
 
 function unavailable(
@@ -152,7 +257,7 @@ function unavailable(
   status: ControlStatus | null,
   health: ControlHealth | null,
 ): OperatorSituationView {
-  return {
+  return withPhaseDContext({
     tone: "error",
     headline,
     what,
@@ -163,7 +268,12 @@ function unavailable(
     manualDetail,
     continuityNote: null,
     technical: technicalRows(status, health),
-  };
+  }, status);
+}
+
+function draftPrepareHint(drafts: DraftGeneration[]): string | null {
+  if (drafts.length === 0) return null;
+  return `草稿槽并行：${drafts.map((d) => `v${d.next_v}（${stageLabel(d.stage)}）`).join("；")}`;
 }
 
 /**
@@ -199,15 +309,17 @@ export function operatorSituationView(
     );
   }
 
-  const active = s.active_generation;
+  const active = primaryGenerationSlot(s) ?? s.active_generation;
+  const drafts = draftGenerations(s);
   const pipeline = h.pipeline;
   const route = pipeline.route ?? null;
   const continuityNote = successorNote(s);
   const technical = technicalRows(s, h);
+  const consumerParked = Boolean(s.pipeline_mode?.enabled && s.pipeline_mode.consumer_parked);
 
   if (!s.epoch_initialized) {
     const action = s.operator_action;
-    return {
+    return withPhaseDContext({
       tone: "warning",
       headline: "严格进化尚未初始化",
       what: "当前没有可运行的 National TCP 严格代次。",
@@ -218,7 +330,7 @@ export function operatorSituationView(
       manualDetail: "只执行控制面给出的受控命令，不手工删除 checkpoint 或状态文件。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   const transition = s.operator_transition;
@@ -242,7 +354,7 @@ export function operatorSituationView(
     const running = state === "bootstrap_running";
     const failed = state === "bootstrap_failed";
     const ready = state === "ready_to_finalize";
-    return {
+    return withPhaseDContext({
       tone: failed ? "error" : running ? "info" : ready ? "success" : "warning",
       headline: failed
         ? "首代官方认证没有形成可发布结果"
@@ -273,13 +385,13 @@ export function operatorSituationView(
         : "只执行 transition 中内容绑定的命令；Official 结果不能替代 native 强度评估。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   if (s.operator_action) {
     const actionLabel = OPERATOR_ACTION_LABELS[s.operator_action] ?? s.operator_action;
     const firstStrictCertification = s.operator_action === "run_first_strict_official_certification";
-    return {
+    return withPhaseDContext({
       tone: "warning",
       headline: firstStrictCertification ? "首个 Bot 等待操作员启动官方认证" : "系统正在等待操作员动作",
       what: active ? `第 ${active.generation_ordinal} 代已推进到“${stageLabel(active.stage)}”，自动流程暂时停在安全边界。` : "自动流程停在受控边界。",
@@ -294,12 +406,12 @@ export function operatorSituationView(
         : "完成动作并取得新健康快照后，编排器才会继续。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   if (controlPipelineBlocked(pipeline)) {
     const issues = controlPipelineIssues(pipeline);
-    return {
+    return withPhaseDContext({
       tone: "error",
       headline: "流水线恢复被阻断",
       what: active ? `第 ${active.generation_ordinal} 代停在“${stageLabel(active.stage)}”。` : "当前没有可安全执行的下一步。",
@@ -310,13 +422,13 @@ export function operatorSituationView(
       manualDetail: "不要绕过 route、复制候选或手工推进 stage。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   if (active && isPipelineTimeoutLeaseStage(active.stage)) {
     const lease = PIPELINE_TIMEOUT_LEASES[active.stage];
     const automatic = s.running && route?.next_tool === lease.nextTool;
-    return {
+    return withPhaseDContext({
       tone: "warning",
       headline: lease.label,
       what: `第 ${active.generation_ordinal} 代进入超时恢复状态；这不是成功进度，也不是未知阶段。`,
@@ -327,7 +439,7 @@ export function operatorSituationView(
       manualDetail: automatic ? "观察恢复结果即可，不要重放原阶段。" : "先恢复编排器，再只走权威 route。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   if (active && route?.intent === "infra_retry") {
@@ -336,7 +448,7 @@ export function operatorSituationView(
     const nextAttempt = currentAttempt != null ? currentAttempt + 1 : null;
     const attemptText = nextAttempt != null && infra.max != null ? `第 ${nextAttempt}/${infra.max} 次` : "下一次";
     const automatic = s.running && route.action === "retry_same_tool";
-    return {
+    return withPhaseDContext({
       tone: "warning",
       headline: `${componentLabel(infra.component)}正在局部重试`,
       what: `第 ${active.generation_ordinal} 代仍停在已落盘的“${stageLabel(active.stage)}”边界；候选与已完成步骤保持不变。`,
@@ -349,11 +461,11 @@ export function operatorSituationView(
         : "编排器当前未运行；恢复运行后只执行 route 指定工具。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   if (active?.stage === "official_bootstrap_required") {
-    return {
+    return withPhaseDContext({
       tone: "warning",
       headline: "首个 Bot 已到官方认证边界",
       what: "本地合规、代码门和原生 TCP 预发布评测已完成；候选尚未发布。",
@@ -364,7 +476,25 @@ export function operatorSituationView(
       manualDetail: "不要把 Official 结果当作 native 强度，也不要自动降级为 bootstrap。",
       continuityNote,
       technical,
-    };
+    }, s);
+  }
+
+  if (active && consumerParked) {
+    const draftHint = draftPrepareHint(drafts);
+    return withPhaseDContext({
+      tone: "info",
+      headline: `第 ${active.generation_ordinal} 代主槽旁路等待（非卡住）`,
+      what: `${active.canonical_bot_name} 已密封；后台 consumer 正在跑 quality→precommit，主槽故意停在“${stageLabel(active.stage)}”。`,
+      why: "Slice 2b one-ahead：consumer_parked 是设计态，不是恢复阻断或失败。",
+      next: draftHint ?? "等待 consumer 完成，并在 commit 晋升屏障后继续发布。",
+      manualRequired: !s.running,
+      manualLabel: s.running ? "无需人工" : "需要操作员",
+      manualDetail: s.running
+        ? "观察 consumer 与草稿槽即可；不要把旁路等待当成卡死。"
+        : (controlStartBlockedReason(s, h) ?? "可在控制面板恢复编排器。"),
+      continuityNote,
+      technical,
+    }, s);
   }
 
   if (active) {
@@ -375,7 +505,8 @@ export function operatorSituationView(
       : null;
     const progress = contractStage ? pipelineStageProgress(contractStage) : null;
     const completedBoundary = progress?.kind === "completed_boundary";
-    return {
+    const draftHint = draftPrepareHint(drafts);
+    return withPhaseDContext({
       tone: healthy ? "info" : "warning",
       headline: completedBoundary
         ? `第 ${active.generation_ordinal} 代已完成“${stageLabel(active.stage)}”边界`
@@ -384,18 +515,18 @@ export function operatorSituationView(
         ? `${active.canonical_bot_name} 已把该边界写入 checkpoint；下一工具尚未完成，Bot 仍未发布。`
         : `${active.canonical_bot_name} 尚在生产与验收流程中，未计为已发布 Bot。`,
       why: route?.directive || "当前 stage 与 health route 已配对。",
-      next: nextAction,
+      next: draftHint ? `${nextAction}；${draftHint}` : nextAction,
       manualRequired: !s.running,
       manualLabel: s.running ? "无需人工" : "需要操作员",
       manualDetail: s.running ? "系统会自动推进；只在出现明确 operator_action 时介入。" : (controlStartBlockedReason(s, h) ?? "可在控制面板恢复编排器。"),
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   if (s.post_publication_handoff.status !== "none") {
     const blocked = s.post_publication_handoff.blocked;
-    return {
+    return withPhaseDContext({
       tone: blocked ? "error" : "info",
       headline: blocked ? "发布收尾被阻断" : "Bot 已发布，正在完成收尾",
       what: "提交、证书与 tag 已形成，系统正在归档并交接下一代。",
@@ -406,12 +537,12 @@ export function operatorSituationView(
       manualDetail: blocked ? "不要跳过 handoff 或直接准备下一代。" : "系统会自动交接。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   const schedulerReady = pipeline.scheduler_boundary?.state === "ready_to_prepare";
   if (schedulerReady && s.running) {
-    return {
+    return withPhaseDContext({
       tone: "success",
       headline: "上一工作单元已结束，正在准备下一代",
       what: "当前没有活跃 checkpoint；外层调度器持有下一代准备权。",
@@ -422,11 +553,11 @@ export function operatorSituationView(
       manualDetail: "不要手工创建 Bot 目录或重算版本号。",
       continuityNote,
       technical,
-    };
+    }, s);
   }
 
   const blockedReason = controlStartBlockedReason(s, h);
-  return {
+  return withPhaseDContext({
     tone: blockedReason ? "warning" : "neutral",
     headline: s.running ? "编排器正在等待下一项工作" : "进化系统当前已停止",
     what: "当前没有活跃代次。",
@@ -437,5 +568,5 @@ export function operatorSituationView(
     manualDetail: s.running ? "等待调度器准备下一代。" : "启动前再次确认 health.pipeline 无阻断。",
     continuityNote,
     technical,
-  };
+  }, s);
 }

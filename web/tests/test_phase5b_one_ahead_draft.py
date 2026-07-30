@@ -5,13 +5,16 @@ Master, Workers) run concurrently with generation N's consumer gate chain,
 filling LLM permit idle time:
 
   * ``active_slot_override`` ContextVar scoping (asyncio task isolation).
-  * ``prepare_generation`` one-ahead ``next_v`` computation (primary_next_v +
-    1) and slot-routed writes.
+  * ``prepare_generation`` draft shadow identity: provisional next_v label
+    (primary_next_v + 1) with ``is_draft=True``, no live floor+2 allocation
+    claim, isolated ``draft_candidates/`` worktree, and slot-routed writes.
+  * Primary prepare early-return only when ``slot_id is None`` (draft must not
+    be short-circuited by an in-flight primary checkpoint).
   * ``_run_draft_cycle`` drives the draft through prepared -> direction_audited
     -> master_planned -> workers_done and stops without triggering the
     Slice 2b seal-at-workers-done seam.
-  * Draft -> primary promotion (``_maybe_promote_draft_to_primary`` and the
-    barrier helper) is best-effort and idempotent.
+  * Draft -> primary promotion remaps provisional next_v onto the formal live
+    successor (``_maybe_promote_draft_to_primary`` and the barrier helper).
 """
 
 from __future__ import annotations
@@ -145,6 +148,70 @@ def test_maybe_promote_draft_noop_when_draft_not_at_workers_done():
     assert read_pipeline_checkpoint(slot_id="draft") is not None
 
 
+def test_draft_slot_writes_shadow_identity():
+    """Draft-slot checkpoints mark is_draft and do not require floor+1 CAS."""
+    # Primary at v10 (synthetic authority treats expected_next_v-1 as published).
+    assert write_pipeline_checkpoint(next_v=10, source_v=9, stage="testing")
+    # Draft provisional v12 would be floor+2 under a real floor=10; shadow
+    # identity must still accept the write.
+    assert write_pipeline_checkpoint(
+        next_v=12, source_v=10, stage="selected", slot_id="draft"
+    )
+    draft = read_pipeline_checkpoint(slot_id="draft")
+    assert draft is not None
+    assert draft["next_v"] == 12
+    assert draft.get("is_draft") is True
+    # Primary untouched.
+    assert read_pipeline_checkpoint()["next_v"] == 10
+
+
+def test_draft_get_bot_dir_isolates_unpublished_candidate(tmp_path, monkeypatch):
+    """Under draft override, unpublished candidates resolve under draft_candidates/."""
+    import evolution_infra as ei
+
+    monkeypatch.setattr(ei, "BOTS_DIR", tmp_path / "bots")
+    monkeypatch.setattr(ei, "RESULTS_DIR", tmp_path / "results")
+    (tmp_path / "bots").mkdir()
+    (tmp_path / "results").mkdir()
+    # Published parent exists under bots/.
+    parent = tmp_path / "bots" / "national_cloud_v10"
+    parent.mkdir()
+    with active_slot_override("draft"):
+        assert ei.get_bot_dir(10) == parent
+        # Unpublished candidate goes to isolated draft tree.
+        draft_cand = ei.get_bot_dir(12)
+        assert draft_cand == tmp_path / "results" / "draft_candidates" / "national_cloud_v12"
+        assert "bots" not in str(draft_cand)
+
+
+def test_maybe_promote_draft_remaps_shadow_next_v(monkeypatch):
+    """Promotion remaps a shadow provisional next_v onto the formal successor."""
+    from generation_scheduler import _maybe_promote_draft_to_primary
+    import epoch_authority
+
+    assert write_pipeline_checkpoint(
+        next_v=12,
+        source_v=10,
+        stage="workers_done",
+        slot_id="draft",
+    )
+    draft = read_pipeline_checkpoint(slot_id="draft")
+    assert draft.get("is_draft") is True
+
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kwargs: {"next_v": 11},
+    )
+    # Shadow draft provisional=12 remaps to formal=11.
+    assert _maybe_promote_draft_to_primary() is True
+    assert read_pipeline_checkpoint(slot_id="draft") is None
+    primary = read_pipeline_checkpoint()
+    assert primary is not None
+    assert primary["next_v"] == 11
+    assert primary.get("is_draft") is not True
+
+
 def test_promote_draft_to_primary_barrier_helper_noop_without_draft():
     from orchestrator_deterministic_route import _promote_draft_to_primary
 
@@ -152,7 +219,7 @@ def test_promote_draft_to_primary_barrier_helper_noop_without_draft():
     assert _promote_draft_to_primary(published_next_v=10) is False
 
 
-def test_promote_draft_to_primary_barrier_helper_mismatch_target():
+def test_promote_draft_to_primary_barrier_helper_remaps_shadow():
     from orchestrator_deterministic_route import _promote_draft_to_primary
 
     assert write_pipeline_checkpoint(
@@ -161,10 +228,12 @@ def test_promote_draft_to_primary_barrier_helper_mismatch_target():
         stage="workers_done",
         slot_id="draft",
     )
-    # Draft targets v99 but published is v10 -> mismatch, no promotion.
-    assert _promote_draft_to_primary(published_next_v=10) is False
-    # Draft survives.
-    assert read_pipeline_checkpoint(slot_id="draft") is not None
+    # Shadow draft remaps onto published+1 even when provisional differs.
+    assert _promote_draft_to_primary(published_next_v=10) is True
+    assert read_pipeline_checkpoint(slot_id="draft") is None
+    primary = read_pipeline_checkpoint()
+    assert primary["next_v"] == 11
+    assert primary.get("is_draft") is not True
 
 
 # ---------------------------------------------------------------------------

@@ -700,9 +700,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                candidate_artifact_hash=None,
                                candidate_manifest_digest=None,
                                charter_digest=None,
+                               publication_tier=None,
                                slot_id=None):
     """Delegate to evolution_infra_checkpoint_cas."""
-    return _ckpt.write_pipeline_checkpoint(next_v=next_v, source_v=source_v, stage=stage, master_plan=master_plan, reviewer_feedback=reviewer_feedback, generation_attempt=generation_attempt, gate_results=gate_results, worker_failure_count=worker_failure_count, worker_invocation_count=worker_invocation_count, parent2_v=parent2_v, direction_audit=direction_audit, audit_context=audit_context, reset_generation_attempt=reset_generation_attempt, replace_audit_context=replace_audit_context, audit_context_replacement_reason=audit_context_replacement_reason, audit_attempt=audit_attempt, reset_audit_attempt=reset_audit_attempt, precommit_attempt=precommit_attempt, reset_precommit_attempt=reset_precommit_attempt, precommit_rework_count=precommit_rework_count, official_rework_count=official_rework_count, timeout_extensions=timeout_extensions, touch_stage_timestamp=touch_stage_timestamp, literature_probe=literature_probe, prepare_scope_files=prepare_scope_files, clear_reviewer_feedback=clear_reviewer_feedback, infra_failure=infra_failure, clear_infra_failure=clear_infra_failure, infra_failure_owner=infra_failure_owner, expected_infra_failure_digest=expected_infra_failure_digest, official_job=official_job, clear_official_job=clear_official_job, expected_official_job_id=expected_official_job_id, repair_baseline_artifact_hash=repair_baseline_artifact_hash, clear_repair_baseline_artifact_hash=clear_repair_baseline_artifact_hash, reset_runtime_contract_ledger=reset_runtime_contract_ledger, expected_runtime_contract_ledger_digest=expected_runtime_contract_ledger_digest, runtime_contract_ledger_reset_reason=runtime_contract_ledger_reset_reason, publication_intent=publication_intent, expected_checkpoint_revision=expected_checkpoint_revision, expected_checkpoint_stage=expected_checkpoint_stage, expected_workflow_run_id=expected_workflow_run_id, workflow_run_id=workflow_run_id, terminal_gate_outcome=terminal_gate_outcome, review_attempt_journal=review_attempt_journal, identity_replan_history=identity_replan_history, candidate_artifact_hash=candidate_artifact_hash, candidate_manifest_digest=candidate_manifest_digest, charter_digest=charter_digest, slot_id=slot_id)
+    return _ckpt.write_pipeline_checkpoint(next_v=next_v, source_v=source_v, stage=stage, master_plan=master_plan, reviewer_feedback=reviewer_feedback, generation_attempt=generation_attempt, gate_results=gate_results, worker_failure_count=worker_failure_count, worker_invocation_count=worker_invocation_count, parent2_v=parent2_v, direction_audit=direction_audit, audit_context=audit_context, reset_generation_attempt=reset_generation_attempt, replace_audit_context=replace_audit_context, audit_context_replacement_reason=audit_context_replacement_reason, audit_attempt=audit_attempt, reset_audit_attempt=reset_audit_attempt, precommit_attempt=precommit_attempt, reset_precommit_attempt=reset_precommit_attempt, precommit_rework_count=precommit_rework_count, official_rework_count=official_rework_count, timeout_extensions=timeout_extensions, touch_stage_timestamp=touch_stage_timestamp, literature_probe=literature_probe, prepare_scope_files=prepare_scope_files, clear_reviewer_feedback=clear_reviewer_feedback, infra_failure=infra_failure, clear_infra_failure=clear_infra_failure, infra_failure_owner=infra_failure_owner, expected_infra_failure_digest=expected_infra_failure_digest, official_job=official_job, clear_official_job=clear_official_job, expected_official_job_id=expected_official_job_id, repair_baseline_artifact_hash=repair_baseline_artifact_hash, clear_repair_baseline_artifact_hash=clear_repair_baseline_artifact_hash, reset_runtime_contract_ledger=reset_runtime_contract_ledger, expected_runtime_contract_ledger_digest=expected_runtime_contract_ledger_digest, runtime_contract_ledger_reset_reason=runtime_contract_ledger_reset_reason, publication_intent=publication_intent, expected_checkpoint_revision=expected_checkpoint_revision, expected_checkpoint_stage=expected_checkpoint_stage, expected_workflow_run_id=expected_workflow_run_id, workflow_run_id=workflow_run_id, terminal_gate_outcome=terminal_gate_outcome, review_attempt_journal=review_attempt_journal, identity_replan_history=identity_replan_history, candidate_artifact_hash=candidate_artifact_hash, candidate_manifest_digest=candidate_manifest_digest, charter_digest=charter_digest, publication_tier=publication_tier, slot_id=slot_id)
 
 
 
@@ -807,9 +808,23 @@ def get_bot_dir(version):
 
     Archived/reaped trees are never a transparent source, candidate or
     opponent fallback.  Audit callers must address an archive explicitly.
+
+    Under an ambient draft slot override, an unpublished candidate (no live
+    ``bots/`` tree yet) resolves to ``RESULTS_DIR/draft_candidates/`` so the
+    one-ahead draft never claims ``bots/national_cloud_v{floor+2}`` while the
+    primary still owns the live allocation. Published parents that already
+    exist under ``BOTS_DIR`` continue to resolve there.
     """
 
-    return BOTS_DIR / bot_name(version)
+    name = bot_name(version)
+    canonical = BOTS_DIR / name
+    try:
+        override = current_slot_override()
+    except Exception:
+        override = None
+    if override == "draft" and not canonical.exists():
+        return RESULTS_DIR / "draft_candidates" / name
+    return canonical
 
 
 def get_logs_dir(version):

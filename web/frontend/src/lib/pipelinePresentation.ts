@@ -28,6 +28,30 @@ export function reviewerRetryPending(checkpoint: PipelineCheckpoint): boolean {
     && latest.candidate_artifact_hash === qualityHash;
 }
 
+/**
+ * Stage shown by the read-only Pipeline stepper.
+ *
+ * When the independent checkpoint poll is null (PipelineMap / partial
+ * observation), fall back to ``active_generation.stage`` so the stepper still
+ * tracks the authoritative control projection instead of hiding progress.
+ */
+export function pipelineStepperStage(
+  checkpoint: Pick<PipelineCheckpoint, "stage"> | null | undefined,
+  activeGeneration: Pick<ActiveGeneration, "stage"> | null | undefined,
+): string | null {
+  if (checkpoint != null && typeof checkpoint.stage === "string" && checkpoint.stage.length > 0) {
+    return checkpoint.stage;
+  }
+  if (
+    activeGeneration != null
+    && typeof activeGeneration.stage === "string"
+    && activeGeneration.stage.length > 0
+  ) {
+    return activeGeneration.stage;
+  }
+  return null;
+}
+
 /** Exact fields shared by the independent checkpoint and paired control view. */
 export function pipelineCheckpointIdentityIssues(
   checkpoint: PipelineCheckpoint,

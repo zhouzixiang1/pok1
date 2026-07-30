@@ -3,6 +3,7 @@ import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import {
   controlPipelineBlocked,
   controlPipelineIssues,
+  draftGenerations,
 } from "../api/control";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
@@ -59,10 +60,12 @@ export default function PipelineMap() {
         {/* Linear stepper from the shared PipelineStatus component.  We pass
             checkpoint=null because the agent-activity projection is not the
             independent checkpoint shape; PipelineStatus then renders the
-            authoritative active_generation stage directly. */}
+            read-only stepper from active_generation.stage. */}
         <PipelineStatus
           checkpoint={null}
           activeGeneration={status?.active_generation ?? null}
+          drafts={draftGenerations(status)}
+          pipelineMode={status?.pipeline_mode ?? null}
           route={route}
         />
       </div>

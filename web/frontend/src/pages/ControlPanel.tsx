@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
   controlApi,
+  controlAbandonAvailable,
   controlPipelineBlocked,
   controlPipelineIssues,
   controlPipelineRouteAllowed,
@@ -124,6 +125,27 @@ export default function ControlPanel() {
     await Promise.all([refresh(), refreshStatus()]);
   };
 
+  const handleAbandon = async () => {
+    if (!controlAbandonAvailable(status)) return;
+    const identity = status?.active_generation
+      ? `v${status.active_generation.next_v} @ ${status.active_generation.stage}`
+      : "当前活跃代次";
+    const confirmed = window.confirm(
+      `确认受控放弃 ${identity}？\n将先停止编排器，再执行权威 abandon；完成后服务保持停止，需手动重新启动。`,
+    );
+    if (!confirmed) return;
+    setLoading("abandon");
+    setMutationError("");
+    try {
+      await controlApi.abandon({ reason: "operator_control_panel_abandon" });
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(null);
+    }
+    await Promise.all([refresh(), refreshStatus(), refreshCheckpoint()]);
+  };
+
   const formatTime = (ts: number) => new Date(ts * 1000).toLocaleTimeString();
 
   const configDirty = config && (
@@ -210,6 +232,11 @@ export default function ControlPanel() {
     && typeof route.directive === "string"
     && route.directive.trim().length > 0,
   );
+  const abandonAvailable = controlAbandonAvailable(status);
+  const asyncCert = status?.async_certification;
+  const asyncPending = asyncCert?.items.filter((item) => item.state === "pending" || item.state === "running") ?? [];
+  const asyncPassed = asyncCert?.items.filter((item) => item.state === "passed") ?? [];
+  const daemonEffective = health?.daemon;
 
   return (
     <div className="space-y-6">
@@ -292,6 +319,16 @@ export default function ControlPanel() {
                 {loading === "stop" || taskStopping ? "停止中..." : "停止"}
               </button>
             )}
+            {abandonAvailable && (
+              <button
+                onClick={handleAbandon}
+                disabled={loading === "abandon" || loading === "stop" || taskStopping}
+                title="停止编排器并受控放弃当前活跃代次；完成后保持停止"
+                className="px-4 py-1.5 text-sm rounded border border-amber-500 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200"
+              >
+                {loading === "abandon" ? "放弃中..." : "受控放弃"}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -342,6 +379,41 @@ export default function ControlPanel() {
         </div>
       )}
 
+      {asyncCert && (
+        <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
+          <h2 className="mb-2 text-sm font-semibold text-gray-800 dark:text-white">异步官方认证队列</h2>
+          {asyncCert.items.length === 0 ? (
+            <p className="text-xs text-gray-500">当前没有 staging→certified 异步认证条目。</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-gray-500">
+                待处理 {asyncPending.length} · 已通过 {asyncPassed.length} · 合计 {asyncCert.items.length}
+                {asyncCert.any_pending ? " · 仍有进行中任务" : ""}
+              </p>
+              <div className="max-h-36 space-y-1 overflow-y-auto">
+                {asyncCert.items.slice(0, 12).map((item) => (
+                  <div key={`${item.version}-${item.staging_tag}-${item.job_id ?? item.state}`} className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="font-mono text-gray-700 dark:text-gray-200">{item.bot_name}</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${
+                      item.state === "passed"
+                        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                        : item.state === "running" || item.state === "pending"
+                          ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                          : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                    }`}>{item.state}</span>
+                    <span className="font-mono text-[10px] text-gray-400">{item.staging_tag}</span>
+                    {item.certified_tag && (
+                      <span className="font-mono text-[10px] text-emerald-600 dark:text-emerald-400">→ {item.certified_tag}</span>
+                    )}
+                    <span className="text-[10px] text-gray-400">{item.formal_authority}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Provider-history recovery boundary */}
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">LLM 恢复边界</h2>
@@ -376,6 +448,17 @@ export default function ControlPanel() {
           {" · "}心跳：{health?.daemon.heartbeat_status ?? "不可用"}
           {health?.daemon.health_error ? ` · health_error=${health.daemon.health_error}` : ""}
         </p>
+        {(daemonEffective?.effective_pairs != null
+          || daemonEffective?.configured_pairs != null
+          || daemonEffective?.pairs_drift != null) && (
+          <p className={`mb-3 text-xs ${daemonEffective.pairs_drift ? "text-amber-700 dark:text-amber-300" : "text-gray-500"}`}>
+            配对投影：配置 {daemonEffective.configured_pairs ?? "—"}
+            {daemonEffective.env_pairs != null ? ` · env ${daemonEffective.env_pairs}` : ""}
+            {daemonEffective.effective_pairs != null ? ` · 进程生效 ${daemonEffective.effective_pairs}` : " · 进程生效不可用"}
+            {daemonEffective.effective_workers != null ? ` · 生效 workers ${daemonEffective.effective_workers}` : ""}
+            {daemonEffective.pairs_drift ? " · 检测到 pairs_drift" : ""}
+          </p>
+        )}
         <p className="mb-3 text-xs text-gray-500">
           每次配对数是写入 evaluation identity 的完整 70 手样本预算（1–8），只影响评分周期的采样量与吞吐；它本身不是 Bot 强度证明。
         </p>

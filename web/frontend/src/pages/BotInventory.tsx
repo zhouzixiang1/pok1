@@ -5,7 +5,7 @@ import { Badge } from "../components/shared/Badge";
 import { Card, CardHeader, EmptyState } from "../components/shared";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
 import { OperatorSituation } from "../components/evolution/OperatorSituation";
-import { evidenceTierForOfficialCertification } from "../domain/evidenceAuthority";
+import { certificationView } from "../domain/certificationView";
 import { cn } from "../lib/utils";
 import type { EvidenceAuthorityLabel } from "../domain/evidenceAuthority";
 
@@ -63,7 +63,11 @@ export default function BotInventory() {
             {rows.map(({ bot, identity }) => {
               const inPool = activeSet.has(bot.name);
               const cert = bot.official_certification ?? null;
-              const tier = evidenceTierForOfficialCertification(cert);
+              const certView = certificationView(cert, {
+                publication_tier: bot.publication_tier ?? cert?.publication_tier ?? null,
+                certified_tag: bot.certified_tag ?? null,
+              });
+              const tier = certView.evidence;
               const identityLabel = identity
                 ? `第${identity.generation_ordinal}代 · ${identity.canonical_bot_name} · ${identity.canonical_tag}`
                 : `${bot.name}（发布身份未能交叉验证）`;
@@ -77,9 +81,19 @@ export default function BotInventory() {
                       </Badge>
                       {bot.completed && <Badge variant="success" size="sm">.completed</Badge>}
                       <Badge variant="info" size="sm">v{bot.version}</Badge>
-                      <span className={cn("ml-auto rounded border px-1.5 py-0.5 text-xs", TONE_CLASS[tier.tone])}>
-                        {tier.label}
+                      {certView.publicationTier && (
+                        <Badge variant={certView.publicationTier === "certified" ? "success" : "warning"} size="sm">
+                          {certView.publicationTier}
+                        </Badge>
+                      )}
+                      <span className={cn("rounded border px-1.5 py-0.5 text-xs", TONE_CLASS[tier.tone])} title={certView.detail}>
+                        {certView.label}
                       </span>
+                      {certView.certifiedTag && (
+                        <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                          {certView.certifiedTag}
+                        </span>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs">

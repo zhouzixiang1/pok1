@@ -294,10 +294,26 @@ def _published_parent_identity(
     epoch_receipt = getattr(spec, "epoch_receipt", None)
     publication_identity = getattr(spec, "publication_identity", None)
     certificate_digest = getattr(spec, "certificate_digest", None)
+    publication_tier = str(getattr(spec, "publication_tier", None) or "certified")
     if not all(
         isinstance(value, dict) and value
         for value in (runtime_manifest, epoch_receipt, publication_identity)
-    ) or not _digest_ok(certificate_digest):
+    ):
+        raise CheckpointSchemaError(
+            ["checkpoint_parent_publication_identity_incomplete"]
+        )
+    # Certified parents require a digest-bound signed certificate.  Pure
+    # staging parents (publication_tier=staging, no digest yet) still bind
+    # completion/high-water tag authority below; empty digest is the sentinel.
+    if publication_tier == "staging":
+        if certificate_digest not in (None, "") and not _digest_ok(certificate_digest):
+            raise CheckpointSchemaError(
+                ["checkpoint_parent_publication_identity_incomplete"]
+            )
+        certificate_digest = (
+            certificate_digest if _digest_ok(certificate_digest) else ""
+        )
+    elif not _digest_ok(certificate_digest):
         raise CheckpointSchemaError(
             ["checkpoint_parent_publication_identity_incomplete"]
         )
@@ -380,11 +396,16 @@ def build_checkpoint_epoch_binding(
     repo_root: str | Path | None = None,
     parent_resolver: Callable[..., Any] | None = None,
     parent_tag_authority_resolver: Callable[..., dict[str, str]] | None = None,
+    allow_shadow_allocation: bool = False,
 ) -> dict[str, Any]:
     """Build the immutable origin envelope for a newly selected checkpoint.
 
     ``parent_resolver`` is injectable only to keep schema tests hermetic.  The
     production writer uses the strict published-role resolver directly.
+
+    ``allow_shadow_allocation`` permits a draft-slot provisional ``next_v`` that
+    is not the live floor+1 successor.  Draft checkpoints are not live
+    allocation claims; promotion remaps them onto the formal next version.
     """
 
     target = _strict_int(next_v)
@@ -420,7 +441,11 @@ def build_checkpoint_epoch_binding(
         if published is not None and abandoned is not None
         else None
     )
-    if allocation_floor is not None and target != allocation_floor + 1:
+    if (
+        allocation_floor is not None
+        and target != allocation_floor + 1
+        and not allow_shadow_allocation
+    ):
         authority_errors.append("checkpoint_target_not_allocation_floor_successor")
     if authority_errors:
         raise CheckpointSchemaError(authority_errors)
@@ -573,10 +598,16 @@ def _published_parent_identity_errors(
         "runtime_manifest_digest",
         "epoch_receipt_digest",
         "publication_identity_digest",
-        "certificate_digest",
     ):
         if not _digest_ok(identity.get(field)):
             errors.append(f"checkpoint_published_parent_identity_{field}_invalid")
+    # certificate_digest: certified requires 64-hex; pure staging may use the
+    # empty-string sentinel while still binding tag/artifact authority.
+    cert = identity.get("certificate_digest")
+    if cert not in (None, "") and not _digest_ok(cert):
+        errors.append("checkpoint_published_parent_identity_certificate_digest_invalid")
+    elif cert not in (None, "") and not isinstance(cert, str):
+        errors.append("checkpoint_published_parent_identity_certificate_digest_invalid")
     if identity.get("completion_tag") != bot_tag(expected_version):
         errors.append("checkpoint_published_parent_identity_completion_tag_mismatch")
     if identity.get("high_water_tag") != (
@@ -679,6 +710,7 @@ def checkpoint_epoch_errors(checkpoint: Any) -> list[str]:
         target is not None
         and allocation_floor is not None
         and target != allocation_floor + 1
+        and checkpoint.get("is_draft") is not True
     ):
         errors.append("checkpoint_target_not_allocation_floor_successor")
 
@@ -865,10 +897,17 @@ def live_checkpoint_allocation_authority_errors(
     the atomic-publication recovery window: a ``publishing`` checkpoint may
     remain executable after its own completion tag advances the high-water by
     exactly one.  Callers must separately validate its publication intent.
+
+    Draft shadow checkpoints (``is_draft=True``) are not live allocation claims:
+    they skip the floor-successor / high-water drift checks.  Promotion remaps
+    them onto the formal ``next_v`` after the primary publishes.
     """
 
     if not isinstance(checkpoint, dict):
         return ["checkpoint_missing_or_not_object"]
+    if checkpoint.get("is_draft") is True:
+        # Shadow identity: do not enforce live floor+1 / high-water CAS.
+        return []
     binding = checkpoint.get("epoch_binding")
     if not isinstance(binding, dict):
         return ["checkpoint_epoch_binding_missing_or_not_object"]

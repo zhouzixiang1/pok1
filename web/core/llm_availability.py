@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
 import json
@@ -40,6 +41,16 @@ _PROVIDER_RESET_RE = re.compile(
     r"(?P<reset>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}"
     r"(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)",
     re.IGNORECASE,
+)
+
+# When a 429 arrives without a provider-owned reset timestamp, the system
+# cannot know the exact window end. GLM documents a 5-hour rolling cap, so
+# the conservative fallback is the full documented window + 60s skew margin.
+# This lets _reconcile_llm_pause auto-resume instead of requiring manual
+# operator intervention that leaves the pipeline dead for hours after the
+# quota window already resets.
+_QUOTA_FALLBACK_WINDOW_SEC = int(
+    os.environ.get("POK_QUOTA_FALLBACK_WINDOW_SEC", str(5 * 3600 + 60))
 )
 
 _TRANSPORT_ERRNOS = frozenset(
@@ -270,15 +281,19 @@ def _issue(
         retry_policy = "manual_resume"
         manual = True
     elif category == QUOTA_429:
-        # A bare 429 does not prove when the quota window ends. Guessing five
-        # minutes caused repeated paid retries against multi-hour quota caps.
-        # Only an explicit provider timestamp permits automatic reconciliation.
-        retry_policy = (
-            "resume_after_quota_reset"
-            if provider_reset_at
-            else "manual_resume_without_provider_reset"
-        )
-        manual = provider_reset_at is None
+        # A bare 429 without a provider timestamp used to require manual
+        # operator intervention, leaving the pipeline dead for hours after
+        # the quota window already resets. GLM enforces a documented 5-hour
+        # rolling cap; a conservative fallback of the full window lets
+        # _reconcile_llm_pause auto-resume without burning guaranteed-to-fail
+        # retries against a still-exhausted quota.
+        if provider_reset_at is None:
+            fallback_dt = datetime.now(timezone.utc) + timedelta(
+                seconds=_QUOTA_FALLBACK_WINDOW_SEC
+            )
+            provider_reset_at = fallback_dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        retry_policy = "resume_after_quota_reset"
+        manual = False
     else:
         retry_policy = "bounded_backoff"
         manual = False

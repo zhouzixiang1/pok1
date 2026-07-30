@@ -33,6 +33,7 @@
     "src/domain/agentActivityView.ts",
     "src/domain/strengthJobView.ts",
     "src/domain/evidenceAuthority.ts",
+    "src/domain/certificationView.ts",
     "src/domain/failureRecoveryView.ts",
     "src/domain/operatorSituationView.ts"
   ]

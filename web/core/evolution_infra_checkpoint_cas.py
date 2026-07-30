@@ -684,6 +684,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                candidate_artifact_hash=None,
                                candidate_manifest_digest=None,
                                charter_digest=None,
+                               publication_tier=None,
                                slot_id=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
@@ -704,6 +705,16 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
     # because os.replace swaps that inode while waiters may still hold an open
     # descriptor to the retired file and later overwrite a newer projection.
     state_file = _state_file_for_slot(slot_id)
+    # Draft shadow identity: the draft slot is not a live allocation claim.
+    # Detect both explicit slot_id="draft" and the ambient override used by
+    # stage handlers that omit slot_id while running under active_slot_override.
+    try:
+        _resolved_slot = slot_id
+        if _resolved_slot is None:
+            _resolved_slot = _ei.current_slot_override()
+    except Exception:
+        _resolved_slot = slot_id
+    is_draft_slot = _resolved_slot == "draft"
     try:
         _ei._preflight_state_sidecar(state_file)
     except OSError as exc:
@@ -732,8 +743,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 log.error("Refusing non-object pipeline checkpoint")
                 return False
         try:
+            # Draft shadow checkpoints skip the live floor+1 successor CAS;
+            # promotion remaps them onto the formal next_v later.
             allocation_authority = _ei.checkpoint_allocation_authority(
-                expected_next_v=next_v,
+                expected_next_v=None if is_draft_slot else next_v,
             )
         except Exception as exc:
             log.error(
@@ -883,6 +896,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_candidate_artifact_hash = None
         existing_candidate_manifest_digest = None
         existing_charter_digest = None
+        existing_publication_tier = None
+        existing_is_draft = bool(is_draft_slot)
         existing_epoch_binding = None
         existing_workflow_run_id = ""
         requested_workflow_run_id = str(workflow_run_id or "").strip()
@@ -944,6 +959,20 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_terminal_gate_outcome = existing.get(
                 "terminal_gate_outcome"
             )
+            # Preserve publication_tier across generic merges unless the caller
+            # supplies an explicit replacement.
+            if publication_tier is None:
+                existing_publication_tier = existing.get("publication_tier")
+            else:
+                existing_publication_tier = publication_tier
+            # Draft shadow flag is sticky for the draft slot; primary writes
+            # never inherit it.
+            if is_draft_slot:
+                existing_is_draft = True
+            elif existing.get("is_draft") is True and not is_draft_slot:
+                # Promoting into primary clears the shadow flag at write time
+                # (caller writes without slot_id / draft override).
+                existing_is_draft = False
             existing_review_attempt_journal = deepcopy(
                 existing.get("review_attempt_journal") or []
             )
@@ -1153,6 +1182,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                         "abandoned_receipt_head_digest"
                     ],
                     repo_root=_ei.PROJECT_ROOT,
+                    allow_shadow_allocation=is_draft_slot,
                 )
             except Exception as exc:
                 errors = list(getattr(exc, "errors", ()) or ())
@@ -1209,6 +1239,17 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 log.error("Invalid charter_digest digest")
                 return False
             existing_charter_digest = _c
+
+        # publication_tier: explicit arg wins; otherwise preserve existing; else
+        # leave None (caller/selected write sites supply the default).
+        if publication_tier is not None:
+            tier = str(publication_tier).strip().lower()
+            if tier not in {"staging", "certified"}:
+                log.error("Invalid publication_tier: %r", publication_tier)
+                return False
+            existing_publication_tier = tier
+        if is_draft_slot:
+            existing_is_draft = True
 
         # Publication is a one-way, immutable transaction.  Persist its intent
         # under the same checkpoint CAS before any Git mutation, then preserve
@@ -1623,6 +1664,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write
         }
+        if existing_publication_tier in {"staging", "certified"}:
+            state["publication_tier"] = existing_publication_tier
+        if existing_is_draft:
+            state["is_draft"] = True
         if existing_review_attempt_journal:
             state["review_attempt_journal"] = existing_review_attempt_journal
         if existing_identity_replan_history:

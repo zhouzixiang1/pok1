@@ -1,4 +1,5 @@
 import type { ControlStatus, EpochState } from "../../api/control";
+import { draftGenerations } from "../../api/control";
 import { authorityNextVersion } from "../../hooks/useControlStatus";
 import { cn } from "../../lib/utils";
 import { canonicalGenerationLabel } from "../../lib/canonicalGenerationIdentity";
@@ -67,6 +68,7 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
   const activeIdentityLabel = status.active_generation
     ? canonicalGenerationLabel(status.active_generation, status.active_generation.next_v)
     : null;
+  const drafts = draftGenerations(status);
 
   return (
     <section className={cn("rounded-xl border p-4", stateTone[status.epoch_state], className)} aria-label="严格进化身份状态">
@@ -204,6 +206,22 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
                 && (
                 <> · v{status.active_generation.source_v} 仅为数字高水位，不表示继承源 artifact</>
               )}
+            </p>
+          )}
+
+          {drafts.length > 0 && (
+            <p>
+              并行草稿槽：
+              {drafts.map((draft, index) => (
+                <span key={`${draft.slot_id}-${draft.next_v}-${draft.workflow_run_id ?? index}`}>
+                  {index > 0 ? "；" : ""}
+                  <span className="font-mono">v{draft.next_v}</span>
+                  <> · 阶段 <span className="font-mono">{draft.stage}</span></>
+                  {draft.checkpoint_revision != null && (
+                    <> · rev <span className="font-mono">{draft.checkpoint_revision}</span></>
+                  )}
+                </span>
+              ))}
             </p>
           )}
         </div>

@@ -38,6 +38,10 @@ import {
   controlSchedulerOwnsPrepareBoundary,
   controlStartBlocked,
   controlStartBlockedReason,
+  draftGenerations,
+  primaryGenerationSlot,
+  controlAbandonAvailable,
+  controlApi,
 } from "../node_modules/.tmp/sse-tests/api/control.js";
 import {
   controlTaskActive,
@@ -47,6 +51,7 @@ import {
   criticAdvisoryComplete,
   criticAdvisoryVerdict,
   pipelineCheckpointIdentityIssues,
+  pipelineStepperStage,
   reviewerRetryPending,
 } from "../node_modules/.tmp/sse-tests/lib/pipelinePresentation.js";
 import {
@@ -1784,4 +1789,98 @@ test("source-bound static receipt rejects stale frontend code before --no-build"
   });
   assert.notEqual(malformed.status, 0);
   assert.match(malformed.stderr, /receipt keys do not match/);
+});
+
+test("data stream accepts staging_uncertified / official-staging bots", () => {
+  const base = botSummary("national_v143");
+  const stagingBot = {
+    ...base,
+    official_certification: {
+      bot: base.name,
+      status: "official-staging",
+      formal_authority: "staging_uncertified",
+      publication_tier: "staging",
+      formal_certified: false,
+    },
+  };
+  assert.equal(validateDataStreamEvent("bots", { active: [stagingBot] }), true);
+
+  const unknownAuthority = {
+    ...base,
+    official_certification: {
+      bot: base.name,
+      status: "official-staging",
+      formal_authority: "not_a_real_authority",
+    },
+  };
+  assert.equal(validateDataStreamEvent("bots", { active: [unknownAuthority] }), false);
+});
+
+test("pipelineStepperStage (PipelineMap null-checkpoint contract) uses active_generation.stage", () => {
+  assert.equal(
+    pipelineStepperStage(null, { stage: "precommit_eval" }),
+    "precommit_eval",
+  );
+  assert.equal(
+    pipelineStepperStage({ stage: "reviewed" }, { stage: "precommit_eval" }),
+    "reviewed",
+  );
+});
+
+test("control Phase A helpers and abandon API surface", () => {
+  const draft = {
+    slot_id: "draft",
+    next_v: 3,
+    source_v: 1,
+    parent2_v: null,
+    stage: "selected",
+    workflow_run_id: null,
+    checkpoint_revision: null,
+    is_draft: true,
+  };
+  const status = {
+    active_generation: {
+      next_v: 2,
+      source_v: 1,
+      parent2_v: null,
+      stage: "workers_done",
+      run_id: "2#1",
+      workflow_run_id: "wf",
+      checkpoint_revision: 1,
+      attempt: { generation: 1, audit: 0, precommit: 0 },
+      generation_ordinal: 2,
+      canonical_version: 2,
+      canonical_bot_name: "national_cloud_v2",
+      canonical_tag: "national-cloud-bot-v2",
+    },
+    active_generations: [
+      {
+        slot_id: "primary",
+        next_v: 2,
+        source_v: 1,
+        parent2_v: null,
+        stage: "workers_done",
+        run_id: "2#1",
+        workflow_run_id: "wf",
+        checkpoint_revision: 1,
+        attempt: { generation: 1, audit: 0, precommit: 0 },
+        generation_ordinal: 2,
+        canonical_version: 2,
+        canonical_bot_name: "national_cloud_v2",
+        canonical_tag: "national-cloud-bot-v2",
+      },
+      draft,
+    ],
+    // Optional Phase A blocks must remain optional (missing ≠ fail-closed).
+  };
+  assert.equal(primaryGenerationSlot(status)?.next_v, 2);
+  assert.deepEqual(draftGenerations(status), [draft]);
+  assert.equal(controlAbandonAvailable(status), true);
+  assert.equal(controlAbandonAvailable({
+    ...status,
+    active_generation: { ...status.active_generation, stage: "official_certifying" },
+    active_generations: [{ ...status.active_generations[0], stage: "official_certifying" }, draft],
+  }), false);
+  assert.equal(typeof controlApi.abandon, "function");
+  assert.equal(typeof controlApi.status, "function");
 });

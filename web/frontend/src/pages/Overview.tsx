@@ -6,6 +6,7 @@ import {
   controlPipelineBlocked,
   controlPipelineIssues,
   controlSchedulerOwnsPrepareBoundary,
+  draftGenerations,
 } from "../api/control";
 import type { PipelineCheckpoint } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
@@ -488,6 +489,8 @@ export default function Overview() {
               <PipelineStatus
                 checkpoint={checkpoint}
                 activeGeneration={controlStatus.active_generation}
+                drafts={draftGenerations(controlStatus)}
+                pipelineMode={controlStatus.pipeline_mode ?? null}
                 handoff={controlStatus.post_publication_handoff}
                 handoffBlocked={controlStatus.post_publication_handoff.status !== "none" && pipelineBlocked}
                 activeBlocked={Boolean(controlStatus.active_generation && pipelineBlocked)}

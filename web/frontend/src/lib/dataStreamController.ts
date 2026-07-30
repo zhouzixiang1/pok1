@@ -287,11 +287,14 @@ const OFFICIAL_STATUSES = new Set([
   "official-inconclusive",
   "official-failed",
   "official-uncertified",
+  // Two-tier publication: staging tag published, async official cert pending.
+  "official-staging",
   "official-unavailable",
 ]);
 const OFFICIAL_MODES = new Set(["smoke", "compliance", "full"]);
 const FORMAL_AUTHORITIES = new Set([
   "signed_full_v5",
+  "staging_uncertified",
   "none",
   "pipeline_attached_full_v5_job",
 ]);
@@ -348,6 +351,9 @@ const isOfficialCertification = (value: unknown): boolean => {
   if (!isOptional(value.certificate_schema_version, isInteger)) return false;
   if (!isOptional(value.formal_authority, (item) => (
     typeof item === "string" && FORMAL_AUTHORITIES.has(item)
+  ))) return false;
+  if (!isOptional(value.publication_tier, (item) => (
+    item === "staging" || item === "certified"
   ))) return false;
   if (!isOptional(value.formal_summary, (item) => item === null || isFormalSummary(item))) return false;
   if (!isOptional(value.subject_kind, (item) => (

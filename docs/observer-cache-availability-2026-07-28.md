@@ -179,3 +179,14 @@ After restarting via systemd, `/api/control/health` resolves to 200 within the
 first ~76s (the cooperative-await followers receive the single build's result)
 instead of returning continuous 503, and the homepage no longer shows the red
 banner on first load. A changed-key drift still returns the fail-closed 503.
+
+## Follow-up (2026-07-30): draft checkpoint in observer key
+
+`_observer_authority_content_key` also watches
+`infra.pipeline_state_path("draft")` (`pipeline_state_draft.json`). Without
+that token, a Slice-2b one-ahead draft stage move left the cached
+`active_generations` projection stale until primary checkpoint / TTL churn.
+Phase A control status blocks (`pipeline_mode`, `async_certification`,
+`eval_wait`, `feature_flags`, `version_authority`, daemon `pairs_drift`) are
+attached inside `_sync_evolution_fields`; Evolution SSE remains primary-slot
+poll-supplement only for multi-slot UI.

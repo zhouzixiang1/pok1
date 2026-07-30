@@ -318,14 +318,18 @@ def test_terse_provider_errors_are_provider_error_envelopes(text):
     assert looks_like_provider_error_envelope(text) is True
 
 
-def test_429_requires_explicit_provider_reset_for_automatic_resume():
+def test_429_bare_sets_conservative_fallback_for_automatic_resume():
     bare = LLMAvailabilityTrace()
     bare.observe_result(_error_result(status=429, errors=["quota exceeded"]))
     bare_block = bare.blocked(role="worker")
     assert bare_block is not None
     assert bare_block.issue.category == QUOTA_429
-    assert bare_block.issue.requires_manual_resume is True
-    assert bare_block.issue.provider_reset_at is None
+    # A bare 429 now gets a conservative 5h fallback reset time instead of
+    # requiring manual operator intervention. This prevents the pipeline from
+    # staying dead for hours after the quota window already resets.
+    assert bare_block.issue.requires_manual_resume is False
+    assert bare_block.issue.provider_reset_at is not None
+    assert bare_block.issue.retry_policy == "resume_after_quota_reset"
 
     reset = LLMAvailabilityTrace()
     reset.observe_text(

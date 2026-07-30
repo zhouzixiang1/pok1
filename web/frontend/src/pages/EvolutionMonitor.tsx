@@ -5,6 +5,7 @@ import {
   controlPipelineBlocked,
   controlPipelineIssues,
   controlSchedulerOwnsPrepareBoundary,
+  draftGenerations,
 } from "../api/control";
 import { api } from "../api/client";
 import type { BotRating, PipelineCheckpoint, WorkerFailure } from "../api/types";
@@ -397,6 +398,7 @@ export default function EvolutionMonitor() {
     onIO: (line: IOLine) => {
       if (!epochStatus?.epoch_initialized) return;
       const role = line.role || "";
+      const slot = line.slot;
       if (role) {
         setActiveRole(role);
         setKnownRoles((prev) => prev.includes(role) ? prev : [...prev, role]);
@@ -412,25 +414,25 @@ export default function EvolutionMonitor() {
         setMessages((prev) => {
           if (prev.length > 0 && prev[prev.length - 1].type === "claude" && prev[prev.length - 1].role === role) {
             const last = prev[prev.length - 1];
-            return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
+            return [...prev.slice(0, -1), { ...last, text: last.text + line.text, slot: last.slot ?? slot }];
           }
-          return [...prev, { id: nextId(), type: "claude", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
+          return [...prev, { id: nextId(), type: "claude", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false }];
         });
       } else if (line.streamType === "thinking") {
         closeTool();
         setMessages((prev) => {
           if (prev.length > 0 && prev[prev.length - 1].type === "thinking" && prev[prev.length - 1].role === role) {
             const last = prev[prev.length - 1];
-            return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
+            return [...prev.slice(0, -1), { ...last, text: last.text + line.text, slot: last.slot ?? slot }];
           }
           const newId = nextId();
           thinkingId.current = newId;
-          return [...prev, { id: newId, type: "thinking", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
+          return [...prev, { id: newId, type: "thinking", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false }];
         });
       } else if (line.streamType === "error") {
         closeTool();
         closeThinking();
-        addMsg({ id: nextId(), type: "error", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
+        addMsg({ id: nextId(), type: "error", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false });
       } else if (line.streamType === "tool_result") {
         if (line.text.trim()) {
           updateLastTool(line.text.trim());
@@ -441,13 +443,13 @@ export default function EvolutionMonitor() {
         if (cleanText) {
           closeTool();
           closeThinking();
-          addMsg({ id: nextId(), type: "raw", text: cleanText, role: role || undefined, toolOutput: [], toolDone: false });
+          addMsg({ id: nextId(), type: "raw", text: cleanText, role: role || undefined, slot, toolOutput: [], toolDone: false });
         }
       } else {
         if (line.text.trim()) {
           closeTool();
           closeThinking();
-          addMsg({ id: nextId(), type: "raw", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
+          addMsg({ id: nextId(), type: "raw", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false });
         }
       }
     },
@@ -856,6 +858,28 @@ export default function EvolutionMonitor() {
                     <div className={cn("mt-2 mb-1 flex items-center gap-1.5", roleColor.text)}>
                       <span className={cn("inline-block w-1.5 h-1.5 rounded-full", roleColor.dot)} />
                       <span className="text-[10px] font-semibold uppercase tracking-wide">{shortRoleName(msg.role!)}</span>
+                      {msg.slot && (
+                        <span className={cn(
+                          "rounded px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+                          msg.slot === "primary"
+                            ? "bg-brand-500/20 text-brand-300"
+                            : "bg-violet-500/20 text-violet-300",
+                        )}>
+                          {msg.slot}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {!showRoleLabel && msg.slot && (
+                    <div className="mb-0.5 px-1">
+                      <span className={cn(
+                        "rounded px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+                        msg.slot === "primary"
+                          ? "bg-brand-500/20 text-brand-300"
+                          : "bg-violet-500/20 text-violet-300",
+                      )}>
+                        {msg.slot}
+                      </span>
                     </div>
                   )}
                   {msg.type === "tool_call" ? (
@@ -927,6 +951,8 @@ export default function EvolutionMonitor() {
                 <PipelineStatus
                   checkpoint={checkpoint}
                   activeGeneration={epochStatus?.active_generation ?? null}
+                  drafts={draftGenerations(epochStatus)}
+                  pipelineMode={epochStatus?.pipeline_mode ?? null}
                   handoff={epochStatus?.post_publication_handoff ?? null}
                   handoffBlocked={Boolean(
                     epochStatus?.post_publication_handoff.status !== "none"

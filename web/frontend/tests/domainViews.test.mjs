@@ -23,12 +23,19 @@ import {
   criticAdvisoryVerdictLabel,
   EVIDENCE_TIER_LABELS,
 } from "../node_modules/.tmp/sse-tests/domain/evidenceAuthority.js";
+import { certificationView } from "../node_modules/.tmp/sse-tests/domain/certificationView.js";
 import {
   workerFailureRows,
   pipelineRecoveryRows,
 } from "../node_modules/.tmp/sse-tests/domain/failureRecoveryView.js";
 import { operatorSituationView } from "../node_modules/.tmp/sse-tests/domain/operatorSituationView.js";
 import { pipelineStageProgress } from "../node_modules/.tmp/sse-tests/constants/pipeline.js";
+import { pipelineStepperStage } from "../node_modules/.tmp/sse-tests/lib/pipelinePresentation.js";
+import {
+  controlAbandonAvailable,
+  draftGenerations,
+  primaryGenerationSlot,
+} from "../node_modules/.tmp/sse-tests/api/control.js";
 import {
   isOfficialCertificationStage,
   isNormalOfficialCertificationStage,
@@ -468,6 +475,178 @@ test("evidenceTierForOfficialCertification classifies staging tier correctly", (
   // A certified bot is still compliance even if publication_tier is also set.
   const certified = evidenceTierForOfficialCertification({ publication_tier: "certified", formal_certified: true, formal_authority: "signed_full_v5" });
   assert.equal(certified.tier, "compliance");
+});
+
+test("certificationView aligns Inventory/BotManager on staging_uncertified", () => {
+  const staging = certificationView({
+    bot: "national_cloud_v2",
+    status: "official-staging",
+    publication_tier: "staging",
+    formal_authority: "staging_uncertified",
+    formal_certified: false,
+  });
+  assert.equal(staging.formal, false);
+  assert.equal(staging.evidence.tier, "staging");
+  assert.equal(staging.publicationTier, "staging");
+  assert.equal(staging.certifiedTag, null);
+  assert.match(staging.label, /待认证|已发布/);
+
+  const withCertifiedTag = certificationView(
+    {
+      bot: "national_cloud_v2",
+      status: "official-staging",
+      publication_tier: "staging",
+      formal_authority: "staging_uncertified",
+      formal_certified: false,
+    },
+    { certified_tag: "national-cloud-bot-v2-certified" },
+  );
+  assert.equal(withCertifiedTag.publicationTier, "staging");
+  assert.equal(withCertifiedTag.certifiedTag, "national-cloud-bot-v2-certified");
+
+  const none = certificationView({
+    bot: "national_cloud_v2",
+    status: "official-uncertified",
+    formal_authority: "none",
+  });
+  assert.equal(none.evidence.tier, "zero");
+  assert.equal(none.label, "未认证");
+  assert.equal(none.publicationTier, null);
+});
+
+test("pipelineStepperStage falls back to active_generation when checkpoint is null", () => {
+  assert.equal(pipelineStepperStage(null, { stage: "workers_done" }), "workers_done");
+  assert.equal(pipelineStepperStage({ stage: "reviewed" }, { stage: "workers_done" }), "reviewed");
+  assert.equal(pipelineStepperStage(null, null), null);
+  assert.equal(pipelineStepperStage({ stage: "" }, { stage: "quality_passed" }), "quality_passed");
+});
+
+test("draftGenerations / primaryGenerationSlot consume Phase A active_generations", () => {
+  const primary = {
+    slot_id: "primary",
+    next_v: 2,
+    source_v: 1,
+    parent2_v: null,
+    stage: "workers_done",
+    run_id: "2#1",
+    workflow_run_id: "wf-primary",
+    checkpoint_revision: 3,
+    attempt: { generation: 1, audit: 0, precommit: 0 },
+    generation_ordinal: 2,
+    canonical_version: 2,
+    canonical_bot_name: "national_cloud_v2",
+    canonical_tag: "national-cloud-bot-v2",
+  };
+  const draft = {
+    slot_id: "draft",
+    next_v: 3,
+    source_v: 1,
+    parent2_v: null,
+    stage: "direction_audited",
+    workflow_run_id: "wf-draft",
+    checkpoint_revision: null,
+    is_draft: true,
+  };
+  const status = {
+    active_generation: primary,
+    active_generations: [primary, draft],
+  };
+  assert.equal(primaryGenerationSlot(status)?.slot_id, "primary");
+  assert.equal(primaryGenerationSlot(status)?.next_v, 2);
+  assert.deepEqual(draftGenerations(status), [draft]);
+  assert.deepEqual(draftGenerations({ active_generation: primary }), []);
+  assert.equal(primaryGenerationSlot({ active_generation: primary })?.slot_id, "primary");
+});
+
+test("operatorSituationView surfaces dual-slot badges, consumer park, eval_wait, staging parent", () => {
+  const primary = {
+    generation_ordinal: 2,
+    canonical_version: 2,
+    canonical_bot_name: "national_cloud_v2",
+    canonical_tag: "national-cloud-bot-v2",
+    slot_id: "primary",
+    next_v: 2,
+    source_v: 1,
+    parent2_v: null,
+    stage: "workers_done",
+    run_id: "2#1",
+    workflow_run_id: "wf-primary",
+    checkpoint_revision: 4,
+    attempt: { generation: 1, audit: 0, precommit: 0 },
+  };
+  const draft = {
+    slot_id: "draft",
+    next_v: 3,
+    source_v: 1,
+    parent2_v: null,
+    stage: "direction_audited",
+    workflow_run_id: "wf-draft",
+    checkpoint_revision: null,
+    is_draft: true,
+  };
+  const status = controlStatusFixture({
+    active_generation: primary,
+    active_generations: [primary, draft],
+    pipeline_mode: {
+      enabled: true,
+      consumer_parked: true,
+      producer_may_prepare_next: true,
+      producer_may_advance: false,
+      in_flight_count: 1,
+      sealed_candidates: ["national_cloud_v2"],
+    },
+    eval_wait: {
+      waiting: true,
+      bot: "national_cloud_v1",
+      games: 2,
+      min_games: 5,
+      rd: 180,
+      rd_threshold: 100,
+      rd_min_games: 3,
+      daemon_alive: true,
+      consecutive_prep_fails: 0,
+      degraded: false,
+    },
+    feature_flags: {
+      slice2b_enabled: true,
+      staging_as_parent: true,
+      certified_tag_prefix: "national-cloud-bot-v",
+      tag_prefix: "national-cloud-bot-v",
+    },
+    version_authority: {
+      high_water: 1,
+      paired_versions: [1],
+      certified_versions: [],
+      unpaired_completion_versions: [],
+      unpaired_high_water_versions: [],
+    },
+  });
+  const view = operatorSituationView(status, controlHealthFixture(status, {
+    stage: "workers_done",
+    route: {
+      stage: "workers_done",
+      next_v: 2,
+      source_v: 1,
+      parent2_v: null,
+      next_tool: "run_quality",
+      allowed_tools: ["run_quality"],
+      intent: "advance",
+      directive: "Continue",
+    },
+  }));
+  assert.equal(view.slotBadges.length, 2);
+  assert.equal(view.slotBadges[0].slot, "primary");
+  assert.equal(view.slotBadges[1].slot, "draft");
+  assert.match(view.headline, /旁路等待|非卡住/);
+  assert.ok(view.contextNotes.some((note) => /consumer park|旁路等待|Slice 2b/.test(note)));
+  assert.ok(view.contextNotes.some((note) => /强度样本等待/.test(note)));
+  assert.ok(view.contextNotes.some((note) => /staging 父本/.test(note)));
+  assert.equal(controlAbandonAvailable(status), true);
+  assert.equal(controlAbandonAvailable({
+    ...status,
+    active_generation: { ...primary, stage: "publishing" },
+    active_generations: [{ ...primary, stage: "publishing" }],
+  }), false);
 });
 
 test("official job rows remain zero-weight progress until a signed certificate is validated", () => {
