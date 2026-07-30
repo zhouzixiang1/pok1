@@ -2599,7 +2599,7 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
                 "action": "abandon_generation",
                 "worker_abandon_reason": "worker_infrastructure_exhausted",
             },
-            "worker_workflow_abandoned",
+            "worker_infrastructure_exhausted",
         ),
         (
             {

@@ -288,10 +288,32 @@ def _validated_strict_abandon_fence(
         for event in events
         if event.event_type == "StrictAuthorityAbandoned"
     ]
+    # The persisted terminal event is the single source of truth for the abandon
+    # reason once a strict-authority instance is already fenced: it was written
+    # by the original owner through this same fence (payload bound to
+    # causation_id + payload_digest, and store.events() rejects any row whose
+    # content_digest(payload) != payload_digest on read), so reproof must
+    # reproduce THAT reason, not whatever reason a later caller supplies. This
+    # mirrors WorkerWorkflow.abandon's accept_existing_reason (worker_workflow
+    # 1714-1718) and closes the v12/v13 reason-drift death loop: an outer
+    # checkpoint that terminalized its strict child under a concrete executor
+    # reason must still reprove that child when a router replay supplies the
+    # abstract routing constant. Only reproofs of an already-abandoned instance
+    # adopt the persisted reason; first creation keeps using the caller reason.
+    # All non-reason fields remain exact-bound below.
+    verified_reason = reason
+    if (
+        instance.get("status") == "abandoned"
+        and len(terminal) == 1
+        and terminal[0].schema_version == 1
+    ):
+        persisted_reason = str((terminal[0].payload or {}).get("reason") or "")
+        if persisted_reason and persisted_reason != str(reason):
+            verified_reason = persisted_reason
     expected_payload, expected_causation_id = (
         strict_authority_abandon_event_identity(
             checkpoint,
-            reason=reason,
+            reason=verified_reason,
         )
     )
     if (

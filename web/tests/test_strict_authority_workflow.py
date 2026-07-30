@@ -945,14 +945,47 @@ def test_generation_abandon_fences_strict_child_journal(authority):
         if event.event_type == "StrictAuthorityAbandoned"
     ]
     assert len(events) == 1
+    # The persisted terminal event is the single source of truth for the abandon
+    # reason once a strict-authority instance is fenced (mirrors WorkerWorkflow's
+    # accept_existing_reason). A reproof may therefore supply a *different*
+    # reason: the fence reproduces the persisted tombstone, not the caller text.
+    # This is what closes the v12/v13 reason-drift death loop. The single
+    # persisted terminal event must be unchanged after such a reproof.
+    drifted = module.abandon_authority(
+        checkpoint,
+        reason="terminal_gate_outcome:" + "f" * 64,
+    )
+    assert drifted == first
+    assert [
+        event
+        for event in store.events(run_id)
+        if event.event_type == "StrictAuthorityAbandoned"
+    ] == events
+    # Strictness is preserved on every non-reason field: tampering with the
+    # terminal event's seq breaks the fence even though reason drift is now
+    # tolerated for an already-fenced instance.
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE workflow_instances SET definition_version = 99 "
+            "WHERE run_id = ?",
+            (run_id,),
+        )
+        connection.commit()
     with pytest.raises(
         module.StrictAuthorityError,
         match="strict_authority_abandon_fence_identity_invalid",
     ):
         module.abandon_authority(
             checkpoint,
-            reason="terminal_gate_outcome:" + "f" * 64,
+            reason="abandon_generation",
         )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE workflow_instances SET definition_version = ? "
+            "WHERE run_id = ?",
+            (module.DEFINITION_VERSION, run_id),
+        )
+        connection.commit()
     with pytest.raises(
         module.StrictAuthorityError,
         match="strict_authority_phase_journal_abandoned:master",

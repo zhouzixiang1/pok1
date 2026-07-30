@@ -85,9 +85,17 @@ def _worker_terminal_abandon_reason(data):
     if error == "WORKER_INFRASTRUCTURE_EXHAUSTED":
         return "worker_infrastructure_exhausted"
     if error == "WORKER_WORKFLOW_ABANDONED":
-        # Provider/Worker text is diagnostic only and must never select a
-        # control-plane abandon capability.
-        return "worker_workflow_abandoned"
+        # The Worker journal's durable abandon reason is the persisted terminal
+        # reason (self-verifying on read and bound to the strict-authority fence)
+        # -- NOT provider text.  The router phase (tool_planning_worker_phases)
+        # forwards it as worker_abandon_reason, so that the strict-authority
+        # fence can reproduce the exact tombstone originally written by the
+        # worker executor.  Falls back to the abstract routing constant only if
+        # the worker result omitted the field.  Bounded to match the fence's
+        # own reason[:1000] truncation and the historical control-plane cap.
+        return str(
+            data.get("worker_abandon_reason") or "worker_workflow_abandoned"
+        )[:160]
     return "worker_terminal_abandon"
 
 
