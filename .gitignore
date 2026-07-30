@@ -81,3 +81,6 @@ bot_images/
 # === ZCode 工具产物 ===
 .zcode/
 platform-ctl/
+
+# === 参考仓库(仅本地对照,不入库) ===
+refs/

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS users (
     role            TEXT    NOT NULL DEFAULT 'user',  -- 'user' | 'admin'
     display_name    TEXT    NOT NULL DEFAULT '',      -- 昵称(可中文)
     is_active       INTEGER NOT NULL DEFAULT 1,       -- 0=封禁
+    email_verified  INTEGER NOT NULL DEFAULT 0,       -- 0=未验证邮箱,禁止登录
     created_at      TEXT    NOT NULL,
     last_login_at   TEXT,
     CONSTRAINT chk_username CHECK (length(username) >= 3),
@@ -165,13 +166,51 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 -- ════════════════════════════════════════════════════════════
--- 密码重置(一次性 token,无邮件服务时 admin 生成)
+-- 密码重置(一次性 token;邮件验证码为主,admin 兜底仍可用 token)
 -- ════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS password_resets (
     token           TEXT    PRIMARY KEY,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at      TEXT    NOT NULL,
     used_at         TEXT,
+    created_at      TEXT    NOT NULL
+);
+
+-- ════════════════════════════════════════════════════════════
+-- 邮箱验证码(注册验证 / 密码重置)
+-- ════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS email_codes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose         TEXT    NOT NULL,                 -- verify | reset
+    code            TEXT    NOT NULL,                 -- 6 位数字
+    expires_at      TEXT    NOT NULL,
+    used_at         TEXT,
+    created_at      TEXT    NOT NULL,
+    CONSTRAINT chk_purpose CHECK (purpose IN ('verify', 'reset'))
+);
+
+-- ════════════════════════════════════════════════════════════
+-- 邮件模板(管理员可编辑)
+-- ════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS email_templates (
+    key             TEXT    PRIMARY KEY,              -- verify_email|reset_password|welcome
+    subject         TEXT    NOT NULL,
+    body_html       TEXT    NOT NULL DEFAULT '',
+    body_text       TEXT    NOT NULL DEFAULT '',
+    updated_at      TEXT    NOT NULL
+);
+
+-- ════════════════════════════════════════════════════════════
+-- 出站邮件审计(轻量)
+-- ════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS email_outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    to_addr         TEXT    NOT NULL,
+    subject         TEXT    NOT NULL,
+    template_key    TEXT    NOT NULL DEFAULT '',
+    status          TEXT    NOT NULL DEFAULT 'sent',  -- sent|failed
+    error           TEXT    NOT NULL DEFAULT '',
     created_at      TEXT    NOT NULL
 );
 
@@ -186,6 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_matches_owner    ON matches(owner_id);
 CREATE INDEX IF NOT EXISTS idx_matches_status   ON matches(status);
 CREATE INDEX IF NOT EXISTS idx_matches_time     ON matches(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user    ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_email_codes_user ON email_codes(user_id, purpose);
 """
 
 
@@ -207,3 +247,12 @@ STATUS_ABORTED = "aborted"
 TYPE_CHALLENGE = "challenge"      # 用户主动选对手
 TYPE_LADDER = "ladder"            # 天梯排位(里程碑6)
 TYPE_EXHIBITION = "exhibition"    # 表演赛
+
+# 邮件模板 key
+TPL_VERIFY_EMAIL = "verify_email"
+TPL_RESET_PASSWORD = "reset_password"
+TPL_WELCOME = "welcome"
+
+# 邮箱验证码用途
+CODE_VERIFY = "verify"
+CODE_RESET = "reset"

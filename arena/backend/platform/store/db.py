@@ -15,7 +15,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .schema import SCHEMA
+from .schema import (
+    SCHEMA,
+    TPL_RESET_PASSWORD,
+    TPL_VERIFY_EMAIL,
+    TPL_WELCOME,
+)
 
 DEFAULT_DB_PATH = Path("arena_platform.db")
 
@@ -50,6 +55,50 @@ class Store:
     def _init_schema(self) -> None:
         with self._tx() as c:
             c.executescript(SCHEMA)
+            self._migrate(c)
+            self._seed_email_templates(c)
+
+    def _migrate(self, c: sqlite3.Connection) -> None:
+        """对已有库做增量列/表迁移(CREATE IF NOT EXISTS 不改旧表结构)。"""
+        cols = {r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+        if "email_verified" not in cols:
+            c.execute(
+                "ALTER TABLE users ADD COLUMN email_verified "
+                "INTEGER NOT NULL DEFAULT 0")
+            # 历史账号视为已验证,避免阻断现有用户
+            c.execute("UPDATE users SET email_verified=1")
+
+    def _seed_email_templates(self, c: sqlite3.Connection) -> None:
+        defaults = [
+            (TPL_VERIFY_EMAIL,
+             "【pok-arena】邮箱验证码",
+             "<p>你好 {{username}},</p>"
+             "<p>你的邮箱验证码是 <strong>{{code}}</strong>,"
+             "{{expires_minutes}} 分钟内有效。</p>"
+             "<p>如非本人操作请忽略本邮件。</p>",
+             "你好 {{username}},\n你的邮箱验证码是 {{code}},"
+             "{{expires_minutes}} 分钟内有效。\n如非本人操作请忽略。"),
+            (TPL_RESET_PASSWORD,
+             "【pok-arena】密码重置验证码",
+             "<p>你好 {{username}},</p>"
+             "<p>你正在重置密码,验证码 <strong>{{code}}</strong>,"
+             "{{expires_minutes}} 分钟内有效。</p>"
+             "<p>如非本人操作请立即忽略并检查账号安全。</p>",
+             "你好 {{username}},\n你正在重置密码,验证码 {{code}},"
+             "{{expires_minutes}} 分钟内有效。"),
+            (TPL_WELCOME,
+             "【pok-arena】欢迎加入",
+             "<p>你好 {{username}},欢迎加入 pok-arena 德州扑克对战平台!</p>"
+             "<p>请先完成邮箱验证,然后上传 bot 并发起对战。</p>",
+             "你好 {{username}},欢迎加入 pok-arena!\n请先完成邮箱验证。"),
+        ]
+        now = _now()
+        for key, subject, html, text in defaults:
+            c.execute(
+                "INSERT OR IGNORE INTO email_templates"
+                "(key, subject, body_html, body_text, updated_at) "
+                "VALUES(?,?,?,?,?)",
+                (key, subject, html, text, now))
 
     # ══════════════════════════════════════════════════════════
     # 用户(真实账号)— 里程碑 2 认证用
@@ -85,9 +134,9 @@ class Store:
             return self._row_to_dict(r)
 
     def update_user(self, user_id: int, **fields) -> dict | None:
-        """可更新字段:password_hash/email/display_name/role/is_active/last_login_at。"""
+        """可更新字段含 email_verified。"""
         allowed = {"password_hash", "email", "display_name", "role",
-                   "is_active", "last_login_at"}
+                   "is_active", "last_login_at", "email_verified"}
         sets = [f"{k}=?" for k in fields if k in allowed]
         vals = [v for k, v in fields.items() if k in allowed]
         if not sets:
@@ -463,6 +512,73 @@ class Store:
         with self._tx() as c:
             c.execute(
                 "UPDATE password_resets SET used_at=? WHERE token=?", (_now(), token))
+
+    # ══════════════════════════════════════════════════════════
+    # 邮箱验证码 / 模板 / 出站审计
+    # ══════════════════════════════════════════════════════════
+
+    def add_email_code(self, user_id: int, purpose: str, code: str,
+                       expires_at: str) -> None:
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO email_codes(user_id, purpose, code, expires_at, "
+                "created_at) VALUES(?,?,?,?,?)",
+                (user_id, purpose, code, expires_at, _now()))
+
+    def get_latest_email_code(self, user_id: int, purpose: str) -> dict | None:
+        with self._tx() as c:
+            r = c.execute(
+                "SELECT * FROM email_codes WHERE user_id=? AND purpose=? "
+                "AND used_at IS NULL ORDER BY id DESC LIMIT 1",
+                (user_id, purpose)).fetchone()
+            return self._row_to_dict(r)
+
+    def mark_email_code_used(self, code_id: int) -> None:
+        with self._tx() as c:
+            c.execute(
+                "UPDATE email_codes SET used_at=? WHERE id=?", (_now(), code_id))
+
+    def list_email_templates(self) -> list[dict]:
+        with self._tx() as c:
+            return [self._row_to_dict(r) for r in c.execute(
+                "SELECT * FROM email_templates ORDER BY key")]
+
+    def get_email_template(self, key: str) -> dict | None:
+        with self._tx() as c:
+            r = c.execute(
+                "SELECT * FROM email_templates WHERE key=?", (key,)).fetchone()
+            return self._row_to_dict(r)
+
+    def upsert_email_template(self, key: str, *, subject: str,
+                              body_html: str, body_text: str) -> dict:
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO email_templates"
+                "(key, subject, body_html, body_text, updated_at) "
+                "VALUES(?,?,?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "subject=excluded.subject, body_html=excluded.body_html, "
+                "body_text=excluded.body_text, updated_at=excluded.updated_at",
+                (key, subject, body_html, body_text, _now()))
+            return self._row_to_dict(c.execute(
+                "SELECT * FROM email_templates WHERE key=?", (key,)).fetchone())
+
+    def add_email_outbox(self, to_addr: str, subject: str, *,
+                         template_key: str = "", status: str = "sent",
+                         error: str = "") -> None:
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO email_outbox"
+                "(to_addr, subject, template_key, status, error, created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (to_addr, subject, template_key, status, error, _now()))
+
+    def list_email_outbox(self, *, limit: int = 50) -> list[dict]:
+        with self._tx() as c:
+            rows = c.execute(
+                "SELECT * FROM email_outbox ORDER BY id DESC LIMIT ?",
+                (limit,))
+            return [self._row_to_dict(r) for r in rows]
 
     # ══════════════════════════════════════════════════════════
     # 辅助

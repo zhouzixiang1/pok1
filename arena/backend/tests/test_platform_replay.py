@@ -420,8 +420,10 @@ def _make_app(tmp_path) -> tuple[FastAPI, Store, AuthManager]:
     orchestrator 不会真的跑对战(测试里直接 save_replay 灌事件流),所以
     runner 用 stub。
     """
+    from arena.backend.platform.auth.captcha import CaptchaStore
     store = Store(str(tmp_path / "replay_api.db"))
     auth = AuthManager(store)
+    captcha = CaptchaStore()
     # stub runner(orchestrator 不会跑对战,但 __init__ 要一个)
     class _StubRunner:
         async def start_session(self, *a, **kw): return "x"
@@ -432,6 +434,7 @@ def _make_app(tmp_path) -> tuple[FastAPI, Store, AuthManager]:
     app = FastAPI()
     app.state.platform_store = store
     app.state.platform_auth = auth
+    app.state.platform_captcha = captcha
     app.state.platform_orchestrator = orch
     app.include_router(auth_router)
     app.include_router(api_router)
@@ -439,10 +442,15 @@ def _make_app(tmp_path) -> tuple[FastAPI, Store, AuthManager]:
 
 
 def _login(client: TestClient, auth: AuthManager) -> None:
-    """注册+登录。TestClient 自动维持 cookie。"""
+    """注册+验证邮箱+登录。"""
     auth.register("alice", "alice@x.com", "secret123")
-    r = client.post("/api/auth/login",
-                    json={"username": "alice", "password": "secret123"})
+    auth.store.update_user(
+        auth.store.get_user_by_username("alice")["id"], email_verified=1)
+    captcha = client.app.state.platform_captcha
+    cid, answer, _ = captcha.create()
+    r = client.post("/api/auth/login", json={
+        "username": "alice", "password": "secret123",
+        "captcha_id": cid, "captcha_answer": answer})
     assert r.status_code == 200, r.text
 
 

@@ -1,42 +1,34 @@
-"""认证 API 路由:注册/登录/登出/改密/重置密码。
-
-挂载到主 app 的 ``/api/auth`` 前缀(里程碑 5 的 main.py 集成)。
-
-端点:
-- POST /api/auth/register     注册
-- POST /api/auth/login        登录(设 cookie)
-- POST /api/auth/logout       登出
-- GET  /api/auth/me           当前登录用户
-- POST /api/auth/change-password  改密码(需登录 + 旧密码)
-- POST /api/auth/request-reset    申请密码重置(返回 token,无邮件服务)
-- POST /api/auth/reset-password   凭 token 设新密码
-- POST /api/auth/admin/create-reset-token  admin 为用户生成重置 token
-"""
+"""认证 API:注册/登录/验证码/邮箱验证/重置密码。"""
 from __future__ import annotations
+
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .auth_manager import AuthError, AuthManager, COOKIE_NAME
+from .captcha import CaptchaStore, png_to_data_url, CAPTCHA_TTL_SEC
 from .dependencies import require_admin, require_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-COOKIE_MAX_AGE = 7 * 24 * 3600  # 与 SESSION_TTL_SEC 一致
+COOKIE_MAX_AGE = 7 * 24 * 3600
 
-
-# ── 请求/响应模型 ─────────────────────────────────────────
 
 class RegisterReq(BaseModel):
     username: str = Field(..., min_length=3, max_length=32)
-    email: str  # 严格校验在 AuthManager.register 的 _validate_email
+    email: str
     password: str = Field(..., min_length=8)
     display_name: str = Field("", max_length=64)
+    captcha_id: str
+    captcha_answer: str
 
 
 class LoginReq(BaseModel):
     username: str
     password: str
+    captcha_id: str
+    captcha_answer: str
 
 
 class ChangePasswordReq(BaseModel):
@@ -46,51 +38,125 @@ class ChangePasswordReq(BaseModel):
 
 class RequestResetReq(BaseModel):
     email_or_username: str
+    captcha_id: str
+    captcha_answer: str
 
 
 class ResetPasswordReq(BaseModel):
+    email_or_username: str
+    code: str
+    new_password: str = Field(..., min_length=8)
+
+
+class ResetByTokenReq(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)
+
+
+class VerifyEmailReq(BaseModel):
+    email_or_username: str
+    code: str
+
+
+class ResendVerifyReq(BaseModel):
+    email_or_username: str
+    captcha_id: str
+    captcha_answer: str
 
 
 class AdminResetReq(BaseModel):
     username_or_email: str
 
 
-# ── 路由 ──────────────────────────────────────────────────
+def _secure_cookie() -> bool:
+    return os.environ.get("POK_PLATFORM_SECURE_COOKIE", "").strip().lower() in {
+        "1", "true", "yes", "on"}
+
 
 def _set_session_cookie(resp: Response, token: str) -> None:
-    resp.set_cookie(COOKIE_NAME, token,
-                    httponly=True, max_age=COOKIE_MAX_AGE,
-                    samesite="lax", path="/")
+    resp.set_cookie(
+        COOKIE_NAME, token,
+        httponly=True, max_age=COOKIE_MAX_AGE,
+        samesite="lax", path="/",
+        secure=_secure_cookie())
 
 
 def _err(exc: AuthError) -> HTTPException:
-    """AuthError → HTTPException(409 用于已存在,400 用于格式,401 用于凭证)。"""
     code_to_status = {
         "username_taken": 409, "email_taken": 409,
         "invalid_credentials": 401, "inactive": 403,
+        "email_unverified": 403,
         "wrong_old_password": 401, "invalid_reset_token": 400,
-        "expired_reset_token": 400,
+        "expired_reset_token": 400, "invalid_code": 400,
+        "expired_code": 400, "mail_failed": 502,
+        "no_user": 404, "invalid_captcha": 400,
     }
-    status = code_to_status.get(exc.code, 400)
-    return HTTPException(status_code=status, detail=exc.message)
+    return HTTPException(status_code=code_to_status.get(exc.code, 400),
+                         detail=exc.message)
+
+
+def _require_captcha(request: Request, captcha_id: str, answer: str) -> None:
+    store: CaptchaStore = request.app.state.platform_captcha
+    if not store.verify(captcha_id, answer):
+        raise HTTPException(status_code=400, detail="图形验证码错误或已过期")
+
+
+@router.get("/captcha")
+async def get_captcha(request: Request) -> dict:
+    store: CaptchaStore = request.app.state.platform_captcha
+    cid, _answer, png = store.create()
+    return {
+        "captcha_id": cid,
+        "image_base64": png_to_data_url(png),
+        "ttl": CAPTCHA_TTL_SEC,
+    }
 
 
 @router.post("/register")
-async def register(req: RegisterReq, request: Request,
-                  response: Response) -> dict:
+async def register(req: RegisterReq, request: Request) -> dict:
+    _require_captcha(request, req.captcha_id, req.captcha_answer)
     auth: AuthManager = request.app.state.platform_auth
     try:
         user = auth.register(req.username, req.email, req.password,
                              display_name=req.display_name)
+        auth.send_email_code(user, "verify")
     except AuthError as exc:
         raise _err(exc)
-    return {"user": user, "message": "注册成功,请登录"}
+    return {
+        "user": user,
+        "message": "注册成功,验证码已发送到邮箱,请完成验证后再登录",
+        "need_verify": True,
+    }
+
+
+@router.post("/verify-email")
+async def verify_email(req: VerifyEmailReq, request: Request) -> dict:
+    auth: AuthManager = request.app.state.platform_auth
+    try:
+        user = auth.verify_email_code(req.email_or_username, req.code)
+    except AuthError as exc:
+        raise _err(exc)
+    return {"ok": True, "user": user, "message": "邮箱已验证,请登录"}
+
+
+@router.post("/resend-verify")
+async def resend_verify(req: ResendVerifyReq, request: Request) -> dict:
+    _require_captcha(request, req.captcha_id, req.captcha_answer)
+    auth: AuthManager = request.app.state.platform_auth
+    user = (auth.store.get_user_by_email(req.email_or_username)
+            or auth.store.get_user_by_username(req.email_or_username))
+    # 防枚举:统一成功文案
+    if user and not user.get("email_verified"):
+        try:
+            auth.send_email_code(user, "verify")
+        except AuthError as exc:
+            raise _err(exc)
+    return {"ok": True, "message": "若账号存在且未验证,验证码已重新发送"}
 
 
 @router.post("/login")
 async def login(req: LoginReq, request: Request, response: Response) -> dict:
+    _require_captcha(request, req.captcha_id, req.captcha_answer)
     auth: AuthManager = request.app.state.platform_auth
     try:
         user, token = auth.authenticate(
@@ -120,9 +186,9 @@ async def me(user: dict = Depends(require_user)) -> dict:
 
 
 @router.post("/change-password")
-async def change_password(req: ChangePasswordReq,
-                          user: dict = Depends(require_user),
-                          auth: AuthManager = Depends(lambda r=...: r.app.state.platform_auth)) -> dict:  # type: ignore
+async def change_password(req: ChangePasswordReq, request: Request,
+                          user: dict = Depends(require_user)) -> dict:
+    auth: AuthManager = request.app.state.platform_auth
     try:
         auth.change_password(user["id"], req.old_password, req.new_password)
     except AuthError as exc:
@@ -132,35 +198,46 @@ async def change_password(req: ChangePasswordReq,
 
 @router.post("/request-reset")
 async def request_reset(req: RequestResetReq, request: Request) -> dict:
-    """申请密码重置。无邮件服务:返回 token(开发态/admin 转交)。
-
-    注意:为防用户名枚举,无论账号是否存在都返回 200。token 为空串表示账号不存在
-    (调用方应丢弃);非空才有效。生产环境若有邮件服务,这里改为发邮件不返回 token。
-    """
+    """申请密码重置:发邮件验证码(不返回 token)。"""
+    _require_captcha(request, req.captcha_id, req.captcha_answer)
     auth: AuthManager = request.app.state.platform_auth
-    token, user = auth.request_password_reset(req.email_or_username)
-    if not token:
-        # 账号不存在,但仍返回成功(防枚举),不暴露 token
-        return {"ok": True, "message": "若账号存在,重置链接已生成",
-                "token": None}
-    return {"ok": True, "message": "重置 token 已生成(无邮件服务,请记录)",
-            "token": token, "username": user.get("username")}
+    try:
+        auth.request_password_reset(req.email_or_username)
+    except AuthError as exc:
+        # 防枚举:账号不存在已在 manager 内吞掉;仅 mail_failed 等向上抛
+        if exc.code == "mail_failed":
+            raise _err(exc)
+    return {"ok": True, "message": "若账号存在,重置验证码已发送到邮箱",
+            "token": None}
 
 
 @router.post("/reset-password")
 async def reset_password(req: ResetPasswordReq, request: Request) -> dict:
     auth: AuthManager = request.app.state.platform_auth
     try:
+        user = auth.reset_password_with_code(
+            req.email_or_username, req.code, req.new_password)
+    except AuthError as exc:
+        raise _err(exc)
+    return {"ok": True, "message": "密码已重置,请用新密码登录",
+            "username": user.get("username")}
+
+
+@router.post("/reset-password-token")
+async def reset_password_token(req: ResetByTokenReq, request: Request) -> dict:
+    """Admin 兜底 token 重置(兼容旧流程)。"""
+    auth: AuthManager = request.app.state.platform_auth
+    try:
         user = auth.reset_password(req.token, req.new_password)
     except AuthError as exc:
         raise _err(exc)
-    return {"ok": True, "message": "密码已重置,请用新密码登录", "username": user.get("username")}
+    return {"ok": True, "message": "密码已重置,请用新密码登录",
+            "username": user.get("username")}
 
 
 @router.post("/admin/create-reset-token")
 async def admin_create_reset_token(req: AdminResetReq, request: Request,
                                    _: dict = Depends(require_admin)) -> dict:
-    """管理员为某用户生成密码重置 token(admin 后台用)。"""
     auth: AuthManager = request.app.state.platform_auth
     try:
         token, user = auth.admin_create_reset_token(req.username_or_email)

@@ -39,15 +39,19 @@ def _make_zip(files: dict[str, str]) -> bytes:
 
 
 def _make_app(tmp_path) -> tuple[FastAPI, Store, AuthManager, BotManager]:
+    from arena.backend.platform.auth.captcha import CaptchaStore
     store = Store(str(tmp_path / "test.db"))
     auth = AuthManager(store)
+    captcha = CaptchaStore()
     bot_mgr = BotManager(store, upload_root=tmp_path / "uploads")
     # 建系统用户(内置 bot 的 owner)+ 普通用户
     system = store.create_user("system", "system@arena.local", "!",
                                role="admin", display_name="系统")
+    store.update_user(system["id"], email_verified=1)
     app = FastAPI()
     app.state.platform_store = store
     app.state.platform_auth = auth
+    app.state.platform_captcha = captcha
     app.state.platform_bot_manager = bot_mgr
     app.state.platform_system_user_id = system["id"]
     app.include_router(auth_router)
@@ -68,11 +72,22 @@ def test_dockerfile_json():
 
 
 def test_dockerfile_tcp():
+    import json
+    import re
     df = make_dockerfile(protocol="tcp", entry_file="national_bot.py", runtime_lang="python")
     assert "FROM python:3.12-slim" in df
     assert "COPY tcp_bridge.py /app/_bridge/tcp_bridge.py" in df  # 含桥
     assert "tcp_bridge.py" in df  # entrypoint 用桥
     assert "USER botuser" in df
+    # Docker EXEC 形式:ENTRYPOINT 数组元素必须全是字符串(不能嵌套数组)
+    m = re.search(r"ENTRYPOINT\s+(\[.*\])", df)
+    assert m, df
+    arr = json.loads(m.group(1))
+    assert all(isinstance(x, str) for x in arr), arr
+    # --bot-cmd 的值本身是 JSON 数组字符串,桥端 json.loads 后得到 list[str]
+    idx = arr.index("--bot-cmd")
+    bot_cmd = json.loads(arr[idx + 1])
+    assert bot_cmd == ["python", "national_bot.py"]
 
 
 def test_dockerfile_bad_protocol():
@@ -239,8 +254,17 @@ def test_register_builtin_specific_versions(tmp_path):
 # ══════════════════════════════════════════════════════════
 
 def _login(client, username, password="securepass1"):
-    r = client.post("/api/auth/login", json={"username": username, "password": password})
-    assert r.status_code == 200
+    from arena.backend.auth import hash_password
+    store = client.app.state.platform_store
+    captcha = client.app.state.platform_captcha
+    u = store.get_user_by_username(username)
+    store.update_user(u["id"], email_verified=1,
+                      password_hash=hash_password(password))
+    cid, answer, _ = captcha.create()
+    r = client.post("/api/auth/login", json={
+        "username": username, "password": password,
+        "captcha_id": cid, "captcha_answer": answer})
+    assert r.status_code == 200, r.text
 
 
 def test_api_upload_bot(tmp_path):

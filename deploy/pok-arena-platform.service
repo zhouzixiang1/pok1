@@ -15,8 +15,9 @@ WorkingDirectory=%h/project/pok-arena
 ExecStart=%h/project/pok-arena/.venv/bin/pok-arena serve-web
 Restart=on-failure
 RestartSec=5
-# 环境变量(可选)
+# 环境变量(可选,推荐 EnvironmentFile 指向项目 .env)
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/project/pok-arena/.env
 
 [Install]
 WantedBy=default.target

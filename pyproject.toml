@@ -12,6 +12,8 @@ dependencies = [
     "typer>=0.12",
     "python-multipart>=0.0.9",  # bot 上传(UploadFile)
     "websockets>=12",  # 预留;SSE 用 StreamingResponse 不强需
+    "captcha>=0.6",  # 自建图形/算术验证码(lepture/captcha)
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]

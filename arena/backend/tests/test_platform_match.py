@@ -424,13 +424,16 @@ def test_leaderboard_sorted_by_rating(tmp_path):
 
 def _make_app(tmp_path) -> tuple[FastAPI, Store, AuthManager, MatchOrchestrator, MockRunner]:
     """构造带 /api + /api/auth 路由的 app + 注入 orchestrator。"""
+    from arena.backend.platform.auth.captcha import CaptchaStore
     store = Store(str(tmp_path / "api.db"))
     auth = AuthManager(store)
+    captcha = CaptchaStore()
     mock = MockRunner()
     orch = MatchOrchestrator(store, mock, hands_per_match=1, action_timeout=2.0)
     app = FastAPI()
     app.state.platform_store = store
     app.state.platform_auth = auth
+    app.state.platform_captcha = captcha
     app.state.platform_orchestrator = orch
     app.include_router(auth_router)
     app.include_router(api_router)
@@ -439,9 +442,16 @@ def _make_app(tmp_path) -> tuple[FastAPI, Store, AuthManager, MatchOrchestrator,
 
 def _login(client: TestClient, auth: AuthManager,
            username: str = "alice", password: str = "secret123") -> None:
-    """注册+登录,TestClient 自动维持 cookie。密码 ≥8 字符(AuthManager 要求)。"""
+    """注册+验证邮箱+登录(带图形验证码)。"""
+    from arena.backend.platform.auth.captcha import CaptchaStore
     auth.register(username, f"{username}@x.com", password)
-    r = client.post("/api/auth/login", json={"username": username, "password": password})
+    uid = auth.store.get_user_by_username(username)["id"]
+    auth.store.update_user(uid, email_verified=1)
+    captcha: CaptchaStore = client.app.state.platform_captcha
+    cid, answer, _ = captcha.create()
+    r = client.post("/api/auth/login", json={
+        "username": username, "password": password,
+        "captcha_id": cid, "captcha_answer": answer})
     assert r.status_code == 200, r.text
 
 

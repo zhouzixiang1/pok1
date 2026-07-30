@@ -24,21 +24,31 @@
 ### 平台部署(管理员)
 ```bash
 cd ~/project/pok-arena
-.venv/bin/pip install -e '.[dev]'        # 后端依赖
-(cd arena/frontend && npm install && npm run build)  # 前端构建
-.venv/bin/pok-arena serve-web             # 启动新平台(http://127.0.0.1:50280)
+cp .env.example .env   # 填写 SMTP_* / POK_PLATFORM_HOST=0.0.0.0
+.venv/bin/pip install -e '.[dev]'
+(cd arena/frontend && npm install && npm run build)
+scripts/platform-ctl.sh start   # 读 .env,默认绑 0.0.0.0:50280
 ```
+
+公网加固要点:
+- 注册/登录需**图形或算术验证码**;注册后须**邮箱验证**才能登录
+- 密码重置发邮件验证码(不再明文返回 token);Admin 可编辑邮件模板并试发
+- IP 限流、安全响应头、对战并发上限、Docker `--cap-drop=ALL` 等已默认开启
+- **不要**把旧 TCP `serve`(50101)一并公网暴露
+- SMTP 密码只放 `.env`,勿 commit
+
 生产部署(systemd user unit,不碰系统服务):
 ```bash
 mkdir -p ~/.config/systemd/user
 cp deploy/pok-arena-platform.service ~/.config/systemd/user/
+# 建议在 unit 里 EnvironmentFile=%h/project/pok-arena/.env
 systemctl --user daemon-reload
 systemctl --user enable --now pok-arena-platform
-journalctl --user -u pok-arena-platform -f   # 看日志
+journalctl --user -u pok-arena-platform -f
 ```
 
 ### 用户使用流程
-1. 打开 http://127.0.0.1:50280 → **注册账号**(用户名/邮箱/密码)
+1. 打开平台首页 → **注册**(填验证码)→ **查收邮件验证码** → **登录**(再填验证码)
 2. **我的 Bot** → 上传 bot 源码包(.zip)+ 填写协议类型(JSON/TCP)和入口文件
 3. **发起对战** → 选我的 bot + 选对手(他人的 bot 或平台内置 national_v*)
 4. **实时观赛**(SSE)或赛后**对局回放**(逐手/逐步推进)

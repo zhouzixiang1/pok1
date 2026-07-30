@@ -16,25 +16,34 @@
 #   platform-ctl docker-ps          查正在跑的 bot 容器
 #   platform-ctl docker-clean       停所有 arena bot 容器(异常残留时用)
 #
-# 环境变量(均可选):
-#   POK_PLATFORM_HOST   (127.0.0.1)   绑定地址
+# 环境变量(均可选;优先读项目根 .env):
+#   POK_PLATFORM_HOST   (0.0.0.0 公网 / 127.0.0.1 本机) 绑定地址
 #   POK_PLATFORM_PORT   (50280)       web 端口
 #   POK_PLATFORM_DB     (arena_platform.db)  SQLite 库路径
 #   POK_PLATFORM_UPLOAD (bot_uploads)  bot 上传根目录
 #   POK_PLATFORM_LOG_LEVEL (WARNING)  日志级别(DEBUG/INFO/WARNING/ERROR)
 #   POK_PLATFORM_RUNDIR (./platform-ctl)  PID + 日志目录
+#   SMTP_* / POK_PLATFORM_RATE_LIMIT / POK_PLATFORM_MAX_CONCURRENT_MATCHES 等见 .env.example
 set -u
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-RUNDIR="${POK_PLATFORM_RUNDIR:-$PWD/platform-ctl}"
+# 加载项目根 .env(若存在);已导出的环境变量优先不被覆盖
+if [ -f "$HERE/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$HERE/.env"
+  set +a
+fi
+RUNDIR="${POK_PLATFORM_RUNDIR:-$HERE/platform-ctl}"
 PY="${PY:-$HERE/.venv/bin/python}"
-HOST="${POK_PLATFORM_HOST:-127.0.0.1}"
+HOST="${POK_PLATFORM_HOST:-0.0.0.0}"
 PORT="${POK_PLATFORM_PORT:-50280}"
-DB="${POK_PLATFORM_DB:-$PWD/arena_platform.db}"
-UPLOAD="${POK_PLATFORM_UPLOAD:-$PWD/bot_uploads}"
+DB="${POK_PLATFORM_DB:-$HERE/arena_platform.db}"
+UPLOAD="${POK_PLATFORM_UPLOAD:-$HERE/bot_uploads}"
 LOG_LEVEL="${POK_PLATFORM_LOG_LEVEL:-WARNING}"
 LOGDIR="$RUNDIR/logs"
 mkdir -p "$RUNDIR" "$LOGDIR" "$UPLOAD" "$(dirname "$DB")"
+cd "$HERE"
 
 PID_FILE="$RUNDIR/serve.pid"
 STDOUT_LOG="$LOGDIR/serve.stdout"
@@ -79,14 +88,15 @@ cmd_start() {
     rm -f "$PID_FILE"
     return 1
   fi
-  # 健康检查
+  # 健康检查(绑 0.0.0.0 时用 loopback 探测)
+  local probe_host="127.0.0.1"
   local health
-  health="$(curl -fsS "http://$HOST:$PORT/api/health" 2>/dev/null || true)"
+  health="$(curl -fsS "http://$probe_host:$PORT/api/health" 2>/dev/null || true)"
   if [ -z "$health" ]; then
     echo "   进程已起(pid $(serve_pid))但 /api/health 无响应,可能仍在初始化"
     echo "   稍候再试:platform-ctl status"
   else
-    echo "   ✅ 就绪(pid $(serve_pid))  前端 http://127.0.0.1:$PORT/  Wiki http://127.0.0.1:$PORT/#/wiki"
+    echo "   ✅ 就绪(pid $(serve_pid))  bind=$HOST:$PORT  访问 http://127.0.0.1:$PORT/"
   fi
 }
 
@@ -125,7 +135,7 @@ cmd_status() {
   fi
   # /api/health
   local health
-  health="$(curl -fsS "http://$HOST:$PORT/api/health" 2>/dev/null || true)"
+  health="$(curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null || true)"
   if [ -n "$health" ]; then
     echo "  health: $health"
   else
@@ -163,7 +173,7 @@ cmd_logs() {
 }
 
 cmd_health() {
-  curl -fsS "http://$HOST:$PORT/api/health" 2>/dev/null \
+  curl -fsS "http://127.0.0.1:$PORT/api/health" 2>/dev/null \
     && echo || echo "(无响应,serve-web 未运行或仍在启动)"
 }
 
