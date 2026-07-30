@@ -124,6 +124,20 @@ async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
     startup_terminal_cost = _orch._startup_recovery_terminal_cost(recovery)
     recovery_stops_launch = startup_terminal_cost is not None
 
+    # P0-3b: boot-time orphan draft reconcile.  A Slice 2b one-ahead draft
+    # checkpoint survives a process restart only if the driving task is still
+    # alive -- but the fire-and-forget task dies with the process.  Without
+    # this reconcile an orphan mid-flight draft (any stage except workers_done)
+    # deadlocks _try_launch_draft_prepare (it sees a non-None draft and returns
+    # early forever).  Reap genuinely orphaned drafts and best-effort promote a
+    # complete workers_done buffer.  Wrapped so boot never crashes on it.
+    try:
+        _reconcile_orphan_draft_at_boot(ui)
+    except Exception as _draft_reconcile_exc:
+        _orch.log.debug(
+            "orphan draft reconcile failed (non-fatal): %s", _draft_reconcile_exc
+        )
+
     pause_before_reconcile = None
     pause_after_reconcile = None
     if not recovery_stops_launch:
@@ -1293,6 +1307,130 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
 # primary slot (see ``orchestrator_deterministic_route``).
 
 
+
+def _reconcile_orphan_draft_at_boot(ui):
+    """P0-3b: reconcile an orphan Slice 2b one-ahead draft at boot.
+
+    The fire-and-forget ``_draft_prepare_task`` dies with the process, so a
+    draft checkpoint left mid-flight on restart can never advance on its own.
+    Without this reconcile it deadlocks ``_try_launch_draft_prepare`` (which
+    sees a non-None draft and returns early forever).  Logic:
+
+      * workers_done -- the intended one-ahead buffer; best-effort promote it
+        via ``_maybe_promote_draft_to_primary`` (CAS-safe + idempotent).  Do
+        NOT unconditionally reap a complete pre-computed candidate.
+      * any other stage -- the driving task is dead; REAP it so a fresh draft
+        can launch.  This is the deadlock fix.
+      * defense-in-depth -- a draft whose next_v/source_v is at or behind the
+        published high-water (the gen it was preparing behind already shipped)
+        and is not promotable is also reaped.
+
+    Every branch is wrapped so boot never crashes on a draft-reconcile error.
+    """
+    try:
+        from evolution_infra import read_all_pipeline_checkpoints
+    except Exception:
+        return
+    try:
+        slots = read_all_pipeline_checkpoints()
+    except Exception:
+        return
+    draft = slots.get("draft") if isinstance(slots, dict) else None
+    if not isinstance(draft, dict) or not draft:
+        # Normal case: no orphan draft.  Keep the hot path cheap.
+        return
+
+    stage = str(draft.get("stage") or "")
+    next_v = 0
+    source_v = 0
+    try:
+        next_v = int(draft.get("next_v") or 0)
+        source_v = int(draft.get("source_v") or 0)
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        _orch.log_system_event(
+            "pipeline.orphan_draft_reconciled",
+            "info",
+            f"Orphan draft checkpoint found at boot (stage={stage}, "
+            f"next_v={next_v}, source_v={source_v}); reconciling",
+            {"stage": stage, "next_v": next_v, "source_v": source_v},
+        )
+    except Exception:
+        pass
+
+    # Resolve the published high-water for the stale check.
+    published_high_water = 0
+    try:
+        from epoch_authority import strict_epoch_projection
+
+        projection = strict_epoch_projection()
+        published_high_water = int(projection.get("published_high_water") or 0)
+    except Exception:
+        published_high_water = 0
+
+    is_stale = (
+        published_high_water > 0
+        and next_v > 0
+        and next_v <= published_high_water
+    )
+
+    if stage == "workers_done":
+        # Complete one-ahead buffer: best-effort promote (CAS-safe).  If the
+        # promotion refuses (primary still active / version mismatch) the
+        # draft stays as a valid promotable buffer -- do NOT reap it.
+        try:
+            from generation_scheduler import _maybe_promote_draft_to_primary
+
+            promoted = _maybe_promote_draft_to_primary()
+        except Exception:
+            promoted = False
+        if promoted:
+            try:
+                _orch.log_system_event(
+                    "pipeline.orphan_draft_promoted",
+                    "info",
+                    "Orphan workers_done draft promoted to primary slot at boot",
+                    {"next_v": next_v, "source_v": source_v},
+                )
+            except Exception:
+                pass
+        elif is_stale:
+            # A complete-but-stale draft behind an already-shipped version is
+            # dead weight; reap rather than leaving an un-promotable marker.
+            try:
+                from evolution_infra import clear_pipeline_checkpoint
+
+                clear_pipeline_checkpoint(slot_id="draft")
+                _orch.log_system_event(
+                    "pipeline.orphan_draft_reaped",
+                    "info",
+                    "Reaped stale workers_done draft at or behind "
+                    f"published high-water {published_high_water}",
+                    {"stage": stage, "next_v": next_v, "source_v": source_v},
+                )
+            except Exception:
+                pass
+        # else: leave the valid workers_done buffer in place for promotion.
+        return
+
+    # Any other stage: the driving task is dead, so the draft can never
+    # advance on its own.  REAP it (this breaks the launch deadlock).
+    try:
+        from evolution_infra import clear_pipeline_checkpoint
+
+        clear_pipeline_checkpoint(slot_id="draft")
+        _orch.log_system_event(
+            "pipeline.orphan_draft_reaped",
+            "info",
+            f"Reaped orphan mid-flight draft (stage={stage}) at boot; "
+            "the driving draft task died with the previous process",
+            {"stage": stage, "next_v": next_v, "source_v": source_v},
+        )
+    except Exception:
+        pass
+
 def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     """Best-effort one-ahead draft prepare for gen N+1 after a seal.
 
@@ -1361,28 +1499,8 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     # consumer gate chain runs concurrently.  It is fenced by the one-ahead
     # coordinator (high-water=1) and the draft checkpoint existence check above.
     # If gen N rejects (abandons) the draft is abandoned at promotion time.
-    async def _draft_prepare_task():
-        try:
-            await _run_draft_cycle(ui, shutdown_mgr, gen_count)
-        except Exception as exc:
-            # Best-effort: a draft failure is non-fatal.  Clear the draft slot.
-            try:
-                from evolution_infra import clear_pipeline_checkpoint
-
-                clear_pipeline_checkpoint(slot_id="draft")
-            except Exception:
-                pass
-            try:
-                _orch.log_system_event(
-                    "orchestrator.slice2b_draft_prepare_failed",
-                    "warn",
-                    f"One-ahead draft prepare failed: {type(exc).__name__}: {exc}",
-                )
-            except Exception:
-                pass
-
     try:
-        _orch.asyncio.create_task(_draft_prepare_task())
+        _orch.asyncio.create_task(_draft_prepare_task(ui, shutdown_mgr, gen_count))
         _orch.log_system_event(
             "orchestrator.slice2b_draft_prepare_launched",
             "info",
@@ -1396,6 +1514,55 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
             from evolution_infra import clear_pipeline_checkpoint
 
             clear_pipeline_checkpoint(slot_id="draft")
+        except Exception:
+            pass
+
+
+async def _draft_prepare_task(ui, shutdown_mgr, gen_count):
+    """Fire-and-forget draft-prepare task body (P0-3a classify-then-decide).
+
+    Module-level so the exception handler is directly testable without mocking
+    the slice2b activation gates that guard ``_try_launch_draft_prepare``.
+    A transient LLM/infra failure (ClaudeSDKError incl. 429 quota,
+    asyncio.TimeoutError, ConnectionError, OSError) or any generic/unknown
+    Exception PRESERVES the draft checkpoint so the completed expensive LLM
+    work survives.  A preserved mid-flight draft is handled by the boot-time
+    reconcile (``_reconcile_orphan_draft_at_boot``) on restart, or resumed by
+    the next loop tick's ``draft_stage_advance`` recovery.  Genuine terminal
+    conditions (routing loop / terminal action) are already cleared INSIDE
+    ``_run_draft_cycle``, so the exception path never needs an unconditional
+    clear.  This mirrors the primary generation slot's infra-error handling
+    (preserve checkpoint + discard provider session) rather than wiping it.
+    """
+    try:
+        await _run_draft_cycle(ui, shutdown_mgr, gen_count)
+    except Exception as exc:
+        # P0-3a: classify-then-decide.  A transient LLM/infra failure
+        # (ClaudeSDKError incl. 429 quota, asyncio.TimeoutError,
+        # ConnectionError, OSError) or any unrecognized Exception PRESERVES
+        # the draft checkpoint so completed expensive LLM work survives.  A
+        # preserved mid-flight draft is handled by the boot-time reconcile
+        # (``_reconcile_orphan_draft_at_boot``) on restart, or resumed by the
+        # next loop tick's ``draft_stage_advance`` recovery.  Genuine
+        # terminal conditions (routing loop / terminal action) are already
+        # cleared INSIDE ``_run_draft_cycle``, so the exception path never
+        # clears.  This mirrors the primary generation slot's infra-error
+        # handling (preserve checkpoint + discard provider session).
+        try:
+            from llm_failure import is_llm_infra_error
+
+            transient = is_llm_infra_error(exc)
+        except Exception:
+            transient = False
+        try:
+            _orch.log_system_event(
+                "orchestrator.slice2b_draft_prepare_failed",
+                "warn",
+                f"One-ahead draft prepare failed "
+                f"({'transient' if transient else 'unknown'}): "
+                f"{type(exc).__name__}: {exc}; "
+                "draft checkpoint retained for resume/reap",
+            )
         except Exception:
             pass
 
@@ -1736,5 +1903,4 @@ def _create_certified_tag(version, cert_result):
             pass
     except Exception:
         pass
-
 
