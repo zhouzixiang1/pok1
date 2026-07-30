@@ -1,13 +1,13 @@
 # Abandon death-loop and workflow_run_id reuse — 2026-07-30
 
-**As-of:** 2026-07-30. **Status:** active blockers fixed (A, D); latent issues
-documented (B, C). All web tests green (4273 passed, 4 skipped).
+**As-of:** 2026-07-30. **Status:** active blockers fixed (A, D, E); latent issues
+documented (B, C). All web tests green.
 
 ## Summary
 
 The autonomous cloud runtime (`pok-evolution`, namespace `national_cloud_v`)
 had been cycling generations v12–v17 without publishing past v11 since
-2026-07-30 morning. Four distinct defects were root-caused through read-only
+2026-07-30 morning. Five distinct defects were root-caused through read-only
 audit of the durable journals, abandon ledger, and event log:
 
 - **Defect A (fixed)** — abandoned version numbers get re-selected and reuse a
@@ -136,6 +136,41 @@ contract alone. **Fail-closed:** a failing check is repaired only if BOTH the
 static map AND the flat contract's own `evidence.locations` corroborate
 `policy.py`; a non-`policy.py` failure still returns `[]` (terminal abandon,
 unchanged behavior). Regression tests in `test_architecture_rework_authority.py`.
+
+---
+
+## Defect E — Slice-2b seal crashes at workers_done (definition version mismatch)
+
+**Surfaced by the A/D fix.** Once v19 became the first generation since v11 to
+reach `workers_done` with `POK_SLICE2B_ENABLED=1`, the orchestrator crashed:
+`definition version mismatch for generation:19:workflow-v1: stored=3
+requested=1`.
+
+**Root cause.** The Slice-2b producer/consumer adapter
+(`web/core/producer_consumer_workflow_store.py`) deliberately reuses the
+producer/worker journal's `run_id` (`snapshot["workflow_run_id"]`) for its seal
+envelope and establishes no second state machine. But `submit` called
+`ensure_instance(run_id, definition_version=ADAPTER_DEFINITION_VERSION)` where
+`ADAPTER_DEFINITION_VERSION = 1`, while the worker journal was created at
+`WORKER_WORKFLOW_DEFINITION_VERSION = 3`. The reuse collides on the same
+`workflow_instances` row, and `WorkflowStore.ensure_instance`
+(`workflow_kernel.py:522`) raises `WorkflowConflict` on the version mismatch.
+
+**Why latent until now.** v11 reached `workers_done` on 2026-07-27, ~27h BEFORE
+`POK_SLICE2B_ENABLED=1` was set (2026-07-28, commit `8fea007f`); with slice2b off
+the seal seam never ran and v11 published via the inline gate chain. v12–v18
+died in the A/D abandon death-loop and never reached `workers_done`. v19 is the
+first generation to reach `workers_done` with slice2b on → first to trigger E.
+The `WORKER_WORKFLOW_DEFINITION_VERSION` constant has been 3 since 2026-07-12
+(commit `9a24bbe3`); the mismatch was latent the whole time. **Commit `2d2994a6`
+did not cause E** — it does not touch the adapter, slice2b, or workflow kernel;
+it merely enabled v19 to reach `workers_done`.
+
+**Fix.** `submit` now inherits the persisted instance's `definition_version`
+when the run_id already exists (the worker journal owns it), falling back to
+`ADAPTER_DEFINITION_VERSION` only for a genuinely new instance. Regression test:
+`test_submit_inherits_existing_worker_journal_definition_version`
+(`test_producer_consumer_workflow_store.py`).
 
 ---
 

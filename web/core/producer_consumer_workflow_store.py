@@ -174,9 +174,26 @@ class ProducerConsumerWorkflowAdapter:
             raise ProducerConsumerStoreError(issues)
         frozen = deepcopy(dict(envelope))
         effect_id = effect_id_for_envelope(frozen)
+        # The Slice-2b seal envelope deliberately reuses the producer/worker
+        # journal's run_id (snapshot["workflow_run_id"]) and establishes no
+        # second state machine.  That journal is created by WorkerWorkflow at
+        # WORKER_WORKFLOW_DEFINITION_VERSION (currently 3), so ensure_instance
+        # must agree with the already-persisted instance's definition_version
+        # rather than forcing the adapter's own version (1) -- otherwise the
+        # workers_done seal raises WorkflowConflict: definition version mismatch
+        # (defect E, surfaced once a generation first reached workers_done with
+        # POK_SLICE2B_ENABLED=1).  Inherit the persisted version when the
+        # instance exists; only fall back to ADAPTER_DEFINITION_VERSION for a
+        # genuinely new instance.
+        existing = self.store.instance(frozen["run_id"])
+        adapter_definition_version = (
+            int(existing.get("definition_version") or ADAPTER_DEFINITION_VERSION)
+            if existing
+            else ADAPTER_DEFINITION_VERSION
+        )
         self.store.ensure_instance(
             frozen["run_id"],
-            definition_version=ADAPTER_DEFINITION_VERSION,
+            definition_version=adapter_definition_version,
         )
 
         # The kernel's run-scoped command lock makes the two uniqueness axes

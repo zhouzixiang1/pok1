@@ -143,6 +143,34 @@ def test_envelope_keeps_draft_and_candidate_identity_distinct():
     assert "job_candidate_ref_subject_mismatch" in caught.value.issues
 
 
+def test_submit_inherits_existing_worker_journal_definition_version(tmp_path):
+    """Defect E: the Slice-2b seal envelope reuses the producer/worker journal's
+    run_id, which WorkerWorkflow created at WORKER_WORKFLOW_DEFINITION_VERSION
+    (3).  The adapter must not force its own ADAPTER_DEFINITION_VERSION (1)
+    against that already-persisted instance, or the workers_done seal raises
+    WorkflowConflict: definition version mismatch (stored=3 requested=1) and
+    crashes the orchestrator.  The adapter inherits the persisted instance's
+    definition_version; only a genuinely new instance uses the adapter default.
+    """
+    from worker_workflow import WORKER_WORKFLOW_DEFINITION_VERSION
+
+    adapter = _adapter(tmp_path)
+    envelope = _envelope()
+    # Pre-create the run_id at the worker journal's definition version (3),
+    # exactly as WorkerWorkflow.for_checkpoint does before the seal.
+    adapter.store.ensure_instance(
+        envelope["run_id"],
+        definition_version=WORKER_WORKFLOW_DEFINITION_VERSION,
+    )
+    # The seal submit must succeed (not raise WorkflowConflict).
+    submitted = adapter.submit(envelope)
+    assert submitted["effect_id"] == effect_id_for_envelope(envelope)
+    # The persisted instance keeps the worker journal's definition version.
+    assert adapter.store.instance(envelope["run_id"])["definition_version"] == (
+        WORKER_WORKFLOW_DEFINITION_VERSION
+    )
+
+
 def test_submit_is_durable_and_same_key_changed_candidate_conflicts(tmp_path):
     adapter = _adapter(tmp_path)
     envelope = _envelope()
