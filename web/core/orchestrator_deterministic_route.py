@@ -45,6 +45,92 @@ from orchestrator_cost_policy import GenerationCostPolicy
 # registry on the orchestrator module so the loop, the consumer task and the
 # promotion barrier share one :class:`Slice2bActivation` instance.  These
 # accessors stay no-ops when slice2b is inactive.
+
+_SLICE2B_CONSUMER_OWNED_GATES = frozenset({
+    "run_quality_gates",
+    "run_review",
+    "run_critic",
+    "run_precommit_eval",
+})
+
+
+def _slice2b_consumer_in_flight(checkpoint, next_v) -> bool:
+    """True when a sealed candidate's consumer gate chain is still running."""
+
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return False
+    if not slice2b_active():
+        return False
+    activation = _slice2b_ensure_activation()
+    if activation is None:
+        return False
+    candidate_id = str(
+        checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+    )
+    if candidate_id not in activation._sealed_snapshots:
+        return False
+    return not activation.ledger.is_terminal(candidate_id)
+
+
+def _slice2b_park_primary_consumer_gates(
+    checkpoint,
+    next_v,
+    source_v,
+    next_tool,
+    *,
+    ui,
+    outcome,
+    reason: str,
+):
+    """Record that the primary lane is parked while the consumer owns the gates."""
+
+    if outcome is not None:
+        outcome.clear()
+        outcome.update({
+            "checkpoint": checkpoint,
+            "route": {
+                "next_tool": next_tool,
+                "stage": checkpoint.get("stage"),
+                "next_v": next_v,
+                "source_v": source_v,
+            },
+            "result": {
+                "success": True,
+                "slice2b_consumer_parked": True,
+                "reason": reason,
+                "candidate_id": str(
+                    checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+                ),
+            },
+            "terminal_abandon_result": None,
+        })
+    try:
+        _o.log_system_event(
+            "pipeline.slice2b_primary_parked_for_consumer",
+            "info",
+            (
+                f"Slice 2b parked primary v{next_v} at {next_tool}; "
+                "consumer gate chain owns this generation."
+            ),
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "next_tool": next_tool,
+                "stage": checkpoint.get("stage"),
+                "reason": reason,
+            },
+        )
+    except Exception:
+        pass
+    if ui:
+        ui.log_history(
+            f"[Recovery] Slice 2b parked v{next_v} at {next_tool} "
+            "(consumer gate chain in flight).",
+            "info",
+        )
+    return True
 def _slice2b_ensure_activation():
     """Lazy-instantiate the process-wide activation registry when slice2b is on.
 
@@ -429,14 +515,37 @@ async def _try_deterministic_checkpoint_route(
     # consumer task; the producer is cleared to begin the next prepare.  When
     # slice2b is inactive (the default) or the seam refuses (missing digests,
     # high-water full), this returns False and the inline path runs unchanged.
-    if (
-        next_tool == "run_quality_gates"
-        and stage == "workers_done"
-        and await _slice2b_seal_at_workers_done(
+    if next_tool == "run_quality_gates" and stage == "workers_done":
+        if _slice2b_consumer_in_flight(checkpoint, next_v):
+            return _slice2b_park_primary_consumer_gates(
+                checkpoint,
+                next_v,
+                source_v,
+                next_tool,
+                ui=ui,
+                outcome=outcome,
+                reason="consumer_gate_chain_in_flight",
+            )
+        if await _slice2b_seal_at_workers_done(
             checkpoint, next_v, source_v, ui=ui, outcome=outcome
-        )
+        ):
+            return True
+
+    # Slice 2b park: while the background consumer owns the canonical gate chain
+    # for a sealed candidate, the primary lane must not re-run those LLM gates.
+    if (
+        next_tool in _SLICE2B_CONSUMER_OWNED_GATES
+        and _slice2b_consumer_in_flight(checkpoint, next_v)
     ):
-        return True
+        return _slice2b_park_primary_consumer_gates(
+            checkpoint,
+            next_v,
+            source_v,
+            next_tool,
+            ui=ui,
+            outcome=outcome,
+            reason="consumer_gate_chain_in_flight",
+        )
 
     # Slice 2b promotion barrier: at commit_bot, the canonical publication may
     # only proceed once the background consumer has promoted the sealed
@@ -970,6 +1079,12 @@ async def _advance_deterministic_recovery(
     )
     action = classified.get("action")
     terminal_action = action
+    result = outcome.get("result") if isinstance(outcome, dict) else None
+    if isinstance(result, dict) and (
+        result.get("slice2b_sealed")
+        or result.get("slice2b_consumer_parked")
+    ):
+        terminal_action = "slice2b_consumer_parked"
     terminal_proof = None
     if action == "publication_handoff_completed":
         cleanup_ctx = gen_ctx or _o._generation_context_from_checkpoint(

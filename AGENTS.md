@@ -302,7 +302,22 @@ all LLM roles total=3600s, stall=1200s, idle=1800s. The `CYCLE_TIMEOUT` is
 14400s (4h) and `WATCHDOG_TIMEOUT` is 28800s (8h). The stall gate
 (productive-message silence) is the primary stuck-stream detector; these
 generous values avoid killing GLM mid-reasoning while still catching truly
-hung streams.
+hung streams. **`FIRST_ACTIVITY` must be raised in lockstep** (cloud env
+defaults Scout/Master/Worker/Review/Critic to 900s, Final to 1200s): only
+`SystemMessage` thinking does **not** count as substantive activity, so the
+legacy 120s Scout default kills streams mid-reasoning and looks like LLM
+truncation. Sig-retry acquires the global LLM semaphore **per attempt**;
+`llm_query._run_stream_with_signature_retry` must forward the `semaphore=`
+kwarg into `llm_query_retry` or every role fails before the stream starts
+(`unexpected keyword argument 'semaphore'`).
+
+When `POK_ALLOW_STAGING_AS_PARENT=1`, `ROLE_PARENT_SOURCE` may omit a
+certificate, but `resolve_national_bot_spec` still **best-effort loads** any
+live signed digest and marks the parent `publication_tier=certified`. Epoch
+checkpoint binding still requires a valid `certificate_digest` for published
+parents; skipping the load causes
+`checkpoint_parent_publication_identity_incomplete` even for already-certified
+bots. Rating pool / official opponent remain certificate-mandatory.
 
 ### GLM 429 quota exhaustion and recovery-window waiting
 
@@ -371,6 +386,14 @@ rarely contend for permits simultaneously. The former per-role
 same global semaphore as all other roles. The `api_concurrency` adaptive
 backoff still halves the cap per 429, so a too-aggressive steady-state
 ceiling self-corrects downward if GLM rate-limits.
+
+When ``POK_SLICE2B_ENABLED=1`` (Slice 2b one-ahead, default-off), the
+background consumer runs the canonical LLM gate chain through
+``run_precommit_eval`` only; the primary orchestrator lane is parked at those
+gates and ``commit_bot`` runs once behind the promotion barrier. After seal at
+``workers_done``, ``producer_may_prepare_next()`` is true (exactly one sealed
+in-flight candidate) and the loop may launch the gen N+1 draft prepare while
+the consumer validates gen N.
 
 ### CLAUDE.md / AGENTS.md memory injection
 

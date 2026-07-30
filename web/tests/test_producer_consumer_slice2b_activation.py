@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 
 from producer_consumer_slice2b import (
+    CONSUMER_GATE_CHAIN_ORDER,
     GATE_CHAIN_ORDER,
     Slice2bError,
 )
@@ -291,8 +292,9 @@ def test_seal_at_workers_done_registers_one_ahead_slot(tmp_path):
     snapshot = _snapshot()
     sealed = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
     assert sealed["candidate_id"] == "candidate-v143"
-    # The one-ahead slot is occupied: producer may NOT advance until the
-    # consumer finishes.
+    # The one-ahead slot is occupied: producer may prepare the next draft but
+    # may NOT seal another candidate until the consumer finishes.
+    assert activation.producer_may_prepare_next() is True
     assert activation.producer_may_advance() is False
     # Sealing the same candidate again is idempotent and does not raise.
     sealed_again = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
@@ -343,9 +345,10 @@ def test_consumer_task_promotes_and_drains_one_ahead_slot(tmp_path):
 
     entry = activation.ledger.snapshot(candidate_id)
     assert entry["validation_outcome"] == "promoted"
-    assert set(entry["gate_results"]) == set(GATE_CHAIN_ORDER)
-    # The one-ahead slot drained after promotion: producer may advance again.
+    assert set(entry["gate_results"]) == set(CONSUMER_GATE_CHAIN_ORDER)
+    # The one-ahead slot drained after promotion: producer may seal again.
     assert activation.producer_may_advance() is True
+    assert activation.producer_may_prepare_next() is False
 
 
 def test_consumer_task_rejects_on_candidate_failure(tmp_path):
@@ -361,6 +364,7 @@ def test_consumer_task_rejects_on_candidate_failure(tmp_path):
     assert entry["terminal_reason"] == "gate_failed:run_review"
     # The slot drains even on rejection so the producer is not permanently stuck.
     assert activation.producer_may_advance() is True
+    assert activation.producer_may_prepare_next() is False
 
 
 def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
@@ -397,7 +401,8 @@ def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
     assert gates
     first_gate = next(iter(gates))
     assert gates[first_gate]["outcome"] == "infrastructure_failure"
-    # The producer is NOT cleared to advance (the slot is still in flight).
+    # The producer is NOT cleared to prepare another draft while infra retries.
+    assert activation.producer_may_prepare_next() is True
     assert activation.producer_may_advance() is False
 
 
@@ -590,7 +595,8 @@ def test_seal_seam_seals_and_schedules_consumer_when_active(monkeypatch, tmp_pat
             assert result is True
             assert outcome["result"]["slice2b_sealed"] is True
             assert outcome["result"]["candidate_id"] == "candidate-v143"
-            # The producer may NOT advance until the consumer finishes (high-water).
+            # The producer may prepare the next draft while the consumer runs.
+            assert activation.producer_may_prepare_next() is True
             assert activation.producer_may_advance() is False
             # The consumer task was launched by the seal (ensure_consumer_running).
             task = activation.consumer_task("candidate-v143")
@@ -599,8 +605,9 @@ def test_seal_seam_seals_and_schedules_consumer_when_active(monkeypatch, tmp_pat
 
         asyncio.run(driver())
         assert activation.ledger.is_promoted("candidate-v143")
-        # After promotion the slot drains: producer may advance.
+        # After promotion the slot drains: producer may seal again.
         assert activation.producer_may_advance() is True
+        assert activation.producer_may_prepare_next() is False
     finally:
         _o._slice2b_activation_registry("clear")
 
@@ -669,7 +676,7 @@ def test_promotion_barrier_fails_closed_on_rejection(monkeypatch, tmp_path):
 
     adapter = _adapter(tmp_path)
     activation = _o._slice2b_activation_registry("set", adapter=adapter)
-    _o._slice2b_gate_runner_factory = lambda nv, sv: _gate_runner_factory(fail_at="commit_bot")
+    _o._slice2b_gate_runner_factory = lambda nv, sv: _gate_runner_factory(fail_at="run_review")
     try:
         checkpoint = _checkpoint()
         candidate_id = "candidate-v143"
@@ -843,5 +850,97 @@ def test_barrier_times_out_on_persistent_infrastructure_failure(monkeypatch, tmp
             asyncio.run(activation.await_promotion(
                 candidate_id=candidate_id, timeout=0.2,
             ))
+    finally:
+        _o._slice2b_activation_registry("clear")
+
+
+def test_deterministic_route_parks_primary_while_consumer_runs(monkeypatch, tmp_path):
+    """Primary must not re-run consumer-owned gates while the consumer is live."""
+
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    def _fake_route(checkpoint):
+        return {
+            "next_tool": "run_quality_gates",
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "stage": checkpoint.get("stage"),
+            "parent2_v": checkpoint.get("parent2_v"),
+            "route": {},
+        }
+
+    monkeypatch.setattr(_o, "_resolve_recovery_route", _fake_route)
+
+    adapter = _adapter(tmp_path)
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    _o._slice2b_gate_runner_factory = lambda nv, sv: _gate_runner_factory()
+    try:
+        checkpoint = _checkpoint()
+
+        async def driver():
+            await odr._slice2b_seal_at_workers_done(
+                checkpoint, 143, 142, ui=None, outcome=None,
+            )
+            recovery = {
+                "action": "resume",
+                "checkpoint": checkpoint,
+            }
+            outcome = {}
+            parked = await odr._try_deterministic_checkpoint_route(
+                recovery,
+                ui=None,
+                outcome=outcome,
+            )
+            return parked, outcome
+
+        parked, outcome = asyncio.run(driver())
+        assert parked is True
+        assert outcome["result"]["slice2b_consumer_parked"] is True
+    finally:
+        _o._slice2b_activation_registry("clear")
+
+
+def test_advance_recovery_emits_slice2b_consumer_parked_terminal_action(
+    monkeypatch, tmp_path,
+):
+    """Seal/park outcomes must trigger the one-ahead draft hook terminal action."""
+
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    def _fake_route(checkpoint):
+        return {
+            "next_tool": "run_quality_gates",
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "stage": checkpoint.get("stage"),
+            "parent2_v": checkpoint.get("parent2_v"),
+            "route": {},
+        }
+
+    monkeypatch.setattr(_o, "_resolve_recovery_route", _fake_route)
+
+    adapter = _adapter(tmp_path)
+    _o._slice2b_activation_registry("set", adapter=adapter)
+    _o._slice2b_gate_runner_factory = lambda nv, sv: _gate_runner_factory()
+    try:
+        checkpoint = _checkpoint()
+        recovery = {"action": "resume", "checkpoint": checkpoint}
+
+        async def driver():
+            return await odr._advance_deterministic_recovery(
+                recovery,
+                ui=None,
+                cost_policy=None,
+                shutdown_mgr=None,
+            )
+
+        advanced = asyncio.run(driver())
+        assert advanced["routed"] is True
+        assert advanced["terminal_action"] == "slice2b_consumer_parked"
+        assert advanced["outcome"]["result"]["slice2b_sealed"] is True
     finally:
         _o._slice2b_activation_registry("clear")

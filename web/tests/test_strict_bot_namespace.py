@@ -257,6 +257,38 @@ def test_staging_parent_source_accepted_without_certificate(tmp_path):
     assert spec.certificate_digest == ""
 
 
+def test_staging_parent_source_binds_existing_certificate_digest(tmp_path, monkeypatch):
+    """ALLOW_STAGING_AS_PARENT must still bind a live certificate when present.
+
+    Otherwise prepare_generation fails closed with
+    checkpoint_parent_publication_identity_incomplete for already-certified
+    parents (dual-tier phase2 gap observed on national_cloud_v11 → v12).
+    """
+    import bot_namespace as bn
+
+    monkeypatch.setattr(bn, "ALLOW_STAGING_AS_PARENT", True)
+    bot = _write_policy_bot(tmp_path, STRICT_TARGET_V)
+    digest = "b" * 64
+
+    spec = resolve_national_bot_spec(
+        bot,
+        ROLE_PARENT_SOURCE,
+        repo_root=tmp_path,
+        publication_resolver=lambda _path: {
+            "published": True,
+            "version": STRICT_TARGET_V,
+            "tag": strict_bot_tag(),
+        },
+        certificate_resolver=lambda _path: {
+            "eligible": True,
+            "certificate_digest": digest,
+        },
+    )
+
+    assert spec.eligible is True
+    assert spec.certificate_digest == digest
+    assert spec.publication_tier == "certified"
+
 def test_version_authority_uses_tags_and_ignores_stale_directory(monkeypatch, tmp_path):
     import evolution_infra
 

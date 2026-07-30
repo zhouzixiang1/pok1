@@ -155,7 +155,7 @@ class Slice2bActivation:
         """Seal the candidate and register it with the one-ahead coordinator.
 
         Returns the :class:`SealResult`.  After this returns the producer may
-        call :meth:`producer_may_advance` to begin the next prepare.
+        call :meth:`producer_may_prepare_next` to begin the next draft prepare.
         """
 
         sealed = seal_candidate(
@@ -187,8 +187,13 @@ class Slice2bActivation:
         self._dispatch_clocks[sealed["candidate_id"]] = submitted_at
         return sealed
 
+    def producer_may_prepare_next(self) -> bool:
+        """Producer may begin the next ``prepare_generation`` draft."""
+
+        return self.coordinator.producer_may_prepare_next()
+
     def producer_may_advance(self) -> bool:
-        """Producer may begin the next ``prepare_generation``."""
+        """Producer may seal another candidate (high-water capacity check)."""
 
         return self.coordinator.producer_may_advance()
 
@@ -592,7 +597,7 @@ def canonical_gate_runner_factory(next_v, source_v):
 
             return run
 
-        from producer_consumer_slice2b import GATE_CHAIN_ORDER
+        from producer_consumer_slice2b import CONSUMER_GATE_CHAIN_ORDER, GATE_CHAIN_ORDER
 
         return {name: make(name) for name in GATE_CHAIN_ORDER}
 

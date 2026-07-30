@@ -72,15 +72,17 @@ SLICE2B_LEDGER_SCHEMA_VERSION = 1
 SLICE2B_LEDGER_KIND = "producer-consumer-slice2b-validation-ledger-v1"
 SLICE2B_SEALED_KIND = "producer-consumer-slice2b-sealed-candidate-v1"
 
-# The Consumer lane runs the *existing* canonical gate chain in this order.
-# The dispatcher does not own these tools; the caller injects them.
-GATE_CHAIN_ORDER = (
+# The Consumer lane runs the canonical LLM gate chain through precommit only.
+# ``commit_bot`` publication remains on the primary orchestrator path behind
+# the promotion barrier so publication authority is not double-invoked.
+CONSUMER_GATE_CHAIN_ORDER = (
     "run_quality_gates",
     "run_review",
     "run_critic",
     "run_precommit_eval",
-    "commit_bot",
 )
+# Full publication chain (consumer precommit + primary commit_bot).
+GATE_CHAIN_ORDER = CONSUMER_GATE_CHAIN_ORDER + ("commit_bot",)
 
 _VALID_SUBSTATE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -480,7 +482,7 @@ class ConsumerDispatcher:
         what the dispatcher did this round (``dispatched``/``idle``/``failed``).
         """
 
-        for gate_name in GATE_CHAIN_ORDER:
+        for gate_name in CONSUMER_GATE_CHAIN_ORDER:
             if gate_name not in gates:
                 raise Slice2bError(f"consumer_dispatcher_missing_gate:{gate_name}")
 
@@ -513,7 +515,7 @@ class ConsumerDispatcher:
             envelope_digest=lease["envelope_digest"],
         )
 
-        for gate_name in GATE_CHAIN_ORDER:
+        for gate_name in CONSUMER_GATE_CHAIN_ORDER:
             runner = gates[gate_name]
             try:
                 gate_result = await runner(snapshot)
@@ -569,12 +571,22 @@ class ConsumerDispatcher:
                     "now": now,
                 }
 
-        promotion_receipt = await gates["commit_bot"](snapshot)
-        if not isinstance(promotion_receipt, Mapping):
-            raise Slice2bError("consumer_dispatcher_promotion_receipt_not_mapping")
-        receipt_digest = promotion_receipt.get("receipt_digest") or promotion_receipt.get("promotion_receipt_digest")
+        # Consumer validation completes at precommit; ``commit_bot`` is owned by
+        # the primary orchestrator behind the promotion barrier.
+        entry = self._ledger.snapshot(candidate_id)
+        if entry is None:
+            raise Slice2bError("consumer_dispatcher_ledger_missing")
+        precommit_gate = entry["gate_results"].get("run_precommit_eval")
+        if precommit_gate is None:
+            raise Slice2bError("consumer_dispatcher_precommit_missing")
+        receipt_digest = precommit_gate.get("digest")
         if not receipt_digest:
-            raise Slice2bError("consumer_dispatcher_promotion_receipt_missing_digest")
+            raise Slice2bError("consumer_dispatcher_precommit_missing_digest")
+        promotion_receipt = {
+            "receipt_digest": receipt_digest,
+            "consumer_precommit_complete": True,
+            "detail": precommit_gate.get("detail") or {},
+        }
         self._ledger.promote(
             candidate_id=candidate_id,
             promotion_receipt=promotion_receipt,
@@ -601,9 +613,11 @@ class OneAheadCoordinator:
 
     * :meth:`note_sealed` records that the Producer has handed candidate N to
       the Consumer and is therefore cleared to begin preparing draft N+1.
-    * :meth:`producer_may_advance` returns True iff there is no in-flight
-      terminal-unresolved Consumer AND the high-water rule (at most one sealed
-      awaiting validation) is satisfied.
+    * :meth:`producer_may_prepare_next` returns True iff exactly one sealed
+      candidate is in flight (the one-ahead buffer slot is occupied and the
+      producer may begin the next ``prepare_generation`` draft).
+    * :meth:`producer_may_advance` returns True iff the high-water seal slot is
+      free (``len(_in_flight) < MAX_SEALED_AWAITING_VALIDATION``).
     * :meth:`wait_for_promotion_readiness` is the synchronous fail-closed
       promotion barrier: the Producer's publication path must await Consumer
       completion for the candidate it is publishing.  This method does NOT
@@ -632,18 +646,17 @@ class OneAheadCoordinator:
         self._in_flight[candidate_id] = artifact_hash
         self._events.setdefault(candidate_id, asyncio.Event())
 
-    def producer_may_advance(self) -> bool:
-        """Producer may begin the next ``prepare_generation`` iff the one-ahead
-        buffer has a free slot.
+    def producer_may_prepare_next(self) -> bool:
+        """Producer may begin the next ``prepare_generation`` draft.
 
-        With ``MAX_SEALED_AWAITING_VALIDATION == 1``, the producer may start
-        the next prepare exactly when zero candidates are sealed-and-in-flight
-        OR exactly one is in flight (the one-ahead buffer occupies that slot).
-        Once a second seal is attempted the coordinator refuses via
-        :meth:`note_sealed`; advancing while two are already in flight would
-        require the high-water backpressure of Slice 11, which is deliberately
-        not implemented in this minimum slice.
+        With ``MAX_SEALED_AWAITING_VALIDATION == 1``, this is True exactly when
+        one sealed candidate is in flight and the consumer owns the gate chain.
         """
+
+        return len(self._in_flight) == self.MAX_SEALED_AWAITING_VALIDATION
+
+    def producer_may_advance(self) -> bool:
+        """Producer may seal another candidate (high-water capacity check)."""
 
         return len(self._in_flight) < self.MAX_SEALED_AWAITING_VALIDATION
 
@@ -723,6 +736,7 @@ def slice2b_enabled(context: Mapping[str, Any] | None) -> bool:
 
 
 __all__ = [
+    "CONSUMER_GATE_CHAIN_ORDER",
     "GATE_CHAIN_ORDER",
     "SLICE2B_LEDGER_KIND",
     "SLICE2B_SEALED_KIND",

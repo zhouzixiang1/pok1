@@ -836,7 +836,16 @@ def resolve_national_bot_spec(
             if publication.get("tag") != bot_tag(version):
                 issues.append("publication_completion_tag_mismatch")
 
-    if certificate_required and version is not None and path.is_dir():
+    if version is not None and path.is_dir() and (
+        certificate_required
+        or (role == ROLE_PARENT_SOURCE and not certificate_required)
+    ):
+        # Rating/opponent roles: certificate is mandatory (fail closed).
+        # Staging-as-parent: still best-effort load. A parent that already has a
+        # signed full certificate must bind that digest into the epoch checkpoint
+        # — otherwise prepare_generation dies with
+        # checkpoint_parent_publication_identity_incomplete even though the bot
+        # is fully certified (dual-tier phase2 gap).
         try:
             if certificate_resolver is None:
                 from official_certification import (
@@ -857,22 +866,32 @@ def resolve_national_bot_spec(
             else:
                 certificate = certificate_resolver(path)
         except Exception as exc:
-            issues.append(f"official_certificate_error:{type(exc).__name__}:{exc}")
+            if certificate_required:
+                issues.append(f"official_certificate_error:{type(exc).__name__}:{exc}")
         else:
-            if certificate.get("eligible") is not True:
-                issues.append("signed_full_official_certificate_required")
             raw_digest = str(certificate.get("certificate_digest") or "")
-            if not _HEX_SHA256_RE.fullmatch(raw_digest):
-                issues.append("official_certificate_digest_invalid")
-            else:
+            digest_ok = bool(_HEX_SHA256_RE.fullmatch(raw_digest))
+            if certificate_required:
+                if certificate.get("eligible") is not True:
+                    issues.append("signed_full_official_certificate_required")
+                if not digest_ok:
+                    issues.append("official_certificate_digest_invalid")
+                else:
+                    certificate_digest = raw_digest
+            elif (
+                certificate.get("eligible") is True
+                and digest_ok
+            ):
                 certificate_digest = raw_digest
 
-    # Determine publication tier: if certificate was required and found → certified.
-    # If certificate was NOT required (staging parent path) → staging.
-    # If certificate was required but missing, issues already capture the failure
-    # and the spec is not eligible; tier stays "certified" (the expected/default).
+    # Tier: certified when a valid digest is bound; staging only when
+    # ROLE_PARENT_SOURCE is allowed without a certificate and none was found.
     publication_tier = "certified"
-    if not certificate_required and role == ROLE_PARENT_SOURCE:
+    if (
+        not certificate_required
+        and role == ROLE_PARENT_SOURCE
+        and not certificate_digest
+    ):
         publication_tier = "staging"
     return NationalBotSpec(
         path=path,

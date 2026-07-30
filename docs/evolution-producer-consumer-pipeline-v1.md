@@ -627,6 +627,10 @@ wait for this refactor.
   in shadow, not activated;
 - Slice 2b, one ahead-buffer with current Consumer and resource broker: still
   2–3 focused development days including production integration review;
+  when activated (`POK_SLICE2B_ENABLED=1`), the consumer runs quality through
+  precommit only, the primary lane parks on those gates, ``commit_bot`` stays
+  on the primary path behind the promotion barrier, and
+  ``producer_may_prepare_next()`` gates the gen N+1 draft prepare after seal;
 - Slice 3, Quality/native fork/join: another 2–3 days;
 - Slice 4, official/rating/restart canary and frontend: another 1–2 days.
 

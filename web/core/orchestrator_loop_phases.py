@@ -669,13 +669,16 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             pass
                         if not _publication_accounting_allows_successor():
                             break
-                    elif advanced["terminal_action"] is None:
+                    elif advanced["terminal_action"] in {
+                        None,
+                        "slice2b_consumer_parked",
+                    }:
                         # Sealed candidate (gen N) with the consumer gate chain
                         # running in the background.  Attempt a one-ahead draft
                         # prepare for gen N+1 to fill LLM idle time.  This is the
                         # one-ahead producer that keeps the 2-permit LLM pool
                         # busy while gen N's quality->review->critic->precommit
-                        # ->commit chain runs concurrently.  Best-effort and
+                        # chain runs concurrently in the consumer.  Best-effort and
                         # non-fatal: any failure simply continues the canonical
                         # spin-wait on the primary slot.
                         try:
@@ -699,12 +702,28 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                 # without any LLM dependency.
                 if not await _orch._honor_active_llm_pause(ui, shutdown_mgr):
                     break
-                # Use degraded min_games after repeated eval timeouts
+                # After repeated eval timeouts, actually *lower* the hard
+                # min_games floor (align with national_native rd_min_games=12).
+                # The previous hardcode of 30 raised the bar above the profile
+                # default (24) and made prepare_generation thrash forever under
+                # DAEMON_EVAL_TIMEOUT=600s with pairs=5 (~7–8 min per batch).
                 degraded_min = None
                 if consecutive_prep_fails >= 3:
-                    degraded_min = 30
+                    from workflow_profiles import get_workflow_profile
+
+                    profile = get_workflow_profile()
+                    degraded_min = max(
+                        1,
+                        min(
+                            int(getattr(profile, "eval_wait_rd_min_games", 12) or 12),
+                            int(getattr(profile, "eval_wait_min_games", 24) or 24),
+                        ),
+                    )
                     if ui:
-                        ui.log_history("评估等待连续超时，降低评估要求 (30 局) 继续进化...", "warn")
+                        ui.log_history(
+                            f"评估等待连续超时，降低评估要求 ({degraded_min} 局) 继续进化...",
+                            "warn",
+                        )
 
                 gen_ctx = await _orch._prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
                 if gen_ctx is None:
@@ -776,7 +795,10 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             and not _publication_accounting_allows_successor()
                         ):
                             break
-                        if advanced["terminal_action"] is None:
+                        if advanced["terminal_action"] in {
+                            None,
+                            "slice2b_consumer_parked",
+                        }:
                             # Same one-ahead draft-prepare hook as the primary
                             # seal branch above; the selected deterministic
                             # recovery route can also reach a sealed/consumer-
@@ -1276,10 +1298,10 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
 
     Called from the continuous loop after a sealed candidate (gen N) has its
     consumer gate chain running in the background and
-    ``advanced["terminal_action"] is None``.  Checks the Slice 2b activation
-    path and the one-ahead coordinator's backpressure gate, then launches a
-    fire-and-forget asyncio task that drives the draft through its LLM stages.
-    Never raises and never blocks the loop.
+    ``advanced["terminal_action"]`` is ``None`` or ``slice2b_consumer_parked``.
+    Checks the Slice 2b activation path and the one-ahead coordinator's draft
+    prepare gate, then launches a fire-and-forget asyncio task that drives the
+    draft through its LLM stages.  Never raises and never blocks the loop.
     """
 
     # Lazy import through the sanctioned activation seam (inertness fence:
@@ -1305,11 +1327,12 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
         return
 
     try:
-        may_advance = bool(activation.producer_may_advance())
+        may_prepare = bool(activation.producer_may_prepare_next())
     except Exception:
         return
-    if not may_advance:
-        # One-ahead buffer is full (high-water=1 reached); backpressure.
+    if not may_prepare:
+        # One-ahead buffer is empty or full; no sealed in-flight candidate to
+        # prepare behind.
         return
 
     # De-duplicate: at most one in-flight draft per sealed candidate.  The

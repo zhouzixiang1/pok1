@@ -31,6 +31,7 @@ import pytest
 
 from pipeline_job_contract import build_job_envelope
 from producer_consumer_slice2b import (
+    CONSUMER_GATE_CHAIN_ORDER,
     GATE_CHAIN_ORDER,
     ConsumerDispatcher,
     OneAheadCoordinator,
@@ -266,8 +267,8 @@ def test_consumer_dispatcher_runs_gate_chain_and_promotes(tmp_path):
     entry = ledger.snapshot(snapshot["candidate_id"])
     assert entry["validation_outcome"] == "promoted"
     # Every gate in the chain ran and recorded a success receipt.
-    assert set(entry["gate_results"]) == set(GATE_CHAIN_ORDER)
-    for gate_name in GATE_CHAIN_ORDER:
+    assert set(entry["gate_results"]) == set(CONSUMER_GATE_CHAIN_ORDER)
+    for gate_name in CONSUMER_GATE_CHAIN_ORDER:
         assert entry["gate_results"][gate_name]["outcome"] == "success"
     assert entry["promotion_receipt"] is not None
 
@@ -417,9 +418,11 @@ def test_consumer_dispatcher_is_idle_when_queue_empty(tmp_path):
 def test_producer_may_advance_when_buffer_has_capacity():
     coord = OneAheadCoordinator(ValidationLedger())
     assert coord.producer_may_advance() is True
+    assert coord.producer_may_prepare_next() is False
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
-    # The one-ahead slot is now occupied; producer may NOT advance further
-    # in this minimum slice (backpressure is Slice 11).
+    # The one-ahead slot is occupied: producer may prepare the next draft but
+    # may NOT seal another candidate in this minimum slice.
+    assert coord.producer_may_prepare_next() is True
     assert coord.producer_may_advance() is False
 
 
@@ -469,6 +472,7 @@ def test_promotion_barrier_blocks_until_consumer_promotes():
     assert entry["validation_outcome"] == "promoted"
     # After promotion the buffer drains and the producer is cleared to seal again.
     assert coord.producer_may_advance() is True
+    assert coord.producer_may_prepare_next() is False
 
 
 def test_promotion_barrier_fails_closed_on_rejection():
@@ -603,6 +607,6 @@ def test_one_ahead_full_cycle_seal_dispatch_barrier(tmp_path):
 
     entry = asyncio.run(driver())
     assert entry["validation_outcome"] == "promoted"
-    assert set(entry["gate_results"]) == set(GATE_CHAIN_ORDER)
+    assert set(entry["gate_results"]) == set(CONSUMER_GATE_CHAIN_ORDER)
     # The Producer can immediately begin the next prepare now that the slot is free.
     assert coord.producer_may_advance() is True

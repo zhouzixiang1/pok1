@@ -1283,7 +1283,7 @@ async def cleanup_owned_provider_attempt(
 
 
 async def _run_stream_with_signature_retry(
-    full_prompt, options, log_file_path, ui, role_name
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
 ):
     """Delegate to llm_query_retry.
 
@@ -1291,19 +1291,26 @@ async def _run_stream_with_signature_retry(
     ``llm_query._run_stream_with_signature_retry`` (and the ``claude_query``,
     ``_process_stream``, ``asyncio.sleep`` it drives) continue to route through
     this module boundary; the companion reads those names via ``_lq``.
+
+    ``semaphore`` must be forwarded: Phase 5a acquires the global LLM permit
+    per attempt inside the companion. Dropping the kwarg here raises
+    ``unexpected keyword argument 'semaphore'`` and aborts every role
+    (including Combined analyst) before any provider stream starts.
     """
 
     return await _qr._run_stream_with_signature_retry(
-        full_prompt, options, log_file_path, ui, role_name
+        full_prompt, options, log_file_path, ui, role_name,
+        semaphore=semaphore,
     )
 
 
 async def _run_stream_with_signature_retry_attempts(
-    full_prompt, options, log_file_path, ui, role_name
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
 ):
     """Delegate to llm_query_retry."""
     return await _qr._run_stream_with_signature_retry_attempts(
-        full_prompt, options, log_file_path, ui, role_name
+        full_prompt, options, log_file_path, ui, role_name,
+        semaphore=semaphore,
     )
 
 
