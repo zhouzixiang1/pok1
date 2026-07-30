@@ -23,8 +23,12 @@ Active code consists of:
 2. `web/` — evolution control plane, native TCP evaluation, immutable evidence,
    prompts, gates, certification, and dashboard.
 3. `bots/national_cloud_v<N>/` — strict policy artifacts created by the active
-   epoch (on this branch the namespace is `national_cloud_v`; `bots/` is empty
-   until the first cloud candidate `national_cloud_v1` is published).
+   epoch (on this branch the namespace is `national_cloud_v`; `bots/` only holds
+   the active strict candidate products, never retired/legacy bots). The
+   currently published versions are queried dynamically via
+   `git tag --list 'national-cloud-bot-v*'` (or
+   `git ls-tree -d --name-only HEAD bots/`); on a fresh checkout it starts
+   empty and fills as the epoch publishes.
 4. `scripts/` — national diagnostics, evaluation identity, and official EXE
    certification.
 
@@ -34,25 +38,32 @@ tests, prompts, runtime output, and documentation. Archived files are
 scan, copy, branch from, cross over, certify, rate, or summarize them. Never add
 an archive directory to `sys.path` or `PYTHONPATH`.
 
-The version-authority high-water on this branch is **0**
-(`ARCHIVED_VERSION_HIGH_WATER = 0` in `web/core/bot_namespace.py`), so the first
-strict target is `national_cloud_v1` (`FIRST_STRICT_POLICY_VERSION = 1`) and the
-retired numeric high-water tag is `national-cloud-bot-v0`. Later published
-cloud candidates (e.g. `national_cloud_v13`) advance the same namespace. No
-main-namespace version history (142/143/156) is carried into this epoch — that
-is identity continuity only and it carries no source bytes, ratings, H2H,
-experience, capabilities, or certification. Legacy main-namespace bots
-(`national_v143`, `national_v156`) inherited from `main` are archived under
-`archive/legacy_main_namespace_bots/` and ignored by the cloud epoch authority
-(`active_bots = []`, `version_authority_high_water = 0`).
+The version-authority floor on this branch is defined by two code constants in
+`web/core/bot_namespace.py`: `ARCHIVED_VERSION_HIGH_WATER = 0` (the retired
+numeric high-water tag `national-cloud-bot-v0`) and
+`FIRST_STRICT_POLICY_VERSION = 1` (so the first strict target is
+`national_cloud_v1`). Later published cloud candidates (e.g.
+`national_cloud_v13`) advance the same namespace. On a fresh checkout the
+high-water falls back to that `ARCHIVED_VERSION_HIGH_WATER = 0` constant; the
+current active versions and the live high-water are resolved by epoch
+initialization from the active namespace tags
+(`git tag --list 'national-cloud-bot-v*'`), not assumed as constants — see the
+query commands in `deploy/tencent-cloud/README.md`. No main-namespace version
+history (142/143/156) is carried into this epoch — that is identity continuity
+only and it carries no source bytes, ratings, H2H, experience, capabilities, or
+certification. Legacy main-namespace bots (`national_v143`, `national_v156`)
+inherited from `main` are archived under `archive/legacy_main_namespace_bots/`
+and ignored by the cloud epoch authority.
 
 Only annotated completion/high-water tags in the **active namespace**
 (`national-cloud-bot-v*` / `national-cloud-high-water-v*`) advance that
 namespace. An untracked directory, abandoned checkpoint, log filename, or
 runtime counter never does. A fresh cloud checkout has no paired cloud tags,
-so `resolve_version_namespace_authority` falls back to the archived high-water
-(0) and the epoch initializes via the `fresh_bootstrap_ready` path — no seed
-tag is required for the version-1 floor.
+so at fresh-checkout time `resolve_version_namespace_authority` falls back to
+the archived high-water (`ARCHIVED_VERSION_HIGH_WATER = 0`) and the epoch
+initializes via the `fresh_bootstrap_ready` path — no seed tag is required for
+the version-1 floor. After publication, the active high-water is parsed from
+the `national-cloud-bot-v*` tags instead.
 
 The first strict checkpoint must bind the schema-2 execute receipt from the
 stopped autonomous checkout via
@@ -270,46 +281,54 @@ ownership it cannot prove.
 ### LLM provider and extended thinking (cloud runtime)
 
 The cloud runtime drives every Master/Reviewer/Critic/Worker role through
-`claude_agent_sdk` (latest stable `claude-agent-sdk`, currently 0.2.126) against
-**GLM-5.2** via the Anthropic-compatible endpoint
-(`ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic`, model id
-`glm-5.2`; all of Haiku/Sonnet/Opus route to `glm-5.2`). Extended thinking is
-configured in `web/core/llm_query.py::_llm_thinking_options` and applied to
-every direct sub-agent dispatch:
+`claude_agent_sdk` (the installed `claude-agent-sdk` version — check with
+`pip show claude-agent-sdk`) against **GLM** (currently GLM-5.2) via the
+Anthropic-compatible endpoint configured in
+`deploy/tencent-cloud/env.runtime` (`ANTHROPIC_BASE_URL`,
+`ANTHROPIC_MODEL`); all of Haiku/Sonnet/Opus route to that single model id
+(currently `glm-5.2`). Extended thinking is configured in
+`web/core/llm_query.py::_llm_thinking_options` and applied to every direct
+sub-agent dispatch:
 
-- `thinking = {"type": "enabled", "budget_tokens": 64000}` — GLM treats the
+- `thinking = {"type": "enabled", "budget_tokens": <budget>}` — GLM treats the
   budget as a **soft target** (not a hard cap), so a large budget gives the
   model full freedom to reason as deeply as it needs and still converge. The
   legacy `{"type": "adaptive"}` mode is **known to hang on GLM**: it emits
   16k–19k+ thinking tokens without ever producing visible output. Do NOT use
   `adaptive`.
-- `effort = "max"` — GLM-5.2's strongest reasoning depth. Confirmed NOT a
+- `effort = "max"` — GLM's strongest reasoning depth. Confirmed NOT a
   death-loop: thinking tokens grow linearly and GLM eventually emits visible
-  text. It is simply **slow**, requiring role timeouts of 1800–3600s (see
-  below). The earlier "infinite loop" diagnosis was a misattribution — the
-  stream was killed at 900s while GLM was still productively reasoning at
-  27k+ thinking tokens.
+  text. It is simply **slow**, which is why role timeouts are kept generous
+  (see below). The earlier "infinite loop" diagnosis was a misattribution —
+  the stream was killed mid-reasoning before it could converge
+  (historical diagnostic snapshot in
+  `docs/llm-utilization-investigation-2026-07-27.md`).
 
-All three are environment-overridable: `POK_LLM_THINKING_MODE`
-(`enabled`/`adaptive`/`disabled`, default `enabled`),
-`POK_LLM_THINKING_BUDGET` (default `64000`), `POK_LLM_EFFORT` (default `max`).
-The committed defaults live in `deploy/tencent-cloud/env.runtime`.
+The committed thinking budget and effort live in
+`deploy/tencent-cloud/env.runtime` (`POK_LLM_THINKING_MODE`
+`enabled`/`adaptive`/`disabled`, `POK_LLM_THINKING_BUDGET`, `POK_LLM_EFFORT`),
+all read from `_llm_thinking_options` in `web/core/llm_query.py`.
 
-Because GLM-5.2 with `effort=max` + a large budget has variable output speed
-(4–9 min typical, up to 15–20 min during peak provider load), role timeouts
-are kept generous via env overrides in `deploy/tencent-cloud/env.runtime`:
-all LLM roles total=3600s, stall=1200s, idle=1800s. The `CYCLE_TIMEOUT` is
-14400s (4h) and `WATCHDOG_TIMEOUT` is 28800s (8h). The stall gate
+Because GLM with `effort=max` + a large budget has variable output speed,
+role timeouts are kept generous via env overrides in
+`deploy/tencent-cloud/env.runtime`: see each role's `*_TOTAL_TIMEOUT` /
+`*_STALL_TIMEOUT` / `*_IDLE_TIMEOUT` / `*_FIRST_ACTIVITY_TIMEOUT` (the
+committed cloud file is the source of truth —
+`grep -E 'TIMEOUT' deploy/tencent-cloud/env.runtime`).
+`CYCLE_TIMEOUT` and `WATCHDOG_TIMEOUT` are code constants, not env vars
+(`web/core/orchestrator_context.py::CYCLE_TIMEOUT` and
+`web/core/evolution_infra.py::WATCHDOG_TIMEOUT`; locate current values with
+`rg -n "^CYCLE_TIMEOUT|^WATCHDOG_TIMEOUT" web/core/`). The stall gate
 (productive-message silence) is the primary stuck-stream detector; these
 generous values avoid killing GLM mid-reasoning while still catching truly
-hung streams. **`FIRST_ACTIVITY` must be raised in lockstep** (cloud env
-defaults Scout/Master/Worker/Review/Critic to 900s, Final to 1200s): only
-`SystemMessage` thinking does **not** count as substantive activity, so the
-legacy 120s Scout default kills streams mid-reasoning and looks like LLM
-truncation. Sig-retry acquires the global LLM semaphore **per attempt**;
-`llm_query._run_stream_with_signature_retry` must forward the `semaphore=`
-kwarg into `llm_query_retry` or every role fails before the stream starts
-(`unexpected keyword argument 'semaphore'`).
+hung streams. **`FIRST_ACTIVITY` must be raised in lockstep**: only
+`SystemMessage` thinking does **not** count as substantive activity, so an
+over-short `FIRST_ACTIVITY` default kills streams mid-reasoning and looks
+like LLM truncation (the concrete cloud defaults are the per-role
+`*_FIRST_ACTIVITY_TIMEOUT` env vars above). Sig-retry acquires the global LLM
+semaphore **per attempt**; `llm_query._run_stream_with_signature_retry` must
+forward the `semaphore=` kwarg into `llm_query_retry` or every role fails
+before the stream starts (`unexpected keyword argument 'semaphore'`).
 
 When `POK_ALLOW_STAGING_AS_PARENT=1`, `ROLE_PARENT_SOURCE` may omit a
 certificate, but `resolve_national_bot_spec` still **best-effort loads** any
@@ -332,7 +351,7 @@ async official certification through `official_certification_job.start_or_poll_j
 
 GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the
 provider returns an HTTP 429 with a Chinese body such as
-`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 2026-07-25 16:20:12 重置。]`.
+`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 <reset_time> 重置。]`.
 This is **quota exhaustion**, distinct from a transient 529 overload:
 the only correct response is to **wait for the reset window**, not to
 exponentially backoff.
@@ -357,7 +376,9 @@ The system handles this through the singleton `rate_limiter`
    parking on `requires_manual_resume`.
 3. **Pipeline pause**: Once `rate_limiter` has a future reset time,
    `rate_limiter.is_blocked()` returns `True`. The orchestrator loop checks
-   this at the top of every cycle (`orchestrator.py` ~line 6013) and
+   this at the top of every cycle (in the orchestrator loop-phase module —
+   `rg -n "rate_limiter.is_blocked|wait_until_reset" web/core/orchestrator*.py`
+   to locate the current call site) and
    `await rate_limiter.wait_until_reset(shutdown_mgr)` blocks the entire
    evolution pipeline until the quota resets. The durable availability pause
    is checked on the same cycle. Every `run_claude_query` entry point also
@@ -383,16 +404,17 @@ fail retry during a multi-hour quota window.
 
 ### Global LLM concurrency (producer-consumer model)
 
-All sub-agent LLM calls are capped at **2 simultaneous in-flight streams**
-via a process-wide `asyncio.Semaphore` in
-`web/core/llm_concurrency.py` (`GLOBAL_LLM_CONCURRENCY=2` default in code,
-env-overridable via `POK_GLOBAL_LLM_CONCURRENCY`; production
-`deploy/tencent-cloud/env.runtime` sets it to `2` as of 2026-07-30 Phase B,
-after the 2026-07-27 Tier A.1 raise to 3 increased GLM 429 pressure under
-slice2b one-ahead overlap). The semaphore is acquired inside `run_claude_query` (the
-single chokepoint for all 17+ LLM call sites: Master Scouts/Critics/final,
-Workers, Review, Critic, direction_audit, crossover, etc.) just before the
-actual provider dispatch.
+All sub-agent LLM calls are capped at a bounded number of **simultaneous
+in-flight streams** via a process-wide `asyncio.Semaphore` in
+`web/core/llm_concurrency.py` (the code default and any production override
+live in `POK_GLOBAL_LLM_CONCURRENCY`; see
+`deploy/tencent-cloud/env.runtime` for the current value and
+`web/core/llm_concurrency.py` for the code default). The semaphore is
+acquired inside `run_claude_query` (the single chokepoint for all 17+ LLM call
+sites: Master Scouts/Critics/final, Workers, Review, Critic,
+direction_audit, crossover, etc.) just before the actual provider dispatch.
+The concurrency-tuning history (past raises/lowers under GLM 429 pressure)
+is recorded in `docs/llm-utilization-investigation-2026-07-27.md`.
 
 FIFO ordering (`asyncio.Semaphore` is deque-backed) prevents starvation: no
 role is permanently blocked. Master and Worker roles execute in different
@@ -587,10 +609,12 @@ mismatch, or later byte drift is a control-plane failure.
 First-strict Reviewer and Critic prompts render only from their durable call
 descriptors, which bind the exact semantic inputs plus checked-in
 producer/template identities. The Critic descriptor also owns its evidence read
-scope. Because the `national_cloud_v` pool is empty at the first-strict reset
-(high-water 0, no published bots), that scope is empty and its prompt carries
-an explicit no-strength contract; it must not open rating, H2H, replay, Arena,
-official, retired-bot, or historical-experience material. Any strict journal,
+scope. Because at the first-strict reset moment the `national_cloud_v` pool is
+empty (high-water at the `ARCHIVED_VERSION_HIGH_WATER = 0` floor, no published
+bots), that scope is empty and its prompt carries an explicit no-strength
+contract; it must not open rating, H2H, replay, Arena, official, retired-bot,
+or historical-experience material. Later versions add to that scope as the
+`national-cloud-bot-v*` tags advance. Any strict journal,
 prompt, context, or invocation-evidence violation canonically abandons the
 generation with zero provider-infrastructure retry debt. A terminal strict
 Master slot, including exhausted schema repair, is disposable only while the
@@ -712,12 +736,15 @@ authority from bot directories or local component state.
 
 The read-only observer projection (`/api/control/health` and `/status`) is
 served through a content-keyed singleflight cache in
-`web/server/routes/control.py`. The builder (`_sync_evolution_fields`) takes
-~76s because it samples `strict_epoch_projection` up to three times to prove
+`web/server/routes/control.py`. The builder (`_sync_evolution_fields`) samples
+`strict_epoch_projection` up to three times per refresh to prove
 epoch/handoff/transition identity did not move (each resample is a load-bearing
-coherence check and must not be deduped). A **same-key** follower therefore
-**cooperatively awaits** the single in-flight build (bounded by
-`_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC`) instead of failing fast with 503; a
+coherence check and must not be deduped), so its build cost scales with that
+sampling count and the underlying data volume; measured build times are
+recorded in `docs/observer-cache-availability-2026-07-28.md`. A **same-key**
+follower therefore **cooperatively awaits** the single in-flight build
+(bounded by `_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC`) instead of failing fast
+with 503; a
 **changed-key** follower still fails closed
 (`observer_projection_authority_changed_during_refresh`) because a superseded
 authority's bytes must never be served under a new key. The await runs on the
@@ -770,9 +797,11 @@ The blocking boundary used by all offloaded HTTP handlers
 owned worker future with a **single `add_done_callback` →
 `loop.call_soon_threadsafe` wakeup**, never a tight
 `while not done: await asyncio.sleep(0.001)` poll. The busy-poll form woke the
-event loop ~1000x/sec; for a slow barrier snapshot (~44s, called twice in
-`/start`'s `_reserve_runtime_launch_owner`) this starved every concurrent
-request and hung `/api/control/start` for 120s+ with HTTP 000. The single-
+event loop ~1000x/sec (a direct arithmetic consequence of the `sleep(0.001)`
+step); for the slow barrier snapshot performed in `/start`'s
+`_reserve_runtime_launch_owner` (called twice) that starvation starved every
+concurrent request and hung `/api/control/start` with HTTP 000 (measured
+durations in `docs/observer-cache-availability-2026-07-28.md`). The single-
 wakeup form lets the loop sleep idle while the worker runs and is woken
 exactly once on completion, preserving the no-default-executor and
 worker-reclaim contracts. Regression test:
@@ -997,6 +1026,10 @@ retired `national_v141` signed-ledger chain). The allowed-signers file
 under namespace `pok-official-cert-v4`. The companion
 `docs/official-signer-rotation.md` documents this epoch-3 server-owned key
 and retains the older operator-host epoch-2 narrative as historical context.
+The currently active signer epoch is authoritative as
+`current_epoch` in `web/core/official_certifier_trust_policy.json`
+(rotation procedure: `docs/official-signer-rotation.md`); the epoch-3 /
+fingerprint values above describe that trust policy as committed.
 
 ## Working rules
 

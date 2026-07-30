@@ -47,13 +47,18 @@ not redundant and must not be deduped** (deduping would create exactly the
 torn-snapshot condition the bracket exists to prevent).
 
 Each `strict_epoch_projection` call reopens signed verdict ledgers; the whole
-build takes **~76s** (measured). But the cache constants were calibrated for a
+build takes **~76s** (measured 2026-07-28; current value use the observer
+endpoint to re-measure). But the cache constants were calibrated for a
 "30-80ms" build:
 
 - `_OBSERVER_CACHE_TTL_SEC = 1.0` — a successful build evicted after 1 second.
 - `_OBSERVER_HTTP_RETRY_DELAY_SEC = 0.15` with `for attempt in range(2)` — a
   ~0.30s retry window.
 - A same-key follower **failed fast** with `observer_projection_refresh_in_progress`.
+
+> 以上具体数值（`_OBSERVER_CACHE_TTL_SEC`、`_OBSERVER_HTTP_RETRY_DELAY_SEC`
+> 等）是 2026-07-28 incident 时刻的调参记录；当前值见
+> `web/server/routes/control.py` 的同名常量（会随调参变化）。
 
 A 76s build can never finish inside a 0.30s retry window, and a 1.0s TTL evicts
 a successful build almost immediately. So every dashboard poll during active
@@ -111,7 +116,8 @@ computation changed. The fail-closed invariants are preserved.
   invalidated on every mutation (`_invalidate_observer_projection_cache` is
   called from every config/start/stop/owner path), so a longer TTL never serves
   stale data across a write. It only reduces redundant rebuilds during
-  steady-state polling.
+  steady-state polling. (具体数值为 2026-07-28 调参记录；当前值见
+  `web/server/routes/control.py` 的 `_OBSERVER_CACHE_TTL_SEC`。)
 
 ### 2. Frontend first-load neutral state (`web/frontend/src/hooks/useControlStatus.ts`, `EpochAuthorityStatus.tsx`, `lib/controlFirstLoadState.ts`)
 
@@ -176,7 +182,8 @@ computation changed. The fail-closed invariants are preserved.
 ## Verification
 
 After restarting via systemd, `/api/control/health` resolves to 200 within the
-first ~76s (the cooperative-await followers receive the single build's result)
+first ~76s (measured 2026-07-28; re-measure current value via the observer
+endpoint; the cooperative-await followers receive the single build's result)
 instead of returning continuous 503, and the homepage no longer shows the red
 banner on first load. A changed-key drift still returns the fail-closed 503.
 

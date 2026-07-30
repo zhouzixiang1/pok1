@@ -191,19 +191,22 @@ python3 web/core/orchestrator.py --one-gen
 ### Dashboard authority endpoints and the observer cache
 
 `/api/control/health` and `/api/control/status` are served through a
-content-keyed singleflight cache whose builder (`_sync_evolution_fields`) takes
-**~76s** (it samples `strict_epoch_projection` up to three times to prove
-epoch/handoff/transition identity did not move). A same-key follower
-**cooperatively awaits** the single in-flight build instead of returning 503,
-so the first dashboard load after a restart may take up to ~76s to populate
-(rarely up to `_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC` under load) — this is
-normal, not an outage. A **changed-key** drift (authority moved during a build)
-still returns a retryable fail-closed 503, which the frontend shows as a neutral
-"refreshing" state on first load rather than the red authority banner. Always
-start the daemon through the cloud-runtime launcher (which exports
-`POK_CLOUD_RUNTIME=1`); launching it without that env var makes the namespace
-prefix default to `national_v` and now fails fast at startup with an actionable
-"namespace mismatch" error. Full analysis:
+content-keyed singleflight cache whose builder (`_sync_evolution_fields`)
+samples `strict_epoch_projection` up to three times to prove
+epoch/handoff/transition identity did not move, so a build is slow (on the
+order of a minute; see the measured values in
+[`docs/observer-cache-availability-2026-07-28.md`](../../docs/observer-cache-availability-2026-07-28.md)).
+A same-key follower **cooperatively awaits** the single in-flight build instead
+of returning 503, so the first dashboard load after a restart may take that
+long to populate (rarely up to `_OBSERVER_FOLLOWER_AWAIT_TIMEOUT_SEC` under
+load) — this is normal, not an outage. A **changed-key** drift (authority
+moved during a build) still returns a retryable fail-closed 503, which the
+frontend shows as a neutral "refreshing" state on first load rather than the
+red authority banner. Always start the daemon through the cloud-runtime
+launcher (which exports `POK_CLOUD_RUNTIME=1`); launching it without that env
+var makes the namespace prefix default to `national_v` and now fails fast at
+startup with an actionable "namespace mismatch" error. To get the live build
+duration, time the observer endpoint directly. Full analysis:
 [`docs/observer-cache-availability-2026-07-28.md`](../../docs/observer-cache-availability-2026-07-28.md)
 and [`proxy-timeout.md`](proxy-timeout.md).
 
@@ -245,7 +248,7 @@ Relevant `env.runtime` knobs (defaults below match the committed cloud file):
 | `POK_SLICE2B_ENABLED` | `1` | one-ahead producer/consumer |
 | `POK_ALLOW_STAGING_AS_PARENT` | `1` | pure staging parents (empty cert digest) |
 | `POK_DEFAULT_PUBLICATION_TIER` | `staging` | async official cert after publish; first-strict stays certified |
-| `POK_GLOBAL_LLM_CONCURRENCY` | `2` | see LLM concurrency below |
+| `POK_GLOBAL_LLM_CONCURRENCY` | see `env.runtime` | see LLM concurrency below |
 
 Draft checkpoints use shadow identity (`is_draft=True`): skip live floor+1
 allocation CAS, isolate under `RESULTS_DIR/draft_candidates/`, remap onto
@@ -254,52 +257,77 @@ formal `next_v` after primary publish. Async cert scheduling keys off
 
 ## Sizing notes (4 vCPU / 3.6 GiB VM)
 
-`env.runtime` sets `POK_DAEMON_WORKERS=2` and `POK_DAEMON_PAIRS=2`
-(conservative). Each native-TCP match forks workers; raise these if you resize
-the instance. Monitor memory: the orchestrator + daemon + match workers should
-stay under ~2.5 GiB with these defaults.
+Daemon sizing is controlled by `env.runtime`'s `POK_DAEMON_WORKERS` /
+`POK_DAEMON_PAIRS` (query the current committed values with
+`grep POK_DAEMON deploy/tencent-cloud/env.runtime`; the code default and the
+hard ceiling live in `start_daemon` and `MAX_DAEMON_PAIRS` in
+`web/core/daemon_management.py`). The actual in-effect values are best read
+from `/api/control/status` — the `configured_workers` / `env_workers` /
+`effective_workers` and `configured_pairs` / `env_pairs` / `effective_pairs` /
+`pairs_drift` fields show what the running daemon is using and whether it has
+drifted from config. Each native-TCP match forks workers; when you resize the
+instance, adjust these accordingly and monitor memory (orchestrator + daemon +
+match workers).
 
-## LLM timing (GLM-5.2 deep reasoning)
+## LLM timing (deep reasoning)
 
-GLM-5.2 with enabled thinking and `effort=max` spends 4–9 min (up to 15–20 min
-during peak provider load) on complex Master-proposal prompts. The default
-role timeouts are far too tight and killed Scouts mid-thought. `env.runtime`
-raises them via role-scoped env overrides:
+The current model (see `env.runtime`'s `ANTHROPIC_MODEL` / `POK_LLM_MODEL`;
+the model id is also reported by the daemon's status endpoint) with enabled
+thinking and `effort=max` is slow on complex Master-proposal prompts — minutes
+to tens of minutes, scaling with provider load. This is the dominant
+wall-time driver. The role timeouts are deliberately generous to avoid
+killing streams mid-reasoning; the per-role timeout/budget values live in
+`env.runtime` and are queryable with
+`grep -E 'TIMEOUT|CONCURRENCY|THINKING|EFFORT' deploy/tencent-cloud/env.runtime`:
 
-- All LLM roles: `total=3600s`, `stall=1200s`, `idle=1800s`
-- `CYCLE_TIMEOUT=14400s` (4h), `WATCHDOG_TIMEOUT=28800s` (8h)
+- Per-role `*_STALL_TIMEOUT` / `*_IDLE_TIMEOUT` / `*_TOTAL_TIMEOUT` /
+  `*_FIRST_ACTIVITY_TIMEOUT` (Master, Master-proposal, Master-final, Review,
+  Critic, Worker)
+- `POK_GLOBAL_LLM_CONCURRENCY`, `POK_LLM_THINKING_*`, `POK_LLM_EFFORT`
+
+Note `CYCLE_TIMEOUT` and `WATCHDOG_TIMEOUT` are **code constants, not env
+vars** (`web/core/orchestrator_context.py::CYCLE_TIMEOUT`,
+`web/core/evolution_infra.py::WATCHDOG_TIMEOUT`; find current values with
+`rg -n "^CYCLE_TIMEOUT|^WATCHDOG_TIMEOUT" web/core/`).
 
 The `stall` gate (productive-message silence) is the primary stuck-stream
-detector; these generous values avoid killing GLM mid-reasoning while still
-catching truly hung streams.
+detector; these generous values avoid killing the model mid-reasoning while
+still catching truly hung streams.
 
 ### `effort=max` and thinking budget
 
-`effort=max` is GLM-5.2's strongest reasoning depth. It is **NOT a death-loop**:
-thinking tokens grow linearly and GLM eventually emits visible text. The
-earlier "infinite loop" diagnosis was a misattribution — the stream was killed
-at 900s while GLM was still productively reasoning at 27k+ thinking tokens.
+`effort=max` is the strongest reasoning depth. It is **NOT a death-loop**:
+thinking tokens grow linearly and the model eventually emits visible text. The
+earlier "infinite loop" diagnosis was a misattribution — a stream that was
+killed mid-reasoning was actually still making progress. The full tuning
+history and the mid-reasoning kill diagnosis are recorded in
+[`docs/llm-utilization-investigation-2026-07-27.md`](../../docs/llm-utilization-investigation-2026-07-27.md).
 
-Configuration (in `env.runtime`, all env-overridable):
-- `POK_LLM_THINKING_MODE=enabled` (default; `adaptive` is known to hang on GLM)
-- `POK_LLM_THINKING_BUDGET=64000` (GLM treats this as a soft target, not a cap)
-- `POK_LLM_EFFORT=max`
+Configuration keys live in `env.runtime` (all env-overridable):
+- `POK_LLM_THINKING_MODE` (`enabled`; `adaptive` is known to hang on the
+  Anthropic-compatible endpoint — see the investigation doc)
+- `POK_LLM_THINKING_BUDGET` (treated as a soft target, not a hard cap)
+- `POK_LLM_EFFORT` (`max`)
 
-### Global LLM concurrency (Phase B — held at 2)
+### Global LLM concurrency (Phase B)
 
-`env.runtime` sets `POK_GLOBAL_LLM_CONCURRENCY=2` (process-wide semaphore in
-`web/core/llm_concurrency.py`, acquired inside `run_claude_query`). The
-2026-07-27 Tier A.1 raise to 3 cut Master-ensemble wall-time but increased
-GLM 429 pressure under Slice 2b one-ahead overlap (primary consumer + draft
-producer). Cap=2 keeps the FIFO semaphore honest; `api_concurrency` adaptive
-backoff still halves further on 429. Raise back to 3 only after quota
-headroom is re-measured, then restart the runtime so the env is reloaded.
+`POK_GLOBAL_LLM_CONCURRENCY` caps all sub-agent LLM calls via a process-wide
+FIFO semaphore in `web/core/llm_concurrency.py` (acquired inside
+`run_claude_query`); its current value is in `env.runtime`
+(`grep POK_GLOBAL_LLM_CONCURRENCY deploy/tencent-cloud/env.runtime`). A prior
+raise (the "Tier A.1" experiment) cut Master-ensemble wall-time but increased
+429 pressure under Slice 2b one-ahead overlap (primary consumer + draft
+producer overlapping); the cap is currently held lower to keep the semaphore
+honest while `api_concurrency` adaptive backoff still halves further on 429.
+Raise it only after quota headroom is re-measured, then restart the runtime so
+the env is reloaded. The full Tier A.1 / Phase B tuning history is in
+[`docs/llm-utilization-investigation-2026-07-27.md`](../../docs/llm-utilization-investigation-2026-07-27.md).
 
 ### GLM 429 quota exhaustion and recovery-window waiting
 
-GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the provider
-returns HTTP 429 with a Chinese body containing the reset timestamp:
-`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 2026-07-25 16:20:12 重置。]`.
+The current model enforces a **5-hour rolling usage cap**. When exhausted, the
+provider returns HTTP 429 with a Chinese body containing the reset timestamp:
+`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 <reset_time> 重置。]`.
 
 The system handles this through the singleton `rate_limiter`
 (`web/core/rate_limiter.py`):
@@ -339,7 +367,7 @@ After verifying tests on this operator checkout (`/home/ubuntu/pok1`):
 2. In `.evolution_pok`: `git pull --ff-only --tags` (Git sync only; never
    copy files between checkouts).
 3. `pokctl restart` / `systemctl restart pok-evolution` so `env.runtime`
-   (`POK_GLOBAL_LLM_CONCURRENCY=2`, staging tier, Slice 2b flags) is
+   (`POK_GLOBAL_LLM_CONCURRENCY`, staging tier, Slice 2b flags) is
    reloaded.
 4. Expect operator stability to reset to **0/10** after restart; schedule
    the restart in a generation empty window when possible.

@@ -1,11 +1,27 @@
 # Evolution Dual-Checkout Sync Policy
 
-This repository intentionally uses two local checkouts under `/home/zzx/project/pok`:
+This repository intentionally uses two local checkouts of the same repository,
+both rooted under one repository root. This document refers to them by role,
+not by absolute host path, because the host path varies by machine:
 
-- `/home/zzx/project/pok` is the operator and infrastructure checkout. Human and agent changes to `web/`, `sever/`, prompts, tests, docs, and project scripts should be developed from this side, or from a temporary worktree created under this directory.
-- `/home/zzx/project/pok/.evolution_pok` is the autonomous evolution runtime clone. The running web/orchestrator/daemon process, candidate bot directories, live ratings, and generation checkpoints live here.
+- The **infrastructure checkout** (the outer checkout) is the operator clone.
+  Human and agent changes to `web/`, `sever/`, prompts, tests, docs, and project
+  scripts should be developed from this side, or from a temporary worktree
+  created under this checkout. On this host it is `/home/ubuntu/pok1`; in a shell
+  already inside it, `"$(git rev-parse --show-toplevel)"` resolves its root.
+- The **runtime checkout** (`.evolution_pok`) is the autonomous evolution clone
+  nested directly under the infrastructure checkout root (on this host
+  `/home/ubuntu/pok1/.evolution_pok`). The running web/orchestrator/daemon
+  process, candidate bot directories, live ratings, and generation checkpoints
+  live here.
 
-The two checkouts must stay synchronized through `origin/main`. Do not copy files between them by hand.
+This branch (`tencent-cloud-runtime`) is an **isolated cloud evolution line**
+whose products publish only into the evolution branch (`origin/tencent-cloud-runtime`),
+never into `origin/main`. The `main` branch keeps the canonical `national_v`
+history unchanged and is intentionally not disturbed. The two checkouts must stay
+synchronized through the **evolution branch** (named by `POK_EVOLUTION_BRANCH`,
+currently `tencent-cloud-runtime`; see `deploy/tencent-cloud/env.runtime`). Do
+not copy files between checkouts by hand.
 
 ## Required Invariant
 
@@ -17,10 +33,10 @@ git remote get-url origin
 
 Committed infrastructure state is synchronized only by git:
 
-1. A change made in `/home/zzx/project/pok` is committed, pushed to `origin/main`, then fetched/merged into `/home/zzx/project/pok/.evolution_pok` at a safe point.
-2. A bot version produced in `/home/zzx/project/pok/.evolution_pok` is complete only after `commit_bot` commits it, creates `national-bot-v{N}`, and pushes both `main` and the tag. The outer checkout must then fetch tags and merge or rebase `origin/main` before editing related bot/evaluation code.
-3. If either checkout is ahead of or behind `origin/main`, do not start new infrastructure work until the intended sync direction is explicit.
-4. Before starting any task, update remote state first. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`. If the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/main`; do not begin from a stale local HEAD.
+1. A change made in the infrastructure checkout is committed, pushed to the evolution branch (`origin/tencent-cloud-runtime`, i.e. `origin/$POK_EVOLUTION_BRANCH`), then fetched/merged into the runtime checkout (`.evolution_pok`) at a safe point.
+2. A bot version produced in `.evolution_pok` is complete only after `commit_bot` commits it, creates the active completion tag (prefix from `ACTIVE_TAG_PREFIX`, currently `national-cloud-bot-v{N}` under this namespace), and pushes both the evolution branch and the tag to `origin/tencent-cloud-runtime`. The outer checkout must then fetch tags and merge or rebase the evolution branch before editing related bot/evaluation code.
+3. If either checkout is ahead of or behind `origin/tencent-cloud-runtime`, do not start new infrastructure work until the intended sync direction is explicit.
+4. Before starting any task, update remote state first. In a clean checkout on the branch you will edit, run `git pull --ff-only --tags`. If the checkout is dirty, on a user branch, or cannot be fast-forwarded safely, run `git fetch --tags origin` and create a temporary worktree from the updated `origin/tencent-cloud-runtime`; do not begin from a stale local HEAD.
 
 ## Directory Ownership
 
@@ -38,7 +54,7 @@ records. They are never copied into the runtime checkout as active inputs.
 Autonomous evolution runtime state belongs only in `.evolution_pok`:
 
 - active `python web/main.py` and `elo_daemon.py` processes
-- candidate `bots/national_v{N}/` directories before `commit_bot`
+- candidate `bots/<active_bot_prefix>{N}/` directories (on this branch `bots/national_cloud_v{N}/`) before `commit_bot`
 - `web/core/results/`
 - `web/logs/`
 - generated match/replay/runtime outputs
@@ -47,11 +63,12 @@ Do not run the long-lived evolution process from the outer checkout. Do not use 
 
 The one-time `national_tcp_policy_v1` reset is runtime authority, not ordinary
 repository cleanup. After infrastructure is merged/pushed and the autonomous
-checkout is stopped, clean, on `main`, and exactly synchronized to
-`origin/main`, execute it only there:
+checkout is stopped, clean, on the evolution branch (`tencent-cloud-runtime`),
+and exactly synchronized to `origin/tencent-cloud-runtime`, execute it only in
+the runtime checkout (`.evolution_pok`):
 
 ```bash
-cd /home/zzx/project/pok/.evolution_pok
+cd "$REPO_ROOT/.evolution_pok"   # REPO_ROOT = the infrastructure checkout root
 python3 scripts/reset_national_tcp_policy_epoch.py \
   --execute --acknowledge-runtime-checkout
 ```
@@ -68,30 +85,31 @@ The current implementation uses an evaluation-contract guard rather than a blank
 
 - `web/core/evolution_scope.py` defines file-scoped evaluation-sensitive paths. `CRITICAL_PREFIXES` must stay empty unless a future change has a specific path-pattern reason; do not lock all of `sever/`, `web/core/`, or `web/tests/`.
 - The hard contract is the union of named exact-file groups for raw national-TCP parsing and legality, the system-owned bot runtime, typed policy ABI, gates/precommit, generation/recovery/publication, and active prompt templates. There is no active local-engine or adapter contract. Runtime observability files such as `web/core/event_bus.py`, `web/core/system_log.py`, `web/core/web_ui.py`, launcher files such as `web/main.py` and `sever/main.py`, docs, and frontend assets are contract-neutral unless they are promoted into a named exact-file group with tests.
-- `web/core/evaluation_contract.py` builds the active contract from those exact files plus only the active candidate/source/parent/opponent bot versions recorded in the checkpoint. The contract is stage-sensitive at the level of pipeline logic, not directories: selected/preparing/crossover stages track prepare+crossover files, `prepared` tracks direction-audit files, `direction_audited` tracks master-planning files, `master_planned` and repair stages track worker/repair files, and post-worker stages track only hard evaluation/runtime files. Guard files such as `evaluation_contract.py`, `evolution_scope.py`, `tool_runtime_guard.py`, `orchestrator.py`, and `pipeline_recovery.py` stay critical at every active stage. Dirty worktree checks use the same checkpoint bot-version set: an unrelated historical `bots/national_v*/` directory is not a stop condition unless that version is part of the current contract.
+- `web/core/evaluation_contract.py` builds the active contract from those exact files plus only the active candidate/source/parent/opponent bot versions recorded in the checkpoint. The contract is stage-sensitive at the level of pipeline logic, not directories: selected/preparing/crossover stages track prepare+crossover files, `prepared` tracks direction-audit files, `direction_audited` tracks master-planning files, `master_planned` and repair stages track worker/repair files, and post-worker stages track only hard evaluation/runtime files. Guard files such as `evaluation_contract.py`, `evolution_scope.py`, `tool_runtime_guard.py`, `orchestrator.py`, and `pipeline_recovery.py` stay critical at every active stage. Dirty worktree checks use the same checkpoint bot-version set: an unrelated historical `bots/<active_bot_prefix>*/` directory (on this branch `bots/national_cloud_v*/`) is not a stop condition unless that version is part of the current contract.
 - `web/core/evolution_infra.py` writes that contract into `web/core/results/pipeline_state.json` as `repo_baseline.evaluation_contract`.
 - `web/core/tool_runtime_guard.py`, `web/core/orchestrator.py`, and `web/core/pipeline_recovery.py` allow unrelated HEAD drift only when the changed paths do not touch the active evaluation contract.
-- `web/core/publish_reconcile.py` retries a rejected push by fetching `origin/main`; it auto-merges remote changes only when they are evaluation-contract neutral. If remote changes touch the contract, it blocks with `remote_contract_changed`.
+- `web/core/publish_reconcile.py` retries a rejected push by fetching the evolution branch (`origin/$POK_EVOLUTION_BRANCH`, currently `origin/tencent-cloud-runtime`; it derives this from `bot_namespace.EVOLUTION_BRANCH`); it auto-merges remote changes only when they are evaluation-contract neutral. If remote changes touch the contract, it blocks with `remote_contract_changed`.
 
 This means documentation-only, observability-only, launcher-only, frontend, or unrelated experiment changes can usually be reconciled automatically. Changes to named rule/evaluation/generation contract files require an explicit restart/resume decision only when they are in the active stage contract. Changes to active candidate/source/parent/opponent bot versions remain contract-critical.
 
 ## Sync Procedures
 
-For infrastructure or documentation work:
+For infrastructure or documentation work, run from the infrastructure checkout
+root:
 
 ```bash
-cd /home/zzx/project/pok
+cd "$(git rev-parse --show-toplevel)"   # infrastructure checkout root
 git pull --ff-only --tags
 git status --short --branch
-git diff --name-only HEAD..origin/main
+git diff --name-only HEAD..origin/tencent-cloud-runtime
 ```
 
-If the outer checkout is dirty, on a user branch, or cannot be fast-forwarded safely, do not force a pull over it. Run `git fetch --tags origin`, then use a temporary worktree inside `/home/zzx/project/pok/.claude/worktrees/` or another ignored path under `/home/zzx/project/pok`; do not switch the user's dirty branch. Commit and push the task branch, merge it to `main`, then remove the temporary worktree.
+If the outer checkout is dirty, on a user branch, or cannot be fast-forwarded safely, do not force a pull over it. Run `git fetch --tags origin`, then use a temporary worktree inside `$REPO_ROOT/.claude/worktrees/` (where `REPO_ROOT` is the infrastructure checkout root) or another ignored path under that root; do not switch the user's dirty branch. Commit and push the task branch, merge it to the evolution branch (`tencent-cloud-runtime`), then remove the temporary worktree.
 
-For evolution output:
+For evolution output, run from the runtime checkout (`.evolution_pok`):
 
 ```bash
-cd /home/zzx/project/pok/.evolution_pok
+cd "$REPO_ROOT/.evolution_pok"
 git status --short --branch
 git fetch --tags origin
 ```
@@ -108,14 +126,14 @@ contract. Never call the MCP `abandon_generation`, rewrite the checkpoint,
 retry the old authorization under new bytes, or delete the durable job.
 
 After stopping every runtime/official process, fast-forward the autonomous
-checkout to the exact reviewed `origin/main`. Run this command once without
+checkout to the exact reviewed `origin/tencent-cloud-runtime`. Run this command once without
 `--execute`, using the exact old checkpoint/head/hash and terminal job:
 
 ```bash
 python scripts/abandon_parked_bootstrap_contract_change.py \
   --expected-baseline-head <40-hex-old-head> \
   --expected-baseline-contract-hash <64-hex-old-contract-hash> \
-  --expected-current-head <40-hex-reviewed-origin-main> \
+  --expected-current-head <40-hex-reviewed-evolution-branch> \
   --expected-workflow-run-id <exact-workflow-run-id> \
   --expected-checkpoint-revision <exact-revision> \
   --expected-candidate-hash <64-hex-artifact-hash> \
@@ -144,7 +162,7 @@ Before restarting after an evaluator-identity migration, establish the rating
 identity and the independent official-verdict authority in this order:
 
 ```bash
-cd /home/zzx/project/pok/.evolution_pok
+cd "$REPO_ROOT/.evolution_pok"
 python3 scripts/evaluation_data_identity.py
 python3 scripts/official_certify.py doctor
 # Only when doctor reports official_verdict_ledger_missing on a new operator host:
@@ -172,7 +190,7 @@ before it detaches a process. For a service or
 remote shell that has no activated environment, start explicitly, for example:
 
 ```bash
-cd /home/zzx/project/pok/.evolution_pok
+cd "$REPO_ROOT/.evolution_pok"
 POK_PYTHON=/absolute/path/to/project-python \
   ./pokctl.sh start --host 0.0.0.0 --port 8000 --no-build
 ```
@@ -180,7 +198,7 @@ POK_PYTHON=/absolute/path/to/project-python \
 An interpreter validation failure is a launcher failure, not a reason to
 reuse an old running process, disable dynamic gates, or restart an old
 checkpoint. Repair/select the interpreter, rerun the stopped-state
-diagnostics, and launch only the current `origin/main` checkout.
+diagnostics, and launch only the current `origin/tencent-cloud-runtime` checkout.
 
 `scripts/pok_restart_observe.sh` obtains that same verified interpreter through
 `./pokctl.sh resolve-python` before it stops the owned service. It uses that
@@ -189,15 +207,16 @@ missing interpreter or an unimportable config writer therefore fails before any
 avoidable downtime; the helper must never fall back to a bare `python` after a
 service has stopped.
 
-After `.evolution_pok` publishes a bot:
+After `.evolution_pok` publishes a bot, run from the infrastructure checkout
+root:
 
 ```bash
-cd /home/zzx/project/pok
+cd "$(git rev-parse --show-toplevel)"   # infrastructure checkout root
 git fetch --tags origin
-git diff --name-only HEAD..origin/main
+git diff --name-only HEAD..origin/tencent-cloud-runtime
 ```
 
-Merge or rebase `origin/main` into the outer branch before editing bots or evaluation infrastructure. Leaving the outer checkout behind is acceptable only while unrelated user work is in progress; it must not be treated as the canonical infrastructure state.
+Merge or rebase `origin/tencent-cloud-runtime` into the outer branch before editing bots or evaluation infrastructure. Leaving the outer checkout behind is acceptable only while unrelated user work is in progress; it must not be treated as the canonical infrastructure state.
 
 ## What Not To Do
 
@@ -205,8 +224,8 @@ Merge or rebase `origin/main` into the outer branch before editing bots or evalu
 - Do not stage `.evolution_pok/` from the outer checkout.
 - Do not run evolution from both checkouts at the same time.
 - Do not make infrastructure edits directly in `.evolution_pok` while a generation is active unless the edit is an emergency repair and the generation is restarted afterward.
-- Do not assume a highest-numbered `bots/national_v*` directory is complete.
+- Do not assume a highest-numbered `bots/<active_bot_prefix>*` directory (on this branch `bots/national_cloud_v*`) is complete.
   Current publication requires the `national_tcp_policy_v1` five-file artifact,
-  current completion metadata, annotated `national-bot-v{N}` tag, and
+  current completion metadata, an annotated completion tag (active prefix `ACTIVE_TAG_PREFIX`, currently `national-cloud-bot-v{N}` under this namespace), and
   role-appropriate signed full-v5 certificate. A retired tag or untagged higher
   directory is not active completion proof.

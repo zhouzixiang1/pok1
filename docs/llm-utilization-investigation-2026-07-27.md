@@ -1,5 +1,11 @@
 # LLM Utilization Investigation — 2026-07-27
 
+> **As-of note**: 本报告记录 2026-07-27 的调查与当时建议。后续 Phase B 已将
+> `POK_GLOBAL_LLM_CONCURRENCY` 回落至 2（见 `env.runtime` 与
+> `docs/observer-cache-availability-2026-07-28.md` 的 follow-up）；当前权威值
+> 始终以 `env.runtime` 为准，下文中的并发建议（如升到 3）是当时的诊断意见，
+> 不等于当前配置。
+
 **Branch**: `tencent-cloud-runtime`
 **Scope**: GLM-5.2 dispatch through `claude_agent_sdk`; token cost explicitly
 out-of-scope per operator direction ("不计 token 成本"), so "utilization" here
@@ -95,9 +101,12 @@ but leave permits idle during legitimate slow GLM streams.
 
 ### 5. Workers fall back to sequential on overlapping targets
 
-`agent_workers.py:1526-1534`: Workers dispatch in parallel only when target
-files are disjoint AND no task has empty `target_files`. Single-file rework
-generations (the common case for quality/precommit repair) run sequentially.
+`web/core/agent_workers.py` 中 `_execute_workers` 的 disjointness 决策
+（见 "Disjointness check: can we safely run workers in parallel?" 段，用
+`rg -n "parallel|serial|target_files|disjoint" web/core/agent_workers.py` 定位）：
+Workers dispatch in parallel only when target files are disjoint AND no task has
+empty `target_files`. Single-file rework generations (the common case for
+quality/precommit repair) run sequentially.
 
 ## Recent inefficiency fixes (death-loop class)
 
@@ -146,7 +155,9 @@ does not touch the dispatch contract.
      over fresh dispatches.
    - **Test impact**: `test_llm_query_*` retry tests need a FIFO assertion.
 
-4. **Parallelize Worker CoT audits** (`agent_workers.py:1623`).
+4. **Parallelize Worker CoT audits** (`web/core/agent_workers.py` 中
+   `_execute_workers` 的 "P0-2: Run Worker CoT checks sequentially" 阶段，用
+   `rg -n "CoT|audit|sequential|gather" web/core/agent_workers.py` 定位).
    - Currently sequential after a parallel worker batch. They are LLM-free
      unless evidence is weak, but the sequential pattern adds latency.
    - **Risk**: low (read-only audits); mainly a `gather` refactor.
@@ -196,6 +207,9 @@ After raising the cap to 3:
 
 ## File-level pointers (for future waves)
 
+> 以下行号为 2026-07-27 incident 时刻的快照，可能已随重构漂移；用
+> `rg -n "<symbol>"` 重新定位（例如 `rg -n "run_claude_query\|semaphore\|signature" web/core/llm_query.py`）。
+
 - `web/core/llm_query.py:2346` — `run_claude_query` (entry point)
 - `web/core/llm_query.py:2813-2820` — semaphore acquire site
 - `web/core/llm_query.py:2078` — signature-retry loop (Tier B.3 target)
@@ -203,5 +217,5 @@ After raising the cap to 3:
 - `web/core/llm_role_observability.py:52-97` — `_ROLE_TIMEOUT_DEFAULTS`
 - `web/core/rate_limiter.py` — quota pause/resume
 - `web/core/agent_master_ensemble.py:316,661` — concurrent Scout/Critic dispatch
-- `web/core/agent_workers.py:1526-1534` — Worker parallel/serial decision
+- `web/core/agent_workers.py` — `_execute_workers` 中 Worker parallel/serial 决策（disjointness check）
 - `deploy/tencent-cloud/env.runtime:106-123` — production timeout/concurrency overrides
