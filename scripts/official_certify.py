@@ -153,6 +153,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "candidate", help="Strict national_tcp_policy_v1 bot directory/subject."
     )
+    pub = sub.add_parser(
+        "publish-certified",
+        help=(
+            "Publish a completed full certificate for an already-certified bot: "
+            "writes official_certificates/<bot>.json, re-annotates the completion "
+            "tag with official-* metadata, and creates the national-cloud-"
+            "certified-v<N> tag. Used after `full --published` to admit a staging "
+            "bot into the rating pool."
+        ),
+    )
+    pub.add_argument(
+        "candidate", help="Strict national_tcp_policy_v1 bot directory/subject."
+    )
+    pub.add_argument(
+        "--execute",
+        action="store_true",
+        help=(
+            "Without this flag the command is a dry-run that reports what it "
+            "would do. With it, the cert file is committed and the tags are "
+            "created/updated."
+        ),
+    )
+    pub.add_argument(
+        "--acknowledge-reannotate-completion-tag",
+        action="store_true",
+        help=(
+            "Required acknowledgement that this command re-annotates the "
+            "existing completion tag (national-cloud-bot-v<N>) in place, which "
+            "is an explicit operator action outside the create-only publication "
+            "transaction."
+        ),
+    )
     sub.add_parser(
         "jobs-status",
         help="Show durable official certification jobs.",
@@ -176,6 +208,183 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum durable jobs to reconcile in this run.",
     )
     return parser.parse_args(argv)
+
+
+def _publish_certified(args) -> int:
+    """Publish a completed full certificate for an already-certified bot.
+
+    Closes the two-tier gap: ``full --published`` signs the certificate + writes
+    the verdict ledger, but does NOT publish the certificate to the repo nor
+    annotate the completion tag.  This command:
+      1. Calls ``publish_certificate_attestation`` to write
+         ``official_certificates/<bot>.json`` (the published attestation wrapper).
+      2. Commits that file so ``git show <tag>:official_certificates/<bot>.json``
+         resolves (required by ``_validate_published_attestation_at_tag``).
+      3. Re-annotates the completion tag (``national-cloud-bot-v<N>``) in place
+         with ``official-certificate`` / ``official-candidate-hash`` /
+         ``official-policy`` metadata (the keys ``certificate_validation`` reads).
+      4. Creates the ``national-cloud-certified-v<N>`` tag at the same commit
+         for tier classification (``resolve_version_namespace_authority``).
+
+    After this, ``resolve_national_bot_spec(..., ROLE_RATING_POOL).eligible``
+    becomes True and the rating daemon admits the bot.
+
+    Without ``--execute`` it is a dry-run.  ``--acknowledge-reannotate-completion-
+    tag`` is required because re-annotating an existing completion tag is an
+    explicit operator action outside the create-only publication transaction.
+    """
+    import subprocess
+
+    from bot_artifact import hash_path, published_bot_identity
+    from bot_namespace import bot_tag, bot_name, certified_tag, parse_bot_version
+    from official_certification import (
+        FULL_POLICY_ID,
+        published_certificate_path,
+        read_status,
+    )
+    from official_certification_authority import (
+        official_full_certified,
+        publish_certificate_attestation,
+    )
+
+    candidate_path = Path(args.candidate).expanduser().resolve()
+    try:
+        version = parse_bot_version(candidate_path.name)
+    except (TypeError, ValueError):
+        version = None
+    if version is None:
+        print(json.dumps({
+            "status": "publish-certified-blocked",
+            "reason": "candidate_not_a_strict_bot",
+            "candidate": str(candidate_path),
+        }, ensure_ascii=False, indent=2))
+        return 2
+
+    # The bot must already carry a completed full certificate (from
+    # `full --published`).  Check without require_published (the publication
+    # gap is exactly what we are about to close).
+    status = read_status(candidate_path)
+    if not official_full_certified(status, candidate_path, require_published=False):
+        print(json.dumps({
+            "status": "publish-certified-blocked",
+            "reason": "bot_not_full_certified",
+            "candidate": str(candidate_path),
+            "status_label": status.get("status"),
+            "mode": status.get("mode"),
+        }, ensure_ascii=False, indent=2))
+        return 2
+
+    certificate_digest = str(status.get("certificate_digest") or "")
+    candidate_hash = hash_path(candidate_path)
+    published = published_bot_identity(str(candidate_path))
+    completion_tag = bot_tag(version)
+    cert_tag = certified_tag(version)
+    cert_rel = published_certificate_path(candidate_path).relative_to(ROOT).as_posix()
+
+    plan = {
+        "status": "publish-certified-plan",
+        "candidate": str(candidate_path),
+        "version": version,
+        "bot": candidate_path.name,
+        "completion_tag": completion_tag,
+        "certified_tag": cert_tag,
+        "certificate_digest": certificate_digest,
+        "candidate_hash": candidate_hash,
+        "policy_id": FULL_POLICY_ID,
+        "published_attestation_path": cert_rel,
+        "completion_tag_metadata_to_write": {
+            "official-certificate": certificate_digest,
+            "official-candidate-hash": candidate_hash,
+            "official-policy": FULL_POLICY_ID,
+        },
+        "published_identity_ok": bool(published.get("published")),
+        "execute": bool(args.execute),
+    }
+    if not args.execute:
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+        return 0
+
+    # Execute.
+    if not args.acknowledge_reannotate_completion_tag:
+        print(json.dumps({
+            "status": "publish-certified-blocked",
+            "reason": "acknowledge_reannotate_completion_tag_required",
+            "command": (
+                "python scripts/official_certify.py publish-certified "
+                f"{args.candidate} --execute "
+                "--acknowledge-reannotate-completion-tag"
+            ),
+        }, ensure_ascii=False, indent=2))
+        return 2
+
+    # 1. Write the published attestation wrapper.
+    publish_result = publish_certificate_attestation(status, candidate_path)
+    if not publish_result.get("ok"):
+        print(json.dumps({
+            "status": "publish-certified-failed",
+            "reason": "publish_certificate_attestation_failed",
+            "publish_result": publish_result,
+        }, ensure_ascii=False, indent=2))
+        return 2
+
+    cert_abs = ROOT / cert_rel
+    # 2. Commit the cert file so it is reachable at the tagged commit.
+    subprocess.run(["git", "add", "--", cert_rel], cwd=str(ROOT), check=True)
+    commit_msg = f"cert(publish): official certificate for {candidate_path.name}\n\nofficial-certificate: {certificate_digest}\nofficial-candidate-hash: {candidate_hash}\nofficial-policy: {FULL_POLICY_ID}"
+    commit_rc = subprocess.run(
+        ["git", "commit", "-m", commit_msg, "--", cert_rel],
+        cwd=str(ROOT), capture_output=True, text=True,
+    )
+    # A no-op commit (file already committed) is fine.
+    if commit_rc.returncode not in (0,):
+        print(json.dumps({
+            "status": "publish-certified-failed",
+            "reason": "git_commit_failed",
+            "stdout": commit_rc.stdout[:500],
+            "stderr": commit_rc.stderr[:500],
+        }, ensure_ascii=False, indent=2))
+        return 2
+
+    # 3. Re-annotate the completion tag with official-* metadata (force update).
+    tag_msg = (
+        f"{candidate_path.name}: official-certified\n\n"
+        f"official-certificate: {certificate_digest}\n"
+        f"official-candidate-hash: {candidate_hash}\n"
+        f"official-policy: {FULL_POLICY_ID}\n"
+    )
+    tag_rc = subprocess.run(
+        ["git", "tag", "-a", "-f", completion_tag, "-m", tag_msg, "HEAD"],
+        cwd=str(ROOT), capture_output=True, text=True,
+    )
+    if tag_rc.returncode != 0:
+        print(json.dumps({
+            "status": "publish-certified-failed",
+            "reason": "completion_tag_reannotate_failed",
+            "stderr": tag_rc.stderr[:500],
+        }, ensure_ascii=False, indent=2))
+        return 2
+
+    # 4. Create the certified tag at the same commit (tier classification).
+    cert_tag_msg = (
+        f"{candidate_path.name}: certified-tier\n\n"
+        f"certified-version: {version}\n"
+        f"publication-tier: certified\n"
+    )
+    subprocess.run(
+        ["git", "tag", "-a", "-f", cert_tag, "-m", cert_tag_msg, completion_tag],
+        cwd=str(ROOT), capture_output=True, text=True, check=False,
+    )
+
+    print(json.dumps({
+        "status": "publish-certified-complete",
+        "candidate": str(candidate_path),
+        "version": version,
+        "completion_tag": completion_tag,
+        "certified_tag": cert_tag,
+        "certificate_digest": certificate_digest,
+        "published_attestation": cert_rel,
+    }, ensure_ascii=False, indent=2))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -329,6 +538,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         print(json.dumps(status_payload(args.candidate), ensure_ascii=False, indent=2))
         return 0
+    if args.cmd == "publish-certified":
+        return _publish_certified(args)
     if args.cmd == "jobs-status":
         print(json.dumps(job_snapshot(), ensure_ascii=False, indent=2))
         return 0
