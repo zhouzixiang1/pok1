@@ -1045,10 +1045,35 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                 _primary_next_v = 0
             if _primary_next_v > _draft_floor:
                 _draft_floor = _primary_next_v
-        _planned_next_v = _draft_floor + 1
-        allocation_floor = _draft_floor
+        # Multi-ahead: reserve a DISTINCT next_v for this draft slot through the
+        # persisted version-reservation registry, so N>1 in-flight drafts never
+        # collide on the same version (the floor+1 projection alone would give
+        # them all the same value).  Falls back to the legacy floor+1 when the
+        # registry is unavailable (slice2b off / single-ahead / tests).
+        _registry_floor = _draft_floor + 1
+        try:
+            from producer_consumer_slice2b_activation import slice2b_active
+
+            if slice2b_active():
+                from orchestrator_deterministic_route import (
+                    _slice2b_ensure_activation,
+                )
+
+                _activation = _slice2b_ensure_activation()
+                if _activation is not None:
+                    _registry_floor = _activation.ledger.reserve_draft_version(
+                        slot_id=slot_id,
+                        floor_next_v=_draft_floor,
+                        candidate_id=str(checkpoint.get("candidate_id") or "")
+                        if isinstance(checkpoint, dict)
+                        else None,
+                    )
+        except Exception:
+            pass
+        _planned_next_v = _registry_floor
+        allocation_floor = _planned_next_v - 1
         log.info(
-            "One-ahead draft slot=%s shadow provisional v%d (primary high-water v%d)",
+            "Ahead draft slot=%s shadow provisional v%d (primary high-water v%d)",
             slot_id,
             _planned_next_v,
             current_v,

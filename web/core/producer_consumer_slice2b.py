@@ -384,6 +384,21 @@ class CandidateLifecycle:
                 )
                 """
             )
+            # Multi-ahead version reservation registry: each in-flight draft
+            # reserves a distinct next_v here so N drafts never collide on the
+            # same version (the floor+1 projection alone would give them all
+            # the same value).  Promotion releases the reservation.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS draft_version_reservation(
+                    slot_id TEXT PRIMARY KEY,
+                    reserved_next_v INTEGER NOT NULL,
+                    candidate_id TEXT,
+                    created_at REAL NOT NULL,
+                    released_at REAL
+                )
+                """
+            )
             row = connection.execute(
                 "SELECT value FROM slice2b_lifecycle_meta WHERE key = 'schema_version'"
             ).fetchone()
@@ -745,6 +760,101 @@ class CandidateLifecycle:
             return None
         snap = entry.get("sealed_snapshot")
         return deepcopy(snap) if snap is not None else None
+
+    # -- multi-ahead version reservation registry ---------------------------
+
+    def reserve_draft_version(
+        self,
+        *,
+        slot_id: str,
+        floor_next_v: int,
+        candidate_id: str | None = None,
+    ) -> int:
+        """Atomically reserve a distinct ``next_v`` for draft ``slot_id``.
+
+        Returns the reserved version: ``max(floor_next_v, highest unreleased
+        reserved_next_v) + 1``.  This is what makes multi-ahead work -- without
+        it, two drafts would both derive the same ``floor + 1`` and collide on
+        the same bot directory / workflow_run_id.  Idempotent per slot: re-
+        reserving the same slot returns its existing reservation.
+        """
+        _require_safe_id(slot_id, "slot_id")
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT reserved_next_v FROM draft_version_reservation "
+                "WHERE slot_id = ? AND released_at IS NULL",
+                (slot_id,),
+            ).fetchone()
+            if existing is not None:
+                connection.commit()
+                return int(existing["reserved_next_v"])
+            highest = connection.execute(
+                "SELECT MAX(reserved_next_v) AS m FROM draft_version_reservation "
+                "WHERE released_at IS NULL"
+            ).fetchone()
+            highest_v = int(highest["m"]) if highest["m"] is not None else 0
+            reserved = max(int(floor_next_v), highest_v) + 1
+            connection.execute(
+                "INSERT INTO draft_version_reservation"
+                "(slot_id, reserved_next_v, candidate_id, created_at, released_at) "
+                "VALUES (?, ?, ?, ?, NULL) "
+                "ON CONFLICT(slot_id) DO UPDATE SET "
+                "  reserved_next_v=excluded.reserved_next_v, "
+                "  candidate_id=excluded.candidate_id, "
+                "  created_at=excluded.created_at, "
+                "  released_at=NULL",
+                (slot_id, reserved, candidate_id, now),
+            )
+            connection.commit()
+            return reserved
+
+    def release_draft_version(self, *, slot_id: str) -> bool:
+        """Mark the reservation for ``slot_id`` released (promotion/abandon).
+
+        Returns True if a reservation was released, False if none existed.
+        """
+        _require_safe_id(slot_id, "slot_id")
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cur = connection.execute(
+                "UPDATE draft_version_reservation SET released_at = ? "
+                "WHERE slot_id = ? AND released_at IS NULL",
+                (now, slot_id),
+            )
+            connection.commit()
+            return cur.rowcount > 0
+
+    def active_reservations(self) -> list[dict[str, Any]]:
+        """All unreleased reservations, ordered by reserved_next_v (for ordered
+        promotion: the lowest reserved version is the next to promote)."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT slot_id, reserved_next_v, candidate_id, created_at "
+                "FROM draft_version_reservation WHERE released_at IS NULL "
+                "ORDER BY reserved_next_v ASC"
+            ).fetchall()
+        return [
+            {
+                "slot_id": str(row["slot_id"]),
+                "reserved_next_v": int(row["reserved_next_v"]),
+                "candidate_id": row["candidate_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def reserved_version_for_slot(self, slot_id: str) -> int | None:
+        """The active reserved version for ``slot_id``, or None if unset."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT reserved_next_v FROM draft_version_reservation "
+                "WHERE slot_id = ? AND released_at IS NULL",
+                (slot_id,),
+            ).fetchone()
+        return int(row["reserved_next_v"]) if row is not None else None
 
     # -- internal: self-transition that keeps the same state ----------------
 

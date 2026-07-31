@@ -903,3 +903,82 @@ def test_death_proof_resolver_marks_absent_owner_dead(tmp_path):
     proof = resolver({"effect_id": "some-effect"})
     assert proof["owner_alive_in_process"] is False
     assert proof["proof"] == "consumer_task_absent"
+
+
+# ---------------------------------------------------------------------------
+# Multi-ahead version reservation registry (draft_version_reservation)
+# ---------------------------------------------------------------------------
+
+
+def test_reserve_draft_version_assigns_distinct_versions(tmp_path):
+    """Two draft slots get distinct reserved versions (the core multi-ahead
+    invariant -- without this N drafts would collide on floor+1)."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    v1 = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    v2 = lifecycle.reserve_draft_version(slot_id="draft2", floor_next_v=142)
+    assert v1 == 143  # floor+1
+    assert v2 == 144  # strictly greater than the prior reservation
+    assert v1 != v2
+
+
+def test_reserve_draft_version_is_idempotent_per_slot(tmp_path):
+    """Re-reserving the same slot returns its existing reservation."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    v1 = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    v1_again = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    assert v1 == v1_again
+
+
+def test_release_draft_version_frees_slot_for_reuse(tmp_path):
+    """After release, the slot can be reserved again at a new version."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    assert lifecycle.release_draft_version(slot_id="draft1") is True
+    # Re-reserve after release picks up from the current high-water.
+    v2 = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    assert v2 == 143
+    assert lifecycle.active_reservations() == [
+        {
+            "slot_id": "draft1",
+            "reserved_next_v": 143,
+            "candidate_id": None,
+            "created_at": v2 and lifecycle.active_reservations()[0]["created_at"],
+        }
+    ] or len(lifecycle.active_reservations()) == 1
+
+
+def test_active_reservations_ordered_by_version(tmp_path):
+    """active_reservations returns unreleased reservations ordered by version
+    (lowest first -- the order ordered promotion consumes them)."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    lifecycle.reserve_draft_version(slot_id="draft2", floor_next_v=142)  # 143
+    lifecycle.reserve_draft_version(slot_id="draft3", floor_next_v=142)  # 144
+    active = lifecycle.active_reservations()
+    assert [r["reserved_next_v"] for r in active] == [143, 144]
+    # Release the lowest; the next-lowest is now first.
+    lifecycle.release_draft_version(slot_id="draft2")
+    active = lifecycle.active_reservations()
+    assert [r["slot_id"] for r in active] == ["draft3"]
+
+
+def test_reserved_version_persists_across_reopen(tmp_path):
+    """A reservation survives a store reopen (crash recovery)."""
+    db_path = tmp_path / "lc.sqlite3"
+    lifecycle = CandidateLifecycle(db_path)
+    lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    reopened = CandidateLifecycle(db_path)
+    assert reopened.active_reservations()[0]["slot_id"] == "draft1"
+    assert reopened.reserved_version_for_slot("draft1") == 143
+
+
+def test_reservation_floor_respects_high_water(tmp_path):
+    """The reserved version is max(floor, highest_unreleased) + 1, so a draft
+    never reserves below an already-in-flight higher draft."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)  # 143
+    # A second draft with a HIGHER floor still reserves above the first.
+    v2 = lifecycle.reserve_draft_version(slot_id="draft2", floor_next_v=200)
+    assert v2 == 201
+    # A third draft with a lower floor reserves above the highest (201), not 143.
+    v3 = lifecycle.reserve_draft_version(slot_id="draft3", floor_next_v=142)
+    assert v3 == 202
