@@ -317,17 +317,18 @@ def _publish_certified(args) -> int:
         }, ensure_ascii=False, indent=2))
         return 2
 
-    # 1. Write the published attestation wrapper.
+    # 1. Write the published attestation wrapper.  publish_certificate_attestation
+    # returns a dict with path/relative_path/digests on success (no explicit
+    # "ok" flag); verify the file was actually written.
     publish_result = publish_certificate_attestation(status, candidate_path)
-    if not publish_result.get("ok"):
+    cert_abs = ROOT / cert_rel
+    if not cert_abs.exists():
         print(json.dumps({
             "status": "publish-certified-failed",
             "reason": "publish_certificate_attestation_failed",
             "publish_result": publish_result,
         }, ensure_ascii=False, indent=2))
         return 2
-
-    cert_abs = ROOT / cert_rel
     # 2. Commit the cert file so it is reachable at the tagged commit.
     subprocess.run(["git", "add", "--", cert_rel], cwd=str(ROOT), check=True)
     commit_msg = f"cert(publish): official certificate for {candidate_path.name}\n\nofficial-certificate: {certificate_digest}\nofficial-candidate-hash: {candidate_hash}\nofficial-policy: {FULL_POLICY_ID}"
