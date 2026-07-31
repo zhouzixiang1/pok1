@@ -131,13 +131,23 @@ def test_reconcile_preserves_workers_done_draft():
     survives restart).  Promotion is best-effort: if it succeeds the work moves
     to the primary slot (draft file cleared as part of promotion); if it
     refuses the draft stays in place.  Either way the pre-computed candidate is
-    never destroyed."""
+    never destroyed.
+
+    The draft's next_v must be AHEAD of the live published high-water, otherwise
+    the (correct) stale-draft reaper would reap it.  We pick a version far above
+    any plausible published high-water so the test is robust to a real checkout
+    that already has published bots."""
     from evolution_infra import read_pipeline_checkpoint as _read_primary
+    from epoch_authority import strict_epoch_projection
+
+    projection = strict_epoch_projection()
+    published_high_water = int(projection.get("published_high_water") or 0)
+    ahead_next_v = max(published_high_water + 5, 100)
 
     draft_path = pipeline_state_path("draft")
     draft_path.write_text(json.dumps({
-        "next_v": 12,
-        "source_v": 11,
+        "next_v": ahead_next_v,
+        "source_v": ahead_next_v - 1,
         "stage": "workers_done",
     }))
 
@@ -145,8 +155,8 @@ def test_reconcile_preserves_workers_done_draft():
 
     orchestrator_loop_phases._reconcile_orphan_draft_at_boot(None)
 
-    # The workers_done work survives in one of two places:
-    #   (a) still in the draft slot (promotion refused), or
+    # The workers_done work survives in two of three places:
+    #   (a) still in the draft slot (promotion refused/not stale), or
     #   (b) promoted to the primary slot (draft cleared on success).
     draft = read_pipeline_checkpoint(slot_id="draft")
     primary = _read_primary()
