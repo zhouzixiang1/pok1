@@ -72,8 +72,8 @@ async def run_one(orch: MatchOrchestrator, store: Store, idx: int,
         if mid is None:
             oc.error = "challenge 重试超时(并发一直满)"
         else:
-            # 轮询(单场最多 4 分钟)
-            deadline = time.time() + 240
+            # 轮询(单场最多 5 分钟;容器被 kill 后 abort 收尾需时间,窗口留足)
+            deadline = time.time() + 300
             m = None
             while time.time() < deadline:
                 await asyncio.sleep(2)
@@ -82,6 +82,12 @@ async def run_one(orch: MatchOrchestrator, store: Store, idx: int,
                     break
             if m is None:
                 oc.error = "no match row"
+            elif m["status"] not in ("completed", "aborted"):
+                # 超时仍未结束(通常是容器被 SIGKILL 后 abort 收尾慢)
+                # 归类为疑似中止,而非笼统 error,便于统计真实稳定性
+                oc.status = "aborted"
+                oc.hands = m["hands_played"]
+                oc.reason = (m.get("reason") or "") + " [轮询超时,status仍running]"
             else:
                 oc.status = m["status"]
                 oc.hands = m["hands_played"]
