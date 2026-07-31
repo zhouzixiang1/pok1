@@ -469,16 +469,38 @@ this work (re-enabled 2026-07-31 after fixing defect E; see
    The former in-memory ``ValidationLedger`` is replaced by a persisted
    ``CandidateLifecycle`` keyed by ``candidate_id`` in
    ``RESULTS_DIR/workflow/slice2b_lifecycle.sqlite3``. Each candidate moves
-   ``[none] → SEALED → (PROMOTED | REJECTED)`` through a single atomic
-   ``_transition`` that enforces a transition whitelist under
+   ``[none] → SEALED → CONSUMING → (PROMOTED | REJECTED)`` through a single
+   atomic ``_transition`` that enforces a transition whitelist under
    ``BEGIN IMMEDIATE``. The sealed snapshot is persisted at seal time, so
    ``Slice2bActivation.recover_at_boot()`` rebuilds the in-memory registries
-   and re-schedules the consumer gate chain for every ``SEALED`` candidate
+   and re-schedules the consumer gate chain for every non-terminal candidate
    after a process restart — one-ahead stays parallel instead of degenerating
    to serial inline. ``ValidationLedger`` remains as a backwards-compat alias.
    The consumer dispatcher's ``adapter.recover`` now carries a death-proof
    resolver (``Slice2bActivation.death_proof_resolver``) so a restart can
    reclaim a lease whose owner pid is gone.
+
+3. **AheadCoordinator derives all state from the FSM** (no in-memory
+   ``_in_flight``). ``producer_may_draft_behind`` / ``in_flight`` /
+   ``wait_for_promotion_readiness`` read the persisted lifecycle directly, so
+   they are correct immediately after a restart (the former ``_in_flight`` dict
+   was empty after restart, causing a recovery gap). ``max_ahead`` is
+   configurable (default 1). ``OneAheadCoordinator`` is a backwards-compat
+   alias.
+
+4. **Multi-ahead (N drafts in parallel)**. Three additions lift the hardcoded
+   one-ahead limit to a configurable ``max_ahead`` (default 1; raising it
+   enables N concurrent drafts): (a) a persisted **version reservation
+   registry** (``draft_version_reservation`` table; ``reserve_draft_version``
+   assigns each draft slot a distinct ``next_v``); (b) a **slot set
+   abstraction** (``is_draft_slot`` prefix match replaces the literal
+   ``"draft"`` compares; numbered slots ``draft1``/``draft2``/... isolate under
+   ``draft_candidates/<slot_id>/``); (c) **version-ordered promotion**
+   (``next_promotable_draft(published_v)`` returns only the draft reserved for
+   ``published_v+1``, so promotions never scramble the version order).
+   ``_try_launch_draft_prepare`` loops over draft slots up to ``max_ahead``;
+   ``_run_draft_cycle`` is parameterized by ``slot_id``. See
+   ``docs/multi-ahead-architecture-2026-07-31.md``.
 
 ### CLAUDE.md / AGENTS.md memory injection
 

@@ -1007,3 +1007,87 @@ def test_next_promotable_draft_is_version_ordered(tmp_path):
     assert promotable2["reserved_next_v"] == 144
     # Nothing promotable for a version with no matching reservation.
     assert coord.next_promotable_draft(published_v=999) is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-ahead end-to-end: 2 drafts, distinct versions, ordered promotion
+# ---------------------------------------------------------------------------
+
+
+def test_multi_ahead_two_drafts_distinct_versions_ordered_promotion(tmp_path):
+    """End-to-end multi-ahead: with max_ahead=2, two drafts reserve distinct
+    versions, both seal into the FSM, and promotion is version-ordered (draft1
+    before draft2).  This exercises the full A-E pipeline:
+    reservation registry (B) + slot abstraction (C) + ordered promotion (D)."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    coord = AheadCoordinator(lifecycle, max_ahead=2)
+
+    # Two drafts reserve distinct versions (the core multi-ahead invariant).
+    v1 = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    v2 = lifecycle.reserve_draft_version(slot_id="draft2", floor_next_v=142)
+    assert v1 == 143
+    assert v2 == 144
+    assert v1 != v2
+
+    # The coordinator (max_ahead=2) has room for both before any seal.
+    assert coord.producer_may_draft_behind() is True
+
+    # Both drafts seal into the FSM (the real seal path: ledger.start).
+    lifecycle.start(
+        candidate_id="candidate-v143",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-143",
+        envelope_digest=DIGESTS["b"],
+        reserved_next_v=v1,
+        slot_id="draft1",
+    )
+    coord.note_sealed(candidate_id="candidate-v143", artifact_hash=DIGESTS["a"])
+
+    lifecycle.start(
+        candidate_id="candidate-v144",
+        sealed_artifact_hash=DIGESTS["c"],
+        envelope_effect_id="eff-144",
+        envelope_digest=DIGESTS["d"],
+        reserved_next_v=v2,
+        slot_id="draft2",
+    )
+    coord.note_sealed(candidate_id="candidate-v144", artifact_hash=DIGESTS["c"])
+
+    # Buffer is now full (2 sealed, max_ahead=2): no room for a third draft.
+    assert coord.producer_may_draft_behind() is False
+    assert coord.in_flight() == {
+        "candidate-v143": DIGESTS["a"],
+        "candidate-v144": DIGESTS["c"],
+    }
+
+    # Ordered promotion: only draft1 (reserved 143) is promotable when the
+    # primary published v142.  draft2 (reserved 144) is NOT promotable yet
+    # (next_promotable_draft only returns the draft for published_v+1).
+    promotable = coord.next_promotable_draft(published_v=142)
+    assert promotable["slot_id"] == "draft1"
+    assert promotable["reserved_next_v"] == 143
+
+    # After draft1 promotes (release) + primary publishes v143, draft2 becomes
+    # promotable (it is the draft reserved for 143+1=144).
+    lifecycle.release_draft_version(slot_id="draft1")
+    promotable2 = coord.next_promotable_draft(published_v=143)
+    assert promotable2["slot_id"] == "draft2"
+    assert promotable2["reserved_next_v"] == 144
+
+
+def test_multi_ahead_max_ahead_one_preserves_single_ahead_behavior(tmp_path):
+    """max_ahead=1 (the default) preserves the original single-ahead behavior:
+    one sealed candidate fills the buffer and blocks a second."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    coord = AheadCoordinator(lifecycle, max_ahead=1)
+    assert coord.max_ahead == 1
+    assert coord.producer_may_draft_behind() is True  # empty buffer
+    lifecycle.start(
+        candidate_id="candidate-v143",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-143",
+        envelope_digest=DIGESTS["b"],
+    )
+    coord.note_sealed(candidate_id="candidate-v143", artifact_hash=DIGESTS["a"])
+    # Buffer full: no room for a second draft (single-ahead semantics).
+    assert coord.producer_may_draft_behind() is False
