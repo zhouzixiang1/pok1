@@ -25,14 +25,14 @@ def _worst_precommit_opponent(matchups, blockers):
     """Return the opponent name most responsible for a precommit failure.
 
     Priority: the first blocker that names a regression opponent
-    (lost_to_parent / lost_to_opponent), else the matchup with the most losses,
-    else the matchup with the worst W-L margin. Returns "unknown" if there are
-    no matchups and no named blockers.
+    (did_not_beat_parent / lost_to_parent / lost_to_opponent), else the matchup
+    with the most losses, else the matchup with the worst W-L margin. Returns
+    "unknown" if there are no matchups and no named blockers.
     """
     if blockers:
         for b in blockers:
             reason = b.get("reason") if isinstance(b, dict) else None
-            if reason in ("lost_to_parent", "lost_to_opponent"):
+            if reason in ("did_not_beat_parent", "lost_to_parent", "lost_to_opponent"):
                 opp = b.get("opponent")
                 if opp:
                     return opp

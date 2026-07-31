@@ -15,8 +15,8 @@ from typing import Any, Iterable
 STRENGTH_ORDER_SCHEMA_VERSION = 1
 NATIONAL_STRENGTH_HANDS = 70
 NATIONAL_STRENGTH_SAMPLE_UNIT = "70_hand_match"
-PRECOMMIT_PARENT_MIN_SAMPLES = 4
-PRECOMMIT_PARENT_MAX_SCORE = 0.40
+PRECOMMIT_PARENT_MIN_SAMPLES = 6
+PRECOMMIT_PARENT_MAX_SCORE = 0.50
 PRECOMMIT_AGGREGATE_MIN_SAMPLES = 8
 PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN = 2
 # Strict-policy precommit has no telemetry-only opponent class.  Every ordinary
@@ -95,10 +95,15 @@ def precommit_outcome_blockers(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Apply the production precommit gate to complete-match outcomes.
 
-    The parent gate catches a clear matchup collapse after at least four
-    samples.  The aggregate gate keeps the established two-match loss-margin
-    tolerance after at least eight samples.  Both operate exclusively on W/L/D
-    points; net-chip magnitude is intentionally not accepted as an argument.
+    The parent gate is a STRENGTH GATE: the candidate must BEAT its parent
+    (primary_match_score > PRECOMMIT_PARENT_MAX_SCORE, i.e. >0.50) over at
+    least PRECOMMIT_PARENT_MIN_SAMPLES (6) complete 70-hand matches.  A
+    candidate that fails to win a majority against its parent is blocked from
+    publication — this guarantees each published bot is stronger than its
+    direct parent and prevents strength regression through the lineage.  The
+    aggregate gate keeps the established two-match loss-margin tolerance after
+    at least eight samples.  Both operate exclusively on W/L/D points; net-chip
+    magnitude is intentionally not accepted as an argument.
     """
 
     blockers: list[dict[str, Any]] = []
@@ -124,12 +129,13 @@ def precommit_outcome_blockers(
             and summary["primary_match_score"] <= PRECOMMIT_PARENT_MAX_SCORE
         ):
             blockers.append({
-                "reason": "lost_to_parent",
+                "reason": "did_not_beat_parent",
                 "opponent": opponent,
                 "details": (
                     f"70-hand outcomes {summary['wins']}W-{summary['losses']}L-"
                     f"{summary['draws']}D score={summary['primary_match_score']:.3f}; "
-                    f"block at score<={PRECOMMIT_PARENT_MAX_SCORE:.2f} with "
+                    f"strength gate requires score>{PRECOMMIT_PARENT_MAX_SCORE:.2f} "
+                    f"(candidate must beat parent) with "
                     f"n>={PRECOMMIT_PARENT_MIN_SAMPLES}."
                 ),
             })

@@ -104,8 +104,8 @@ def is_precommit_shutdown() -> bool:
 def _is_infra_blocker(reason):
     """True if this blocker reason is an infrastructure failure, not a bot
     regression. Infra blockers trigger retry-with-lower-n_games; regression
-    blockers (lost_to_parent / aggregate_precommit_regression / semantic_regression)
-    still hard-fail the gate."""
+    blockers (did_not_beat_parent / lost_to_parent / aggregate_precommit_regression
+    / semantic_regression) still hard-fail the gate."""
     return is_infra_blocker(reason)
 
 

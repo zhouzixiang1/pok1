@@ -712,7 +712,7 @@ def test_precommit_outcome_gate_rejects_tiny_0w_8l_collapse():
 
     assert summary["primary_match_score"] == 0.0
     assert {row["reason"] for row in blockers} == {
-        "lost_to_parent",
+        "did_not_beat_parent",
         "aggregate_native_regression",
     }
 
@@ -729,7 +729,56 @@ def test_precommit_outcome_gate_keeps_9w_7l_despite_huge_negative_chips():
     }], parent_label="national_v143")
 
     assert summary["primary_match_score"] == 9 / 16
+    # 9/16 = 0.5625 > 0.50, so the candidate clearly beat its parent and passes.
     assert blockers == []
+
+
+def test_precommit_parent_gate_requires_majority_win():
+    """The strength gate requires the candidate to BEAT its parent (>50% score)
+    over at least PRECOMMIT_PARENT_MIN_SAMPLES (6) matches.  A candidate that
+    merely ties or narrowly loses is blocked."""
+    from strength_order import precommit_outcome_blockers, PRECOMMIT_PARENT_MAX_SCORE, PRECOMMIT_PARENT_MIN_SAMPLES
+
+    assert PRECOMMIT_PARENT_MAX_SCORE == 0.50
+    assert PRECOMMIT_PARENT_MIN_SAMPLES == 6
+    # 3W-3L-0D over 6 matches = score 0.50 — does NOT beat parent (must be >0.50).
+    blockers, _ = precommit_outcome_blockers([{
+        "opponent": "national_v143",
+        "wins": 3,
+        "losses": 3,
+        "draws": 0,
+    }], parent_label="national_v143")
+    assert any(r["reason"] == "did_not_beat_parent" for r in blockers)
+
+
+def test_precommit_parent_gate_passes_on_clear_majority_win():
+    """A candidate that wins a clear majority (>50%) over enough samples passes."""
+    from strength_order import precommit_outcome_blockers
+
+    # 5W-2L-0D over 7 matches = score 5/7 ≈ 0.714 > 0.50 → passes parent gate.
+    blockers, _ = precommit_outcome_blockers([{
+        "opponent": "national_v143",
+        "wins": 5,
+        "losses": 2,
+        "draws": 0,
+    }], parent_label="national_v143")
+    assert not any(r["reason"] == "did_not_beat_parent" for r in blockers)
+
+
+def test_precommit_parent_gate_samples_threshold():
+    """Below PRECOMMIT_PARENT_MIN_SAMPLES (6), the parent gate does not fire
+    even on a collapse — too few samples to judge strength reliably."""
+    from strength_order import precommit_outcome_blockers, PRECOMMIT_PARENT_MIN_SAMPLES
+
+    assert PRECOMMIT_PARENT_MIN_SAMPLES == 6
+    # Only 5 samples (below threshold) with a collapse — parent gate does not fire.
+    blockers, _ = precommit_outcome_blockers([{
+        "opponent": "national_v143",
+        "wins": 0,
+        "losses": 5,
+        "draws": 0,
+    }], parent_label="national_v143")
+    assert not any(r["reason"] == "did_not_beat_parent" for r in blockers)
 
 
 def test_legacy_magic_reason_cannot_bypass_primary_outcome_gate():
