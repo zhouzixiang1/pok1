@@ -293,15 +293,17 @@ class TCPBridge:
     def __init__(self, *, bot_entry: str, bot_name: str,
                  listen_host: str, listen_port: int,
                  bot_cwd: str | None = None,
-                 bot_cmd: list[str] | None = None) -> None:
+                 bot_cmd: list[str] | None = None,
+                 argv_style: str = "flags") -> None:
         self.bot_entry = bot_entry
         self.bot_name = bot_name
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.bot_cwd = bot_cwd
-        # 桥自动追加国赛协议位置参数:host port name,并设 GUOSAI_* 环境变量。
+        # 桥按 argv_style 决定如何把连接参数传给 bot,并始终设 GUOSAI_* 环境变量。
         # 多语言:C++/Java 编译后传 ["./bot_bin"] / ["java","Main"]。
         self.bot_cmd = bot_cmd
+        self.argv_style = argv_style
         self.state = BridgeState()
         self._bot_reader: asyncio.StreamReader | None = None
         self._bot_writer: asyncio.StreamWriter | None = None
@@ -362,27 +364,34 @@ class TCPBridge:
     async def _spawn_bot(self) -> None:
         """spawn 用户 bot 子进程。
 
-        默认 ``python <bot_entry> <host> <port> <name>``(国赛经典位置参数)。
-        若设置了 ``bot_cmd``(多语言:C++/Java 编译后的命令),用它作基础命令。
+        连接参数的传递方式由 ``argv_style`` 决定(注册 bot 时声明,默认 flags):
 
-        同时写入 ``GUOSAI_HOST`` / ``GUOSAI_PORT`` / ``GUOSAI_NAME`` 环境变量,
-        兼容只读环境变量、不读 argv 的 bot。
+        - ``flags``: ``python <entry> --host H --port P --name N``
+          适配用 argparse 旗标解析的 bot(内置 national_v* 的默认风格)。
+        - ``positional``: ``python <entry> H P N``
+          适配把 argv 当位置参数解析的 bot(部分国赛/用户上传 bot)。
+        - ``env``: 不传连接 argv,只靠 ``GUOSAI_*`` 环境变量(适配读 env 的 bot)。
 
-        注意:不要传 ``--host/--port/--name`` 旗标。不少国赛 bot 把 argv 当
-        位置参数解析(``host=args[0]; port=int(args[1])``),旗标形式会直接
-        ``ValueError`` 崩溃,表现为「bot 连接超时」。
+        三种风格都同时设置 ``GUOSAI_HOST`` / ``GUOSAI_PORT`` / ``GUOSAI_NAME``
+        环境变量,作为兜底。选错风格(如给 argparse 旗标 bot 传位置参数)会让
+        bot 启动即崩溃(argparse 报 unrecognized arguments),表现为「bot 连接超时」。
         """
         base_cmd = self.bot_cmd if self.bot_cmd else [sys.executable, self.bot_entry]
-        cmd = list(base_cmd) + [
-            self.listen_host,
-            str(self.listen_port),
-            self.bot_name,
-        ]
+        if self.argv_style == "flags":
+            extra = ["--host", self.listen_host,
+                     "--port", str(self.listen_port),
+                     "--name", self.bot_name]
+        elif self.argv_style == "env":
+            extra = []  # 只靠 GUOSAI_* 环境变量
+        else:  # positional(默认兼容旧行为)
+            extra = [self.listen_host, str(self.listen_port), self.bot_name]
+        cmd = list(base_cmd) + extra
         env = os.environ.copy()
         env["GUOSAI_HOST"] = self.listen_host
         env["GUOSAI_PORT"] = str(self.listen_port)
         env["GUOSAI_NAME"] = self.bot_name
-        logger.info("spawning bot: %s (cwd=%s)", " ".join(cmd), self.bot_cwd)
+        logger.info("spawning bot (argv_style=%s): %s (cwd=%s)",
+                    self.argv_style, " ".join(cmd), self.bot_cwd)
         # stderr 保留管道,连接失败时可读出 bot 崩溃信息
         self._bot_proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -543,6 +552,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--bot-cmd", default=None,
                    help="bot 启动命令(JSON 数组,如 '[\"./bot_bin\"]');"
                         "默认 [python, bot_entry]。用于 C++/Java 编译型 bot")
+    p.add_argument("--argv-style", default="flags",
+                   choices=("flags", "positional", "env"),
+                   help="连接参数传递方式:flags(--host/--port 旗标)|"
+                        "positional(位置参数)|env(只读 GUOSAI_*);默认 flags")
     return p.parse_args(argv)
 
 
@@ -576,6 +589,7 @@ def main(argv: list[str] | None = None) -> int:
         listen_port=args.listen_port,
         bot_cwd=args.bot_cwd,
         bot_cmd=bot_cmd,
+        argv_style=args.argv_style,
     )
     try:
         return asyncio.run(bridge.run())

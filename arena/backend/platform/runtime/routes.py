@@ -57,18 +57,23 @@ async def create_bot(request: Request,
                      protocol: str = Form("json"),
                      entry_file: str = Form("main.py"),
                      runtime_lang: str = Form("python"),
+                     argv_style: str = Form("flags"),
                      display_name: str = Form(""),
                      description: str = Form(""),
                      upload_note: str = Form(""),
                      user: dict = Depends(require_user)) -> dict:
-    """上传新 bot。需登录。"""
+    """上传新 bot。需登录。argv_style 仅 TCP 协议生效。"""
+    if argv_style not in ("flags", "positional", "env"):
+        raise HTTPException(status_code=400,
+                            detail="argv_style 必须是 flags/positional/env")
     mgr = _get_bot_manager(request)
     raw = await file.read()
     try:
         bot = mgr.create_bot_from_upload(
             user["id"], name, raw, protocol=protocol, entry_file=entry_file,
             runtime_lang=runtime_lang, display_name=display_name,
-            description=description, upload_note=upload_note)
+            description=description, argv_style=argv_style,
+            upload_note=upload_note)
     except BotBuildError as exc:
         raise _err(exc)
     return {"bot": bot, "message": "bot 创建成功"}

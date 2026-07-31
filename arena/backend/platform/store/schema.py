@@ -63,11 +63,13 @@ CREATE TABLE IF NOT EXISTS bots (
     is_builtin      INTEGER NOT NULL DEFAULT 0,       -- 1=平台预置(national_v*)
     is_public       INTEGER NOT NULL DEFAULT 1,       -- 1=他人可选为对手
     is_active       INTEGER NOT NULL DEFAULT 1,       -- 0=下架
+    argv_style      TEXT    NOT NULL DEFAULT 'flags', -- TCP bot 连接参数风格:flags(--host/--port)|positional(host port name)|env(只读 GUOSAI_*)
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
     UNIQUE(owner_id, name),
     CONSTRAINT chk_protocol CHECK (protocol IN ('json', 'tcp')),
-    CONSTRAINT chk_lang     CHECK (runtime_lang IN ('python', 'cpp', 'java'))
+    CONSTRAINT chk_lang     CHECK (runtime_lang IN ('python', 'cpp', 'java')),
+    CONSTRAINT chk_argv     CHECK (argv_style IN ('flags', 'positional', 'env'))
 );
 
 -- ════════════════════════════════════════════════════════════
@@ -236,6 +238,11 @@ ROLE_ADMIN = "admin"
 # 常量:协议
 PROTO_JSON = "json"
 PROTO_TCP = "tcp"
+
+# 常量:TCP bot 连接参数风格(容器内桥 spawn bot 的 argv 形式)
+ARGV_FLAGS = "flags"            # --host/--port/--name 旗标(内置 national_v* 风格)
+ARGV_POSITIONAL = "positional"  # 位置参数 host port name(uploads 风格)
+ARGV_ENV = "env"                # 不传 argv,只设 GUOSAI_* 环境变量
 
 # 常量:对局状态
 STATUS_PENDING = "pending"

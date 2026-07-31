@@ -90,7 +90,8 @@ ENTRYPOINT ["java", "{classname}"]
     raise BotBuildError("unsupported_lang", f"暂不支持 {runtime_lang},目前仅 python/cpp/java")
 
 
-def _dockerfile_tcp(entry_file: str, runtime_lang: str = "python") -> str:
+def _dockerfile_tcp(entry_file: str, runtime_lang: str = "python",
+                    argv_style: str = "flags") -> str:
     """TCP bot 的 Dockerfile(容器内挂 tcp_bridge.py,bot 连回环)。
 
     桥进程(里程碑 4 的 tcp_bridge.py)被打入镜像,启动时:
@@ -101,6 +102,10 @@ def _dockerfile_tcp(entry_file: str, runtime_lang: str = "python") -> str:
 
     多语言:python 用 ``python entry.py``;cpp/java 编译后桥用二进制/java 命令。
     桥通过 ``--bot-cmd`` 接收完整的启动命令(JSON 数组**字符串**)。
+
+    ``argv_style`` 决定桥如何把连接参数传给 bot:
+    flags(--host/--port 旗标,默认)/positional(位置参数)/env(只读 GUOSAI_*)。
+    选错会让 bot 启动即崩溃,所以按 bot 注册时声明的风格构建进镜像 ENTRYPOINT。
 
     注意:Dockerfile EXEC 形式 ``ENTRYPOINT [...]`` 要求数组元素**全是字符串**,
     因此 ``--bot-cmd`` 的值必须是转义后的 JSON 字符串字面量,不能内嵌裸数组。
@@ -116,10 +121,11 @@ def _dockerfile_tcp(entry_file: str, runtime_lang: str = "python") -> str:
 COPY tcp_bridge.py {bridge_dir}/tcp_bridge.py
 RUN useradd -m botuser && chown -R botuser:botuser /app
 USER botuser
-# 桥先起(后台监听 50101),bot 再连回环 host/port/name(位置参数)
-# 平台只与桥 stdin/stdout 通信(JSON),桥翻译成 TCP 喂给 bot
+# 桥先起(后台监听 50101),再 spawn bot 连回环。
+# 平台只与桥 stdin/stdout 通信(JSON),桥翻译成 TCP 喂给 bot。
 # --bot-cmd 传完整启动命令(JSON 数组的字符串形式,Docker EXEC 只能含字符串)
-ENTRYPOINT ["python", "{bridge_dir}/tcp_bridge.py", "--bot-entry", "{entry_file}", "--bot-cmd", {bot_cmd_literal}]
+# --argv-style 决定连接参数传递方式(flags=--host/--port 旗标,positional=位置参数,env=只读 GUOSAI_*)
+ENTRYPOINT ["python", "{bridge_dir}/tcp_bridge.py", "--bot-entry", "{entry_file}", "--bot-cmd", {bot_cmd_literal}, "--argv-style", "{argv_style}"]
 """
 
 
@@ -155,12 +161,13 @@ RUN javac *.java"""
 
 
 def make_dockerfile(*, protocol: str, entry_file: str,
-                    runtime_lang: str = "python") -> str:
-    """按协议生成 Dockerfile。"""
+                    runtime_lang: str = "python",
+                    argv_style: str = "flags") -> str:
+    """按协议生成 Dockerfile。argv_style 仅 TCP 协议生效(JSON bot 不走桥)。"""
     if protocol == "json":
         return _dockerfile_json(entry_file, runtime_lang)
     if protocol == "tcp":
-        return _dockerfile_tcp(entry_file, runtime_lang)
+        return _dockerfile_tcp(entry_file, runtime_lang, argv_style)
     raise BotBuildError("bad_protocol", f"未知协议 {protocol}")
 
 
@@ -224,16 +231,19 @@ def checksum(raw_bytes: bytes) -> str:
 
 def build_bot_image(*, source_dir: Path, protocol: str, entry_file: str,
                     runtime_lang: str, bot_id: int, version: int,
-                    bridge_src: Path | None = None) -> str:
+                    bridge_src: Path | None = None,
+                    argv_style: str = "flags") -> str:
     """构建 bot Docker 镜像。返回镜像名 ``arena-bot-<id>:v<version>``。
 
     source_dir: 已解压的源码目录(含入口文件)。
     bridge_src: TCP 协议时,tcp_bridge.py 的源路径(里程碑 4 提供);
                 JSON 协议忽略。
+    argv_style: TCP bot 连接参数传递风格(flags/positional/env),写进镜像
+                ENTRYPOINT 的 --argv-style;JSON 协议忽略。
     """
     image = f"{IMAGE_PREFIX}-{bot_id}:v{version}"
     dockerfile = make_dockerfile(protocol=protocol, entry_file=entry_file,
-                                 runtime_lang=runtime_lang)
+                                 runtime_lang=runtime_lang, argv_style=argv_style)
     # 写 Dockerfile 到源码目录
     (source_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
     # TCP bot 需要打入桥代理(里程碑 4 的 tcp_bridge.py)

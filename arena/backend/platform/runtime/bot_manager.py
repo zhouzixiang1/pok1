@@ -53,18 +53,19 @@ class BotManager:
                                runtime_lang: str = "python",
                                display_name: str = "",
                                description: str = "",
+                               argv_style: str = "flags",
                                upload_note: str = "",
                                build: bool = True) -> dict:
         """上传并创建新 bot。返回 bot 记录(含构建出的镜像名)。
 
         流程:校验 → 建 bots 记录(临时无镜像)→ 解压 → 建版本 → 构建。
-        构建失败回滚(删 bot 记录 + 文件)。
+        构建失败回滚(删 bot 记录 + 文件)。argv_style 仅 TCP 协议生效。
         """
         # 1. 先建 bots 记录(占位,镜像构建成功后回填)
         bot = self.store.create_bot(
             owner_id, name, protocol=protocol, entry_file=entry_file,
             runtime_lang=runtime_lang, display_name=display_name,
-            description=description)
+            description=description, argv_style=argv_style)
         try:
             version = self._ingest_version(
                 bot["id"], raw_zip, entry_file=entry_file,
@@ -117,7 +118,8 @@ class BotManager:
                 source_dir=src_dir, protocol=bot["protocol"],
                 entry_file=entry_rel, runtime_lang=bot["runtime_lang"],
                 bot_id=bot_id, version=version,
-                bridge_src=self.bridge_src if bot["protocol"] == PROTO_TCP else None)
+                bridge_src=self.bridge_src if bot["protocol"] == PROTO_TCP else None,
+                argv_style=bot.get("argv_style", "flags"))
         # 回填 bots 表的 docker_image / source_path
         self.store.update_bot(
             bot_id, docker_image=image,
@@ -190,9 +192,13 @@ class BotManager:
             src = BUILTIN_SOURCE_ROOT / vname
             if not src.exists():
                 continue
-            # 已注册则跳过(幂等)
+            # 已注册则跳过(幂等),但补设 argv_style=flags(national_v* 用旗标解析)
             existing = self.store.get_bot_by_owner_name(system_user_id, vname)
             if existing:
+                # 内置 bot 用 --host/--port 旗标;旧记录可能缺该字段或被改错
+                if existing.get("argv_style") != "flags":
+                    self.store.update_bot(existing["id"], argv_style="flags")
+                    existing = self.store.get_bot(existing["id"])
                 results.append(_bot_view(existing))
                 continue
             # 注册为 TCP 协议内置 bot(用 national_bot.py 入口,兼容 TCP 通道)
@@ -200,6 +206,7 @@ class BotManager:
                 system_user_id, vname, protocol=PROTO_TCP,
                 entry_file="national_bot.py", runtime_lang="python",
                 display_name=vname, description=f"平台预置 {vname}",
+                argv_style="flags",  # national_v* 的 national_bot.py 用 argparse 旗标
                 is_builtin=True, is_public=True)
             # 内置 bot 的源码路径直接指向仓库 bots/ 目录(不复制)
             self.store.update_bot(
@@ -236,7 +243,8 @@ class BotManager:
                 source_dir=build_dir, protocol=bot["protocol"],
                 entry_file=bot["entry_file"], runtime_lang=bot["runtime_lang"],
                 bot_id=bot_id, version=999,  # builtin 用固定 tag
-                bridge_src=self.bridge_src if bot["protocol"] == PROTO_TCP else None)
+                bridge_src=self.bridge_src if bot["protocol"] == PROTO_TCP else None,
+                argv_style=bot.get("argv_style", "flags"))
             # 镜像名 build_bot_image 生成的是 arena-bot-<id>:v999,
             # retag 成 arena-bot-<id>:builtin 更语义化
             import subprocess
@@ -262,6 +270,7 @@ def _bot_view(bot: dict) -> dict:
         "protocol": bot["protocol"],
         "entry_file": bot["entry_file"],
         "runtime_lang": bot["runtime_lang"],
+        "argv_style": bot.get("argv_style", "flags"),  # TCP bot 连接参数风格
         "current_version": bot["current_version"],
         "has_image": bool(bot["docker_image"]),
         "is_builtin": bool(bot["is_builtin"]),

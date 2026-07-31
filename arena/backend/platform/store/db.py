@@ -68,6 +68,19 @@ class Store:
             # 历史账号视为已验证,避免阻断现有用户
             c.execute("UPDATE users SET email_verified=1")
 
+        # bots.argv_style(旧库没有该列;新建库已含)。回填旧 bot 的默认风格。
+        bot_cols = {r[1] for r in c.execute("PRAGMA table_info(bots)").fetchall()}
+        if "argv_style" not in bot_cols:
+            c.execute(
+                "ALTER TABLE bots ADD COLUMN argv_style "
+                "TEXT NOT NULL DEFAULT 'flags'")
+            # 旧的用户上传 bot 当时用位置参数能跑通 → 标 positional 保持行为;
+            # 内置 national_v* 用旗标 → flags。新列 DEFAULT 'flags' 已覆盖内置,
+            # 这里把非内置旧 bot 修正为 positional。
+            c.execute(
+                "UPDATE bots SET argv_style='positional' "
+                "WHERE is_builtin=0 AND argv_style='flags'")
+
     def _seed_email_templates(self, c: sqlite3.Connection) -> None:
         defaults = [
             (TPL_VERIFY_EMAIL,
@@ -171,16 +184,18 @@ class Store:
     def create_bot(self, owner_id: int, name: str, *, protocol: str = "json",
                    entry_file: str = "main.py", runtime_lang: str = "python",
                    display_name: str = "", description: str = "",
+                   argv_style: str = "flags",
                    is_builtin: bool = False, is_public: bool = True) -> dict:
         """创建 bot 记录。owner+name 唯一冲突抛 IntegrityError。"""
         with self._tx() as c:
             cur = c.execute(
                 "INSERT INTO bots(owner_id, name, display_name, description, "
                 "protocol, entry_file, runtime_lang, is_builtin, is_public, "
-                "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "argv_style, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (owner_id, name, display_name or name, description,
                  protocol, entry_file, runtime_lang,
-                 1 if is_builtin else 0, 1 if is_public else 0, _now(), _now()))
+                 1 if is_builtin else 0, 1 if is_public else 0,
+                 argv_style, _now(), _now()))
             bid = cur.lastrowid
             return self._row_to_dict(c.execute(
                 "SELECT * FROM bots WHERE id=?", (bid,)).fetchone())
@@ -199,10 +214,10 @@ class Store:
 
     def update_bot(self, bot_id: int, **fields) -> dict | None:
         """可更新:display_name/description/docker_image/source_path/
-        current_version/is_public/is_active/entry_file/protocol。"""
+        current_version/is_public/is_active/entry_file/protocol/argv_style。"""
         allowed = {"display_name", "description", "docker_image", "source_path",
                    "current_version", "is_public", "is_active",
-                   "entry_file", "protocol", "updated_at"}
+                   "entry_file", "protocol", "argv_style", "updated_at"}
         sets = [f"{k}=?" for k in fields if k in allowed]
         vals = [v for k, v in fields.items() if k in allowed]
         if not sets:
