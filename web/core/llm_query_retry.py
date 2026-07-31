@@ -1294,6 +1294,57 @@ def parse_json_output(output):
         return json.loads(output)
     except Exception:
         pass
+
+    # Strategy 3: Inline (unfenced) JSON brace-matching.
+    # GLM with effort=max often emits a long chain-of-thought followed by the
+    # final JSON object INLINE (no ```json fence) after the model's prose. The
+    # fenced strategies above only look inside ```json blocks, and raw
+    # json.loads fails on the leading prose. Walk every '{' and attempt a
+    # string-aware brace match; collect every balanced candidate and return the
+    # LONGEST parseable one, which is the top-level object (inner objects like
+    # a ``falsifier`` sub-dict are shorter). This mirrors Strategy 1.5's brace
+    # matcher but is not gated on a ```json fence.
+    brace_positions = [m.start() for m in re.finditer(r'\{', output)]
+    best = None
+    best_len = -1
+    for brace_pos in brace_positions:
+        depth = 0
+        in_string = False
+        escape_next = False
+        end = -1
+        for i in range(brace_pos, len(output)):
+            c = output[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if c == '\\' and in_string:
+                escape_next = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end > 0:
+            candidate = output[brace_pos:end + 1]
+            # Only consider candidates strictly longer than the current best to
+            # avoid re-parsing nested duplicates; prefer the outermost object.
+            if len(candidate) > best_len:
+                try:
+                    parsed = json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+                best = parsed
+                best_len = len(candidate)
+    if best is not None:
+        return best
     return None
 
 
