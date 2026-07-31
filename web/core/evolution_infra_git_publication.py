@@ -853,7 +853,7 @@ def _validate_existing_publication_commit(intent: dict, commit_oid: str) -> None
     ]
     bot_prefix = bot_path.rstrip("/") + "/"
     if (
-        certificate_path not in changed
+        certificate_path and certificate_path not in changed
         or not any(item.startswith(bot_prefix) for item in changed)
         or any(
             item != certificate_path and not item.startswith(bot_prefix)
@@ -871,25 +871,28 @@ def _validate_existing_publication_commit(intent: dict, commit_oid: str) -> None
     )
     if canonical_digest(manifest) != intent.get("candidate_artifact_hash"):
         raise RuntimeError("publication commit candidate tree hash mismatch")
-    certificate_bytes = _ei._git_blob_bytes(commit_oid, certificate_path)
-    if hashlib.sha256(certificate_bytes).hexdigest() != intent.get(
-        "certificate_file_sha256"
-    ):
-        raise RuntimeError("publication commit certificate blob hash mismatch")
-    try:
-        certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
-    except Exception as exc:
-        raise RuntimeError(
-            f"publication commit certificate blob is invalid: {type(exc).__name__}"
-        ) from exc
-    if certificate_payload.get("attestation_digest") != intent.get(
-        "certificate_attestation_digest"
-    ):
-        raise RuntimeError("publication commit attestation digest mismatch")
-    if certificate_payload.get("certificate_digest") != intent.get(
-        "official_certificate_digest"
-    ):
-        raise RuntimeError("publication commit official certificate mismatch")
+    # Staging-tier intents have no official certificate (empty path); skip the
+    # certificate blob/payload validation that only applies to certified tiers.
+    if certificate_path:
+        certificate_bytes = _ei._git_blob_bytes(commit_oid, certificate_path)
+        if hashlib.sha256(certificate_bytes).hexdigest() != intent.get(
+            "certificate_file_sha256"
+        ):
+            raise RuntimeError("publication commit certificate blob hash mismatch")
+        try:
+            certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"publication commit certificate blob is invalid: {type(exc).__name__}"
+            ) from exc
+        if certificate_payload.get("attestation_digest") != intent.get(
+            "certificate_attestation_digest"
+        ):
+            raise RuntimeError("publication commit attestation digest mismatch")
+        if certificate_payload.get("certificate_digest") != intent.get(
+            "official_certificate_digest"
+        ):
+            raise RuntimeError("publication commit official certificate mismatch")
     message = _ei._git("show", "-s", "--format=%B", commit_oid, check=False).strip()
     if message != str(intent.get("commit_message") or "").strip():
         raise RuntimeError("publication commit message does not match frozen intent")
@@ -919,8 +922,7 @@ def _resolve_existing_publication_commit(intent: dict) -> str:
             "--reverse",
             f"{baseline}..{_LOCAL_PUB_REF}",
             "--",
-            bot_path,
-            certificate_path,
+            *[p for p in (bot_path, certificate_path) if p],
             check=False,
         ).splitlines()
         if item
@@ -1004,7 +1006,7 @@ def _validate_frozen_publication_tree(
     ]
     bot_prefix = bot_path.rstrip("/") + "/"
     if (
-        certificate_path not in changed
+        certificate_path and certificate_path not in changed
         or not any(item.startswith(bot_prefix) for item in changed)
         or any(
             item != certificate_path and not item.startswith(bot_prefix)
@@ -1022,11 +1024,13 @@ def _validate_frozen_publication_tree(
     )
     if canonical_digest(manifest) != intent.get("candidate_artifact_hash"):
         raise RuntimeError("private-index candidate tree differs from frozen intent")
-    certificate_bytes = _ei._git_blob_bytes(tree_oid, certificate_path)
-    if hashlib.sha256(certificate_bytes).hexdigest() != intent.get(
-        "certificate_file_sha256"
-    ):
-        raise RuntimeError("private-index certificate differs from frozen intent")
+    # Staging-tier intents have no official certificate (empty path).
+    if certificate_path:
+        certificate_bytes = _ei._git_blob_bytes(tree_oid, certificate_path)
+        if hashlib.sha256(certificate_bytes).hexdigest() != intent.get(
+            "certificate_file_sha256"
+        ):
+            raise RuntimeError("private-index certificate differs from frozen intent")
 
 
 def _create_publication_commit(intent: dict) -> str:
@@ -1114,13 +1118,15 @@ def _create_publication_commit(intent: dict) -> str:
         _ei.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         parent_oid = _ei._git("rev-parse", _LOCAL_PUB_REF).strip()
         _ei._git_with_index(index_path, "read-tree", parent_oid)
+        _git_add_paths = [bot_path]
+        if certificate_path:
+            _git_add_paths.append(certificate_path)
         _ei._git_with_index(
             index_path,
             "add",
             "-A",
             "--",
-            bot_path,
-            certificate_path,
+            *_git_add_paths,
         )
         tree_oid = _ei._git_with_index(index_path, "write-tree")
         if not re.fullmatch(r"[0-9a-f]{40}", tree_oid):
@@ -1146,12 +1152,14 @@ def _create_publication_commit(intent: dict) -> str:
         ref_updated = True
     except Exception:
         if not ref_updated:
+            _restore_paths = [bot_path]
+            if certificate_path:
+                _restore_paths.append(certificate_path)
             _ei._git(
                 "restore",
                 "--staged",
                 "--",
-                bot_path,
-                certificate_path,
+                *_restore_paths,
                 check=False,
             )
         raise
