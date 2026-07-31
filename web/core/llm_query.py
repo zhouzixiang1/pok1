@@ -1786,15 +1786,19 @@ async def run_claude_query(
             # (llm_query_retry._run_stream_with_signature_retry_attempts), NOT
             # around the whole retry loop.  This means signature-retry backoff
             # sleeps RELEASE the permit so other LLM work can fill the gap —
-            # critical for keeping the 2-permit pool fully utilized.
-            from llm_concurrency import get_global_llm_semaphore
+            # critical for keeping the pool fully utilized.
+            #
+            # Partitioned semaphore: consumer-lane roles (review/critic) get an
+            # exclusive sub-pool so the publication critical path is never
+            # starved by producer Scout bursts under multi-ahead.
+            from llm_concurrency import get_llm_semaphore_for_role
 
-            _global_llm_sem = get_global_llm_semaphore()
+            _role_sem = get_llm_semaphore_for_role(role_name)
             _sem_wait_start = time.time()
             lifecycle_fields["semaphore_wait_sec"] = round(time.time() - _sem_wait_start, 3)
             full_text, cost_usd, usage = await _run_stream_with_signature_retry(
                 full_prompt, options, log_file_path, ui, role_name,
-                semaphore=_global_llm_sem,
+                semaphore=_role_sem,
             )
 
         streamed_output = "\n".join(full_text)
