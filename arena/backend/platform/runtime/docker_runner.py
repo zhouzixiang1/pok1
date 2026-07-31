@@ -23,15 +23,16 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-# Docker 资源限制(与 CONTRACT.md 对齐)
+# Docker 资源限制(可通过环境变量覆盖,适配重策略 bot 如 national_v143)
 NETWORK_MODE = "none"
-MEMORY_LIMIT = "512m"
-CPU_LIMIT = "0.5"
+MEMORY_LIMIT = os.environ.get("POK_PLATFORM_BOT_MEMORY", "1g")  # 默认 1g(原 512m 对 multiprocessing bot 不足)
+CPU_LIMIT = os.environ.get("POK_PLATFORM_BOT_CPU", "0.5")
 DEFAULT_ACTION_TIMEOUT = 60.0
 
 
