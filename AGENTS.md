@@ -347,6 +347,20 @@ stays on the certified (inline official) path. Staging publications schedule
 async official certification through `official_certification_job.start_or_poll_job`
 (non-blocking poll), keyed off `strict_published_versions`.
 
+Staging and certified tiers both publish from the **same** precommit-pass
+checkpoint stage `verified` (`tool_eval.py` sets `verified` on precommit pass;
+the router maps `verified -> commit_bot` for both tiers; staging simply skips
+the official EXE gate). The staging `publication_intent`'s
+`origin_checkpoint_stage` is therefore `verified`, and
+`publication_transaction.py::publication_intent_structure_errors` allows
+`verified` for staging intents. It must NOT demand `precommit_passed` /
+`staging_publishing` — those are gate-snapshot booleans / phantom names,
+never real checkpoint stages (absent from `STAGE_ORDER`, written nowhere),
+so requiring them blocked every staging-tier `commit_bot` from birth
+(`publication_intent_origin_stage_invalid` infinite loop; fixed after
+bc668676). Regression:
+`tests/test_publication_transaction.py::test_staging_intent_from_verified_stage_passes_structure_validation`.
+
 ### GLM 429 quota exhaustion and recovery-window waiting
 
 GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the

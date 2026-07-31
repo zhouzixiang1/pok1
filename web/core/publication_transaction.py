@@ -476,7 +476,14 @@ def publication_intent_structure_errors(intent: Any) -> list[str]:
     except (TypeError, ValueError):
         errors.append("publication_intent_origin_revision_invalid")
     if is_staging:
-        allowed_origin_stages = {"precommit_passed", "staging_publishing"}
+        # Staging publications originate from the same precommit-pass stage as
+        # certified ones: ``run_precommit_eval`` sets ``verified`` on pass
+        # (``tool_eval.py``), and the router maps ``verified -> commit_bot``.
+        # ``precommit_passed``/``staging_publishing`` are not real checkpoint
+        # stages (absent from ``STAGE_ORDER`` and never written by any path),
+        # so demanding them blocked every staging-tier generation from birth
+        # (commit bc668676). They are retained as legacy tolerant values.
+        allowed_origin_stages = {"verified", "precommit_passed", "staging_publishing"}
     else:
         allowed_origin_stages = {"verified", "official_certifying"}
     if intent.get("origin_checkpoint_stage") not in allowed_origin_stages:

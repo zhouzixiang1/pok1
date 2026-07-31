@@ -1218,6 +1218,53 @@ def test_publication_intent_digest_covers_strategy_and_remote_requirement():
     )
 
 
+def test_staging_intent_from_verified_stage_passes_structure_validation():
+    """A staging-tier generation publishes from the real precommit-pass stage.
+
+    ``run_precommit_eval`` sets checkpoint ``stage="verified"`` on pass
+    (``tool_eval.py``) and the router maps ``verified -> commit_bot`` for both
+    tiers; the staging commit branch then builds the intent from that same
+    checkpoint. The staging ``origin_checkpoint_stage`` must therefore be
+    ``verified`` and must pass structural validation — otherwise every
+    staging-tier generation loops forever on ``commit_bot`` with
+    ``publication_intent_origin_stage_invalid`` (born-broken in bc668676).
+    """
+    from publication_transaction import (
+        PUBLICATION_INTENT_KIND_STAGING,
+        build_staging_publication_intent,
+        publication_intent_structure_errors,
+    )
+
+    version = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
+    checkpoint = {
+        "next_v": version,
+        "source_v": source_v,
+        "parent2_v": None,
+        "workflow_run_id": f"generation:{version}:test",
+        "checkpoint_revision": 17,
+        "stage": "verified",
+    }
+    intent = build_staging_publication_intent(
+        checkpoint=checkpoint,
+        candidate_artifact_hash="a" * 64,
+        final_gate_ledger_digest="e" * 64,
+        strategy_tag="staging test",
+        rating_info="",
+        baseline_head="1" * 40,
+        baseline_remote_main="2" * 40,
+        baseline_remote_completion_refs={},
+        prepublication_strict_bots=[],
+        remote_publication_required=True,
+        remote_publication_enabled=True,
+    )
+    assert intent["kind"] == PUBLICATION_INTENT_KIND_STAGING
+    assert intent["origin_checkpoint_stage"] == "verified"
+    # Regression anchor: the staging precommit-pass -> commit path must clear
+    # structural validation; demanding phantom stage names blocked it at birth.
+    assert publication_intent_structure_errors(intent) == []
+
+
 @pytest.mark.parametrize("existing_kind", ["wrong_bytes", "symlink", "directory"])
 def test_completed_sentinel_rejects_unbound_existing_path(
     tmp_path, existing_kind
