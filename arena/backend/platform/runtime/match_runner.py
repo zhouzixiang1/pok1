@@ -547,12 +547,18 @@ class MatchRunner:
             response_str = await self.runner.send(
                 current.session_id, request, timeout=self.action_timeout)
         except (asyncio.TimeoutError, RuntimeError, OSError) as exc:
-            logger.info("[H%d] %s: bot 通信异常 %s → fold",
-                        self.hand_num, current.name, type(exc).__name__)
+            # 完整异常 message 含 docker_runner 的 stderr 尾部(容器崩溃诊断)
+            exc_msg = str(exc)
+            logger.info("[H%d] %s: bot 通信异常 %s → fold (%s)",
+                        self.hand_num, current.name, type(exc).__name__,
+                        exc_msg[:200])
             # RuntimeError / OSError 通常表示容器已死,继续打满 70 手无意义
             if isinstance(exc, (RuntimeError, OSError)):
                 self._abort_match = True
+                # reason 携带异常 message(含 stderr),便于排查偶发崩溃
                 self._abort_reason = f"{current.name}:{type(exc).__name__}"
+                if exc_msg:
+                    self._abort_reason += f": {exc_msg}"[:300]
             return ("timeout", None, {
                 "decision_wait_sec": round(time.perf_counter() - t0, 6),
                 "timeout_budget_sec": self.action_timeout,
