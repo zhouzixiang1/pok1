@@ -67,6 +67,7 @@ arena.db
 arena_platform.db
 *.db
 *.db-journal
+*.db.bak.*
 logs/
 
 # === 新平台运行产物(里程碑 1+) ===
