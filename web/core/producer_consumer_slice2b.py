@@ -53,7 +53,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
+import sqlite3
 import time
 from collections import deque
 from copy import deepcopy
@@ -226,11 +228,51 @@ def build_slice2b_quality_envelope(
 
 
 # ---------------------------------------------------------------------------
-# Validation ledger (Consumer-owned; never written into pipeline_state.json)
+# Candidate lifecycle (Consumer-owned, PERSISTED; survives process restart)
 # ---------------------------------------------------------------------------
+#
+# Replaces the original in-memory ``ValidationLedger``.  The per-candidate
+# lifecycle is a small explicit state machine persisted to a dedicated sqlite
+# table so one-ahead survives an orchestrator/service restart:
+#
+#   [none] --start()--> [SEALED] --record_gate()*--> [SEALED]
+#                                   |--promote()--> [PROMOTED] (terminal)
+#                                   `--reject()---> [REJECTED] (terminal)
+#
+# The ``SEALED`` state spans both "envelope submitted, consumer not yet leased"
+# and "consumer is running the gate chain" -- the durable envelope outbox +
+# fenced lease already own lease discipline, so the lifecycle only needs to
+# distinguish sealed-and-unresolved from terminal.  ``non_terminal_candidates``
+# is the boot-recovery entry point: after a crash it lists every candidate
+# whose seal is durable but whose consumer never reached a terminal outcome,
+# so the activation can relaunch the consumer task for them.
 
 
-def _empty_ledger_entry(candidate_id: str) -> dict[str, Any]:
+# Lifecycle states.  ``None``/missing row == not yet sealed.
+_CANDIDATE_SEALED = "sealed"  # sealed, validation in progress (or not yet leased)
+_CANDIDATE_PROMOTED = "promoted"  # consumer gates passed; commit_bot may publish
+_CANDIDATE_REJECTED = "rejected"  # a gate failed; generation must abandon
+
+# Public mirror of the in-memory ``validation_outcome`` values, for callers
+# (coordinator / activation) that read ``snapshot()["validation_outcome"]``.
+_VALIDATION_OUTCOME_BY_STATE = {
+    _CANDIDATE_SEALED: "running",
+    _CANDIDATE_PROMOTED: "promoted",
+    _CANDIDATE_REJECTED: "rejected",
+}
+
+# Allowed transitions into a new state from the current persisted state.
+# ``None`` current = row does not exist yet (only ``start`` is legal).
+_ALLOWED_STATE_TRANSITIONS = {
+    (None, _CANDIDATE_SEALED),
+    (_CANDIDATE_SEALED, _CANDIDATE_PROMOTED),
+    (_CANDIDATE_SEALED, _CANDIDATE_REJECTED),
+}
+
+_LIFECYCLE_SCHEMA_VERSION = 1
+
+
+def _empty_lifecycle_row(candidate_id: str) -> dict[str, Any]:
     return {
         "candidate_id": candidate_id,
         "sealed_artifact_hash": None,
@@ -241,22 +283,204 @@ def _empty_ledger_entry(candidate_id: str) -> dict[str, Any]:
         "gate_results": {},  # gate_name -> {outcome, digest, finished_at}
         "promotion_receipt": None,
         "completed_at": None,
+        "sealed_snapshot": None,  # the immutable snapshot the consumer needs
     }
 
 
-class ValidationLedger:
-    """Per-candidate validation ledger owned by the Consumer lane.
+class CandidateLifecycle:
+    """Per-candidate validation lifecycle, persisted to sqlite.
 
-    The ledger is intentionally an in-process object in this minimum slice: it
-    records the gate outcomes the Consumer observes so the promotion barrier
-    can prove readiness without re-running the chain.  A later slice may
-    persist it through the workflow kernel's event log; the public surface
-    here (``start``, ``record_gate``, ``promote``, ``reject``, ``snapshot``) is
-    stable for that migration.
+    Drop-in replacement for the former in-memory :class:`ValidationLedger`:
+    the public surface (``start``, ``record_gate``, ``promote``, ``reject``,
+    ``snapshot``, ``is_terminal``, ``is_promoted``) is preserved so the
+    :class:`ConsumerDispatcher` and :class:`OneAheadCoordinator` are unchanged.
+    Persistence is added so a process restart does not lose in-flight
+    candidates: ``non_terminal_candidates`` lets the activation relaunch the
+    consumer task for every sealed-but-unresolved candidate.
+
+    The lifecycle owns its own sqlite database (``slice2b_lifecycle.sqlite3``)
+    keyed by ``candidate_id``; it deliberately does NOT piggyback on the
+    worker-journal event stream (different key, simpler invariants).  All
+    mutations go through a single atomic ``_transition`` that enforces the
+    transition whitelist under ``BEGIN IMMEDIATE``.
     """
 
-    def __init__(self) -> None:
-        self._entries: dict[str, dict[str, Any]] = {}
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        # Default to a process-private temp db so the legacy no-arg call
+        # ``ValidationLedger()`` (used widely in unit tests) keeps working.
+        # Production (the activation layer) passes the real lifecycle path.
+        if db_path is None:
+            import tempfile
+            db_path = Path(tempfile.gettempdir()) / (
+                f"slice2b_lifecycle_{os.getpid()}_{id(self)}.sqlite3"
+            )
+        self._db_path = str(db_path)
+        self._ensure_schema()
+
+    # -- schema -------------------------------------------------------------
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._db_path, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
+        return connection
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS slice2b_candidate_lifecycle(
+                    candidate_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    sealed_artifact_hash TEXT,
+                    envelope_effect_id TEXT,
+                    envelope_digest TEXT,
+                    gate_results_json TEXT NOT NULL DEFAULT '{}',
+                    promotion_receipt_json TEXT,
+                    terminal_reason TEXT,
+                    completed_at REAL,
+                    sealed_snapshot_json TEXT,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS slice2b_lifecycle_meta(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            row = connection.execute(
+                "SELECT value FROM slice2b_lifecycle_meta WHERE key = 'schema_version'"
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO slice2b_lifecycle_meta(key, value) VALUES (?, ?)",
+                    ("schema_version", str(_LIFECYCLE_SCHEMA_VERSION)),
+                )
+            connection.commit()
+
+    # -- single atomic transition ------------------------------------------
+
+    def _transition(
+        self,
+        candidate_id: str,
+        *,
+        to_state: str,
+        mutator: Callable[[dict[str, Any]], None] | None = None,
+        require_snapshot: bool = False,
+    ) -> dict[str, Any]:
+        """Atomically move ``candidate_id`` to ``to_state`` if allowed.
+
+        Reads the current persisted row, enforces
+        ``(current_state, to_state) in _ALLOWED_STATE_TRANSITIONS``, applies
+        ``mutator`` to the in-memory row copy, and writes it back under
+        ``BEGIN IMMEDIATE``.  Returns the post-transition snapshot.  Raises
+        :class:`Slice2bError` on an illegal transition.
+        """
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM slice2b_candidate_lifecycle WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            current_state = str(row["state"]) if row is not None else None
+            if (current_state, to_state) not in _ALLOWED_STATE_TRANSITIONS:
+                connection.rollback()
+                raise Slice2bError(
+                    f"candidate_lifecycle_illegal_transition:"
+                    f"{current_state}->{to_state}"
+                )
+            entry = self._row_to_entry(row) if row is not None else _empty_lifecycle_row(candidate_id)
+            if require_snapshot and not entry.get("sealed_snapshot"):
+                connection.rollback()
+                raise Slice2bError(
+                    "candidate_lifecycle_snapshot_missing:" + candidate_id
+                )
+            if mutator is not None:
+                mutator(entry)
+            # Persist.  UPSERT so the SEALED insert and the terminal UPDATE
+            # share one code path.
+            connection.execute(
+                """
+                INSERT INTO slice2b_candidate_lifecycle(
+                    candidate_id, state, sealed_artifact_hash,
+                    envelope_effect_id, envelope_digest, gate_results_json,
+                    promotion_receipt_json, terminal_reason, completed_at,
+                    sealed_snapshot_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(candidate_id) DO UPDATE SET
+                    state=excluded.state,
+                    sealed_artifact_hash=excluded.sealed_artifact_hash,
+                    envelope_effect_id=excluded.envelope_effect_id,
+                    envelope_digest=excluded.envelope_digest,
+                    gate_results_json=excluded.gate_results_json,
+                    promotion_receipt_json=excluded.promotion_receipt_json,
+                    terminal_reason=excluded.terminal_reason,
+                    completed_at=excluded.completed_at,
+                    sealed_snapshot_json=excluded.sealed_snapshot_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    candidate_id,
+                    to_state,
+                    entry.get("sealed_artifact_hash"),
+                    entry.get("envelope_effect_id"),
+                    entry.get("envelope_digest"),
+                    _canonical_json(entry.get("gate_results") or {}),
+                    (
+                        _canonical_json(entry["promotion_receipt"])
+                        if entry.get("promotion_receipt") is not None
+                        else None
+                    ),
+                    entry.get("terminal_reason"),
+                    entry.get("completed_at"),
+                    (
+                        _canonical_json(entry["sealed_snapshot"])
+                        if entry.get("sealed_snapshot") is not None
+                        else None
+                    ),
+                    now,
+                ),
+            )
+            connection.commit()
+            entry["validation_outcome"] = _VALIDATION_OUTCOME_BY_STATE.get(to_state)
+            return deepcopy(entry)
+
+    @staticmethod
+    def _row_to_entry(row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}  # type: ignore[return-value]
+        entry = {
+            "candidate_id": str(row["candidate_id"]),
+            "sealed_artifact_hash": row["sealed_artifact_hash"],
+            "envelope_effect_id": row["envelope_effect_id"],
+            "envelope_digest": row["envelope_digest"],
+            "validation_outcome": _VALIDATION_OUTCOME_BY_STATE.get(
+                str(row["state"])
+            ),
+            "terminal_reason": row["terminal_reason"],
+            "gate_results": json.loads(row["gate_results_json"] or "{}"),
+            "promotion_receipt": (
+                json.loads(row["promotion_receipt_json"])
+                if row["promotion_receipt_json"]
+                else None
+            ),
+            "completed_at": row["completed_at"],
+            "sealed_snapshot": (
+                json.loads(row["sealed_snapshot_json"])
+                if row["sealed_snapshot_json"]
+                else None
+            ),
+        }
+        return entry
+
+    # -- public API (mirrors the former ValidationLedger) -------------------
 
     def start(
         self,
@@ -265,27 +489,35 @@ class ValidationLedger:
         sealed_artifact_hash: str,
         envelope_effect_id: str,
         envelope_digest: str,
+        sealed_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if candidate_id in self._entries:
-            existing = self._entries[candidate_id]
-            if existing["sealed_artifact_hash"] != sealed_artifact_hash:
-                raise Slice2bError(
-                    "validation_ledger_candidate_artifact_drift"
-                )
+        """Record that the Producer sealed ``candidate_id``.
+
+        Idempotent: replaying the same seal (same artifact hash) returns the
+        existing row; a different artifact hash for the same candidate_id is
+        an unrecoverable drift.  ``sealed_snapshot`` is persisted once (at the
+        first start) so the consumer can recover it after a crash without the
+        Producer still being around.
+        """
+        _require_safe_id(candidate_id, "candidate_id")
+        artifact = _require_digest(sealed_artifact_hash, "sealed_artifact_hash")
+
+        existing = self.snapshot(candidate_id)
+        if existing is not None:
+            if existing["sealed_artifact_hash"] != artifact:
+                raise Slice2bError("validation_ledger_candidate_artifact_drift")
             return deepcopy(existing)
-        entry = _empty_ledger_entry(candidate_id)
-        entry.update(
-            {
-                "sealed_artifact_hash": _require_digest(
-                    sealed_artifact_hash, "sealed_artifact_hash"
-                ),
-                "envelope_effect_id": envelope_effect_id,
-                "envelope_digest": envelope_digest,
-                "validation_outcome": "running",
-            }
+
+        def _seed(entry: dict[str, Any]) -> None:
+            entry["sealed_artifact_hash"] = artifact
+            entry["envelope_effect_id"] = envelope_effect_id
+            entry["envelope_digest"] = envelope_digest
+            if sealed_snapshot is not None and not entry.get("sealed_snapshot"):
+                entry["sealed_snapshot"] = deepcopy(dict(sealed_snapshot))
+
+        return self._transition(
+            candidate_id, to_state=_CANDIDATE_SEALED, mutator=_seed
         )
-        self._entries[candidate_id] = entry
-        return deepcopy(entry)
 
     def record_gate(
         self,
@@ -301,18 +533,19 @@ class ValidationLedger:
             raise Slice2bError(f"validation_ledger_unknown_gate:{gate_name}")
         if outcome not in {"success", "candidate_failure", "infrastructure_failure"}:
             raise Slice2bError(f"validation_ledger_unknown_outcome:{outcome}")
-        entry = self._entries.get(candidate_id)
-        if entry is None:
-            raise Slice2bError("validation_ledger_candidate_not_started")
-        if entry["validation_outcome"] != "running":
-            raise Slice2bError("validation_ledger_candidate_already_terminal")
-        entry["gate_results"][gate_name] = {
-            "outcome": outcome,
-            "digest": _require_digest(result_digest, "gate result digest"),
-            "finished_at": float(finished_at),
-            "detail": deepcopy(dict(detail or {})),
-        }
-        return deepcopy(entry)
+
+        def _record(entry: dict[str, Any]) -> None:
+            entry["gate_results"][gate_name] = {
+                "outcome": outcome,
+                "digest": _require_digest(result_digest, "gate result digest"),
+                "finished_at": float(finished_at),
+                "detail": deepcopy(dict(detail or {})),
+            }
+
+        # Self-transition SEALED -> SEALED to persist the gate result.
+        return self._transition_with_self_state(
+            candidate_id, mutator=_record
+        )
 
     def promote(
         self,
@@ -321,15 +554,18 @@ class ValidationLedger:
         promotion_receipt: Mapping[str, Any],
         completed_at: float,
     ) -> dict[str, Any]:
-        entry = self._require_running(candidate_id)
         receipt = deepcopy(dict(promotion_receipt))
         if not receipt:
             raise Slice2bError("validation_ledger_promotion_receipt_missing")
-        entry["validation_outcome"] = "promoted"
-        entry["promotion_receipt"] = receipt
-        entry["completed_at"] = float(completed_at)
-        entry["terminal_reason"] = "promoted_by_consumer"
-        return deepcopy(entry)
+
+        def _promote(entry: dict[str, Any]) -> None:
+            entry["promotion_receipt"] = receipt
+            entry["completed_at"] = float(completed_at)
+            entry["terminal_reason"] = "promoted_by_consumer"
+
+        return self._transition(
+            candidate_id, to_state=_CANDIDATE_PROMOTED, mutator=_promote
+        )
 
     def reject(
         self,
@@ -340,34 +576,104 @@ class ValidationLedger:
     ) -> dict[str, Any]:
         if not isinstance(reason, str) or not reason.strip():
             raise Slice2bError("validation_ledger_reject_reason_missing")
-        entry = self._require_running(candidate_id)
-        entry["validation_outcome"] = "rejected"
-        entry["terminal_reason"] = reason.strip()
-        entry["completed_at"] = float(completed_at)
-        return deepcopy(entry)
+        clean_reason = reason.strip()
+
+        def _reject(entry: dict[str, Any]) -> None:
+            entry["terminal_reason"] = clean_reason
+            entry["completed_at"] = float(completed_at)
+
+        return self._transition(
+            candidate_id, to_state=_CANDIDATE_REJECTED, mutator=_reject
+        )
 
     def snapshot(self, candidate_id: str) -> dict[str, Any] | None:
-        entry = self._entries.get(candidate_id)
-        return deepcopy(entry) if entry is not None else None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM slice2b_candidate_lifecycle WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return deepcopy(self._row_to_entry(row)) if row is not None else None
 
     def is_terminal(self, candidate_id: str) -> bool:
-        entry = self._entries.get(candidate_id)
+        entry = self.snapshot(candidate_id)
         return entry is not None and entry["validation_outcome"] in {
             "promoted",
             "rejected",
         }
 
     def is_promoted(self, candidate_id: str) -> bool:
-        entry = self._entries.get(candidate_id)
+        entry = self.snapshot(candidate_id)
         return entry is not None and entry["validation_outcome"] == "promoted"
 
-    def _require_running(self, candidate_id: str) -> dict[str, Any]:
-        entry = self._entries.get(candidate_id)
+    # -- boot recovery (new) ------------------------------------------------
+
+    def non_terminal_candidates(self) -> dict[str, str]:
+        """Map candidate_id -> sealed_artifact_hash for every sealed-but-
+        unresolved candidate.  Used by ``recover_at_boot`` to relaunch the
+        consumer task after a crash/restart so one-ahead stays parallel.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT candidate_id, sealed_artifact_hash FROM slice2b_candidate_lifecycle "
+                "WHERE state = ?",
+                (_CANDIDATE_SEALED,),
+            ).fetchall()
+        return {
+            str(row["candidate_id"]): str(row["sealed_artifact_hash"])
+            for row in rows
+        }
+
+    def recover_snapshot(self, candidate_id: str) -> dict[str, Any] | None:
+        """Return the persisted sealed snapshot for boot-recovery, or None."""
+        entry = self.snapshot(candidate_id)
         if entry is None:
-            raise Slice2bError("validation_ledger_candidate_not_started")
-        if entry["validation_outcome"] != "running":
-            raise Slice2bError("validation_ledger_candidate_already_terminal")
-        return entry
+            return None
+        snap = entry.get("sealed_snapshot")
+        return deepcopy(snap) if snap is not None else None
+
+    # -- internal: self-transition that keeps the same state ----------------
+
+    def _transition_with_self_state(
+        self,
+        candidate_id: str,
+        *,
+        mutator: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        """Persist a mutation while staying in the SEALED state (gate records).
+
+        Enforces the candidate exists and is still SEALED (not terminal).
+        """
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM slice2b_candidate_lifecycle WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise Slice2bError("validation_ledger_candidate_not_started")
+            if str(row["state"]) != _CANDIDATE_SEALED:
+                connection.rollback()
+                raise Slice2bError("validation_ledger_candidate_already_terminal")
+            entry = self._row_to_entry(row)
+            mutator(entry)
+            connection.execute(
+                """
+                UPDATE slice2b_candidate_lifecycle
+                SET gate_results_json = ?, updated_at = ?
+                WHERE candidate_id = ?
+                """,
+                (_canonical_json(entry.get("gate_results") or {}), now, candidate_id),
+            )
+            connection.commit()
+            return deepcopy(entry)
+
+
+# Backwards-compatible alias: existing imports of ``ValidationLedger`` keep
+# resolving.  Constructed with a db_path (the activation passes the lifecycle
+# sqlite path; tests pass a tmp_path).
+ValidationLedger = CandidateLifecycle
 
 
 # ---------------------------------------------------------------------------
@@ -461,10 +767,14 @@ class ConsumerDispatcher:
         ledger: ValidationLedger,
         *,
         owner: str,
+        death_proof_resolver: (
+            Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+        ) = None,
     ) -> None:
         self._adapter = adapter
         self._ledger = ledger
         self._owner = _require_safe_id(owner, "consumer_dispatcher_owner")
+        self._death_proof_resolver = death_proof_resolver
 
     async def run_once(
         self,
@@ -491,6 +801,7 @@ class ConsumerDispatcher:
             lease_seconds=lease_seconds,
             now=now,
             recovery_id=f"slice2b-dispatch-{int(now)}",
+            death_proof_resolver=self._death_proof_resolver,
         )
         leases = pending.get("leases", [])
         if not leases:

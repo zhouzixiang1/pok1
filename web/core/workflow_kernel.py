@@ -23,6 +23,17 @@ from typing import Any, Iterable
 
 KERNEL_SCHEMA_VERSION = 1
 
+# Effect-kind prefix owned by the Slice-2b producer-consumer seal.  A seal
+# effect deliberately attaches to the worker journal's run_id (the adapter's
+# defect-E note documents this), whose instance is ``status="completed"`` by
+# the time the seal runs (worker_workflow.projected flips it at workers_done).
+# request_effect therefore admits such effects on a ``completed`` instance,
+# while every other kind (worker_llm / system_blueprint / unknown) still
+# requires ``status="running"``.  The literal is duplicated here on purpose:
+# the kernel owns no poker/LLM-domain imports, so the adapter's constant is
+# mirrored rather than imported.
+PRODUCER_CONSUMER_EFFECT_KIND_PREFIX = "producer-consumer-job:"
+
 
 class WorkflowError(RuntimeError):
     """Base class for durable workflow failures."""
@@ -910,7 +921,20 @@ class WorkflowStore:
                 "SELECT status FROM workflow_instances WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
-            if instance is None or str(instance["status"]) != "running":
+            # defect E (b) fix: a producer-consumer seal effect deliberately
+            # attaches to a worker-journal run_id whose instance is already
+            # ``status="completed"`` at the seal point (workers_done).  Admit
+            # such effects so the durable outbox CAS below can run; every other
+            # kind (worker_llm / system_blueprint / unknown) still requires a
+            # ``running`` instance, so worker-effect safety is unchanged.
+            status = str(instance["status"]) if instance is not None else None
+            running_ok = status == "running"
+            seal_on_completed = (
+                status == "completed"
+                and isinstance(kind, str)
+                and kind.startswith(PRODUCER_CONSUMER_EFFECT_KIND_PREFIX)
+            )
+            if instance is None or not (running_ok or seal_on_completed):
                 connection.rollback()
                 raise WorkflowConflict(
                     f"workflow instance is not running: {run_id}"

@@ -69,7 +69,13 @@ def _slice2b_consumer_in_flight(checkpoint, next_v) -> bool:
     candidate_id = str(
         checkpoint.get("candidate_id") or f"candidate-v{next_v}"
     )
-    if candidate_id not in activation._sealed_snapshots:
+    # Query the PERSISTED lifecycle (not the in-memory _sealed_snapshots), so
+    # this stays accurate after a process restart: a sealed-but-unresolved
+    # candidate is still "in flight" even before recover_at_boot rehydrates
+    # the in-memory registries.  snapshot() returns None for an unknown
+    # candidate (never sealed here) -> not in flight.
+    snapshot = activation.ledger.snapshot(candidate_id)
+    if snapshot is None:
         return False
     return not activation.ledger.is_terminal(candidate_id)
 
@@ -160,7 +166,15 @@ def _slice2b_ensure_activation():
         from evolution_infra import RESULTS_DIR
         store = WorkflowStore(Path(RESULTS_DIR) / "workflow" / "events.sqlite3")
         adapter = ProducerConsumerWorkflowAdapter(store)
-        return _o._slice2b_activation_registry("set", adapter=adapter)
+        activation = _o._slice2b_activation_registry("set", adapter=adapter)
+        # Boot recovery: re-schedule consumers for every sealed-but-unresolved
+        # candidate from a prior process.  Idempotent + loop-safe (only stashes
+        # factories; the task is materialized later from the event loop).
+        try:
+            activation.recover_at_boot()
+        except Exception:
+            pass
+        return activation
     except Exception:
         return None
 

@@ -115,12 +115,28 @@ class Slice2bActivation:
         adapter: ProducerConsumerWorkflowAdapter,
         coordinator: OneAheadCoordinator | None = None,
         dispatcher_owner: str = "slice2b-consumer",
+        lifecycle_db_path: str | Path | None = None,
     ) -> None:
         self.adapter = adapter
-        self.ledger = ValidationLedger()
+        # Persist the candidate lifecycle beside the adapter's workflow sqlite
+        # so it survives a process restart (the former in-memory ledger lost
+        # every in-flight candidate on crash, degenerating one-ahead to serial).
+        if lifecycle_db_path is None:
+            try:
+                lifecycle_db_path = (
+                    Path(adapter.store.path).parent / "slice2b_lifecycle.sqlite3"
+                )
+            except Exception:
+                lifecycle_db_path = None  # ValidationLedger() temp fallback
+        self.ledger = ValidationLedger(lifecycle_db_path)
         self.coordinator = coordinator or OneAheadCoordinator(self.ledger)
         self.dispatcher = ConsumerDispatcher(
-            self.adapter, self.ledger, owner=dispatcher_owner
+            self.adapter,
+            self.ledger,
+            owner=dispatcher_owner,
+            # Prove prior-owner death when recovering a leased envelope, so a
+            # restart can reclaim a consumer lease whose owner pid is gone.
+            death_proof_resolver=self.death_proof_resolver(),
         )
         # candidate_id -> asyncio.Task running the canonical gate chain.
         self._consumer_tasks: dict[str, asyncio.Task] = {}
@@ -177,6 +193,23 @@ class Slice2bActivation:
             candidate_id=sealed["candidate_id"],
             artifact_hash=sealed["artifact_digest"],
         )
+        # Persist the sealed candidate's lifecycle (SEALED) AND the immutable
+        # snapshot, so a process restart can recover the consumer task without
+        # the Producer still being around.  The dispatcher's later ``start``
+        # call is idempotent (artifact-drift guard), so seeding here is safe.
+        try:
+            self.ledger.start(
+                candidate_id=sealed["candidate_id"],
+                sealed_artifact_hash=sealed["artifact_digest"],
+                envelope_effect_id=sealed["effect_id"],
+                envelope_digest=sealed["envelope_digest"],
+                sealed_snapshot=dict(snapshot),
+            )
+        except Slice2bError:
+            # Artifact drift on a replay is a real error surfaced elsewhere;
+            # any other failure here must not block the seal (the envelope is
+            # already durable).  The dispatcher will re-seed on its claim.
+            pass
         # Stash the snapshot so the consumer task / a retry can re-derive it
         # without the producer having to stay around.  Also record the envelope
         # submission time so the consumer dispatches with a ``now`` that keeps
@@ -346,6 +379,98 @@ class Slice2bActivation:
 
     def consumer_task(self, candidate_id: str) -> asyncio.Task | None:
         return self._consumer_tasks.get(candidate_id)
+
+    # -- boot recovery (re-launch consumers for sealed-but-unresolved
+    #    candidates after a process restart) --------------------------------
+
+    def recover_at_boot(self) -> dict[str, Any]:
+        """Rebuild in-memory state and re-schedule consumers for every
+        sealed-but-unresolved candidate after a process restart.
+
+        The seal envelope is already durable (sqlite outbox); this method
+        rehydrates the per-process registries (``_sealed_snapshots`` /
+        ``_dispatch_clocks``) and re-schedules the canonical gate chain for
+        every candidate the persisted lifecycle still shows as ``SEALED``.
+        The next ``ensure_consumer_running`` (called by the orchestrator loop
+        or the promotion barrier) materializes the consumer ``asyncio.Task``.
+
+        Safe to call multiple times: re-scheduling a candidate already running
+        is a no-op (``ensure_consumer_running`` returns the live task).  Must
+        be called from the orchestrator event loop thread.
+        """
+
+        recovered: dict[str, Any] = {"rescheduled": [], "terminal": []}
+        try:
+            non_terminal = self.ledger.non_terminal_candidates()
+        except Exception:
+            # The lifecycle store may not be initialized yet (first-ever
+            # boot); nothing to recover.
+            return recovered
+        for candidate_id, artifact_hash in non_terminal.items():
+            snapshot = self.ledger.recover_snapshot(candidate_id)
+            if snapshot is None:
+                # Sealed envelope durable but snapshot not persisted (legacy
+                # seal from before persistence).  Cannot rebuild the gate
+                # chain; leave it for the inline fallback.  This is a fail-
+                # safe no-op, not a crash.
+                recovered["terminal"].append(
+                    {"candidate_id": candidate_id, "reason": "snapshot_missing"}
+                )
+                continue
+            # Rebuild the in-memory registries the consumer task reads.
+            self._sealed_snapshots[candidate_id] = dict(snapshot)
+            # Use the snapshot's own timing plan epoch if present, else now.
+            timing_plan = snapshot.get("quality_native_match_timing_plan") or {}
+            dispatch_epoch = float(
+                timing_plan.get("submitted_at_epoch") or time.time()
+            )
+            self._dispatch_clocks[candidate_id] = dispatch_epoch
+            # Re-register the canonical factory so ensure_consumer_running
+            # re-launches the gate chain.  next_v/source_v come from the
+            # recovered snapshot.
+            next_v = int(snapshot.get("next_v") or 0)
+            source_v = int(snapshot.get("source_v") or 0)
+            factory = canonical_gate_runner_factory(next_v, source_v)
+            self.schedule_consumer(
+                candidate_id=candidate_id,
+                gate_runner_factory=factory,
+                now=dispatch_epoch,
+            )
+            recovered["rescheduled"].append(
+                {"candidate_id": candidate_id, "artifact_hash": artifact_hash}
+            )
+        return recovered
+
+    def death_proof_resolver(self) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+        """Return a death-proof resolver for ``adapter.recover``.
+
+        After a process restart, every previously-leased consumer task is gone
+        (its owner pid no longer exists in this process).  The resolver proves
+        that by checking ``self._consumer_tasks``: if no live task owns the
+        effect, the prior owner is dead and the lease may be reclaimed.  This
+        is only safe to assert from the activation's own event loop thread.
+        """
+
+        def _resolve(effect: Mapping[str, Any]) -> Mapping[str, Any]:
+            # The effect_id encodes the sealed candidate; if its consumer task
+            # is not live in THIS process, the prior owner is dead.  A restart
+            # always satisfies this (no tasks exist yet at boot).
+            effect_id = str(effect.get("effect_id") or "")
+            task = self._consumer_tasks.get(effect_id) if effect_id else None
+            owner_alive = task is not None and not task.done()
+            return {
+                "schema": "slice2b-death-proof-v1",
+                "effect_id": effect_id,
+                "owner_alive_in_process": bool(owner_alive),
+                "proof": (
+                    "consumer_task_absent"
+                    if not owner_alive
+                    else "consumer_task_live"
+                ),
+                "observed_at": time.time(),
+            }
+
+        return _resolve
 
     # -- promotion barrier (synchronous fail-closed) ------------------------
 

@@ -33,6 +33,7 @@ from pipeline_job_contract import build_job_envelope
 from producer_consumer_slice2b import (
     CONSUMER_GATE_CHAIN_ORDER,
     GATE_CHAIN_ORDER,
+    CandidateLifecycle,
     ConsumerDispatcher,
     OneAheadCoordinator,
     SealResult,
@@ -610,3 +611,264 @@ def test_one_ahead_full_cycle_seal_dispatch_barrier(tmp_path):
     assert set(entry["gate_results"]) == set(CONSUMER_GATE_CHAIN_ORDER)
     # The Producer can immediately begin the next prepare now that the slot is free.
     assert coord.producer_may_advance() is True
+
+
+# ---------------------------------------------------------------------------
+# CandidateLifecycle (persisted FSM replacing the in-memory ValidationLedger)
+# ---------------------------------------------------------------------------
+
+
+def test_lifecycle_persists_across_store_reopen(tmp_path):
+    """A sealed candidate remains visible after the lifecycle store is closed
+    and reopened (simulating a process restart).  This is the core durability
+    invariant that lets one-ahead survive a restart."""
+    db_path = tmp_path / "slice2b_lifecycle.sqlite3"
+    lifecycle = CandidateLifecycle(db_path)
+    lifecycle.start(
+        candidate_id="candidate-v200",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-200",
+        envelope_digest=DIGESTS["b"],
+        sealed_snapshot={"candidate_id": "candidate-v200", "next_v": 200},
+    )
+    assert lifecycle.non_terminal_candidates() == {
+        "candidate-v200": DIGESTS["a"]
+    }
+
+    # Drop the in-memory object and reopen the same on-disk store.
+    reopened = CandidateLifecycle(db_path)
+    assert reopened.non_terminal_candidates() == {
+        "candidate-v200": DIGESTS["a"]
+    }
+    entry = reopened.snapshot("candidate-v200")
+    assert entry["validation_outcome"] == "running"
+    assert entry["sealed_snapshot"]["next_v"] == 200
+
+
+def test_lifecycle_terminal_candidate_not_in_non_terminal(tmp_path):
+    """Once a candidate reaches PROMOTED, it leaves non_terminal_candidates
+    (the boot-recovery set) but stays queryable via snapshot()."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    lifecycle.start(
+        candidate_id="candidate-v201",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-201",
+        envelope_digest=DIGESTS["b"],
+    )
+    assert "candidate-v201" in lifecycle.non_terminal_candidates()
+    lifecycle.promote(
+        candidate_id="candidate-v201",
+        promotion_receipt={"receipt_digest": DIGESTS["c"]},
+        completed_at=130.0,
+    )
+    assert lifecycle.non_terminal_candidates() == {}
+    assert lifecycle.is_terminal("candidate-v201")
+    assert lifecycle.is_promoted("candidate-v201")
+
+
+def test_lifecycle_reject_moves_to_rejected_terminal(tmp_path):
+    """reject() transitions SEALED -> REJECTED and records the reason."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    lifecycle.start(
+        candidate_id="candidate-v202",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-202",
+        envelope_digest=DIGESTS["b"],
+    )
+    lifecycle.reject(
+        candidate_id="candidate-v202",
+        reason="gate_failed:run_quality_gates",
+        completed_at=140.0,
+    )
+    entry = lifecycle.snapshot("candidate-v202")
+    assert entry["validation_outcome"] == "rejected"
+    assert entry["terminal_reason"] == "gate_failed:run_quality_gates"
+    assert lifecycle.is_terminal("candidate-v202")
+    assert lifecycle.is_promoted("candidate-v202") is False
+
+
+def test_lifecycle_illegal_transition_promote_after_rejected_raises(tmp_path):
+    """A terminal candidate cannot transition again (PROMOTED/REJECTED are
+    absorbing).  Trying to promote an already-rejected candidate raises."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    lifecycle.start(
+        candidate_id="candidate-v203",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-203",
+        envelope_digest=DIGESTS["b"],
+    )
+    lifecycle.reject(
+        candidate_id="candidate-v203",
+        reason="gate_failed:run_review",
+        completed_at=150.0,
+    )
+    with pytest.raises(Slice2bError, match="illegal_transition"):
+        lifecycle.promote(
+            candidate_id="candidate-v203",
+            promotion_receipt={"receipt_digest": DIGESTS["c"]},
+            completed_at=160.0,
+        )
+
+
+def test_lifecycle_promote_without_start_raises(tmp_path):
+    """promote() on a candidate that was never sealed (no SEALED row) is an
+    illegal transition (None -> PROMOTED is not in the whitelist)."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    with pytest.raises(Slice2bError, match="illegal_transition"):
+        lifecycle.promote(
+            candidate_id="candidate-never-sealed",
+            promotion_receipt={"receipt_digest": DIGESTS["c"]},
+            completed_at=170.0,
+        )
+
+
+def test_lifecycle_start_is_idempotent_on_replay(tmp_path):
+    """Replaying the same seal (same artifact hash) returns the existing row
+    without raising.  A different artifact hash is unrecoverable drift."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    first = lifecycle.start(
+        candidate_id="candidate-v204",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-204",
+        envelope_digest=DIGESTS["b"],
+    )
+    replay = lifecycle.start(
+        candidate_id="candidate-v204",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-204",
+        envelope_digest=DIGESTS["b"],
+    )
+    assert first["sealed_artifact_hash"] == replay["sealed_artifact_hash"]
+    with pytest.raises(Slice2bError, match="artifact_drift"):
+        lifecycle.start(
+            candidate_id="candidate-v204",
+            sealed_artifact_hash=DIGESTS["f"],  # different artifact
+            envelope_effect_id="eff-204",
+            envelope_digest=DIGESTS["b"],
+        )
+
+
+def test_lifecycle_record_gate_persists_and_reloads(tmp_path):
+    """Gate results survive a store reopen (consumer crashed mid-chain)."""
+    db_path = tmp_path / "lc.sqlite3"
+    lifecycle = CandidateLifecycle(db_path)
+    lifecycle.start(
+        candidate_id="candidate-v205",
+        sealed_artifact_hash=DIGESTS["a"],
+        envelope_effect_id="eff-205",
+        envelope_digest=DIGESTS["b"],
+    )
+    lifecycle.record_gate(
+        candidate_id="candidate-v205",
+        gate_name="run_quality_gates",
+        outcome="success",
+        result_digest=DIGESTS["1"],
+        finished_at=200.0,
+    )
+    # Reopen and confirm the gate result persisted.
+    reopened = CandidateLifecycle(db_path)
+    entry = reopened.snapshot("candidate-v205")
+    assert "run_quality_gates" in entry["gate_results"]
+    assert entry["gate_results"]["run_quality_gates"]["outcome"] == "success"
+
+
+def test_validation_ledger_alias_is_candidate_lifecycle():
+    """The backwards-compat alias resolves to the persisted class."""
+    assert ValidationLedger is CandidateLifecycle
+
+
+# ---------------------------------------------------------------------------
+# Boot recovery (recover_at_boot re-schedules consumers after a restart)
+# ---------------------------------------------------------------------------
+
+
+def test_recover_at_boot_reschedules_non_terminal_candidates(tmp_path):
+    """After a restart, recover_at_boot rebuilds the in-memory snapshot
+    registry and re-schedules the consumer for every SEALED candidate."""
+    from producer_consumer_slice2b_activation import Slice2bActivation
+
+    adapter = _adapter(tmp_path)
+    snapshot = _snapshot(candidate_id="candidate-v300")
+    # First "process": seal + record a SEALED lifecycle with the snapshot.
+    activation = Slice2bActivation(adapter=adapter)
+    activation.seal_at_workers_done(
+        snapshot=snapshot,
+        run_id="run-300",
+        job_id="job:draft-v300:quality-static",
+        idempotency_key="draft-v300:quality-static:v1",
+        artifact_digest=snapshot["artifact_hash"],
+        resource_claim=_RESOURCE_CLAIM,
+        retry_policy=_RETRY_POLICY,
+        deadline=_DEADLINE,
+        evaluation_contract_digest=DIGESTS["1"],
+        executor_digest=DIGESTS["2"],
+        repository_digest=DIGESTS["5"],
+        runtime_digest=DIGESTS["4"],
+    )
+    assert "candidate-v300" in activation._sealed_snapshots
+
+    # Simulate a crash: build a FRESH activation over the same adapter (same
+    # sqlite).  The in-memory registries start empty.
+    crashed_activation = Slice2bActivation(adapter=adapter)
+    assert "candidate-v300" not in crashed_activation._sealed_snapshots
+
+    # recover_at_boot rebuilds the registries from the persisted lifecycle.
+    recovered = crashed_activation.recover_at_boot()
+    assert any(
+        r["candidate_id"] == "candidate-v300"
+        for r in recovered["rescheduled"]
+    )
+    assert "candidate-v300" in crashed_activation._sealed_snapshots
+    # The snapshot was recovered from the persisted lifecycle.
+    recovered_snapshot = crashed_activation._sealed_snapshots["candidate-v300"]
+    assert recovered_snapshot["candidate_id"] == "candidate-v300"
+    # A factory was scheduled so ensure_consumer_running will relaunch it.
+    assert "candidate-v300" in crashed_activation._scheduled_factories
+
+
+def test_recover_at_boot_skips_terminal_candidates(tmp_path):
+    """A candidate that already reached PROMOTED is not re-scheduled."""
+    from producer_consumer_slice2b_activation import Slice2bActivation
+
+    adapter = _adapter(tmp_path)
+    snapshot = _snapshot(candidate_id="candidate-v301")
+    activation = Slice2bActivation(adapter=adapter)
+    activation.seal_at_workers_done(
+        snapshot=snapshot,
+        run_id="run-301",
+        job_id="job:draft-v301:quality-static",
+        idempotency_key="draft-v301:quality-static:v1",
+        artifact_digest=snapshot["artifact_hash"],
+        resource_claim=_RESOURCE_CLAIM,
+        retry_policy=_RETRY_POLICY,
+        deadline=_DEADLINE,
+        evaluation_contract_digest=DIGESTS["1"],
+        executor_digest=DIGESTS["2"],
+        repository_digest=DIGESTS["5"],
+        runtime_digest=DIGESTS["4"],
+    )
+    # Mark it terminal via the ledger directly (consumer finished + promoted).
+    activation.ledger.promote(
+        candidate_id="candidate-v301",
+        promotion_receipt={"receipt_digest": DIGESTS["c"]},
+        completed_at=300.0,
+    )
+
+    crashed_activation = Slice2bActivation(adapter=adapter)
+    recovered = crashed_activation.recover_at_boot()
+    assert recovered["rescheduled"] == []
+    assert "candidate-v301" not in crashed_activation._sealed_snapshots
+
+
+def test_death_proof_resolver_marks_absent_owner_dead(tmp_path):
+    """The death-proof resolver proves prior-owner death when no live task
+    exists for the effect (the post-restart case)."""
+    from producer_consumer_slice2b_activation import Slice2bActivation
+
+    adapter = _adapter(tmp_path)
+    activation = Slice2bActivation(adapter=adapter)
+    resolver = activation.death_proof_resolver()
+    # No consumer task registered -> owner is dead.
+    proof = resolver({"effect_id": "some-effect"})
+    assert proof["owner_alive_in_process"] is False
+    assert proof["proof"] == "consumer_task_absent"

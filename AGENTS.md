@@ -439,7 +439,7 @@ same global semaphore as all other roles. The `api_concurrency` adaptive
 backoff still halves the cap per 429, so a too-aggressive steady-state
 ceiling self-corrects downward if GLM rate-limits.
 
-When ``POK_SLICE2B_ENABLED=1`` (Slice 2b one-ahead, default-off), the
+When ``POK_SLICE2B_ENABLED=1`` (Slice 2b one-ahead), the
 background consumer runs the canonical LLM gate chain through
 ``run_precommit_eval`` only; the primary orchestrator lane is parked at those
 gates and ``commit_bot`` runs once behind the promotion barrier. After seal at
@@ -449,6 +449,36 @@ the consumer validates gen N. Draft checkpoints use shadow identity
 (``is_draft=True``): they skip live floor+1 allocation CAS, isolate candidates
 under ``RESULTS_DIR/draft_candidates/``, and promotion remaps them onto the
 formal ``next_v`` after the primary publishes.
+
+The Slice-2b seal is now durable and crash-recoverable. Two contracts make
+this work (re-enabled 2026-07-31 after fixing defect E; see
+``docs/slice2b-one-ahead-fsm-2026-07-31.md``):
+
+1. **Status gate narrowed by effect kind**
+   (``workflow_kernel.py::request_effect``). The seal deliberately attaches a
+   ``producer-consumer-job:*`` effect to the worker-journal ``run_id``, whose
+   instance is already ``status="completed"`` at the seal point
+   (``worker_workflow.projected`` flips it at ``workers_done``). The gate now
+   admits such seal effects on a ``completed`` instance, while every other
+   kind (``worker_llm`` / ``system_blueprint`` / unknown) still requires a
+   ``running`` instance. Worker-effect safety is unchanged. Before this fix,
+   the seal crashed every generation that reached ``workers_done`` with
+   slice2b on (0 producer-consumer effects in the entire runtime history).
+
+2. **Persisted candidate lifecycle FSM** (``producer_consumer_slice2b.py``).
+   The former in-memory ``ValidationLedger`` is replaced by a persisted
+   ``CandidateLifecycle`` keyed by ``candidate_id`` in
+   ``RESULTS_DIR/workflow/slice2b_lifecycle.sqlite3``. Each candidate moves
+   ``[none] → SEALED → (PROMOTED | REJECTED)`` through a single atomic
+   ``_transition`` that enforces a transition whitelist under
+   ``BEGIN IMMEDIATE``. The sealed snapshot is persisted at seal time, so
+   ``Slice2bActivation.recover_at_boot()`` rebuilds the in-memory registries
+   and re-schedules the consumer gate chain for every ``SEALED`` candidate
+   after a process restart — one-ahead stays parallel instead of degenerating
+   to serial inline. ``ValidationLedger`` remains as a backwards-compat alias.
+   The consumer dispatcher's ``adapter.recover`` now carries a death-proof
+   resolver (``Slice2bActivation.death_proof_resolver``) so a restart can
+   reclaim a lease whose owner pid is gone.
 
 ### CLAUDE.md / AGENTS.md memory injection
 

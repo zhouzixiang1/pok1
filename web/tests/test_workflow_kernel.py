@@ -1217,3 +1217,110 @@ def test_unknown_database_schema_version_fails_closed(tmp_path):
 
     with pytest.raises(WorkflowConflict, match="unsupported workflow database schema"):
         WorkflowStore(path)
+
+
+# ---------------------------------------------------------------------------
+# Defect E (b) regression: request_effect status gate narrowed by effect kind.
+#
+# The Slice-2b seal deliberately attaches a ``producer-consumer-job:*`` effect
+# to a worker-journal run_id whose instance is already ``status="completed"``
+# at the seal point (worker_workflow.projected flips the worker journal to
+# "completed" at workers_done).  request_effect must admit such seal effects on
+# a completed instance (otherwise the seal crashes -- the historical "0
+# producer-consumer effects in the entire runtime history" + commit 7682ce95
+# disable).  Worker effects (worker_llm / system_blueprint) and any unknown
+# kind still require a running instance, so worker-effect safety is unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _completed_store(tmp_path):
+    """A WorkflowStore whose single instance is status='completed'."""
+    store = WorkflowStore(tmp_path / "workflow.sqlite3")
+    store.ensure_instance("200#0", definition_version=1)  # born "running"
+    store.append_event_and_set_status(
+        "200#0",
+        event_type="WorkerProjected",
+        payload={"stage": "workers_done"},
+        causation_id="projected-200",
+        expected_version=0,
+        status="completed",
+    )
+    return store
+
+
+def test_request_effect_accepts_producer_consumer_kind_on_completed_instance(tmp_path):
+    """Seal effect (producer-consumer-job:*) on a COMPLETED journal succeeds."""
+    store = _completed_store(tmp_path)
+    effect = store.request_effect(
+        run_id="200#0",
+        effect_id="slice2b-seal-200",
+        kind="producer-consumer-job:quality-static",
+        input_payload={"envelope_digest": "abc"},
+        causation_id="seal-200",
+    )
+    assert effect["effect_id"] == "slice2b-seal-200"
+    assert effect["kind"] == "producer-consumer-job:quality-static"
+    assert effect["status"] == "requested"
+    # The idempotent replay path is now also reachable for seal effects on a
+    # completed instance (previously the status gate defeated replay).
+    duplicate = store.request_effect(
+        run_id="200#0",
+        effect_id="slice2b-seal-200",
+        kind="producer-consumer-job:quality-static",
+        input_payload={"envelope_digest": "abc"},
+        causation_id="seal-200",
+    )
+    assert duplicate["effect_id"] == "slice2b-seal-200"
+
+
+def test_request_effect_rejects_worker_kind_on_completed_instance(tmp_path):
+    """worker_llm effect on a COMPLETED journal is still rejected."""
+    store = _completed_store(tmp_path)
+    with pytest.raises(WorkflowConflict, match="not running"):
+        store.request_effect(
+            run_id="200#0",
+            effect_id="worker-200",
+            kind="worker_llm",
+            input_payload={"task_digest": "abc"},
+            causation_id="request-worker-200",
+        )
+
+
+def test_request_effect_rejects_unknown_kind_on_completed_instance(tmp_path):
+    """Unknown kind on a COMPLETED journal is rejected (worker safety)."""
+    store = _completed_store(tmp_path)
+    with pytest.raises(WorkflowConflict, match="not running"):
+        store.request_effect(
+            run_id="200#0",
+            effect_id="mystery-200",
+            kind="something-else",
+            input_payload={"x": 1},
+            causation_id="request-mystery-200",
+        )
+
+
+def test_request_effect_still_requires_running_for_worker_kind_on_running(tmp_path):
+    """Baseline: worker_llm still works on a RUNNING instance (unchanged)."""
+    store = WorkflowStore(tmp_path / "workflow.sqlite3")
+    store.ensure_instance("201#0", definition_version=1)  # running
+    effect = store.request_effect(
+        run_id="201#0",
+        effect_id="worker-201",
+        kind="worker_llm",
+        input_payload={"task_digest": "abc"},
+        causation_id="request-worker-201",
+    )
+    assert effect["status"] == "requested"
+
+
+def test_request_effect_rejects_any_kind_on_missing_instance(tmp_path):
+    """No instance at all still raises (seal-kind relaxation is not a bypass)."""
+    store = WorkflowStore(tmp_path / "workflow.sqlite3")
+    with pytest.raises(WorkflowConflict, match="not running"):
+        store.request_effect(
+            run_id="never-created",
+            effect_id="slice2b-seal-x",
+            kind="producer-consumer-job:quality-static",
+            input_payload={"envelope_digest": "abc"},
+            causation_id="seal-x",
+        )
