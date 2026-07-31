@@ -128,9 +128,11 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"内置 bot 池({len(bot_pool)}): {[n for _, n in bot_pool]}", flush=True)
 
     runner = DockerRunner()
+    # orchestrator 并发上限设得比 worker 数大,保证 worker 的 challenge 不被拒
+    # (worker 串行消费,实际并发 = concurrency)。
     orch = MatchOrchestrator(store, runner, bot_manager=mgr,
                              hands_per_match=70, action_timeout=60.0,
-                             max_concurrent=args.concurrency)
+                             max_concurrent=args.concurrency + 2)
     total = args.matches
     print(f"\n开始稳定性压测:{total} 场,并发 {args.concurrency}\n", flush=True)
 
@@ -145,11 +147,28 @@ async def main_async(args: argparse.Namespace) -> int:
 
     outcomes: list[MatchOutcome] = []
     t_start = time.time()
-    # 并发由 orchestrator.max_concurrent 独占控制;run_one 遇"并发满"自动重试。
-    # 一次提交全部 task,orchestrator 会把超出并发上限的排队(challenge 重试等空位)。
-    tasks = [run_one(orch, store, i + 1, a[0], b[0], a[1], b[1])
-             for i, (a, b) in enumerate(pairs)]
-    outcomes = await asyncio.gather(*tasks)
+    # 生产者-消费者:challenge 在并发满时是同步拒绝(ValueError),不是排队,
+    # 所以用 N 个 worker 从队列取任务,每个跑完再取下一个(避免 gather herd)。
+    # orchestrator.max_concurrent 设得比 worker 数大,保证 worker 不被拒。
+    queue: asyncio.Queue[tuple[int, tuple, tuple]] = asyncio.Queue()
+    for i, (a, b) in enumerate(pairs):
+        queue.put_nowait((i + 1, a, b))
+
+    async def worker():
+        results: list[MatchOutcome] = []
+        while not queue.empty():
+            try:
+                idx, a, b = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            results.append(await run_one(orch, store, idx, a[0], b[0], a[1], b[1]))
+        return results
+
+    workers = await asyncio.gather(*[worker() for _ in range(args.concurrency)])
+    for w in workers:
+        outcomes.extend(w)
+    # 按场次序号排序(便于阅读)
+    outcomes.sort(key=lambda o: o.idx)
     await runner.cleanup_all()
     total_dur = time.time() - t_start
 
