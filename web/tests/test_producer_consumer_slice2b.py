@@ -33,6 +33,7 @@ from pipeline_job_contract import build_job_envelope
 from producer_consumer_slice2b import (
     CONSUMER_GATE_CHAIN_ORDER,
     GATE_CHAIN_ORDER,
+    AheadCoordinator,
     CandidateLifecycle,
     ConsumerDispatcher,
     OneAheadCoordinator,
@@ -412,50 +413,82 @@ def test_consumer_dispatcher_is_idle_when_queue_empty(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# OneAheadCoordinator
+# AheadCoordinator (derives all state from the CandidateLifecycle FSM)
 # ---------------------------------------------------------------------------
 
 
+def _seal_into_fsm(ledger, candidate_id, artifact_hash=DIGESTS["a"]):
+    """Seed the FSM the way the real seal path does (seal_at_workers_done)."""
+    ledger.start(
+        candidate_id=candidate_id,
+        sealed_artifact_hash=artifact_hash,
+        envelope_effect_id=f"eff-{candidate_id}",
+        envelope_digest=DIGESTS["e"],
+    )
+
+
 def test_producer_may_advance_when_buffer_has_capacity():
-    coord = OneAheadCoordinator(ValidationLedger())
+    ledger = ValidationLedger()
+    coord = AheadCoordinator(ledger)
+    # Empty FSM: buffer has full capacity (producer may draft behind / seal).
     assert coord.producer_may_advance() is True
-    assert coord.producer_may_prepare_next() is False
+    assert coord.producer_may_draft_behind() is True
+    _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
-    # The one-ahead slot is occupied: producer may prepare the next draft but
-    # may NOT seal another candidate in this minimum slice.
-    assert coord.producer_may_prepare_next() is True
+    # Single-ahead (max_ahead=1): the slot is occupied, no room for another.
+    assert coord.producer_may_draft_behind() is False
     assert coord.producer_may_advance() is False
 
 
 def test_high_water_refuses_second_seal_in_minimum_slice():
-    coord = OneAheadCoordinator(ValidationLedger())
+    ledger = ValidationLedger()
+    coord = AheadCoordinator(ledger)
+    _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
+    # The real seal path seeds the FSM (ledger.start) before note_sealed.  With
+    # max_ahead=1, a second sealed candidate exceeds the high-water.
+    _seal_into_fsm(ledger, "c2", artifact_hash=DIGESTS["b"])
     with pytest.raises(Slice2bError, match="high_water_exceeded"):
         coord.note_sealed(candidate_id="c2", artifact_hash=DIGESTS["b"])
 
 
 def test_sealed_artifact_drift_is_rejected():
-    coord = OneAheadCoordinator(ValidationLedger())
-    coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
+    # Artifact drift is now detected by the FSM (the single source of truth),
+    # not the coordinator's former _in_flight dict.
+    ledger = ValidationLedger()
+    _seal_into_fsm(ledger, "c1", artifact_hash=DIGESTS["a"])
     with pytest.raises(Slice2bError, match="artifact_drift"):
-        coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["b"])
+        _seal_into_fsm(ledger, "c1", artifact_hash=DIGESTS["b"])
+
+
+def test_coordinator_derives_from_lifecycle_no_in_flight():
+    """The coordinator holds NO candidate state: producer_may_* / in_flight are
+    derived purely from the persisted lifecycle FSM.  This is the regression
+    for the former recovery gap (recover_at_boot never replayed note_sealed,
+    so the in-memory _in_flight was empty after a restart)."""
+    ledger = ValidationLedger()
+    coord = AheadCoordinator(ledger)
+    assert coord.in_flight() == {}
+    assert coord.producer_may_draft_behind() is True
+    _seal_into_fsm(ledger, "c1")
+    # The coordinator sees the sealed candidate WITHOUT any note_sealed call --
+    # it reads the FSM directly.  This is correct immediately after a restart.
+    fresh_coord = AheadCoordinator(ledger)
+    assert fresh_coord.in_flight() == {"c1": DIGESTS["a"]}
+    assert fresh_coord.producer_may_draft_behind() is False
 
 
 def test_promotion_barrier_blocks_until_consumer_promotes():
     ledger = ValidationLedger()
-    coord = OneAheadCoordinator(ledger)
+    coord = AheadCoordinator(ledger)
+    # Seed the FSM (the real seal path).  The coordinator derives from it.
+    _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
 
     async def driver():
         # Simulate the Consumer completing the chain mid-barrier.
         async def consumer():
             await asyncio.sleep(0.02)
-            ledger.start(
-                candidate_id="c1",
-                sealed_artifact_hash=DIGESTS["a"],
-                envelope_effect_id="eff-1",
-                envelope_digest=DIGESTS["e"],
-            )
             ledger.promote(
                 candidate_id="c1",
                 promotion_receipt={"receipt_digest": DIGESTS["9"]},
@@ -473,23 +506,18 @@ def test_promotion_barrier_blocks_until_consumer_promotes():
     assert entry["validation_outcome"] == "promoted"
     # After promotion the buffer drains and the producer is cleared to seal again.
     assert coord.producer_may_advance() is True
-    assert coord.producer_may_prepare_next() is False
+    assert coord.producer_may_draft_behind() is True
 
 
 def test_promotion_barrier_fails_closed_on_rejection():
     ledger = ValidationLedger()
-    coord = OneAheadCoordinator(ledger)
+    coord = AheadCoordinator(ledger)
+    _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
 
     async def driver():
         async def consumer():
             await asyncio.sleep(0.01)
-            ledger.start(
-                candidate_id="c1",
-                sealed_artifact_hash=DIGESTS["a"],
-                envelope_effect_id="eff-1",
-                envelope_digest=DIGESTS["e"],
-            )
             ledger.reject(
                 candidate_id="c1",
                 reason="gate_failed:run_review",
@@ -507,7 +535,7 @@ def test_promotion_barrier_fails_closed_on_rejection():
 
 
 def test_promotion_barrier_rejects_unknown_candidate():
-    coord = OneAheadCoordinator(ValidationLedger())
+    coord = AheadCoordinator(ValidationLedger())
     with pytest.raises(Slice2bError, match="unknown_candidate"):
 
         async def driver():
@@ -520,7 +548,8 @@ def test_barrier_poll_callback_drives_consumer_in_same_loop():
     """A single event loop can run Producer barrier + Consumer dispatch."""
 
     ledger = ValidationLedger()
-    coord = OneAheadCoordinator(ledger)
+    coord = AheadCoordinator(ledger)
+    _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
 
     poll_count = {"n": 0}
@@ -528,12 +557,6 @@ def test_barrier_poll_callback_drives_consumer_in_same_loop():
     def poll_callback():
         poll_count["n"] += 1
         if poll_count["n"] == 1:
-            ledger.start(
-                candidate_id="c1",
-                sealed_artifact_hash=DIGESTS["a"],
-                envelope_effect_id="eff-1",
-                envelope_digest=DIGESTS["e"],
-            )
             ledger.promote(
                 candidate_id="c1",
                 promotion_receipt={"receipt_digest": DIGESTS["9"]},
@@ -574,11 +597,19 @@ def test_slice2b_enabled_requires_explicit_opt_in():
 def test_one_ahead_full_cycle_seal_dispatch_barrier(tmp_path):
     adapter = _adapter(tmp_path)
     ledger = ValidationLedger()
-    coord = OneAheadCoordinator(ledger)
+    coord = AheadCoordinator(ledger)
     dispatcher = ConsumerDispatcher(adapter, ledger, owner="consumer-a")
 
     snapshot = _snapshot()
     sealed = _seal(adapter, snapshot=snapshot)
+    # The real seal path (seal_at_workers_done) seeds the FSM before the
+    # coordinator or dispatcher see the candidate.  Mirror that here.
+    ledger.start(
+        candidate_id=sealed["candidate_id"],
+        sealed_artifact_hash=sealed["artifact_digest"],
+        envelope_effect_id=sealed["effect_id"],
+        envelope_digest=sealed["envelope_digest"],
+    )
     coord.note_sealed(
         candidate_id=sealed["candidate_id"],
         artifact_hash=sealed["artifact_digest"],

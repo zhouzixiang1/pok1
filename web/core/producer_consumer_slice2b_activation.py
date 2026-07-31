@@ -189,13 +189,9 @@ class Slice2bActivation:
             repository_digest=repository_digest,
             runtime_digest=runtime_digest,
         )
-        self.coordinator.note_sealed(
-            candidate_id=sealed["candidate_id"],
-            artifact_hash=sealed["artifact_digest"],
-        )
         # Persist the sealed candidate's lifecycle (SEALED) AND the immutable
-        # snapshot, so a process restart can recover the consumer task without
-        # the Producer still being around.  The dispatcher's later ``start``
+        # snapshot FIRST, so the FSM is the source of truth before the
+        # coordinator's high-water check runs.  The dispatcher's later ``start``
         # call is idempotent (artifact-drift guard), so seeding here is safe.
         try:
             self.ledger.start(
@@ -210,6 +206,12 @@ class Slice2bActivation:
             # any other failure here must not block the seal (the envelope is
             # already durable).  The dispatcher will re-seed on its claim.
             pass
+        # Coordinator high-water check: now that the FSM reflects this candidate,
+        # note_sealed enforces the multi-ahead capacity (raises if over-sealed).
+        self.coordinator.note_sealed(
+            candidate_id=sealed["candidate_id"],
+            artifact_hash=sealed["artifact_digest"],
+        )
         # Stash the snapshot so the consumer task / a retry can re-derive it
         # without the producer having to stay around.  Also record the envelope
         # submission time so the consumer dispatches with a ``now`` that keeps

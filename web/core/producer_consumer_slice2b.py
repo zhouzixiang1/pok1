@@ -90,6 +90,15 @@ _VALID_SUBSTATE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
+# Reasons the primary orchestrator lane is parked while the consumer owns the
+# gate chain.  Replaces the former scattered bare-string flags
+# ("slice2b_consumer_parked" / "slice2b_sealed") with a single typed value that
+# the orchestrator classifier and loop branches consume.
+class ParkReason:
+    SEALED = "slice2b_sealed"  # primary just sealed; consumer lane starting
+    CONSUMER_IN_FLIGHT = "slice2b_consumer_parked"  # consumer owns gates
+
+
 class Slice2bError(RuntimeError):
     """The one-ahead buffer could not be proven without guessing."""
 
@@ -249,27 +258,40 @@ def build_slice2b_quality_envelope(
 
 
 # Lifecycle states.  ``None``/missing row == not yet sealed.
-_CANDIDATE_SEALED = "sealed"  # sealed, validation in progress (or not yet leased)
+_CANDIDATE_SEALED = "sealed"  # sealed; consumer not yet leasing the gate chain
+_CANDIDATE_CONSUMING = "consuming"  # consumer leased + running the gate chain
 _CANDIDATE_PROMOTED = "promoted"  # consumer gates passed; commit_bot may publish
 _CANDIDATE_REJECTED = "rejected"  # a gate failed; generation must abandon
 
 # Public mirror of the in-memory ``validation_outcome`` values, for callers
 # (coordinator / activation) that read ``snapshot()["validation_outcome"]``.
+# Both SEALED and CONSUMING project as "running" (validation in progress); the
+# distinction is lease discipline, not a different consumer-visible outcome.
 _VALIDATION_OUTCOME_BY_STATE = {
     _CANDIDATE_SEALED: "running",
+    _CANDIDATE_CONSUMING: "running",
     _CANDIDATE_PROMOTED: "promoted",
     _CANDIDATE_REJECTED: "rejected",
 }
 
 # Allowed transitions into a new state from the current persisted state.
 # ``None`` current = row does not exist yet (only ``start`` is legal).
+# Gate records stay within the CONSUMING state via ``record_gate``.
 _ALLOWED_STATE_TRANSITIONS = {
     (None, _CANDIDATE_SEALED),
+    (_CANDIDATE_SEALED, _CANDIDATE_CONSUMING),
     (_CANDIDATE_SEALED, _CANDIDATE_PROMOTED),
     (_CANDIDATE_SEALED, _CANDIDATE_REJECTED),
+    (_CANDIDATE_CONSUMING, _CANDIDATE_PROMOTED),
+    (_CANDIDATE_CONSUMING, _CANDIDATE_REJECTED),
 }
 
-_LIFECYCLE_SCHEMA_VERSION = 1
+# The set of non-terminal states: a candidate in either of these is still
+# "in flight" (sealed-but-unresolved).  The coordinator derives its high-water
+# count from the count of rows in these states.
+_NON_TERMINAL_STATES = (_CANDIDATE_SEALED, _CANDIDATE_CONSUMING)
+
+_LIFECYCLE_SCHEMA_VERSION = 2
 
 
 def _empty_lifecycle_row(candidate_id: str) -> dict[str, Any]:
@@ -284,6 +306,9 @@ def _empty_lifecycle_row(candidate_id: str) -> dict[str, Any]:
         "promotion_receipt": None,
         "completed_at": None,
         "sealed_snapshot": None,  # the immutable snapshot the consumer needs
+        "reserved_next_v": None,  # draft version reserved for ordered promotion
+        "slot_id": None,  # which draft slot owns this candidate
+        "sealed_at_epoch": None,  # when the SEALED transition happened
     }
 
 
@@ -346,6 +371,11 @@ class CandidateLifecycle:
                 )
                 """
             )
+            # Schema v2: add multi-ahead columns (idempotent; legacy rows default
+            # to NULL, which is correct for single-ahead history).
+            self._ensure_column(connection, "reserved_next_v", "INTEGER")
+            self._ensure_column(connection, "slot_id", "TEXT")
+            self._ensure_column(connection, "sealed_at_epoch", "REAL")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS slice2b_lifecycle_meta(
@@ -362,7 +392,24 @@ class CandidateLifecycle:
                     "INSERT INTO slice2b_lifecycle_meta(key, value) VALUES (?, ?)",
                     ("schema_version", str(_LIFECYCLE_SCHEMA_VERSION)),
                 )
+            elif int(row["value"] or 0) < _LIFECYCLE_SCHEMA_VERSION:
+                connection.execute(
+                    "UPDATE slice2b_lifecycle_meta SET value = ? WHERE key = 'schema_version'",
+                    (str(_LIFECYCLE_SCHEMA_VERSION),),
+                )
             connection.commit()
+
+    @staticmethod
+    def _ensure_column(connection: sqlite3.Connection, name: str, decl: str) -> None:
+        """Add ``name`` to slice2b_candidate_lifecycle if absent (idempotent)."""
+        cols = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(slice2b_candidate_lifecycle)")
+        }
+        if name not in cols:
+            connection.execute(
+                f"ALTER TABLE slice2b_candidate_lifecycle ADD COLUMN {name} {decl}"
+            )
 
     # -- single atomic transition ------------------------------------------
 
@@ -405,15 +452,19 @@ class CandidateLifecycle:
             if mutator is not None:
                 mutator(entry)
             # Persist.  UPSERT so the SEALED insert and the terminal UPDATE
-            # share one code path.
+            # share one code path.  Multi-ahead columns (reserved_next_v,
+            # slot_id, sealed_at_epoch) are written on the SEALED insert and
+            # preserved on subsequent transitions (excluded.* carries the
+            # mutator-updated value, defaulting to the existing row value).
             connection.execute(
                 """
                 INSERT INTO slice2b_candidate_lifecycle(
                     candidate_id, state, sealed_artifact_hash,
                     envelope_effect_id, envelope_digest, gate_results_json,
                     promotion_receipt_json, terminal_reason, completed_at,
-                    sealed_snapshot_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sealed_snapshot_json, updated_at,
+                    reserved_next_v, slot_id, sealed_at_epoch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(candidate_id) DO UPDATE SET
                     state=excluded.state,
                     sealed_artifact_hash=excluded.sealed_artifact_hash,
@@ -424,7 +475,13 @@ class CandidateLifecycle:
                     terminal_reason=excluded.terminal_reason,
                     completed_at=excluded.completed_at,
                     sealed_snapshot_json=excluded.sealed_snapshot_json,
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    reserved_next_v=COALESCE(excluded.reserved_next_v,
+                        slice2b_candidate_lifecycle.reserved_next_v),
+                    slot_id=COALESCE(excluded.slot_id,
+                        slice2b_candidate_lifecycle.slot_id),
+                    sealed_at_epoch=COALESCE(excluded.sealed_at_epoch,
+                        slice2b_candidate_lifecycle.sealed_at_epoch)
                 """,
                 (
                     candidate_id,
@@ -446,6 +503,9 @@ class CandidateLifecycle:
                         else None
                     ),
                     now,
+                    entry.get("reserved_next_v"),
+                    entry.get("slot_id"),
+                    entry.get("sealed_at_epoch"),
                 ),
             )
             connection.commit()
@@ -477,6 +537,9 @@ class CandidateLifecycle:
                 if row["sealed_snapshot_json"]
                 else None
             ),
+            "reserved_next_v": row["reserved_next_v"],
+            "slot_id": row["slot_id"],
+            "sealed_at_epoch": row["sealed_at_epoch"],
         }
         return entry
 
@@ -490,6 +553,8 @@ class CandidateLifecycle:
         envelope_effect_id: str,
         envelope_digest: str,
         sealed_snapshot: Mapping[str, Any] | None = None,
+        reserved_next_v: int | None = None,
+        slot_id: str | None = None,
     ) -> dict[str, Any]:
         """Record that the Producer sealed ``candidate_id``.
 
@@ -497,7 +562,8 @@ class CandidateLifecycle:
         existing row; a different artifact hash for the same candidate_id is
         an unrecoverable drift.  ``sealed_snapshot`` is persisted once (at the
         first start) so the consumer can recover it after a crash without the
-        Producer still being around.
+        Producer still being around.  ``reserved_next_v`` / ``slot_id`` bind the
+        draft version + slot for ordered multi-ahead promotion.
         """
         _require_safe_id(candidate_id, "candidate_id")
         artifact = _require_digest(sealed_artifact_hash, "sealed_artifact_hash")
@@ -508,12 +574,20 @@ class CandidateLifecycle:
                 raise Slice2bError("validation_ledger_candidate_artifact_drift")
             return deepcopy(existing)
 
+        sealed_at = time.time()
+
         def _seed(entry: dict[str, Any]) -> None:
             entry["sealed_artifact_hash"] = artifact
             entry["envelope_effect_id"] = envelope_effect_id
             entry["envelope_digest"] = envelope_digest
             if sealed_snapshot is not None and not entry.get("sealed_snapshot"):
                 entry["sealed_snapshot"] = deepcopy(dict(sealed_snapshot))
+            if reserved_next_v is not None and entry.get("reserved_next_v") is None:
+                entry["reserved_next_v"] = int(reserved_next_v)
+            if slot_id is not None and not entry.get("slot_id"):
+                entry["slot_id"] = str(slot_id)
+            if entry.get("sealed_at_epoch") is None:
+                entry["sealed_at_epoch"] = sealed_at
 
         return self._transition(
             candidate_id, to_state=_CANDIDATE_SEALED, mutator=_seed
@@ -605,23 +679,64 @@ class CandidateLifecycle:
         entry = self.snapshot(candidate_id)
         return entry is not None and entry["validation_outcome"] == "promoted"
 
-    # -- boot recovery (new) ------------------------------------------------
+    # -- consumer lease transition (SEALED -> CONSUMING) --------------------
+
+    def begin_consuming(self, *, candidate_id: str) -> dict[str, Any]:
+        """Mark a sealed candidate as leased by the consumer (SEALED -> CONSUMING).
+
+        Called by the dispatcher when it claims the envelope and starts the gate
+        chain.  Idempotent: a candidate already CONSUMING stays CONSUMING (the
+        dispatcher may re-claim on retry); a terminal candidate is rejected.
+        """
+        existing = self.snapshot(candidate_id)
+        if existing is None:
+            raise Slice2bError("validation_ledger_candidate_not_started")
+        if existing["validation_outcome"] in {"promoted", "rejected"}:
+            raise Slice2bError("validation_ledger_candidate_already_terminal")
+        if existing.get("validation_outcome") == "running" and self._state_of(candidate_id) == _CANDIDATE_CONSUMING:
+            return deepcopy(existing)
+        return self._transition(candidate_id, to_state=_CANDIDATE_CONSUMING)
+
+    def _state_of(self, candidate_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT state FROM slice2b_candidate_lifecycle WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        return str(row["state"]) if row is not None else None
+
+    # -- boot recovery + multi-ahead queries --------------------------------
 
     def non_terminal_candidates(self) -> dict[str, str]:
         """Map candidate_id -> sealed_artifact_hash for every sealed-but-
-        unresolved candidate.  Used by ``recover_at_boot`` to relaunch the
-        consumer task after a crash/restart so one-ahead stays parallel.
+        unresolved candidate (SEALED or CONSUMING).  Used by ``recover_at_boot``
+        to relaunch the consumer task after a crash/restart so one-ahead stays
+        parallel, and by the coordinator to derive its in-flight count.
         """
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT candidate_id, sealed_artifact_hash FROM slice2b_candidate_lifecycle "
-                "WHERE state = ?",
-                (_CANDIDATE_SEALED,),
+                f"WHERE state IN ({','.join('?' for _ in _NON_TERMINAL_STATES)})",
+                _NON_TERMINAL_STATES,
             ).fetchall()
         return {
             str(row["candidate_id"]): str(row["sealed_artifact_hash"])
             for row in rows
         }
+
+    def non_terminal_entries(self) -> list[dict[str, Any]]:
+        """Full rows for every non-terminal candidate, ordered by reserved_next_v
+        then sealed_at_epoch.  Used by ordered promotion to pick the next
+        promotable draft (lowest reserved version first).
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM slice2b_candidate_lifecycle "
+                f"WHERE state IN ({','.join('?' for _ in _NON_TERMINAL_STATES)}) "
+                "ORDER BY reserved_next_v IS NULL, reserved_next_v ASC, sealed_at_epoch ASC",
+                _NON_TERMINAL_STATES,
+            ).fetchall()
+        return [deepcopy(self._row_to_entry(row)) for row in rows]
 
     def recover_snapshot(self, candidate_id: str) -> dict[str, Any] | None:
         """Return the persisted sealed snapshot for boot-recovery, or None."""
@@ -639,9 +754,11 @@ class CandidateLifecycle:
         *,
         mutator: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
-        """Persist a mutation while staying in the SEALED state (gate records).
+        """Persist a mutation while staying in the current non-terminal state.
 
-        Enforces the candidate exists and is still SEALED (not terminal).
+        Gate records happen while the consumer is running the chain; the
+        candidate may be SEALED (pre-lease) or CONSUMING (leased).  Either is
+        legal; terminal states are rejected.
         """
         now = time.time()
         with self._connect() as connection:
@@ -653,7 +770,7 @@ class CandidateLifecycle:
             if row is None:
                 connection.rollback()
                 raise Slice2bError("validation_ledger_candidate_not_started")
-            if str(row["state"]) != _CANDIDATE_SEALED:
+            if str(row["state"]) not in _NON_TERMINAL_STATES:
                 connection.rollback()
                 raise Slice2bError("validation_ledger_candidate_already_terminal")
             entry = self._row_to_entry(row)
@@ -825,6 +942,9 @@ class ConsumerDispatcher:
             envelope_effect_id=lease["effect_id"],
             envelope_digest=lease["envelope_digest"],
         )
+        # Transition SEALED -> CONSUMING now that this dispatcher has leased the
+        # envelope and is about to run the gate chain.  Idempotent on retry.
+        self._ledger.begin_consuming(candidate_id=candidate_id)
 
         for gate_name in CONSUMER_GATE_CHAIN_ORDER:
             runner = gates[gate_name]
@@ -917,66 +1037,103 @@ class ConsumerDispatcher:
 # ---------------------------------------------------------------------------
 
 
-class OneAheadCoordinator:
-    """Rendezvous between the Producer lane and the in-flight Consumer.
+class AheadCoordinator:
+    """Rendezvous between the Producer lane and the in-flight Consumer(s).
 
-    Minimal-slice semantics:
+    The coordinator holds NO candidate state of its own: every predicate is
+    derived from the persisted :class:`CandidateLifecycle` FSM, which is the
+    single source of truth for each in-flight candidate.  This eliminates the
+    former redundant ``_in_flight`` dict that could drift out of sync with the
+    FSM after a process restart (the recovery gap), and makes multi-ahead
+    support a pure function of the high-water capacity.
 
-    * :meth:`note_sealed` records that the Producer has handed candidate N to
-      the Consumer and is therefore cleared to begin preparing draft N+1.
-    * :meth:`producer_may_prepare_next` returns True iff exactly one sealed
-      candidate is in flight (the one-ahead buffer slot is occupied and the
-      producer may begin the next ``prepare_generation`` draft).
-    * :meth:`producer_may_advance` returns True iff the high-water seal slot is
-      free (``len(_in_flight) < MAX_SEALED_AWAITING_VALIDATION``).
+    * :meth:`note_sealed` is a no-op on coordinator state (the FSM ``start``
+      already persisted the SEALED row); it only seeds the runtime wake-up
+      event so the promotion barrier can be unblocked efficiently.
+    * :meth:`producer_may_draft_behind` returns True iff the number of
+      sealed-but-unresolved candidates is below ``max_ahead`` (there is room to
+      prepare another draft behind the in-flight ones).
+    * :meth:`producer_may_seal_another` is the same capacity check (kept as an
+      alias for the control-plane projection).
     * :meth:`wait_for_promotion_readiness` is the synchronous fail-closed
       promotion barrier: the Producer's publication path must await Consumer
-      completion for the candidate it is publishing.  This method does NOT
-      publish; it only proves the Consumer has promoted (or surfaces the
-      rejection).  Publication itself remains in the unchanged ``commit_bot``.
+      completion for the candidate it is publishing.  Unknown candidates are
+      detected from the FSM (not an in-memory registry), so the barrier is
+      correct immediately after a restart.
     """
 
-    MAX_SEALED_AWAITING_VALIDATION = 1
-
-    def __init__(self, ledger: ValidationLedger) -> None:
-        self._ledger = ledger
-        # candidate_id -> artifact_hash for every sealed-but-unresolved candidate.
-        self._in_flight: dict[str, str] = {}
-        # candidate_id -> asyncio.Event fired when the Consumer reaches a terminal state.
+    def __init__(
+        self,
+        lifecycle: CandidateLifecycle,
+        *,
+        max_ahead: int | None = None,
+    ) -> None:
+        self._lifecycle = lifecycle
+        # Configurable high-water (multi-ahead).  Defaults to the legacy
+        # single-ahead value unless the caller (activation) passes a larger one.
+        self.max_ahead = int(max_ahead) if max_ahead and int(max_ahead) >= 1 else 1
+        # Runtime wake-up events only (NOT candidate state).  candidate_id ->
+        # asyncio.Event fired when the Consumer reaches a terminal state.  These
+        # are rebuilt lazily; their absence does not affect correctness because
+        # the barrier polls the FSM as the source of truth.
         self._events: dict[str, asyncio.Event] = {}
 
+    # Backwards-compat: the class formerly hardcoded this as 1.
+    @property
+    def MAX_SEALED_AWAITING_VALIDATION(self) -> int:
+        return self.max_ahead
+
+    def _non_terminal_count(self) -> int:
+        return len(self._lifecycle.non_terminal_candidates())
+
     def note_sealed(self, *, candidate_id: str, artifact_hash: str) -> None:
+        """Seed the runtime wake-up event for a sealed candidate.
+
+        Candidate state itself lives in the FSM (``start`` persisted the SEALED
+        row before this is called).  The high-water check is defense-in-depth
+        (the launch path checks producer_may_draft_behind before sealing).
+        """
         _require_safe_id(candidate_id, "candidate_id")
         _require_digest(artifact_hash, "artifact_hash")
-        if candidate_id in self._in_flight:
-            if self._in_flight[candidate_id] != artifact_hash:
-                raise Slice2bError("one_ahead_sealed_artifact_drift")
-            return
-        if len(self._in_flight) >= self.MAX_SEALED_AWAITING_VALIDATION:
+        # The candidate is already counted in the FSM (start ran first).  If the
+        # count now EXCEEDS max_ahead, the producer over-sealed; reject.  (Equal
+        # is fine: exactly max_ahead in flight is the intended full buffer.)
+        if self._non_terminal_count() > self.max_ahead:
             raise Slice2bError("one_ahead_high_water_exceeded")
-        self._in_flight[candidate_id] = artifact_hash
         self._events.setdefault(candidate_id, asyncio.Event())
 
-    def producer_may_prepare_next(self) -> bool:
-        """Producer may begin the next ``prepare_generation`` draft.
+    def producer_may_draft_behind(self) -> bool:
+        """Producer may begin another ``prepare_generation`` draft.
 
-        With ``MAX_SEALED_AWAITING_VALIDATION == 1``, this is True exactly when
-        one sealed candidate is in flight and the consumer owns the gate chain.
+        True iff the number of sealed-but-unresolved candidates is below
+        ``max_ahead`` (there is room to prepare one more draft behind the
+        in-flight consumer(s)).  Derived from the FSM, so it is correct after a
+        restart without any in-memory replay.
         """
-
-        return len(self._in_flight) == self.MAX_SEALED_AWAITING_VALIDATION
+        return self._non_terminal_count() < self.max_ahead
 
     def producer_may_advance(self) -> bool:
-        """Producer may seal another candidate (high-water capacity check)."""
+        """Alias of :meth:`producer_may_draft_behind` (capacity to seal another)."""
+        return self.producer_may_draft_behind()
 
-        return len(self._in_flight) < self.MAX_SEALED_AWAITING_VALIDATION
+    # Backwards-compatible alias used by the control-plane projection.
+    def producer_may_prepare_next(self) -> bool:
+        """Legacy name: True iff at least one candidate is in flight AND there is
+        room for the producer to draft behind it.
+
+        For single-ahead (max_ahead=1) this preserves the original semantics
+        (True iff exactly one is in flight).  For multi-ahead it returns True
+        whenever the buffer has capacity, which is the generalized intent.
+        """
+        return self.producer_may_draft_behind()
 
     def in_flight(self) -> dict[str, str]:
-        return dict(self._in_flight)
+        """Derived view of sealed-but-unresolved candidates (FSM source)."""
+        return dict(self._lifecycle.non_terminal_candidates())
 
     def note_terminal(self, *, candidate_id: str) -> None:
+        """Fire the wake-up event for a candidate that reached a terminal state."""
         event = self._events.get(candidate_id)
-        self._in_flight.pop(candidate_id, None)
         if event is not None:
             event.set()
 
@@ -990,20 +1147,17 @@ class OneAheadCoordinator:
     ) -> dict[str, Any]:
         """Block publication until the Consumer has finished with ``candidate_id``.
 
-        Returns the terminal ledger entry.  Raises :class:`Slice2bError` if the
-        Consumer rejected (publication must NOT proceed) or if the candidate is
-        unknown to the coordinator.
-
-        ``poll_callback`` is invoked once per poll tick so a host loop can drive
-        the Consumer dispatcher while waiting (the dispatcher is itself just an
-        async coroutine, so a single event loop can run both lanes without
-        threads).  This is the synchronous fail-closed barrier.
+        Returns the terminal lifecycle entry.  Raises :class:`Slice2bError` if
+        the Consumer rejected (publication must NOT proceed) or if the candidate
+        is unknown to the FSM (the single source of truth, so this is correct
+        even after a restart with no in-memory replay).
         """
-
-        if candidate_id not in self._events and not self._ledger.is_terminal(candidate_id):
+        # Unknown candidate is decided by the FSM, not the in-memory _events.
+        entry = self._lifecycle.snapshot(candidate_id)
+        if entry is None and not self._lifecycle.is_terminal(candidate_id):
             raise Slice2bError("one_ahead_barrier_unknown_candidate")
         start = time.monotonic()
-        while not self._ledger.is_terminal(candidate_id):
+        while not self._lifecycle.is_terminal(candidate_id):
             if poll_callback is not None:
                 poll_callback()
             event = self._events.get(candidate_id)
@@ -1018,7 +1172,7 @@ class OneAheadCoordinator:
                 await asyncio.sleep(poll_interval)
             if timeout is not None and (time.monotonic() - start) > timeout:
                 raise Slice2bError("one_ahead_barrier_timeout")
-        entry = self._ledger.snapshot(candidate_id)
+        entry = self._lifecycle.snapshot(candidate_id)
         if entry is None or entry["validation_outcome"] not in {"promoted", "rejected"}:
             raise Slice2bError("one_ahead_barrier_no_terminal_entry")
         self.note_terminal(candidate_id=candidate_id)
@@ -1027,6 +1181,12 @@ class OneAheadCoordinator:
                 f"one_ahead_barrier_rejected:{entry['terminal_reason']}"
             )
         return entry
+
+
+# Backwards-compatible aliases.  ``OneAheadCoordinator`` is the historical name
+# (imported by tests and the activation layer); it now resolves to the generalized
+# ``AheadCoordinator``.  The high-water is configurable but defaults to 1.
+OneAheadCoordinator = AheadCoordinator
 
 
 # ---------------------------------------------------------------------------

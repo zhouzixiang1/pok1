@@ -292,9 +292,9 @@ def test_seal_at_workers_done_registers_one_ahead_slot(tmp_path):
     snapshot = _snapshot()
     sealed = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
     assert sealed["candidate_id"] == "candidate-v143"
-    # The one-ahead slot is occupied: producer may prepare the next draft but
-    # may NOT seal another candidate until the consumer finishes.
-    assert activation.producer_may_prepare_next() is True
+    # The one-ahead buffer is full (max_ahead=1): no room for another draft
+    # until the consumer finishes and drains the slot.
+    assert activation.producer_may_prepare_next() is False
     assert activation.producer_may_advance() is False
     # Sealing the same candidate again is idempotent and does not raise.
     sealed_again = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
@@ -346,9 +346,9 @@ def test_consumer_task_promotes_and_drains_one_ahead_slot(tmp_path):
     entry = activation.ledger.snapshot(candidate_id)
     assert entry["validation_outcome"] == "promoted"
     assert set(entry["gate_results"]) == set(CONSUMER_GATE_CHAIN_ORDER)
-    # The one-ahead slot drained after promotion: producer may seal again.
+    # The one-ahead slot drained after promotion: buffer has capacity again.
     assert activation.producer_may_advance() is True
-    assert activation.producer_may_prepare_next() is False
+    assert activation.producer_may_prepare_next() is True
 
 
 def test_consumer_task_rejects_on_candidate_failure(tmp_path):
@@ -364,7 +364,7 @@ def test_consumer_task_rejects_on_candidate_failure(tmp_path):
     assert entry["terminal_reason"] == "gate_failed:run_review"
     # The slot drains even on rejection so the producer is not permanently stuck.
     assert activation.producer_may_advance() is True
-    assert activation.producer_may_prepare_next() is False
+    assert activation.producer_may_prepare_next() is True
 
 
 def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
@@ -401,8 +401,9 @@ def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
     assert gates
     first_gate = next(iter(gates))
     assert gates[first_gate]["outcome"] == "infrastructure_failure"
-    # The producer is NOT cleared to prepare another draft while infra retries.
-    assert activation.producer_may_prepare_next() is True
+    # The candidate is still in flight (infra retries, not terminal), so the
+    # buffer is full and the producer may not draft another.
+    assert activation.producer_may_prepare_next() is False
     assert activation.producer_may_advance() is False
 
 
@@ -595,8 +596,9 @@ def test_seal_seam_seals_and_schedules_consumer_when_active(monkeypatch, tmp_pat
             assert result is True
             assert outcome["result"]["slice2b_sealed"] is True
             assert outcome["result"]["candidate_id"] == "candidate-v143"
-            # The producer may prepare the next draft while the consumer runs.
-            assert activation.producer_may_prepare_next() is True
+            # The buffer is full (sealed candidate in flight): no room for
+            # another draft until the consumer finishes.
+            assert activation.producer_may_prepare_next() is False
             assert activation.producer_may_advance() is False
             # The consumer task was launched by the seal (ensure_consumer_running).
             task = activation.consumer_task("candidate-v143")
@@ -605,9 +607,9 @@ def test_seal_seam_seals_and_schedules_consumer_when_active(monkeypatch, tmp_pat
 
         asyncio.run(driver())
         assert activation.ledger.is_promoted("candidate-v143")
-        # After promotion the slot drains: producer may seal again.
+        # After promotion the slot drains: buffer has capacity again.
         assert activation.producer_may_advance() is True
-        assert activation.producer_may_prepare_next() is False
+        assert activation.producer_may_prepare_next() is True
     finally:
         _o._slice2b_activation_registry("clear")
 
