@@ -1465,60 +1465,77 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
         return
 
     try:
-        may_prepare = bool(activation.producer_may_prepare_next())
+        may_prepare = bool(activation.producer_may_draft_behind())
     except Exception:
         return
     if not may_prepare:
-        # One-ahead buffer is empty or full; no sealed in-flight candidate to
-        # prepare behind.
+        # Multi-ahead buffer is full (number of sealed-but-unresolved
+        # candidates has reached max_ahead); no room for another draft.
         return
 
-    # De-duplicate: at most one in-flight draft per sealed candidate.  The
-    # draft slot checkpoint is the durable marker.
+    # De-duplicate: at most one in-flight draft per draft slot.  A draft slot
+    # checkpoint is the durable marker that the slot is occupied.
     try:
-        from evolution_infra import read_pipeline_checkpoint
-
-        existing_draft = read_pipeline_checkpoint(slot_id="draft")
+        from evolution_infra import read_pipeline_checkpoint, read_all_pipeline_checkpoints, is_draft_slot
     except Exception:
-        existing_draft = None
-    if existing_draft:
-        # A draft is already pending; do not launch another.  Promotion /
-        # abandon / re-prepare is a later phase.
         return
-
-    # Do not start a speculative draft while a shutdown is in flight.
+    occupied_slots = set()
     try:
-        if shutdown_mgr is not None and shutdown_mgr.is_shutting_down:
-            return
+        all_slots = read_all_pipeline_checkpoints()
     except Exception:
-        pass
+        all_slots = {}
+    for sid in all_slots:
+        if is_draft_slot(sid):
+            occupied_slots.add(sid)
 
-    # Launch the draft prepare as a fire-and-forget background task.  The draft
-    # runs prepare -> direction_audit -> Master -> Workers into
-    # pipeline_state_draft.json, filling the LLM permit idle time while gen N's
-    # consumer gate chain runs concurrently.  It is fenced by the one-ahead
-    # coordinator (high-water=1) and the draft checkpoint existence check above.
-    # If gen N rejects (abandons) the draft is abandoned at promotion time.
-    try:
-        _orch.asyncio.create_task(_draft_prepare_task(ui, shutdown_mgr, gen_count))
-        _orch.log_system_event(
-            "orchestrator.slice2b_draft_prepare_launched",
-            "info",
-            "One-ahead draft prepare launched for gen N+1",
-            {"gen_count": gen_count},
-        )
-    except Exception:
-        # If the task cannot be scheduled (e.g. no running loop), clear any
-        # partial draft marker so the next tick can retry.
+    # Pick the next free draft slot.  Single-ahead (max_ahead==1) uses the
+    # legacy unprefixed "draft" slot; multi-ahead uses numbered slots
+    # draft1, draft2, ... up to max_ahead.
+    max_ahead = int(getattr(activation.coordinator, "max_ahead", 1))
+    launched_any = False
+    for n in range(1, max_ahead + 1):
+        if not activation.producer_may_draft_behind():
+            break
+        if max_ahead == 1:
+            candidate_slot = "draft"  # legacy single-ahead slot
+        else:
+            candidate_slot = f"draft{n}"
+        if candidate_slot in occupied_slots:
+            continue
+        # Do not start a speculative draft while a shutdown is in flight.
         try:
-            from evolution_infra import clear_pipeline_checkpoint
-
-            clear_pipeline_checkpoint(slot_id="draft")
+            if shutdown_mgr is not None and shutdown_mgr.is_shutting_down:
+                return
         except Exception:
             pass
+        # Launch the draft prepare as a fire-and-forget background task.  The
+        # draft runs prepare -> direction_audit -> Master -> Workers into
+        # pipeline_state_<slot>.json, filling the LLM permit idle time while gen
+        # N's consumer gate chain runs concurrently.  It is fenced by the
+        # ahead coordinator (high-water=max_ahead) and the slot existence check.
+        try:
+            _orch.asyncio.create_task(
+                _draft_prepare_task(ui, shutdown_mgr, gen_count, slot_id=candidate_slot)
+            )
+            occupied_slots.add(candidate_slot)
+            launched_any = True
+            _orch.log_system_event(
+                "orchestrator.slice2b_draft_prepare_launched",
+                "info",
+                f"Ahead draft prepare launched for slot {candidate_slot}",
+                {"gen_count": gen_count, "slot_id": candidate_slot},
+            )
+        except Exception:
+            # If the task cannot be scheduled (e.g. no running loop), clear any
+            # partial draft marker so the next tick can retry.
+            try:
+                clear_pipeline_checkpoint(slot_id=candidate_slot)
+            except Exception:
+                pass
+    return
 
 
-async def _draft_prepare_task(ui, shutdown_mgr, gen_count):
+async def _draft_prepare_task(ui, shutdown_mgr, gen_count, slot_id="draft"):
     """Fire-and-forget draft-prepare task body (P0-3a classify-then-decide).
 
     Module-level so the exception handler is directly testable without mocking
@@ -1533,9 +1550,12 @@ async def _draft_prepare_task(ui, shutdown_mgr, gen_count):
     ``_run_draft_cycle``, so the exception path never needs an unconditional
     clear.  This mirrors the primary generation slot's infra-error handling
     (preserve checkpoint + discard provider session) rather than wiping it.
+
+    ``slot_id`` selects which multi-ahead draft slot the task drives (``draft``
+    for single-ahead / legacy; ``draft1``/``draft2``/... for multi-ahead).
     """
     try:
-        await _run_draft_cycle(ui, shutdown_mgr, gen_count)
+        await _run_draft_cycle(ui, shutdown_mgr, gen_count, slot_id=slot_id)
     except Exception as exc:
         # P0-3a: classify-then-decide.  A transient LLM/infra failure
         # (ClaudeSDKError incl. 429 quota, asyncio.TimeoutError,
@@ -1567,13 +1587,13 @@ async def _draft_prepare_task(ui, shutdown_mgr, gen_count):
             pass
 
 
-async def _run_draft_cycle(ui, shutdown_mgr, gen_count):
+async def _run_draft_cycle(ui, shutdown_mgr, gen_count, *, slot_id="draft"):
     """Drive the one-ahead draft (gen N+1) through its LLM stages.
 
-    Runs entirely inside an ``active_slot_override('draft')`` asyncio task
+    Runs entirely inside an ``active_slot_override(slot_id)`` asyncio task
     context so that every checkpoint read/write performed by
     ``prepare_generation`` and the deterministic stage router transparently
-    targets ``pipeline_state_draft.json``.  The draft advances:
+    targets ``pipeline_state_<slot_id>.json``.  The draft advances:
 
         selected -> preparing -> prepared        (prepare_generation)
         prepared -> direction_audited            (run_direction_audit)
@@ -1582,28 +1602,31 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count):
 
     and STOPS at ``workers_done``.  It deliberately does NOT run the consumer
     gate chain (quality->review->critic->precommit->commit) nor trigger the
-    Slice 2b seal-at-workers-done seam: the draft is a pre-computed candidate
+    Slice 2b seal-at-workers_done seam: the draft is a pre-computed candidate
     that is promoted to the primary slot when gen N publishes (see the
     promotion barrier), after which the canonical primary loop owns its gate
     chain and publication.
 
-    Best-effort and non-fatal: any exception clears the draft slot so the next
-    loop tick can re-prepare from scratch.
+    ``slot_id`` selects the multi-ahead draft slot (``draft`` for single-ahead /
+    legacy; ``draft1``/``draft2``/... for multi-ahead).  Best-effort and
+    non-fatal: any exception clears the draft slot so the next loop tick can
+    re-prepare from scratch.
     """
     from evolution_infra import active_slot_override, clear_pipeline_checkpoint
     from generation_scheduler import prepare_generation as _prepare_generation
 
-    with active_slot_override("draft"):
+    with active_slot_override(slot_id):
         # Phase 1: prepare the draft generation into the draft slot.  This
-        # computes the one-ahead target (primary_next_v + 1) and writes the
-        # ``selected`` checkpoint to pipeline_state_draft.json.
+        # computes the one-ahead target (primary_next_v + 1, or a distinct
+        # reserved version for multi-ahead) and writes the ``selected``
+        # checkpoint to pipeline_state_<slot_id>.json.
         draft_ctx = await _prepare_generation(
-            shutdown_mgr, ui, slot_id="draft"
+            shutdown_mgr, ui, slot_id=slot_id
         )
         if draft_ctx is None:
             # Prepare refused (handoff, epoch, workflow guard, shutdown, ...).
             # Nothing to drive; leave the draft slot clean.
-            clear_pipeline_checkpoint(slot_id="draft")
+            clear_pipeline_checkpoint(slot_id=slot_id)
             return
 
         # Phases 2-4: drive the deterministic stage router one stage at a time
@@ -1680,7 +1703,7 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count):
                     )
                 except Exception:
                     pass
-                clear_pipeline_checkpoint(slot_id="draft")
+                clear_pipeline_checkpoint(slot_id=slot_id)
                 return
             if not advanced.get("routed"):
                 # Could not route (e.g. blocked recovery).  Stop driving; the
@@ -1693,11 +1716,11 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count):
                 "orchestrator.slice2b_draft_iteration_cap",
                 "warn",
                 "One-ahead draft exceeded stage-advance iteration cap; clearing",
-                {"gen_count": gen_count},
+                {"gen_count": gen_count, "slot_id": slot_id},
             )
         except Exception:
             pass
-        clear_pipeline_checkpoint(slot_id="draft")
+        clear_pipeline_checkpoint(slot_id=slot_id)
 
 
 # ---------------------------------------------------------------------------

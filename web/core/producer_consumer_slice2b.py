@@ -331,13 +331,16 @@ class CandidateLifecycle:
     """
 
     def __init__(self, db_path: str | Path | None = None) -> None:
-        # Default to a process-private temp db so the legacy no-arg call
-        # ``ValidationLedger()`` (used widely in unit tests) keeps working.
-        # Production (the activation layer) passes the real lifecycle path.
+        # Default to a UNIQUE process-private temp db per instance so the legacy
+        # no-arg call ``ValidationLedger()`` (used widely in unit tests) never
+        # shares state across instances (id(self) alone can be reused by the
+        # allocator between instances with identical lifetimes).  Production
+        # (the activation layer) passes the real lifecycle path.
         if db_path is None:
             import tempfile
+            import uuid
             db_path = Path(tempfile.gettempdir()) / (
-                f"slice2b_lifecycle_{os.getpid()}_{id(self)}.sqlite3"
+                f"slice2b_lifecycle_{os.getpid()}_{uuid.uuid4().hex}.sqlite3"
             )
         self._db_path = str(db_path)
         self._ensure_schema()
@@ -1034,9 +1037,12 @@ class ConsumerDispatcher:
         if not leases:
             return {"dispatched": False, "reason": "no_leasable_envelope", "now": now}
         if len(leases) > 1:
-            # Process exactly one per round to keep lease renewal bounded; the
-            # next ``run_once`` picks up the rest.  This is the minimum viable
-            # dispatcher; a fork/join executor is Slice 3.
+            # Process exactly one per run_once round.  In the multi-ahead model
+            # there is ONE consumer task per sealed candidate (the activation's
+            # ensure_consumer_running launches a task per candidate_id), so each
+            # dispatcher instance naturally claims its own candidate; truncating
+            # to one keeps lease renewal bounded and avoids one task racing
+            # another's candidate.  The next run_once picks up any remainder.
             leases = leases[:1]
 
         lease = leases[0]
