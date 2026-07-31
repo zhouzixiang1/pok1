@@ -230,14 +230,18 @@ class MatchOrchestrator:
         winner = result.get("winner")
         ended_at = datetime.now().isoformat(timespec="seconds")
         net_bb_a = float(earnings[0]) / BIG_BLIND if earnings else 0.0
-        if result.get("aborted"):
+        aborted = bool(result.get("aborted"))
+        if aborted:
+            # bot 容器中途崩溃 / 通信不可恢复 → 整场中止,如实标 aborted(非 completed)
+            final_status = STATUS_ABORTED
             reason = f"bot_session_dead:{result.get('abort_reason') or 'unknown'}"
         else:
+            final_status = STATUS_COMPLETED
             reason = "completed"
 
         self.store.update_match(
             match_id,
-            status=STATUS_COMPLETED,
+            status=final_status,
             hands_played=hands,
             earnings_a=int(earnings[0]) if earnings else 0,
             earnings_b=int(earnings[1]) if len(earnings) > 1 else 0,
@@ -247,26 +251,29 @@ class MatchOrchestrator:
             ended_at=ended_at,
         )
 
-        # 评分 + 对统计更新(独立 try:评分失败不影响已完成对局记录)
-        try:
-            self._update_ratings(bot_a["id"], bot_b["id"], earnings)
-            self._update_pair_stats(bot_a["id"], bot_b["id"])
-        except Exception:
-            logger.exception("match %s rating/pair_stats update failed", match_id)
+        # 评分 + 对统计更新:仅正常完成的对局计入 Glicko-2(中止对局不评)。
+        # 独立 try:评分失败不影响已完成对局记录。
+        if not aborted:
+            try:
+                self._update_ratings(bot_a["id"], bot_b["id"], earnings)
+                self._update_pair_stats(bot_a["id"], bot_b["id"])
+            except Exception:
+                logger.exception("match %s rating/pair_stats update failed", match_id)
 
         self._matches_played += 1
         self._current_match_id = prev_match_id
         await self._broadcast({
             "type": "match_end",
             "match_id": match_id,
-            "status": STATUS_COMPLETED,
+            "status": final_status,
             "winner": winner,
             "earnings": earnings,
             "hands_played": hands,
+            "reason": reason,
             "ended_at": ended_at,
         })
-        logger.info("match %s completed: winner=%s earnings=%s hands=%d",
-                    match_id, winner, earnings, hands)
+        logger.info("match %s %s: winner=%s earnings=%s hands=%d",
+                    match_id, final_status, winner, earnings, hands)
 
     # ══════════════════════════════════════════════════════════
     # 事件 sink:写 DB replay + SSE 扇出

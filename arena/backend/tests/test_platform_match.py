@@ -697,12 +697,13 @@ def test_orchestrator_event_sink_is_async_coroutine(tmp_path):
 
 
 def test_orchestrator_handles_runner_error(tmp_path):
-    """runner 抛异常 → MatchRunner 内部当 timeout fold,对局仍能 completed。
+    """runner 通信异常(RuntimeError=容器崩溃)→ 对局中止,status=aborted。
 
     验证:容器崩溃(send 抛 RuntimeError)不会让 orchestrator 卡死,
-    对局按 fold 结束(status completed,不 aborted)。
+    本手按 fold 结束后整场 abort,如实标 status=aborted(非 completed),
+    且中止对局不计入 Glicko-2 评分。
     """
-    orch, store, _ = _orch(tmp_path, hands_per_match=1)
+    orch, store, _ = _orch(tmp_path, hands_per_match=70)
     user, ba, bb = _make_user_and_two_bots(store)
 
     class _CrashRunner(MockRunner):
@@ -715,8 +716,15 @@ def test_orchestrator_handles_runner_error(tmp_path):
             challenger_bot_id=ba["id"], opponent_bot_id=bb["id"],
             owner_user_id=user["id"]))
         m = _wait_match_done(loop, orch, match_id, store)
-    # MatchRunner 把 send 异常当 timeout → fold,对局 completed(非 aborted)
-    assert m["status"] in ("completed", "aborted")
+    # RuntimeError → MatchRunner 设 _abort_match → 本手 fold 后整场中止
+    assert m["status"] == "aborted", f"期望 aborted,实际 {m['status']}"
+    # 中止对局因 bot 崩溃,hands_played < 70(本手即止)
+    assert m["hands_played"] < 70
+    # 中止对局不计分:ratings 表无记录(初值未变 / 无 matches_played)
+    ra = store.get_rating(ba["id"])
+    rb = store.get_rating(bb["id"])
+    assert (ra is None or ra["matches_played"] == 0), "aborted 对局不应计入评分"
+    assert (rb is None or rb["matches_played"] == 0), "aborted 对局不应计入评分"
 
 
 def test_get_match_status_snapshot(tmp_path):
