@@ -899,6 +899,13 @@ def _resolve_existing_publication_commit(intent: dict) -> str:
     baseline = str(intent.get("baseline_head") or "")
     bot_path, certificate_path = _ei._publication_commit_paths(intent)
     for relative in (bot_path, certificate_path):
+        # A staging-tier intent has an empty certificate path (no official
+        # certificate). ``git cat-file -e "<baseline>:"`` resolves the commit
+        # object itself (empty path = tree root) and spuriously returns success,
+        # which would block every staging publication with a false "path already
+        # existed". Skip empty paths — they have nothing to collision-check.
+        if not relative:
+            continue
         if _ei._git_command_succeeds(
             "cat-file", "-e", f"{baseline}:{relative}"
         ):
