@@ -959,6 +959,154 @@ def _bootstrap_contract_change_abandon_authority(
     )
 
 
+# Reason prefix for the general contract-change abandon path. Distinct from the
+# bootstrap prefix ``official_bootstrap_contract_change:`` so the bootstrap-only
+# external binding validator (``validate_canonical_abandon_external_binding``)
+# stays a no-op for these claims and the two authority paths never collide.
+_CONTRACT_CHANGE_ABANDON_REASON_PREFIX = "national_contract_change_abandon"
+
+# Publication-family stages that are both non-resumable after a contract
+# change (``requires_contract_unchanged=True``) and non-disposable by the
+# generic abandon guard (``never_disposable``). These are the only stages where
+# a contract-critical deploy can strand a generation with no other recovery.
+_CONTRACT_CHANGE_ABANDONABLE_STAGES = frozenset(
+    {"verified", "publishing", "official_certifying"}
+)
+
+
+def _contract_change_abandon_reason(proof: dict | None) -> str:
+    """Render the canonical reason bound to a contract-change abandon proof."""
+    if not isinstance(proof, dict):
+        return ""
+    digest = proof.get("claim_digest") or ""
+    if not isinstance(digest, str) or not digest:
+        return ""
+    return f"{_CONTRACT_CHANGE_ABANDON_REASON_PREFIX}:{digest}"
+
+
+def _contract_change_abandon_authority(
+    checkpoint: dict | None,
+    *,
+    reason: str,
+    contract_change_proof: dict | None,
+) -> dict | None:
+    """Authority that lets a contract-critical deploy abandon a stranded gen.
+
+    A generation that reached a publication-family stage (``verified`` /
+    ``publishing`` / ``official_certifying``) cannot resume after its evaluation
+    contract changed (``repo_baseline_head_mismatch``) and cannot be generically
+    abandoned (``never_disposable``). This authority is the only recovery path.
+
+    It mirrors ``_bootstrap_contract_change_abandon_authority``'s opt-in
+    contract exactly: it returns ``None`` when no proof is supplied (so the
+    default ``never_disposable`` guard is untouched), and on every lock boundary
+    it rebuilds the proof from the live checkpoint + Git state and requires the
+    caller's proof to match byte-for-byte. The proof is never authority by
+    itself — the deploy's contract change is re-proven with
+    ``evaluate_head_drift`` each time.
+
+    Returns the validated proof (truthy) on success; raises ``RuntimeError``
+    (surfaced as ``contract_change_authority_invalid`` by the caller) on any
+    mismatch, drift, or out-of-scope checkpoint.
+    """
+    if contract_change_proof is None:
+        return None
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("contract_change_abandon_checkpoint_missing")
+    if not isinstance(contract_change_proof, dict):
+        raise RuntimeError("contract_change_abandon_proof_not_object")
+
+    # Reason must bind exactly this proof's digest (no free-form text grant).
+    expected_reason = _contract_change_abandon_reason(contract_change_proof)
+    if not expected_reason:
+        raise RuntimeError("contract_change_abandon_proof_missing_claim_digest")
+    if str(reason) != expected_reason:
+        raise RuntimeError("contract_change_abandon_reason_mismatch")
+
+    # Stage must be a publication-family stage that is genuinely unrecoverable
+    # after a contract change and non-disposable by the generic guard.
+    stage = checkpoint.get("stage")
+    if stage not in _CONTRACT_CHANGE_ABANDONABLE_STAGES:
+        raise RuntimeError(
+            f"contract_change_abandon_stage_not_publication_family:{stage}"
+        )
+
+    # Baseline head from the frozen checkpoint record (short form stored; the
+    # proof stores the full 40-hex it was reviewed against).
+    baseline = checkpoint.get("repo_baseline")
+    if not isinstance(baseline, dict):
+        raise RuntimeError("contract_change_abandon_repo_baseline_missing")
+    baseline_head_short = str(baseline.get("head") or "")
+    if not baseline_head_short:
+        raise RuntimeError("contract_change_abandon_baseline_head_missing")
+
+    # Current HEAD from the live worktree the operator fast-forwarded to.
+    current_head = _evolution_git("rev-parse", "HEAD").strip()
+    if not current_head:
+        raise RuntimeError("contract_change_abandon_current_head_missing")
+
+    # Re-prove the contract change with the authoritative head-drift evaluator.
+    # contract_unchanged False + non-empty head_contract_paths means the deploy
+    # genuinely changed evaluation-contract paths, so the stranded candidate is
+    # unrecoverable under the new source and abandon is the legitimate path.
+    from evaluation_contract import evaluate_head_drift
+
+    next_v = checkpoint.get("next_v")
+    source_v = checkpoint.get("source_v")
+    contract_unchanged, drift = evaluate_head_drift(
+        PROJECT_ROOT,
+        baseline_head_short,
+        current_head,
+        candidate_v=next_v if isinstance(next_v, int) else None,
+        source_v=source_v if isinstance(source_v, int) else None,
+        checkpoint=checkpoint,
+        stage=stage,
+    )
+    if contract_unchanged:
+        raise RuntimeError("contract_change_abandon_contract_not_changed")
+    actual_contract_paths = sorted(drift.get("head_contract_paths") or [])
+    if not actual_contract_paths:
+        raise RuntimeError("contract_change_abandon_no_contract_paths_changed")
+
+    # The proof must carry the exact proof identity it was reviewed against;
+    # every field is re-derived here and required to match (tamper-proof).
+    claimed_baseline_head = str(contract_change_proof.get("baseline_head") or "")
+    claimed_current_head = str(contract_change_proof.get("current_head") or "")
+    if not claimed_baseline_head.startswith(baseline_head_short):
+        raise RuntimeError("contract_change_abandon_baseline_head_mismatch")
+    if claimed_current_head != current_head:
+        raise RuntimeError("contract_change_abandon_current_head_mismatch")
+    claimed_paths = sorted(contract_change_proof.get("changed_contract_paths") or [])
+    if claimed_paths != actual_contract_paths:
+        raise RuntimeError("contract_change_abandon_contract_paths_mismatch")
+
+    # The proof's checkpoint identity (5 CAS fields) must match the live
+    # checkpoint exactly, so the authority can never target a different gen.
+    identity = _checkpoint_transaction_identity(checkpoint)
+    if contract_change_proof.get("checkpoint") != identity:
+        raise RuntimeError("contract_change_abandon_checkpoint_identity_mismatch")
+
+    # Recompute and bind the claim digest: the proof's stored digest must equal
+    # the canonical digest over the now-revalidated proof fields. This makes the
+    # digest a function of the live proof, not a caller-supplied token.
+    rebuilt = {
+        "schema_version": 1,
+        "kind": "national-contract-change-abandon-proof",
+        "evaluation_epoch": EVALUATION_EPOCH,
+        "baseline_head": claimed_baseline_head,
+        "current_head": current_head,
+        "changed_contract_paths": actual_contract_paths,
+        "checkpoint": identity,
+        "stage": stage,
+    }
+    rebuilt_digest = canonical_digest(rebuilt)
+    if contract_change_proof.get("claim_digest") != rebuilt_digest:
+        raise RuntimeError("contract_change_abandon_claim_digest_mismatch")
+
+    # Return a truthy authority object carrying the revalidated proof.
+    return {**rebuilt, "claim_digest": rebuilt_digest}
+
+
 def expected_abandon_identity(checkpoint: dict) -> dict:
     """Return the full checkpoint CAS identity required by forced callers."""
 
@@ -1138,6 +1286,7 @@ async def _do_abandon_generation(
     expected_checkpoint_stage: str | None = None,
     expected_terminal_gate_outcome_digest: str | None = None,
     _operator_bootstrap_contract_change_claim_digest: str | None = None,
+    _operator_contract_change_proof: dict | None = None,
 ) -> dict:
     """Core abandon logic — clears the pipeline checkpoint and removes the
     incomplete next-gen directory.
@@ -1410,12 +1559,38 @@ async def _do_abandon_generation(
             "abandoned": False,
             "reason": "bootstrap_contract_change_authority_invalid",
             "action": "operator_reconcile",
-            "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            "error": f"{type(exc).__name__}:{str(exc)[:500]}",
+        }
+    try:
+        # General contract-change abandon authority: the only recovery path for
+        # a generation stranded at a publication-family stage (verified /
+        # publishing / official_certifying) by a contract-critical deploy. Same
+        # opt-in contract as the bootstrap authority: returns None unless an
+        # operator proof is supplied, and rebuilds the proof on every lock
+        # boundary. Mirrors the bootstrap try/except so a mismatched proof
+        # surfaces a typed authority-invalid result rather than crashing.
+        contract_change_authority = (
+            None
+            if recorded_abandon_receipt is not None
+            or not isinstance(checkpoint, dict)
+            else _contract_change_abandon_authority(
+                checkpoint,
+                reason=reason,
+                contract_change_proof=_operator_contract_change_proof,
+            )
+        )
+    except Exception as exc:
+        return {
+            "abandoned": False,
+            "reason": "contract_change_authority_invalid",
+            "action": "operator_reconcile",
+            "error": f"{type(exc).__name__}:{str(exc)[:500]}",
         }
     blocked = (
         None
         if recorded_abandon_receipt is not None
         or bootstrap_contract_change_authority is not None
+        or contract_change_authority is not None
         else _generic_abandon_stage_block(checkpoint, reason)
     )
     if blocked:
@@ -1504,11 +1679,19 @@ async def _do_abandon_generation(
                         ),
                     )
                 )
+                latest_contract_change_authority = (
+                    _contract_change_abandon_authority(
+                        latest,
+                        reason=reason,
+                        contract_change_proof=_operator_contract_change_proof,
+                    )
+                )
                 latest_block = _generic_abandon_stage_block(latest, reason)
                 if (
                     latest_block
                     and recorded_abandon_receipt is None
                     and latest_bootstrap_authority is None
+                    and latest_contract_change_authority is None
                 ):
                     return latest_block, None
                 first_strict_execution_fence = (
@@ -1668,11 +1851,19 @@ async def _do_abandon_generation(
                         ),
                     )
                 )
+                latest_contract_change_authority = (
+                    _contract_change_abandon_authority(
+                        latest,
+                        reason=reason,
+                        contract_change_proof=_operator_contract_change_proof,
+                    )
+                )
                 latest_block = _generic_abandon_stage_block(latest, reason)
                 if (
                     latest_block
                     and recorded_abandon_receipt is None
                     and latest_bootstrap_authority is None
+                    and latest_contract_change_authority is None
                 ):
                     return latest_block
                 checkpoint = latest

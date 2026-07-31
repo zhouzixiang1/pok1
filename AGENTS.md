@@ -716,6 +716,34 @@ epoch initialization false and exposes no active bots. A completed historical
 receipt remains valid after later legitimate commits and ledger rows because it
 binds its original prefix and exact successor row; it never adopts later bytes.
 
+A generation stranded at a **publication-family stage** (`verified` /
+`publishing` / `official_certifying`) by a **contract-critical deploy** is the
+one case where neither resume nor generic abandon is possible: those stages
+require `requires_contract_unchanged=True` (so a deploy that changed an
+evaluation-contract path makes the checkpoint non-resumable with
+`repo_baseline_head_mismatch`) AND they are in the `never_disposable` set (so
+`generic_abandon_block` refuses with `publication_or_certification_stage_not_
+disposable`). The `_bootstrap_contract_change_abandon_authority` bypass is
+bootstrap-only (hard-bound to `next_v == FIRST_STRICT_POLICY_VERSION`). The
+general recovery path is the opt-in `_operator_contract_change_proof`
+authority in `_do_abandon_generation` (mirrors the bootstrap pattern: returns
+`None` unless a proof is supplied, so the default `never_disposable` guard is
+untouched). The proof is rebuilt from the live checkpoint + Git state on every
+lock boundary: it proves `evaluate_head_drift` found non-empty
+`head_contract_paths` between `repo_baseline.head` and current HEAD, the
+operator-declared `changed_contract_paths` exactly matches the live drift, the
+proof's `baseline_head`/`current_head`/checkpoint identity all match, and the
+`claim_digest` is the canonical digest over those revalidated fields (not a
+caller-supplied token). Reason prefix is `national_contract_change_abandon:`
+(distinct from `official_bootstrap_contract_change:` so the bootstrap external
+binding validator stays a no-op). The operator script
+`scripts/abandon_contract_change_generation.py` drives the dry-run → review →
+execute flow; it only accepts publication-family stages and only when the
+contract genuinely changed. Regression:
+`tests/test_abandon_helper.py::test_verified_stage_abandons_with_valid_contract
+_change_proof` and `test_verified_stage_still_refused_without_contract_change_
+proof`. Details: `docs/contract-change-abandon-recovery-2026-07-31.md`.
+
 A provider stream may treat a vanished checkpoint as a completed abandon only
 when the current authorized owner tool returned one unique canonical result,
 flattened or nested, containing `workflow_run_id` plus the exact transaction,

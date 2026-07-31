@@ -75,6 +75,17 @@ checkpoint, result, log, or certificate files are never copied by hand.
     A failed diagnostic, dry-run or execute leaves the runtime stopped; it never
     falls through to normal recovery. Never delete, copy back, or edit a
     checkpoint/candidate to make either path appear clean.
+11. If the contract-critical change stranded a generation at a publication-family
+    stage (`verified` / `publishing` / `official_certifying`) — non-resumable
+    (`repo_baseline_head_mismatch`, `requires_contract_unchanged=True`) AND
+    non-disposable (`never_disposable`) — the only recovery is the opt-in
+    contract-change abandon authority. Stop the runtime, then run
+    `scripts/abandon_contract_change_generation.py` (dry-run → review
+    `changed_contract_paths`/`claim_digest` → `--execute
+    --acknowledge-runtime-checkout --claim-digest <digest>`). It rebuilds the
+    proof from the live checkpoint + Git on every lock boundary, quarantines the
+    candidate, clears the checkpoint by exact CAS, and appends the terminal
+    receipt. Details: `docs/contract-change-abandon-recovery-2026-07-31.md`.
 
 ## Historical Contract-40 source freeze gate
 

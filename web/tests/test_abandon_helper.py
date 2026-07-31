@@ -2881,3 +2881,323 @@ def test_rework_authority_failure_paths_abandon_in_tool_source():
         assert reason in source, (
             f"{reason} 缺失——rework authority 工具内 abandon 回归"
         )
+
+
+# ---------------------------------------------------------------------------
+# General contract-change abandon authority (verified/publishing + contract
+# deploy deadlock). Mirrors the bootstrap bypass pattern but for any
+# publication-family generation stranded by a contract-critical deploy.
+# Regression anchors for the recovery path added 2026-07-31.
+# ---------------------------------------------------------------------------
+
+
+def _verified_contract_change_checkpoint(next_v, source_v, *, revision=17):
+    """A publication-family checkpoint with a repo_baseline that has drifted.
+
+    Models the v25 deadlock: stage=verified, repo_baseline.head points at the
+    pre-deploy commit and the live HEAD has advanced (contract changed).
+    """
+    return _strict_checkpoint(
+        next_v,
+        source_v,
+        "verified",
+        run_id=f"{next_v}#0",
+        workflow_run_id=f"generation:{next_v}:workflow-v1",
+        checkpoint_revision=revision,
+        publication_tier="staging",
+        repo_baseline={
+            "branch": EVOLUTION_BRANCH,
+            "head": "57a76b23328d",  # pre-deploy short HEAD (baseline)
+            "entry_count": 1,
+            "dirty_count": 0,
+            "untracked_count": 1,
+            "entries": [f"?? bots/{bot_name(next_v)}/"],
+            "truncated": False,
+            "evaluation_contract": {"version": 42, "hash": "0" * 64},
+            "captured_stage": "verified",
+            "captured_ts": 1785446247.0,
+        },
+    )
+
+
+def _build_contract_change_proof(checkpoint, *, current_head, contract_paths):
+    """Build the operator proof the authority must match (mirrors the script)."""
+    from bot_artifact import canonical_digest
+
+    identity = tbm._checkpoint_transaction_identity(checkpoint)
+    rebuilt = {
+        "schema_version": 1,
+        "kind": "national-contract-change-abandon-proof",
+        "evaluation_epoch": checkpoint.get("evaluation_epoch"),
+        "baseline_head": checkpoint["repo_baseline"]["head"],
+        "current_head": current_head,
+        "changed_contract_paths": sorted(contract_paths),
+        "checkpoint": identity,
+        "stage": checkpoint.get("stage"),
+    }
+    rebuilt["claim_digest"] = canonical_digest(rebuilt)
+    return rebuilt
+
+
+def _wire_contract_change_drift(monkeypatch, *, current_head, contract_paths):
+    """Monkeypatch the head-drift + git primitives the authority re-proves."""
+    monkeypatch.setattr(
+        tbm,
+        "_evolution_git",
+        lambda *args, **_kw: current_head if args == ("rev-parse", "HEAD") else "",
+    )
+
+    def fake_evaluate_head_drift(_root, baseline_head, _current_head, **_kw):
+        # contract_unchanged is False iff heads differ AND contract paths changed.
+        unchanged = bool(baseline_head) and baseline_head == current_head
+        return unchanged, {
+            "head_drift_paths_available": True,
+            "evaluation_contract_unchanged": unchanged,
+            "head_contract_paths": list(contract_paths) if not unchanged else [],
+        }
+
+    import evaluation_contract
+
+    monkeypatch.setattr(
+        evaluation_contract, "evaluate_head_drift", fake_evaluate_head_drift
+    )
+
+
+def test_contract_change_authority_is_none_without_proof():
+    """No proof => authority returns None => default never_disposable guard holds."""
+    checkpoint = _verified_contract_change_checkpoint(T + 1, T)
+    assert tbm._contract_change_abandon_authority(
+        checkpoint, reason="abandon_generation", contract_change_proof=None
+    ) is None
+
+
+def test_contract_change_authority_rejects_out_of_scope_stage():
+    """Only publication-family stages (verified/publishing/official_certifying)
+    are eligible; a master-stage checkpoint cannot use this path."""
+    checkpoint = _strict_checkpoint(T + 1, T, "master_planned")
+    checkpoint["repo_baseline"] = {"head": "57a76b23328d"}
+    proof = {"claim_digest": "a" * 64}
+    with pytest.raises(RuntimeError, match="stage_not_publication_family"):
+        tbm._contract_change_abandon_authority(
+            checkpoint,
+            reason="national_contract_change_abandon:" + "a" * 64,
+            contract_change_proof=proof,
+        )
+
+
+def test_contract_change_authority_validates_real_drift(monkeypatch):
+    """A proof built from the live drift passes; a forged one is rejected."""
+    checkpoint = _verified_contract_change_checkpoint(T + 1, T)
+    current_head = "c94c8a7b4ee4bf985cdad796eb951bcd0a524fc9"
+    contract_paths = ["web/core/publication_transaction.py"]
+    _wire_contract_change_drift(
+        monkeypatch, current_head=current_head, contract_paths=contract_paths
+    )
+    proof = _build_contract_change_proof(
+        checkpoint, current_head=current_head, contract_paths=contract_paths
+    )
+    reason = tbm._contract_change_abandon_reason(proof)
+    assert reason.startswith("national_contract_change_abandon:")
+
+    authority = tbm._contract_change_abandon_authority(
+        checkpoint, reason=reason, contract_change_proof=proof
+    )
+    assert authority is not None
+    assert authority["changed_contract_paths"] == contract_paths
+    assert authority["current_head"] == current_head
+
+    # A proof whose current_head was tampered (but whose digest was honestly
+    # recomputed from the tampered fields) must be rejected: the authority
+    # re-derives the live current_head from git and requires an exact match, so
+    # a proof built against a different HEAD is refused before digest binding.
+    forged = _build_contract_change_proof(
+        checkpoint,
+        current_head="deadbeef" * 5,
+        contract_paths=contract_paths,
+    )
+    forged_reason = tbm._contract_change_abandon_reason(forged)
+    with pytest.raises(RuntimeError, match="current_head_mismatch"):
+        tbm._contract_change_abandon_authority(
+            checkpoint, reason=forged_reason, contract_change_proof=forged
+        )
+
+    # A proof whose changed_contract_paths list omits a real changed path is
+    # rejected (operator cannot understate the deploy's contract impact).
+    understated = _build_contract_change_proof(
+        checkpoint,
+        current_head=current_head,
+        contract_paths=[],  # claims nothing changed, but live drift has a path
+    )
+    understated_reason = tbm._contract_change_abandon_reason(understated)
+    with pytest.raises(RuntimeError, match="contract_paths_mismatch"):
+        tbm._contract_change_abandon_authority(
+            checkpoint,
+            reason=understated_reason,
+            contract_change_proof=understated,
+        )
+
+
+def test_verified_stage_still_refused_without_contract_change_proof(
+    tmp_path, monkeypatch
+):
+    """Negative anchor: verified without a proof is still never_disposable.
+
+    The new authority must NOT weaken the default guard — verified remains
+    non-disposable unless an explicit contract-change proof is supplied.
+    """
+    import evolution_core
+    import evolution_infra
+
+    checkpoint = _verified_contract_change_checkpoint(T + 1, T)
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
+    candidate = tmp_path / bot_name(T + 1)
+    _strict_artifact(candidate, T + 1)
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tbm.RESULTS_DIR)
+    monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
+    cleared = []
+    monkeypatch.setattr(
+        tbm, "clear_pipeline_checkpoint", lambda **_kw: cleared.append(True) or True
+    )
+    monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
+
+    result = _run(
+        tbm._do_abandon_generation(
+            reason="abandon_generation",
+            _bypass_rate_limit=True,
+            expected_workflow_run_id=checkpoint["workflow_run_id"],
+            expected_next_v=T + 1,
+            expected_source_v=T,
+            expected_checkpoint_revision=17,
+            expected_checkpoint_stage="verified",
+        )
+    )
+    assert result["abandoned"] is False
+    assert result["stage"] == "verified"
+    assert result["reason"] == "publication_or_certification_stage_not_disposable"
+    assert cleared == []
+    assert candidate.exists()
+
+
+def test_verified_stage_abandons_with_valid_contract_change_proof(
+    tmp_path, monkeypatch
+):
+    """Positive anchor: a verified gen stranded by a contract-critical deploy is
+    abandoned via the proof authority — candidate quarantined, checkpoint
+    cleared, abandoned_versions.jsonl receipt appended."""
+    import evolution_core
+    import evolution_infra
+
+    checkpoint = _verified_contract_change_checkpoint(T + 1, T)
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
+    candidate = tmp_path / bot_name(T + 1)
+    _strict_artifact(candidate, T + 1)
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tbm.RESULTS_DIR)
+    monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
+
+    def clear(**_expected):
+        state_file.unlink(missing_ok=True)
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+
+    current_head = "c94c8a7b4ee4bf985cdad796eb951bcd0a524fc9"
+    contract_paths = ["web/core/publication_transaction.py"]
+    _wire_contract_change_drift(
+        monkeypatch, current_head=current_head, contract_paths=contract_paths
+    )
+    proof = _build_contract_change_proof(
+        checkpoint, current_head=current_head, contract_paths=contract_paths
+    )
+    reason = tbm._contract_change_abandon_reason(proof)
+
+    result = _run(
+        tbm._do_abandon_generation(
+            reason=reason,
+            _bypass_rate_limit=True,
+            expected_workflow_run_id=checkpoint["workflow_run_id"],
+            expected_next_v=T + 1,
+            expected_source_v=T,
+            expected_checkpoint_revision=17,
+            expected_checkpoint_stage="verified",
+            _operator_contract_change_proof=proof,
+        )
+    )
+    assert result["abandoned"] is True, result
+
+    # Candidate was quarantined (moved, not deleted) into the transaction dir.
+    transaction = (
+        tbm.RESULTS_DIR
+        / "policy_epoch_abandon_transactions"
+        / result["abandon_transaction_id"]
+    )
+    assert (transaction / "candidate").is_dir()
+    assert not candidate.exists()
+    assert not state_file.exists()
+
+    # A terminal abandon receipt was appended for this version at verified.
+    ledger = tbm.RESULTS_DIR / "abandoned_versions.jsonl"
+    assert ledger.is_file()
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert any(
+        r.get("version") == T + 1
+        and r.get("checkpoint_stage") == "verified"
+        and r.get("reason") == reason
+        for r in rows
+    )
+
+
+def test_verified_stage_abandon_rejects_mismatched_contract_change_proof(
+    tmp_path, monkeypatch
+):
+    """A proof that does not match the live drift surfaces a typed
+    authority-invalid result (abandoned stays False)."""
+    import evolution_core
+    import evolution_infra
+
+    checkpoint = _verified_contract_change_checkpoint(T + 1, T)
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
+    candidate = tmp_path / bot_name(T + 1)
+    _strict_artifact(candidate, T + 1)
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tbm.RESULTS_DIR)
+    monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
+
+    current_head = "c94c8a7b4ee4bf985cdad796eb951bcd0a524fc9"
+    real_paths = ["web/core/publication_transaction.py"]
+    _wire_contract_change_drift(
+        monkeypatch, current_head=current_head, contract_paths=real_paths
+    )
+    # Proof claims a DIFFERENT changed path than the live drift — must reject.
+    proof = _build_contract_change_proof(
+        checkpoint,
+        current_head=current_head,
+        contract_paths=["web/core/totally_different.py"],
+    )
+    reason = tbm._contract_change_abandon_reason(proof)
+
+    result = _run(
+        tbm._do_abandon_generation(
+            reason=reason,
+            _bypass_rate_limit=True,
+            expected_workflow_run_id=checkpoint["workflow_run_id"],
+            expected_next_v=T + 1,
+            expected_source_v=T,
+            expected_checkpoint_revision=17,
+            expected_checkpoint_stage="verified",
+            _operator_contract_change_proof=proof,
+        )
+    )
+    assert result["abandoned"] is False
+    assert result["reason"] == "contract_change_authority_invalid"
+    assert candidate.exists()
+    assert state_file.exists()
