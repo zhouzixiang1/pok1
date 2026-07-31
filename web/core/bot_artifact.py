@@ -778,7 +778,11 @@ def validate_completion_tag(
         issues.append("completion_tag_object_invalid")
     if identity.get("migrated_since_completion"):
         issues.append("completion_tag_bot_tree_differs_from_head")
-    expected_hash = str(expected_metadata.get("official-candidate-hash") or "")
+    expected_hash = str(
+        expected_metadata.get("official-candidate-hash")
+        or expected_metadata.get("staging-candidate-hash")
+        or ""
+    )
     if not expected_hash or identity.get("tag_artifact_hash") != expected_hash:
         issues.append("completion_tag_candidate_hash_mismatch")
 
@@ -794,7 +798,12 @@ def validate_completion_tag(
         for line in contents_result.stdout.splitlines():
             key, separator, value = line.partition(":")
             normalized = key.strip().lower().replace("_", "-")
-            if separator and normalized.startswith("official-"):
+            # Accept both certified (official-*) and staging (staging-*)
+            # annotated-tag metadata keys.
+            if separator and (
+                normalized.startswith("official-")
+                or normalized.startswith("staging-")
+            ):
                 metadata_values.setdefault(normalized, []).append(value.strip())
     for key, expected in expected_metadata.items():
         if metadata_values.get(key, []) != [str(expected)]:
