@@ -1102,7 +1102,9 @@ def _create_publication_commit(intent: dict) -> str:
         ]
         if not any(item.startswith(bot_prefix) for item in scoped):
             raise RuntimeError("publication commit has no staged candidate files")
-        if certificate_path not in scoped:
+        # Staging-tier intents have no official certificate (empty path); only
+        # certified tiers require a staged certificate file.
+        if certificate_path and certificate_path not in scoped:
             raise RuntimeError("publication commit has no staged certificate")
         if unexpected:
             raise RuntimeError(
