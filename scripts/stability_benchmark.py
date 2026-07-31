@@ -51,27 +51,41 @@ class MatchOutcome:
 async def run_one(orch: MatchOrchestrator, store: Store, idx: int,
                   bot_a_id: int, bot_b_id: int,
                   name_a: str, name_b: str) -> MatchOutcome:
-    """跑一场对战,返回结果。"""
+    """跑一场对战,返回结果。并发满时自动重试。"""
     oc = MatchOutcome(idx=idx, bot_a=name_a, bot_b=name_b)
     t0 = time.time()
     try:
-        mid = await orch.challenge(
-            challenger_bot_id=bot_a_id, opponent_bot_id=bot_b_id,
-            owner_user_id=1)
-        # 轮询(单场最多 4 分钟)
-        deadline = time.time() + 240
-        m = None
-        while time.time() < deadline:
-            await asyncio.sleep(2)
-            m = store.get_match(mid)
-            if m and m["status"] in ("completed", "aborted"):
+        # challenge 可能因并发满被拒,重试到成功(最多 5 分钟)
+        mid = None
+        challenge_deadline = time.time() + 300
+        while time.time() < challenge_deadline:
+            try:
+                mid = await orch.challenge(
+                    challenger_bot_id=bot_a_id, opponent_bot_id=bot_b_id,
+                    owner_user_id=1)
                 break
-        if m is None:
-            oc.error = "no match row"
+            except ValueError as exc:
+                if "并发" in str(exc) or "已满" in str(exc):
+                    await asyncio.sleep(2)  # 等并发空位
+                    continue
+                raise
+        if mid is None:
+            oc.error = "challenge 重试超时(并发一直满)"
         else:
-            oc.status = m["status"]
-            oc.hands = m["hands_played"]
-            oc.reason = m["reason"]
+            # 轮询(单场最多 4 分钟)
+            deadline = time.time() + 240
+            m = None
+            while time.time() < deadline:
+                await asyncio.sleep(2)
+                m = store.get_match(mid)
+                if m and m["status"] in ("completed", "aborted"):
+                    break
+            if m is None:
+                oc.error = "no match row"
+            else:
+                oc.status = m["status"]
+                oc.hands = m["hands_played"]
+                oc.reason = m["reason"]
     except Exception as exc:
         oc.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -131,14 +145,10 @@ async def main_async(args: argparse.Namespace) -> int:
 
     outcomes: list[MatchOutcome] = []
     t_start = time.time()
-    # 按并发批次跑(用 semaphore 控制并发,但 orchestrator 自己也有 max_concurrent)
-    sem = asyncio.Semaphore(args.concurrency)
-
-    async def guarded(i, a, b):
-        async with sem:
-            return await run_one(orch, store, i, a[0], b[0], a[1], b[1])
-
-    tasks = [guarded(i + 1, a, b) for i, (a, b) in enumerate(pairs)]
+    # 并发由 orchestrator.max_concurrent 独占控制;run_one 遇"并发满"自动重试。
+    # 一次提交全部 task,orchestrator 会把超出并发上限的排队(challenge 重试等空位)。
+    tasks = [run_one(orch, store, i + 1, a[0], b[0], a[1], b[1])
+             for i, (a, b) in enumerate(pairs)]
     outcomes = await asyncio.gather(*tasks)
     await runner.cleanup_all()
     total_dur = time.time() - t_start
