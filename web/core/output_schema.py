@@ -11,7 +11,10 @@ MASTER_PLAN_MAX_TASKS = 3
 WORKER_TASK_MIN_TARGET_FILES = 1
 WORKER_TASK_MAX_TARGET_FILES = 3
 WORKER_PROMPT_MIN_CHARS = 20
-WORKER_PROMPT_MAX_CHARS = 12_000
+# GLM with effort=max produces detailed worker prompts; the prior 12_000 cap
+# rejected valid proposals that overflowed by <1% (e.g. 12050 chars). 13_000
+# gives an 8% headroom while staying far below Worker context-window limits.
+WORKER_PROMPT_MAX_CHARS = 13_000
 
 PrecomputeBuildPhase = Literal["module_import"]
 PrecomputeFallback = Literal["legal_baseline"]

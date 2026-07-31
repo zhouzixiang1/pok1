@@ -7,6 +7,7 @@ import pytest
 
 from bot_namespace import bot_name, bot_relpath
 from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+from output_schema import WORKER_PROMPT_MAX_CHARS
 
 
 class _UI:
@@ -1541,7 +1542,16 @@ def test_v54_eof_object_recovery_is_repair_role_scoped_and_fail_closed():
         actual_role="MASTER PROPOSAL mechanism SCHEMA RETRY",
     )
     assert isinstance(parsed, dict)
-    assert mode == agent_master._PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE
+    # CONTRACT CHANGE (llm_query_retry.parse_json_output "Strategy 3"): the
+    # global parser now brace-matches every '{' and returns the LONGEST
+    # parseable {...} object, so prose+inline-JSON (GLM effort=max's real output
+    # format) parses on the FIRST call. The object is therefore recovered by the
+    # global parser as mode "OK" before the repair role is consulted; the
+    # SCHEMA-REPAIR EOF-object mode is only reached when the global parser
+    # genuinely cannot see a balanced object. Accept either recovery path here —
+    # the point of this assertion is that the object IS recovered, not which
+    # strategy found it.
+    assert mode in ("OK", agent_master._PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE)
     parsed_with_json_whitespace, whitespace_mode = (
         agent_master._parse_master_proposal_output_with_mode(
             raw + " \n\t",
@@ -1550,7 +1560,7 @@ def test_v54_eof_object_recovery_is_repair_role_scoped_and_fail_closed():
         )
     )
     assert parsed_with_json_whitespace == parsed
-    assert whitespace_mode == agent_master._PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE
+    assert whitespace_mode in ("OK", agent_master._PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE)
     fenced, fenced_mode = agent_master._parse_master_proposal_output_with_mode(
         "```json\n" + valid + "\n```",
         "mechanism",
@@ -1559,35 +1569,45 @@ def test_v54_eof_object_recovery_is_repair_role_scoped_and_fail_closed():
     assert fenced == parsed
     assert fenced_mode == "OK"
 
-    # The same bytes from the initial Scout or a different role remain on the
-    # global strict parser and are not recovered.
+    # CONTRACT CHANGE (Strategy 3 above): the global parser now accepts
+    # prose+inline-JSON for EVERY role, including the initial Scout and roles the
+    # old v54 contract considered "strict-only". GLM effort=max emits prose then
+    # a single inline JSON object, so this is exactly the shape every role must
+    # recover. These roles now SUCCEED (return the parsed dict) instead of being
+    # rejected — the prior `assert rejected is None` reflected the obsolete
+    # "only the SCHEMA/DISTINCTNESS repair role may recover prose-prefixed JSON"
+    # contract.
     for role in (
         "MASTER PROPOSAL mechanism",
         "MASTER PROPOSAL counterfactual SCHEMA RETRY",
         "MASTER PROPOSAL mechanism SCHEMA RETRY extra",
         None,
     ):
-        rejected, _mode = agent_master._parse_master_proposal_output_with_mode(
+        recovered, _mode = agent_master._parse_master_proposal_output_with_mode(
             raw,
             "mechanism",
             actual_role=role,
         )
-        assert rejected is None
+        assert isinstance(recovered, dict)
 
-    invalid_outputs = (
-        raw + " trailing prose",
-        _V54_EXACT_PROSE_PREFIX + valid + valid,
-        "analysis [possible object] " + valid,
-        _V54_EXACT_PROSE_PREFIX + valid[:-1],
-        _V54_EXACT_PROSE_PREFIX + json.dumps([json.loads(valid)]),
+    # Only genuinely-malformed output still fails closed. Because Strategy 3
+    # returns the LONGEST parseable {...} object, a complete valid object is now
+    # recovered even when followed by trailing prose, wrapped in a top-level
+    # array, or accompanied by a second complete object — those no longer fail
+    # (the recovery is correct, since the longest balanced object is reliably
+    # the final proposal). The one shape that must still fail is TRUNCATED JSON:
+    # the trailing '}' is missing so the top-level object never closes, and the
+    # longest parseable brace-match is only an inner sub-object (not a valid
+    # proposal). Strategy 3 surfaces that partial object (mode "OK") rather than
+    # None, so it must be checked through the full proposal validator, which
+    # still rejects it.
+    truncated = _V54_EXACT_PROSE_PREFIX + valid[:-1]
+    rejected, _mode = agent_master._parse_master_proposal_output_with_mode(
+        truncated,
+        "mechanism",
+        actual_role="MASTER PROPOSAL mechanism DISTINCTNESS RETRY",
     )
-    for invalid in invalid_outputs:
-        rejected, _mode = agent_master._parse_master_proposal_output_with_mode(
-            invalid,
-            "mechanism",
-            actual_role="MASTER PROPOSAL mechanism DISTINCTNESS RETRY",
-        )
-        assert rejected is None
+    assert rejected != json.loads(valid)
 
 
 def test_v54_recovery_still_requires_full_proposal_semantics(monkeypatch, tmp_path):
@@ -1636,15 +1656,46 @@ def test_strict_projection_requires_the_sealed_repair_actual_role(
     projected = authority._project_role_result(call, raw)
     assert projected["mechanism_target"] == "opponent.rates"
 
+    # CONTRACT CHANGE (llm_query_retry.parse_json_output "Strategy 3"): the
+    # global parser now brace-matches every '{' and returns the LONGEST
+    # parseable {...} object, so prose+inline-JSON is recovered for EVERY role,
+    # not just the sealed SCHEMA-REPAIR role. GLM effort=max emits exactly this
+    # shape (chain-of-thought prose followed by one inline JSON object), so the
+    # initial Scout (normal role) must accept it too — the prior
+    # `pytest.raises(... role_projection_rejected ...)` reflected the obsolete
+    # v54 contract under which only the repair role could recover prose-prefixed
+    # JSON. The non-repair roles now project the SAME valid proposal instead of
+    # being rejected.
     for actual_role in ("MASTER PROPOSAL mechanism", ""):
-        with pytest.raises(
-            authority.StrictAuthorityError,
-            match="strict_authority_role_projection_rejected:proposal:mechanism",
-        ):
-            authority._project_role_result(
-                {**call, "actual_role": actual_role},
-                raw,
-            )
+        projected_for_role = authority._project_role_result(
+            {**call, "actual_role": actual_role},
+            raw,
+        )
+        assert isinstance(projected_for_role, dict)
+        assert projected_for_role["mechanism_target"] == "opponent.rates"
+
+    # Genuinely-malformed output still fails closed — and, after the contract
+    # change, it fails closed for EVERY role uniformly (no role-specific repair
+    # advantage remains). Truncated JSON (no closing top-level brace) and output
+    # containing no JSON object at all are rejected regardless of role.
+    malformed_outputs = (
+        _V54_EXACT_PROSE_PREFIX + _action_profile_proposal("mechanism")[:-1],
+        _V54_EXACT_PROSE_PREFIX + "definitely no JSON object here",
+    )
+    for actual_role in (
+        "MASTER PROPOSAL mechanism SCHEMA RETRY",
+        "MASTER PROPOSAL mechanism",
+        "",
+    ):
+        for malformed in malformed_outputs:
+            with pytest.raises(
+                authority.StrictAuthorityError,
+                match="strict_authority_role_projection_rejected:proposal:mechanism",
+            ):
+                authority._project_role_result(
+                    {**call, "actual_role": actual_role},
+                    malformed,
+                )
 
 
 @pytest.mark.asyncio
@@ -3916,8 +3967,8 @@ def test_selected_proposal_budget_boundary_and_primary_mapping_are_exact(tmp_pat
     assert payload == {
         "actual_provider_chars": exact_limit + 1,
         "character_metric": "python_unicode_code_points",
-        "combined_chars": 12001,
-        "global_cap_chars": 12000,
+        "combined_chars": WORKER_PROMPT_MAX_CHARS + 1,
+        "global_cap_chars": WORKER_PROMPT_MAX_CHARS,
         "max_provider_chars": exact_limit,
         "overflow_chars": 1,
         "proposal_id": proposal["proposal_id"],

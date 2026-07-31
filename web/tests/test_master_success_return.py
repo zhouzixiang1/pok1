@@ -15,6 +15,7 @@ import pytest
 
 from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
 from bot_namespace import bot_name
+from output_schema import WORKER_PROMPT_MAX_CHARS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -495,7 +496,7 @@ async def test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_i
     import plan_compiler
 
     invalid = json.loads(json.dumps(VALID_PLAN))
-    invalid["tasks"][0]["worker_prompt"] = "x" * 12000
+    invalid["tasks"][0]["worker_prompt"] = "x" * WORKER_PROMPT_MAX_CHARS
     prompts = []
 
     async def fake_run_claude_query(
@@ -531,21 +532,21 @@ async def test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_i
     )
     assert match is not None
     payload = json.loads(match.group(1))
-    assert payload["actual_provider_chars"] == 12000
-    assert payload["global_cap_chars"] == 12000
+    assert payload["actual_provider_chars"] == WORKER_PROMPT_MAX_CHARS
+    assert payload["global_cap_chars"] == WORKER_PROMPT_MAX_CHARS
     assert payload["max_provider_chars"] == (
-        12000
+        WORKER_PROMPT_MAX_CHARS
         - payload["reserved_selected_contract_chars"]
         - payload["reserved_runtime_contract_max_chars"]
         - 2
     )
     assert payload["combined_chars"] == (
-        12000
+        WORKER_PROMPT_MAX_CHARS
         + payload["reserved_selected_contract_chars"]
         + payload["reserved_runtime_contract_max_chars"]
         + 2
     )
-    assert payload["overflow_chars"] == 12000 - payload["max_provider_chars"]
+    assert payload["overflow_chars"] == WORKER_PROMPT_MAX_CHARS - payload["max_provider_chars"]
 
     # The retry returned a schema-valid plan.  It must now remain losslessly
     # inline through the default compiler instead of crossing a hidden 10k
@@ -556,7 +557,7 @@ async def test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_i
         target_dir=tmp_path / bot_name(STRICT_TARGET_V + 1),
         project_root=tmp_path,
     )
-    assert meta["hard_prompt_chars"] == 12000
+    assert meta["hard_prompt_chars"] == WORKER_PROMPT_MAX_CHARS
     assert meta["compiled"] is False
     assert "plan_compiler" not in compiled
     assert not (tmp_path / bot_name(STRICT_TARGET_V + 1) / ".task_context").exists()
@@ -712,7 +713,7 @@ def test_v51_10017_char_strict_master_prompt_stays_inline_and_replays(
         target_dir=candidate_dir,
         project_root=project_root,
     )
-    assert compiler["hard_prompt_chars"] == 12000
+    assert compiler["hard_prompt_chars"] == WORKER_PROMPT_MAX_CHARS
     assert compiler["compiled"] is False, json.dumps(compiler, sort_keys=True)
     assert compiler["contract_binding"]["bound"] is True
     assert not (candidate_dir / ".task_context").exists()
