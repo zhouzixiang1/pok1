@@ -229,9 +229,18 @@ class BotManager:
             return bot["docker_image"]  # 已构建
         if not bot.get("is_builtin"):
             raise BotBuildError("not_builtin", "仅内置 bot 可用此方法")
-        src = Path(bot["source_path"])
+        source_path = bot.get("source_path") or ""
+        if not source_path:
+            # source_path 为空 → Path('')=CWD,会把整个项目根打包进镜像
+            # (曾导致 national_v143 镜像含整个仓库、入口文件丢失)
+            raise BotBuildError(
+                "no_source",
+                f"内置 bot {bot['name']} 缺少 source_path,无法定位源码")
+        src = Path(source_path)
         if not src.exists():
             raise BotBuildError("no_source", f"内置 bot 源码不存在: {src}")
+        if not src.is_dir():
+            raise BotBuildError("no_source", f"内置 bot 源码不是目录: {src}")
         # 复制到临时构建目录(避免污染源码目录)
         import tempfile
         build_dir = Path(tempfile.mkdtemp(prefix=f"builtin_{bot_id}_"))
