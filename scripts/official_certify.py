@@ -103,6 +103,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             action="store_true",
             help="Poll the durable job until it reaches a terminal state.",
         )
+        p.add_argument(
+            "--published",
+            action="store_true",
+            help=(
+                "Certify an already-published strict bot whose pipeline "
+                "checkpoint has been cleared (full mode only). Proves the "
+                "candidate bytes equal the published tag bytes instead of the "
+                "checkpoint-owned quality/capability/probe admission."
+            ),
+        )
     bootstrap = sub.add_parser(
         "bootstrap-first-strict",
         help=(
@@ -405,11 +415,20 @@ def main(argv: list[str] | None = None) -> int:
         # bytes and current dynamic capability/probe ledger before selecting
         # an opponent or creating a durable official-EXE job.  The v143-only
         # explicit bootstrap has a distinct control authorization below.
-        quality_admission_report = build_formal_quality_admission(args.candidate)
+        # ``--published`` substitutes a published-tag proof (candidate bytes ==
+        # published tag bytes) for an already-published strict bot whose
+        # pipeline checkpoint has been cleared.
+        if args.published:
+            from official_platform_harness import build_published_quality_admission
+            quality_admission_report = build_published_quality_admission(args.candidate)
+            admission_reason = "published_admission_invalid"
+        else:
+            quality_admission_report = build_formal_quality_admission(args.candidate)
+            admission_reason = "current_dynamic_quality_capability_probe_ledger_invalid"
         if quality_admission_report.get("valid") is not True:
             print(json.dumps({
                 "status": "formal-quality-admission-blocked",
-                "reason": "current_dynamic_quality_capability_probe_ledger_invalid",
+                "reason": admission_reason,
                 "candidate": args.candidate,
                 "quality_admission": quality_admission_report,
             }, ensure_ascii=False, indent=2))

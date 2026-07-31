@@ -2911,3 +2911,129 @@ def test_collect_new_thp_files_scans_platform_root_and_exe_dir(tmp_path):
     assert artifacts == [str(artifact_dir / "THP-root.txt")]
     assert not root_thp.exists()
     assert (artifact_dir / "THP-root.txt").read_text(encoding="gb2312") == "root"
+
+
+# ---------------------------------------------------------------------------
+# Published-bot quality admission (``official_certify.py full --published``)
+# ---------------------------------------------------------------------------
+
+
+def test_formal_published_quality_admission_integrity_rejects_wrong_kind():
+    """The integrity validator rejects an admission whose kind is not the
+    published kind (a checkpoint-kind receipt cannot masquerade as published)."""
+    from official_platform_harness import (
+        PUBLISHED_QUALITY_ADMISSION_KIND,
+        formal_published_quality_admission_integrity_issues,
+    )
+
+    admission = {
+        "schema_version": 1,
+        "kind": "official-formal-quality-admission",  # wrong kind
+        "candidate_path": "/tmp/bots/national_v200",
+        "candidate_hash": "a" * 64,
+        "published_tag": "national-cloud-bot-v200",
+        "published_commit_oid": "b" * 40,
+    }
+    issues = formal_published_quality_admission_integrity_issues(admission)
+    assert any("kind_mismatch" in i for i in issues)
+
+
+def test_formal_published_quality_admission_integrity_rejects_tampered_digest():
+    """A hand-edited admission_digest is rejected (the receipt is content-bound)."""
+    from official_platform_harness import (
+        PUBLISHED_QUALITY_ADMISSION_KIND,
+        PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+        formal_published_quality_admission_integrity_issues,
+    )
+
+    payload = {
+        "schema_version": PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+        "kind": PUBLISHED_QUALITY_ADMISSION_KIND,
+        "candidate_path": "/tmp/bots/national_v200",
+        "candidate_hash": "a" * 64,
+        "published_tag": "national-cloud-bot-v200",
+        "published_commit_oid": "b" * 40,
+    }
+    admission = {**payload, "admission_digest": "0" * 64}  # wrong digest
+    issues = formal_published_quality_admission_integrity_issues(admission)
+    assert any("digest_mismatch" in i for i in issues)
+
+
+def test_formal_published_quality_admission_integrity_accepts_valid_receipt():
+    """A correctly-built published admission passes the integrity validator."""
+    from official_platform_harness import (
+        PUBLISHED_QUALITY_ADMISSION_KIND,
+        PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+        formal_published_quality_admission_integrity_issues,
+    )
+
+    payload = {
+        "schema_version": PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+        "kind": PUBLISHED_QUALITY_ADMISSION_KIND,
+        "candidate_path": "/tmp/bots/national_v200",
+        "candidate_hash": "a" * 64,
+        "published_tag": "national-cloud-bot-v200",
+        "published_commit_oid": "b" * 40,
+    }
+    admission = {**payload, "admission_digest": canonical_digest(payload)}
+    issues = formal_published_quality_admission_integrity_issues(admission)
+    assert issues == []
+
+
+def test_build_published_quality_admission_rejects_unpublished_identity(monkeypatch):
+    """A candidate whose published_bot_identity is not fully consistent fails
+    closed with the not_published issue."""
+    from official_platform_harness import build_published_quality_admission
+    import bot_artifact
+
+    def _fake_identity(path):
+        return {
+            "published": False,
+            "artifact_hash": "a" * 64,
+            "tag": "",
+            "commit_oid": "",
+            "issues": ["completion_tag_missing"],
+        }
+
+    # published_bot_identity is imported lazily inside the helper from
+    # bot_artifact, so the patch must land on bot_artifact.
+    monkeypatch.setattr(bot_artifact, "published_bot_identity", _fake_identity)
+
+    report = build_published_quality_admission("/tmp/bots/national_v200")
+    assert report["valid"] is False
+    assert report["admission"] is None
+    assert any("not_published" in i for i in report["issues"])
+
+
+def test_build_published_quality_admission_builds_receipt_for_published_bot(monkeypatch):
+    """A fully-published strict bot yields a valid published-kind admission whose
+    candidate_hash binds the on-disk bytes to the published tag bytes."""
+    from official_platform_harness import (
+        PUBLISHED_QUALITY_ADMISSION_KIND,
+        build_published_quality_admission,
+    )
+    import bot_artifact
+
+    candidate_hash = "c" * 64
+
+    def _fake_identity(path):
+        return {
+            "published": True,
+            "artifact_hash": candidate_hash,
+            "tag": "national-cloud-bot-v201",
+            "commit_oid": "d" * 40,
+            "issues": [],
+        }
+
+    monkeypatch.setattr(bot_artifact, "published_bot_identity", _fake_identity)
+
+    report = build_published_quality_admission("/tmp/bots/national_v201")
+    assert report["valid"] is True
+    admission = report["admission"]
+    assert admission["kind"] == PUBLISHED_QUALITY_ADMISSION_KIND
+    assert admission["candidate_hash"] == candidate_hash
+    assert admission["published_tag"] == "national-cloud-bot-v201"
+    assert admission["published_commit_oid"] == "d" * 40
+    # The admission digest is content-bound over the rest of the payload.
+    payload = {k: v for k, v in admission.items() if k != "admission_digest"}
+    assert admission["admission_digest"] == canonical_digest(payload)

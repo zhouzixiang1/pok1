@@ -27,6 +27,7 @@ from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, parse_bot_versi
 from official_eligibility import epoch_lifecycle_eligibility, strict_role_eligibility
 from official_platform_harness import (
     OfficialPlatformConfig,
+    PUBLISHED_QUALITY_ADMISSION_KIND,
     _copy_config,
     round_completion_issues,
     run_official_acceptance_sync,
@@ -192,16 +193,21 @@ def normal_full_quality_admission_required(
     Every current strict normal full job must carry the exact
     checkpoint-owned receipt.  The explicit first-strict bootstrap is intentionally
     the only branch that takes the separate operator authorization path.
+    A ``--published`` full job carries a published-kind admission (proving the
+    candidate equals its published tag bytes) which is still required, but the
+    structural check dispatches to the published-kind validator.
     """
 
     if isinstance(spec, CertificationSpec):
         mode = spec.mode
         bootstrap_control_id = spec.bootstrap_control_id
         candidate = spec.candidate
+        admission = spec.quality_admission
     elif isinstance(spec, dict):
         mode = str(spec.get("mode") or "")
         bootstrap_control_id = spec.get("bootstrap_control_id")
         candidate = str(spec.get("candidate") or "")
+        admission = spec.get("quality_admission")
     else:
         return False
     if mode != "full" or bootstrap_control_id is not None:
@@ -212,6 +218,11 @@ def normal_full_quality_admission_required(
         version = None
     return bool(
         version is not None and int(version) >= FIRST_STRICT_POLICY_VERSION
+    ) or (
+        # A published-bot full job always binds its (published-kind) admission
+        # regardless of version floor; the structural check below dispatches.
+        isinstance(admission, dict)
+        and admission.get("kind") == PUBLISHED_QUALITY_ADMISSION_KIND
     )
 
 
@@ -222,7 +233,8 @@ def normal_full_quality_admission_issues(
 
     This is deliberately a structural boundary only.  The job worker and
     harness immediately recompute the live checkpoint-owned receipt and reject
-    any drift before the official EXE is touched.
+    any drift before the official EXE is touched.  A published-kind admission
+    is validated by the published-kind structural validator instead.
     """
 
     if not normal_full_quality_admission_required(spec):
@@ -233,6 +245,18 @@ def normal_full_quality_admission_issues(
     else:
         admission = spec.get("quality_admission") if isinstance(spec, dict) else None
         candidate = str(spec.get("candidate") or "") if isinstance(spec, dict) else ""
+    # Dispatch by admission kind: a published-bot full job proves its candidate
+    # via the published tag, not the checkpoint-owned quality/capability/probe
+    # ledger, so it uses a distinct structural validator.
+    if isinstance(admission, dict) and admission.get("kind") == PUBLISHED_QUALITY_ADMISSION_KIND:
+        from official_platform_harness import (
+            formal_published_quality_admission_integrity_issues,
+        )
+
+        return formal_published_quality_admission_integrity_issues(
+            admission,
+            candidate=candidate,
+        )
     from official_platform_harness import formal_quality_admission_integrity_issues
 
     return formal_quality_admission_integrity_issues(

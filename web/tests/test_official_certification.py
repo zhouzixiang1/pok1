@@ -279,6 +279,72 @@ def test_test_runner_envelope_preserves_normal_full_quality_admission(
     assert envelope["quality_admission_required"] is True
 
 
+def test_normal_full_quality_admission_dispatches_published_kind(tmp_path):
+    """A full spec carrying a published-kind admission is validated by the
+    published-kind structural validator, not the checkpoint-kind validator.
+
+    This is the dispatch that lets ``official_certify.py full --published``
+    certify an already-published bot (whose checkpoint-owned
+    quality/capability/probe ledger fields are absent)."""
+
+    from official_certification import (
+        build_spec,
+        normal_full_quality_admission_issues,
+        normal_full_quality_admission_required,
+    )
+
+    candidate = _bot(tmp_path / strict_bot_name())
+    opponent = _bot(tmp_path / strict_bot_name(STRICT_TARGET_V + 1))
+    payload = {
+        "schema_version": 1,
+        "kind": "official-published-quality-admission",
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": "a" * 64,
+        "published_tag": "national-cloud-bot-v99",
+        "published_commit_oid": "b" * 40,
+    }
+    published_admission = {**payload, "admission_digest": canonical_digest(payload)}
+    spec = build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        quality_admission=published_admission,
+    )
+    # A published-kind full job still requires an admission, and the structural
+    # validator dispatched to is the published-kind one (returns no issues for
+    # a valid receipt -- it does NOT emit checkpoint-kind field errors).
+    assert normal_full_quality_admission_required(spec) is True
+    assert normal_full_quality_admission_issues(spec) == []
+
+
+def test_normal_full_quality_admission_published_kind_rejects_invalid_receipt(tmp_path):
+    """A published-kind admission with a tampered digest is rejected by the
+    published-kind structural validator."""
+
+    from official_certification import normal_full_quality_admission_issues
+
+    candidate = _bot(tmp_path / strict_bot_name())
+    admission = {
+        "schema_version": 1,
+        "kind": "official-published-quality-admission",
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": "a" * 64,
+        "published_tag": "national-cloud-bot-v99",
+        "published_commit_oid": "b" * 40,
+        "admission_digest": "0" * 64,  # tampered
+    }
+    # Pass the spec as a dict so validate_spec (which raises) is bypassed;
+    # normal_full_quality_admission_issues is the structural boundary that
+    # dispatches by kind.
+    spec_like = {
+        "mode": "full",
+        "candidate": str(candidate),
+        "quality_admission": admission,
+    }
+    issues = normal_full_quality_admission_issues(spec_like)
+    assert any("digest_mismatch" in i for i in issues)
+
+
 def _config(tmp_path: Path) -> OfficialPlatformConfig:
     exe = tmp_path / "platform.exe"
     exe.write_bytes(b"fake-exe")

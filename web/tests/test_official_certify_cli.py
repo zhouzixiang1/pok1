@@ -351,6 +351,111 @@ def test_cli_full_binds_quality_admission_into_durable_spec(monkeypatch):
     assert seen["quality_admission"] == admission
 
 
+def test_cli_full_published_uses_published_admission_path(monkeypatch):
+    """``--published`` routes through build_published_quality_admission (not the
+    checkpoint-owned build_formal_quality_admission) and binds its receipt."""
+    module = _module()
+    published_admission = {
+        "schema_version": 1,
+        "kind": "official-published-quality-admission",
+        "candidate_path": str((ROOT / "bots" / "national_v144").resolve()),
+        "candidate_hash": "d" * 64,
+        "published_tag": "national-cloud-bot-v144",
+        "published_commit_oid": "e" * 40,
+        "admission_digest": "f" * 64,
+    }
+    seen = {}
+    formal_called = {"n": 0}
+
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: formal_called.__setitem__("n", formal_called["n"] + 1)
+        or {"valid": False, "issues": ["must_not_be_called"], "admission": None},
+    )
+    monkeypatch.setattr(
+        module,
+        "select_official_opponent",
+        lambda *_a, **_k: {
+            "selected": True,
+            "candidate": "bots/national_v144",
+            "opponent": {"path": "bots/national_v143", "eligible": True},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "build_spec",
+        lambda mode, candidate, **kwargs: seen.update(
+            {"mode": mode, "candidate": candidate, **kwargs}
+        )
+        or object(),
+    )
+    monkeypatch.setattr(
+        module,
+        "start_or_poll_job",
+        lambda *_a, **_k: {"state": "failed", "pending": False},
+    )
+
+    # build_published_quality_admission is imported lazily inside main(); patch
+    # it on the official_platform_harness module the CLI imports from.
+    import official_platform_harness as _oph
+
+    monkeypatch.setattr(
+        _oph,
+        "build_published_quality_admission",
+        lambda *_a, **_k: {"valid": True, "issues": [], "admission": published_admission},
+    )
+
+    assert module.main(["full", "bots/national_v144", "--published"]) == 2
+    # The checkpoint-owned admission path was NOT used.
+    assert formal_called["n"] == 0
+    # The published-kind admission was bound into the spec.
+    assert seen["quality_admission"]["kind"] == "official-published-quality-admission"
+    assert seen["quality_admission"]["candidate_hash"] == "d" * 64
+
+
+def test_cli_full_published_blocks_when_published_admission_invalid(monkeypatch, capsys):
+    """``--published`` with an un-published candidate fails closed with the
+    published_admission_invalid reason (not the checkpoint reason)."""
+    module = _module()
+
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "select_official_opponent",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("selection must not start without a valid published admission")
+        ),
+    )
+    import official_platform_harness as _oph
+
+    monkeypatch.setattr(
+        _oph,
+        "build_published_quality_admission",
+        lambda *_a, **_k: {
+            "valid": False,
+            "issues": ["official_published_quality_admission_not_published"],
+            "admission": None,
+        },
+    )
+
+    exit_code = module.main(["full", "bots/national_v144", "--published"])
+    assert exit_code == 2
+    output = capsys.readouterr().out
+    assert "formal-quality-admission-blocked" in output
+    assert "published_admission_invalid" in output
+    assert "official_published_quality_admission_not_published" in output
+
+
 def test_cli_first_strict_requires_explicit_one_time_acknowledgement(monkeypatch, capsys):
     module = _module()
     monkeypatch.setattr(

@@ -108,6 +108,14 @@ THP_SUIT_TO_TCP = {"s": 0, "h": 1, "d": 2, "c": 3}
 TERMINAL_COMPLETION_SCHEMA_VERSION = 3
 FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION = 2
 FORMAL_QUALITY_ADMISSION_KIND = "official-formal-quality-admission"
+# A published-bot full certification carries this distinct admission kind: it
+# proves the candidate bytes equal the published tag bytes (a stronger,
+# content-bound proof than the in-flight checkpoint admission) instead of
+# binding a live checkpoint-owned quality/capability/probe ledger.  Used by
+# ``official_certify.py full --published`` to certify an already-published
+# strict bot whose pipeline checkpoint has been cleared.
+PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION = 1
+PUBLISHED_QUALITY_ADMISSION_KIND = "official-published-quality-admission"
 FORMAL_WIRE_CAUSAL_ORDER_SCHEMA_VERSION = 1
 
 
@@ -628,6 +636,123 @@ def build_formal_quality_admission(
                 "issues": ["official_formal_quality_admission_current_drift"],
                 "admission": admission,
             }
+    return {"valid": True, "issues": [], "admission": admission}
+
+
+# ---------------------------------------------------------------------------
+# Published-bot quality admission (for ``official_certify.py full --published``)
+# ---------------------------------------------------------------------------
+
+
+def formal_published_quality_admission_integrity_issues(
+    admission: Any,
+    *,
+    candidate: str | Path | None = None,
+) -> list[str]:
+    """Validate the published-kind admission receipt carried by a full job.
+
+    Mirrors :func:`formal_quality_admission_integrity_issues` but for the
+    published-bot proof basis: the receipt binds the candidate bytes to the
+    published tag (``candidate_hash``) rather than to a checkpoint-owned
+    quality/capability/probe ledger.  Independent of the durable job envelope.
+    """
+
+    if not isinstance(admission, dict):
+        return ["official_published_quality_admission_missing"]
+    issues: list[str] = []
+    if admission.get("schema_version") != PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION:
+        issues.append("official_published_quality_admission_schema_mismatch")
+    if admission.get("kind") != PUBLISHED_QUALITY_ADMISSION_KIND:
+        issues.append("official_published_quality_admission_kind_mismatch")
+    payload = {
+        key: value
+        for key, value in admission.items()
+        if key != "admission_digest"
+    }
+    if admission.get("admission_digest") != canonical_digest(payload):
+        issues.append("official_published_quality_admission_digest_mismatch")
+    candidate_path = admission.get("candidate_path")
+    if not isinstance(candidate_path, str) or not candidate_path.strip():
+        issues.append("official_published_quality_admission_candidate_path_invalid")
+    elif candidate is not None:
+        try:
+            expected_candidate_path = str(Path(candidate).expanduser().resolve())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            expected_candidate_path = ""
+        if candidate_path != expected_candidate_path:
+            issues.append(
+                "official_published_quality_admission_candidate_path_mismatch"
+            )
+    if not _valid_sha256(admission.get("candidate_hash")):
+        issues.append("official_published_quality_admission_candidate_hash_invalid")
+    if not isinstance(admission.get("published_tag"), str) or not admission.get("published_tag"):
+        issues.append("official_published_quality_admission_published_tag_missing")
+    if not isinstance(admission.get("published_commit_oid"), str) or len(admission.get("published_commit_oid")) != 40:
+        issues.append("official_published_quality_admission_commit_oid_invalid")
+    return list(dict.fromkeys(issues))
+
+
+def build_published_quality_admission(
+    candidate: str | Path,
+) -> dict[str, Any]:
+    """Build a quality-admission receipt for an ALREADY-PUBLISHED strict bot.
+
+    The checkpoint-owned :func:`build_formal_quality_admission` only works for
+    the in-flight candidate (it reads the live ``pipeline_state.json``).  An
+    already-published bot has no live checkpoint, but its publication is a
+    stronger, content-bound proof: the on-disk candidate bytes must equal the
+    published tag bytes.  This helper derives the admission from that published
+    identity instead.
+
+    Returns ``{"valid": bool, "issues": list[str], "admission": dict | None}``
+    (the same shape as :func:`build_formal_quality_admission`).  The admission
+    is admissible for a ``full`` job whose candidate is a published strict
+    policy artifact; it does NOT require the candidate to already carry a full
+    certificate (that is what the full job itself produces -- requiring it
+    here would be circular).
+    """
+
+    from bot_artifact import published_bot_identity
+
+    try:
+        requested = Path(candidate).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return {
+            "valid": False,
+            "issues": ["official_published_quality_admission_candidate_path_invalid"],
+            "admission": None,
+        }
+    identity = published_bot_identity(str(requested))
+    issues: list[str] = []
+    if not identity.get("published"):
+        # The candidate is not a fully-consistent published strict artifact
+        # (missing tag, tag commit not on main, tree drift, untracked files, or
+        # on-disk bytes differ from the published tag bytes).
+        issues.append("official_published_quality_admission_not_published")
+        tag_issues = identity.get("issues") or []
+        issues.extend(
+            "official_published_quality_admission_identity:" + str(item)
+            for item in tag_issues[:8]
+        )
+    candidate_hash = identity.get("artifact_hash")
+    if not isinstance(candidate_hash, str) or not _valid_sha256(candidate_hash):
+        issues.append("official_published_quality_admission_candidate_hash_unavailable")
+        candidate_hash = ""
+    if issues:
+        return {
+            "valid": False,
+            "issues": list(dict.fromkeys(issues)),
+            "admission": None,
+        }
+    payload = {
+        "schema_version": PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+        "kind": PUBLISHED_QUALITY_ADMISSION_KIND,
+        "candidate_path": str(requested),
+        "candidate_hash": candidate_hash,
+        "published_tag": str(identity.get("tag") or ""),
+        "published_commit_oid": str(identity.get("commit_oid") or ""),
+    }
+    admission = {**payload, "admission_digest": canonical_digest(payload)}
     return {"valid": True, "issues": [], "admission": admission}
 
 

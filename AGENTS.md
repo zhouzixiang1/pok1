@@ -1110,6 +1110,15 @@ python scripts/official_platform_acceptance.py \
   --self-play-rounds 1 --opponent-rounds 1 --target-hands 70
 python scripts/official_certify.py full bots/national_cloud_v<N> --wait-if-busy
 
+# Full certification of an ALREADY-PUBLISHED staging bot (its pipeline checkpoint
+# has been cleared). `--published` proves the candidate bytes equal the published
+# tag bytes instead of the checkpoint-owned quality/capability/probe admission.
+# Required to admit a staging-published bot into the rating pool / official
+# opponent pool (ROLE_RATING_POOL / ROLE_OFFICIAL_OPPONENT always require a full
+# certificate regardless of POK_ALLOW_STAGING_AS_PARENT).
+python scripts/official_certify.py full bots/national_cloud_v<N> --published \
+  --opponent bots/national_cloud_v<M> --wait-if-busy
+
 # One-time empty-pool bootstrap for the first strict bot only
 python scripts/official_certify.py bootstrap-first-strict bots/national_cloud_v1 \
   --control-id first_strict_control_v1 \
