@@ -464,6 +464,14 @@ def _promote_draft_to_primary(published_next_v):
         return False
     # Success: clear the draft slot.
     clear_pipeline_checkpoint(slot_id="draft")
+    # Release the multi-ahead version reservation for this draft slot so the
+    # next draft can reserve the subsequent version (ordered promotion).
+    try:
+        activation = _slice2b_ensure_activation()
+        if activation is not None:
+            activation.ledger.release_draft_version(slot_id="draft")
+    except Exception:
+        pass
     try:
         _o.log_system_event(
             "orchestrator.slice2b_draft_promoted",

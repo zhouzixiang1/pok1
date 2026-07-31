@@ -1292,6 +1292,42 @@ class AheadCoordinator:
             )
         return entry
 
+    # -- ordered multi-ahead promotion --------------------------------------
+
+    def next_promotable_draft(self, published_v: int) -> dict[str, Any] | None:
+        """Return the draft slot whose reserved version is exactly
+        ``published_v + 1`` and whose lifecycle is non-terminal, or None.
+
+        This enforces VERSION-ORDERED promotion: only the draft reserved for the
+        next formal version may be promoted.  Without this, concurrent
+        promotions of N drafts could promote draft N+2 onto the N+1 slot before
+        draft N+1, scrambling the version sequence.  The draft must also have
+        reached ``workers_done`` (its checkpoint is promotable) -- checked by
+        the caller against the slot checkpoint; here we only assert the
+        reservation + lifecycle state are consistent.
+        """
+        try:
+            target_v = int(published_v) + 1
+        except (TypeError, ValueError):
+            return None
+        reservations = self._lifecycle.active_reservations()
+        # Match the reservation for the target version that also has a
+        # non-terminal lifecycle row (sealed/consuming).
+        non_terminal = {
+            entry.get("candidate_id"): entry
+            for entry in self._lifecycle.non_terminal_entries()
+        }
+        for res in reservations:
+            if int(res.get("reserved_next_v") or 0) != target_v:
+                continue
+            cid = res.get("candidate_id")
+            if cid and cid in non_terminal:
+                return dict(res)
+            # No lifecycle row yet (draft still preparing, not sealed): still
+            # report it so the promoter can decide based on the slot checkpoint.
+            return dict(res)
+        return None
+
 
 # Backwards-compatible aliases.  ``OneAheadCoordinator`` is the historical name
 # (imported by tests and the activation layer); it now resolves to the generalized

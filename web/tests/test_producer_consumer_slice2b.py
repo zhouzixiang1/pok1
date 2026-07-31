@@ -982,3 +982,28 @@ def test_reservation_floor_respects_high_water(tmp_path):
     # A third draft with a lower floor reserves above the highest (201), not 143.
     v3 = lifecycle.reserve_draft_version(slot_id="draft3", floor_next_v=142)
     assert v3 == 202
+
+
+def test_next_promotable_draft_is_version_ordered(tmp_path):
+    """next_promotable_draft(published_v) returns ONLY the draft reserved for
+    published_v+1 -- enforcing version-ordered promotion.  A higher draft is
+    NOT promotable until the lower one promotes and published_v advances."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    coord = AheadCoordinator(lifecycle)
+    # Two drafts in flight: reserved 143 (draft1) and 144 (draft2).
+    lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    lifecycle.reserve_draft_version(slot_id="draft2", floor_next_v=142)
+    # Primary just published v142: only draft1 (reserved 143) is promotable.
+    promotable = coord.next_promotable_draft(published_v=142)
+    assert promotable is not None
+    assert promotable["slot_id"] == "draft1"
+    assert promotable["reserved_next_v"] == 143
+    # draft2 (reserved 144) is NOT promotable yet (published_v+1 == 143, not 144).
+    # After draft1 promotes and publishes v143, draft2 becomes promotable.
+    lifecycle.release_draft_version(slot_id="draft1")
+    promotable2 = coord.next_promotable_draft(published_v=143)
+    assert promotable2 is not None
+    assert promotable2["slot_id"] == "draft2"
+    assert promotable2["reserved_next_v"] == 144
+    # Nothing promotable for a version with no matching reservation.
+    assert coord.next_promotable_draft(published_v=999) is None
