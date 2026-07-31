@@ -233,6 +233,13 @@ export default function MatchDetail() {
 
       <MatchMetaCard m={m} id={id ?? ''} />
 
+      {m.status === 'aborted' && (
+        <div className="mt-3 rounded-xl border border-error-200 bg-error-50 px-4 py-3 text-sm text-error-700">
+          ⚠ 本局因 bot 通信中断而中止,未打满 {(m.total_hands ?? 70)} 手(实际{' '}
+          {(m.hands_played ?? 0)} 手)。中止对局不计入评分。
+        </div>
+      )}
+
       {noReplay ? (
         <div className="mt-4 rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-500">
           {m.status === 'running' || m.status === 'pending' ? (

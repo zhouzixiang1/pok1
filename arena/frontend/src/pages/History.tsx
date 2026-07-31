@@ -31,6 +31,7 @@ const STATUS_LABEL: Record<string, string> = {
   pending: '排队中',
   running: '进行中',
   completed: '已完成',
+  aborted: '已中止',
   errored: '出错',
   cancelled: '已取消',
 }
@@ -120,9 +121,9 @@ export default function History() {
             >
               <option value="">全部</option>
               <option value="completed">已完成</option>
+              <option value="aborted">已中止</option>
               <option value="running">进行中</option>
               <option value="pending">排队中</option>
-              <option value="errored">出错</option>
             </select>
           </label>
           <label className="flex flex-col gap-1 text-xs text-gray-500">
@@ -199,9 +200,11 @@ export default function History() {
                         className={
                           m.status === 'running'
                             ? 'text-success-500'
-                            : m.status === 'errored'
+                            : m.status === 'aborted'
                               ? 'text-error-500'
-                              : ''
+                              : m.status === 'errored'
+                                ? 'text-error-500'
+                                : ''
                         }
                       >
                         {STATUS_LABEL[m.status] ?? m.status}

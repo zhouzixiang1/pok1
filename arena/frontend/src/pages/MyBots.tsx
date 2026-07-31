@@ -45,6 +45,7 @@ export default function MyBots() {
     name: '',
     protocol: 'json',
     entry_file: 'main.py',
+    argv_style: 'flags',
     display_name: '',
     description: '',
   })
@@ -108,12 +109,13 @@ export default function MyBots() {
         name: form.name.trim(),
         protocol: form.protocol,
         entry_file: form.entry_file.trim() || 'main.py',
+        ...(form.protocol === 'tcp' ? { argv_style: form.argv_style } : {}),
         display_name: form.display_name.trim(),
         description: form.description.trim(),
       })
       setMsg(`bot「${form.name}」上传成功`)
       setShowUpload(false)
-      setForm({ name: '', protocol: 'json', entry_file: 'main.py', display_name: '', description: '' })
+      setForm({ name: '', protocol: 'json', entry_file: 'main.py', argv_style: 'flags', display_name: '', description: '' })
       setUploadFile(null)
       if (fileRef.current) fileRef.current.value = ''
       load()
@@ -267,10 +269,23 @@ export default function MyBots() {
               <input
                 value={form.entry_file}
                 onChange={(e) => setForm({ ...form, entry_file: e.target.value })}
-                placeholder="main.py"
+                placeholder={form.protocol === 'tcp' ? 'national_bot.py' : 'main.py'}
                 className={inputCls}
               />
             </L>
+            {form.protocol === 'tcp' && (
+              <L label="连接参数风格">
+                <select
+                  value={form.argv_style}
+                  onChange={(e) => setForm({ ...form, argv_style: e.target.value })}
+                  className={inputCls}
+                >
+                  <option value="flags">flags(--host/--port 旗标)</option>
+                  <option value="positional">positional(位置参数)</option>
+                  <option value="env">env(读 GUOSAI_* 环境变量)</option>
+                </select>
+              </L>
+            )}
             <L label="展示名(可空)">
               <input
                 value={form.display_name}
