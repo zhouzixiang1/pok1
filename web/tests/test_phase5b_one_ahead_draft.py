@@ -184,6 +184,51 @@ def test_draft_get_bot_dir_isolates_unpublished_candidate(tmp_path, monkeypatch)
         assert "bots" not in str(draft_cand)
 
 
+def test_is_draft_slot_prefix_matches_legacy_and_numbered():
+    """is_draft_slot accepts the legacy 'draft' and numbered draft1/draft2/...
+    but rejects the primary slot (None) and unrelated slot ids."""
+    import evolution_infra as ei
+
+    assert ei.is_draft_slot("draft") is True
+    assert ei.is_draft_slot("draft1") is True
+    assert ei.is_draft_slot("draft2") is True
+    assert ei.is_draft_slot(None) is False
+    assert ei.is_draft_slot("") is False
+    assert ei.is_draft_slot("primary") is False
+
+
+def test_draft_slot_id_numbering():
+    """draft_slot_id(n) returns 1-based numbered slot ids."""
+    import evolution_infra as ei
+
+    assert ei.draft_slot_id(1) == "draft1"
+    assert ei.draft_slot_id(2) == "draft2"
+    assert ei.draft_slot_id(10) == "draft10"
+    with pytest.raises(ValueError):
+        ei.draft_slot_id(0)
+    with pytest.raises(ValueError):
+        ei.draft_slot_id(-1)
+
+
+def test_numbered_draft_slot_isolates_per_slot_candidate_tree(tmp_path, monkeypatch):
+    """A numbered draft slot (draft2) isolates its candidate under a per-slot
+    subdirectory, so two concurrent drafts never overwrite each other."""
+    import evolution_infra as ei
+
+    monkeypatch.setattr(ei, "BOTS_DIR", tmp_path / "bots")
+    monkeypatch.setattr(ei, "RESULTS_DIR", tmp_path / "results")
+    (tmp_path / "bots").mkdir()
+    (tmp_path / "results").mkdir()
+    # draft1 and draft2 each get their own subtree for the same version.
+    with active_slot_override("draft1"):
+        d1 = ei.get_bot_dir(20)
+    with active_slot_override("draft2"):
+        d2 = ei.get_bot_dir(20)
+    assert d1 == tmp_path / "results" / "draft_candidates" / "draft1" / "national_cloud_v20"
+    assert d2 == tmp_path / "results" / "draft_candidates" / "draft2" / "national_cloud_v20"
+    assert d1 != d2  # distinct subtrees -> no collision
+
+
 def test_maybe_promote_draft_remaps_shadow_next_v(monkeypatch):
     """Promotion remaps a shadow provisional next_v onto the formal successor."""
     from generation_scheduler import _maybe_promote_draft_to_primary

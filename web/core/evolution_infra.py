@@ -49,6 +49,39 @@ _ACTIVE_SLOT_OVERRIDE: contextvars.ContextVar[str | None] = contextvars.ContextV
 )
 
 
+# ──────────────────────────────────────────────
+# Multi-ahead draft slot set (generalized from the single "draft" slot)
+# ──────────────────────────────────────────────
+# A draft slot is any slot whose id starts with this prefix: "draft",
+# "draft1", "draft2", ...  The legacy single-ahead path used the literal
+# "draft"; multi-ahead generalizes to N concurrent draft slots.  The prefix
+# match replaces the former literal ``== "draft"`` compares at the CAS escape
+# and candidate-tree isolation sites.
+DRAFT_SLOT_PREFIX = "draft"
+
+
+def is_draft_slot(slot_id):
+    """True iff ``slot_id`` is a draft slot (any of draft, draft1, draft2, ...).
+
+    ``None`` is not a draft slot (it is the primary/live slot).  This is the
+    single predicate that classifies a slot as a shadow draft, used by the
+    CAS floor+1 escape and the candidate-tree isolation.
+    """
+    return bool(slot_id) and isinstance(slot_id, str) and slot_id.startswith(DRAFT_SLOT_PREFIX)
+
+
+def draft_slot_id(n):
+    """Return the n-th draft slot id (1-based: draft1, draft2, ...).
+
+    ``draft_slot_id(0)`` and below raise ValueError; the legacy single-ahead
+    slot is the unprefixed ``"draft"`` (kept for backwards compatibility, and
+    because ``is_draft_slot("draft")`` is True via the prefix match).
+    """
+    if not isinstance(n, int) or n < 1:
+        raise ValueError(f"draft slot index must be >= 1, got {n!r}")
+    return f"{DRAFT_SLOT_PREFIX}{n}"
+
+
 @contextmanager
 def active_slot_override(slot_id):
     """Bind a slot override for the duration of a draft asyncio task.
@@ -822,8 +855,15 @@ def get_bot_dir(version):
         override = current_slot_override()
     except Exception:
         override = None
-    if override == "draft" and not canonical.exists():
-        return RESULTS_DIR / "draft_candidates" / name
+    # Multi-ahead: each draft slot isolates its candidate tree under a
+    # per-slot subdirectory so N drafts never overwrite each other.  The legacy
+    # single-ahead slot ("draft") maps to draft_candidates/<name> (backwards
+    # compatible); numbered slots map to draft_candidates/<slot_id>/<name>.
+    if is_draft_slot(override) and not canonical.exists():
+        base = RESULTS_DIR / "draft_candidates"
+        if override == DRAFT_SLOT_PREFIX:
+            return base / name
+        return base / str(override) / name
     return canonical
 
 

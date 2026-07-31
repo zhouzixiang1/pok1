@@ -705,16 +705,18 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
     # because os.replace swaps that inode while waiters may still hold an open
     # descriptor to the retired file and later overwrite a newer projection.
     state_file = _state_file_for_slot(slot_id)
-    # Draft shadow identity: the draft slot is not a live allocation claim.
-    # Detect both explicit slot_id="draft" and the ambient override used by
-    # stage handlers that omit slot_id while running under active_slot_override.
+    # Draft shadow identity: a draft slot is not a live allocation claim.
+    # Detect both an explicit draft slot_id (draft / draft1 / draft2 / ...) and
+    # the ambient override used by stage handlers that omit slot_id while
+    # running under active_slot_override.  Multi-ahead generalizes the former
+    # literal ``== "draft"`` to a prefix match on the draft slot set.
     try:
         _resolved_slot = slot_id
         if _resolved_slot is None:
             _resolved_slot = _ei.current_slot_override()
     except Exception:
         _resolved_slot = slot_id
-    is_draft_slot = _resolved_slot == "draft"
+    is_draft_slot = _ei.is_draft_slot(_resolved_slot)
     try:
         _ei._preflight_state_sidecar(state_file)
     except OSError as exc:
