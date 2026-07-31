@@ -1807,6 +1807,7 @@ async def run_native_tcp_smoke(
     timeout_sec: float | None = 90.0,
     timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
     progress_callback: Any = None,
+    in_flight_candidate_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     return await _nn.run_native_tcp_smoke(
         candidate_token,
@@ -1817,6 +1818,7 @@ async def run_native_tcp_smoke(
         timeout_sec=timeout_sec,
         timing_plan=timing_plan,
         progress_callback=progress_callback,
+        in_flight_candidate_dir=in_flight_candidate_dir,
     )
 
 

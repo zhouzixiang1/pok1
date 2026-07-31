@@ -86,3 +86,39 @@ def test_in_flight_candidate_does_not_resolve_bot_for_candidate(monkeypatch, tmp
 
     # The candidate was NOT resolved through resolve_bot; only the opponent was.
     assert str(workspace) not in resolve_calls
+
+
+def test_native_wrapper_forwards_in_flight_candidate_dir(monkeypatch, tmp_path):
+    """The ``national_native.run_native_tcp_smoke`` wrapper (used by all three
+    production call sites: agent_review, tool_gates, tool_gates_native_smoke)
+    must accept and forward ``in_flight_candidate_dir`` to the real
+    ``national_native_acceptance.run_native_tcp_smoke``.
+
+    Regression anchor: commit 57a76b23 added the param to the real function but
+    NOT to the delegating wrapper in ``national_native.py``, so every crossover
+    smoke crashed with ``unexpected keyword argument 'in_flight_candidate_dir'``
+    (v26 crash 2026-07-31).
+    """
+    forwarded: dict[str, object] = {}
+
+    async def fake_smoke(candidate_token, **kwargs):
+        forwarded["candidate_token"] = candidate_token
+        forwarded["kwargs"] = kwargs
+        return {"passed": True}
+
+    # The wrapper calls the real function via the ``_nn`` module alias.
+    monkeypatch.setattr(national_native_mod._nn, "run_native_tcp_smoke", fake_smoke)
+
+    import asyncio
+
+    workspace = tmp_path / "crossover_workspaces" / "v26-attempt-1-xyz"
+    report = asyncio.run(national_native_mod.run_native_tcp_smoke(
+        workspace,
+        source_v=11,
+        opponent_token=None,
+        hands=1,
+        in_flight_candidate_dir=workspace,
+    ))
+    assert report["passed"] is True
+    # The wrapper forwarded the kwarg (the bug was that it did not).
+    assert forwarded["kwargs"].get("in_flight_candidate_dir") == workspace
