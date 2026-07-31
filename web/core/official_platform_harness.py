@@ -1835,9 +1835,20 @@ def run_official_acceptance_sync(
                     if isinstance(job_envelope, dict)
                     else None
                 )
-                admission_integrity_issues = formal_quality_admission_integrity_issues(
-                    expected_admission,
-                    candidate=candidate_path,
+                admission_integrity_issues = (
+                    formal_published_quality_admission_integrity_issues(
+                        expected_admission,
+                        candidate=candidate_path,
+                    )
+                    if (
+                        isinstance(expected_admission, dict)
+                        and expected_admission.get("kind")
+                        == PUBLISHED_QUALITY_ADMISSION_KIND
+                    )
+                    else formal_quality_admission_integrity_issues(
+                        expected_admission,
+                        candidate=candidate_path,
+                    )
                 )
                 if admission_integrity_issues:
                     raise FormalQualityAdmissionError(
@@ -1847,10 +1858,21 @@ def run_official_acceptance_sync(
                             for issue in admission_integrity_issues[:12]
                         ]
                     )
-                quality_admission = build_formal_quality_admission(
-                    candidate_path,
-                    expected_admission=expected_admission,
-                )
+                if (
+                    isinstance(expected_admission, dict)
+                    and expected_admission.get("kind")
+                    == PUBLISHED_QUALITY_ADMISSION_KIND
+                ):
+                    # Published-bot full job: re-prove candidate bytes == published
+                    # tag bytes (no live checkpoint re-derivation).
+                    quality_admission = build_published_quality_admission(
+                        candidate_path,
+                    )
+                else:
+                    quality_admission = build_formal_quality_admission(
+                        candidate_path,
+                        expected_admission=expected_admission,
+                    )
                 if quality_admission.get("valid") is not True:
                     raise FormalQualityAdmissionError(
                         [

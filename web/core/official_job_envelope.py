@@ -205,14 +205,33 @@ def job_envelope_issues(
         if not isinstance(candidate_path, str) or not candidate_path.strip():
             issues.append("official_job_envelope_quality_admission_candidate_path_invalid")
         else:
-            from official_platform_harness import formal_quality_admission_integrity_issues
-
-            issues.extend(
-                formal_quality_admission_integrity_issues(
-                    quality_admission,
-                    candidate=candidate_path,
-                )
+            # Dispatch by admission kind: a published-bot admission uses the
+            # published-kind structural validator, not the checkpoint-style one.
+            from official_platform_harness import (
+                PUBLISHED_QUALITY_ADMISSION_KIND,
+                formal_published_quality_admission_integrity_issues,
+                formal_quality_admission_integrity_issues,
             )
+
+            admission_kind = (
+                quality_admission.get("kind")
+                if isinstance(quality_admission, dict)
+                else None
+            )
+            if admission_kind == PUBLISHED_QUALITY_ADMISSION_KIND:
+                issues.extend(
+                    formal_published_quality_admission_integrity_issues(
+                        quality_admission,
+                        candidate=candidate_path,
+                    )
+                )
+            else:
+                issues.extend(
+                    formal_quality_admission_integrity_issues(
+                        quality_admission,
+                        candidate=candidate_path,
+                    )
+                )
     for key in (
         "job_id",
         "request_digest",

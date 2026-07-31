@@ -973,6 +973,62 @@ def test_normal_formal_quality_admission_roundtrips_through_spec_and_job_envelop
     assert job_envelope_issues(envelope) == []
 
 
+def test_published_kind_quality_admission_roundtrips_through_job_envelope(tmp_path):
+    """A published-kind admission must pass the job-envelope validator (which
+    dispatches by kind to the published structural validator), not fail on the
+    missing checkpoint-style quality_gate_digest/capability_digest fields."""
+
+    from official_platform_harness import (
+        PUBLISHED_QUALITY_ADMISSION_KIND,
+        PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+    )
+    import official_certification as certification
+
+    candidate = tmp_path / "bots" / bot_name(200)
+    opponent = tmp_path / "bots" / bot_name(199)
+    candidate.mkdir(parents=True)
+    opponent.mkdir(parents=True)
+    (candidate / "national_bot.py").write_text("candidate\n", encoding="utf-8")
+    (opponent / "national_bot.py").write_text("opponent\n", encoding="utf-8")
+    payload = {
+        "schema_version": PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+        "kind": PUBLISHED_QUALITY_ADMISSION_KIND,
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": "a" * 64,
+        "published_tag": "national-cloud-bot-v200",
+        "published_commit_oid": "b" * 40,
+    }
+    admission = {**payload, "admission_digest": canonical_digest(payload)}
+    spec = certification.build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        quality_admission=admission,
+    )
+    record = certification.spec_record(spec)
+    restored = certification._spec_from_mapping(record)
+    identity = certification.certification_identity(restored)
+    envelope = build_job_envelope(
+        {
+            "job_id": "1" * 64,
+            "request_digest": "2" * 64,
+            "manager_sha256": "3" * 64,
+            "identity": identity,
+            "spec": record,
+            "opponent_selection": None,
+            "source_v": 199,
+        },
+        attempt=1,
+        attempt_nonce="4" * 64,
+        suite_dir=tmp_path / "suite",
+    )
+
+    assert envelope["quality_admission"] == admission
+    # The envelope validator dispatched to the published-kind structural check
+    # and found no issues (it did NOT demand checkpoint-style fields).
+    assert job_envelope_issues(envelope) == []
+
+
 def test_strict_normal_full_refuses_missing_or_tampered_admission_before_worker(
     tmp_path,
 ):

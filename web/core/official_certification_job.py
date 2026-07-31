@@ -231,12 +231,28 @@ def _live_normal_full_admission_issues(request: dict[str, Any]) -> list[str]:
     if not normal_full_quality_admission_required(spec):
         return []
     try:
-        from official_platform_harness import build_formal_quality_admission
-
-        report = build_formal_quality_admission(
-            spec.candidate,
-            expected_admission=spec.quality_admission,
+        # Dispatch by admission kind: a published-bot full job proves its
+        # candidate via the published tag (build_published_quality_admission),
+        # not the checkpoint-owned quality/capability/probe ledger
+        # (build_formal_quality_admission).  Both return the same shape.
+        from official_platform_harness import (
+            PUBLISHED_QUALITY_ADMISSION_KIND,
+            build_formal_quality_admission,
+            build_published_quality_admission,
         )
+
+        admission_kind = (
+            spec.quality_admission.get("kind")
+            if isinstance(spec.quality_admission, dict)
+            else None
+        )
+        if admission_kind == PUBLISHED_QUALITY_ADMISSION_KIND:
+            report = build_published_quality_admission(spec.candidate)
+        else:
+            report = build_formal_quality_admission(
+                spec.candidate,
+                expected_admission=spec.quality_admission,
+            )
     except Exception as exc:
         return [
             "official_job_quality_admission_live_validation_error:"

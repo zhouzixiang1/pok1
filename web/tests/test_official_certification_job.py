@@ -172,6 +172,58 @@ def test_live_normal_full_admission_rebinds_current_receipt(tmp_path, monkeypatc
     ]
 
 
+def test_live_admission_dispatches_published_kind_away_from_checkpoint(tmp_path, monkeypatch):
+    """A published-kind admission must re-prove via build_published_quality_admission
+    (published tag bytes), NOT build_formal_quality_admission (checkpoint ledger).
+
+    This is the regression for the v27 production failure: the job worker
+    re-derived the admission from the (absent) checkpoint and failed with
+    official_job_quality_admission_live_invalid:official_formal_quality_ledger_missing.
+    """
+    from official_platform_harness import (
+        PUBLISHED_QUALITY_ADMISSION_KIND,
+        PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+    )
+
+    candidate = _bot(tmp_path / "bots" / bot_name(STRICT_TARGET_V + 50))
+    opponent = _bot(tmp_path / "bots" / bot_name(STRICT_TARGET_V + 49))
+    payload = {
+        "schema_version": PUBLISHED_QUALITY_ADMISSION_SCHEMA_VERSION,
+        "kind": PUBLISHED_QUALITY_ADMISSION_KIND,
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": "a" * 64,
+        "published_tag": "national-cloud-bot-v99",
+        "published_commit_oid": "b" * 40,
+    }
+    published_admission = {**payload, "admission_digest": canonical_digest(payload)}
+    spec = build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        quality_admission=published_admission,
+    )
+    request = jobs._request_payload(spec, opponent_selection=None, source_v=142)
+    import official_platform_harness
+
+    formal_called = {"n": 0}
+
+    # The checkpoint-style re-derivation must NOT be called for a published bot.
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: formal_called.__setitem__("n", formal_called["n"] + 1)
+        or {"valid": False, "issues": ["must_not_be_called"], "admission": None},
+    )
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_published_quality_admission",
+        lambda *_a, **_k: {"valid": True, "issues": [], "admission": published_admission},
+    )
+
+    assert _REAL_LIVE_NORMAL_FULL_ADMISSION_ISSUES(request) == []
+    assert formal_called["n"] == 0
+
+
 def test_stale_live_admission_never_creates_or_spawns_fresh_job(tmp_path, monkeypatch):
     root = tmp_path / "jobs"
     monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(root))
