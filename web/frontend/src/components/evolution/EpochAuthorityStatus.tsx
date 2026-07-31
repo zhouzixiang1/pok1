@@ -3,6 +3,7 @@ import { draftGenerations } from "../../api/control";
 import { authorityNextVersion } from "../../hooks/useControlStatus";
 import { cn } from "../../lib/utils";
 import { canonicalGenerationLabel } from "../../lib/canonicalGenerationIdentity";
+import { RefreshStatusBadge } from "./ui";
 
 export const epochStateLabels: Record<EpochState, string> = {
   reset_required: "严格进化需要一次性初始化",
@@ -30,11 +31,13 @@ interface Props {
   status: ControlStatus | null;
   loading?: boolean;
   error?: string | null;
+  /** Epoch-ms of the last successful observation, for the refresh badge. */
+  lastUpdated?: number | null;
   compact?: boolean;
   className?: string;
 }
 
-export function EpochAuthorityStatus({ status, loading = false, error, compact = false, className }: Props) {
+export function EpochAuthorityStatus({ status, loading = false, error, lastUpdated = null, compact = false, className }: Props) {
   if (!status) {
     return (
       <div className={cn("rounded-xl border border-gray-200 bg-white p-4 text-sm dark:border-border-subtle dark:bg-surface-1", className)}>
@@ -51,6 +54,7 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
             {error && (
               <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">{error}</p>
             )}
+            <RefreshStatusBadge lastUpdated={lastUpdated} className="mt-1 block text-xs text-gray-400 dark:text-gray-500" />
           </div>
         ) : (
           <div>

@@ -73,7 +73,7 @@ function ConfigLabel({ children }: { children: React.ReactNode }) {
 }
 
 export default function NationalArena() {
-  const { status: controlStatus, loading: statusLoading, error: statusError } = useControlStatusValue();
+  const { status: controlStatus, loading: statusLoading, error: statusError, lastUpdated } = useControlStatusValue();
   const [mode, setMode] = useState<ArenaMode>("managed_bots");
   const [bots, setBots] = useState<ArenaBot[]>([]);
   const [sessions, setSessions] = useState<ArenaSession[]>([]);
@@ -303,7 +303,7 @@ export default function NationalArena() {
     <>
       <PageMeta title="国赛对弈 | Bot 自进化" description="National TCP local arena" />
       <div className="space-y-5">
-        <EpochAuthorityStatus status={controlStatus} loading={statusLoading} error={statusError} />
+        <EpochAuthorityStatus status={controlStatus} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} />
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-xl font-semibold text-gray-900 dark:text-white">国赛对弈</h1>

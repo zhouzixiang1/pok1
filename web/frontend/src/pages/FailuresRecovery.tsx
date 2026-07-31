@@ -47,7 +47,7 @@ const DISPOSITION_LABEL: Record<RecoveryDisposition, string> = {
  * terminal/abandon.  Never renders a single opaque spinner that hides these.
  */
 export default function FailuresRecovery() {
-  const { status, health, loading, error } = useControlStatusValue();
+  const { status, health, loading, error, lastUpdated } = useControlStatusValue();
   const { agents } = useBoundAgentActivity(
     status?.active_generation,
     status?.epoch_initialized === true,
@@ -77,6 +77,7 @@ export default function FailuresRecovery() {
         health={health}
         loading={loading}
         error={error}
+        lastUpdated={lastUpdated}
         variant="compact"
       />
       <PhaseAProjectionStrip

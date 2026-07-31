@@ -104,7 +104,7 @@ const PauseIcon = () => (
 
 export default function MatchReplay() {
   const matches = useRecentMatches();
-  const { status, loading: statusLoading, error: statusError } = useControlStatusValue();
+  const { status, loading: statusLoading, error: statusError, lastUpdated } = useControlStatusValue();
   const [selectedMatch, setSelectedMatch] = useState<MatchReplayData | null>(null);
   const [loadError, setLoadError] = useState("");
   const [currentHand, setCurrentHand] = useState(0);
@@ -223,7 +223,7 @@ export default function MatchReplay() {
   return (
     <>
       <PageMeta title="国赛原生对局回放 — Bot 自进化" description="national_tcp_policy_v1 hand_records 回放" />
-      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} compact className="mb-4" />
+      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} compact className="mb-4" />
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
         <div className="xl:col-span-1">
           <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-white/[0.03]">

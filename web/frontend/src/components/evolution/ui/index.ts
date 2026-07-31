@@ -4,6 +4,7 @@ export { EvolutionStatusBadge } from "./EvolutionStatusBadge";
 export { EvolutionStepperTrack } from "./EvolutionStepperTrack";
 export type { StepperStep, StepperStepStatus } from "./EvolutionStepperTrack";
 export { EvolutionStreamShell } from "./EvolutionStreamShell";
+export { RefreshStatusBadge } from "./RefreshStatusBadge";
 export {
   EVOLUTION_GAP,
   EVOLUTION_RADIUS,

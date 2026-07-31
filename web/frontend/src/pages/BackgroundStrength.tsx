@@ -34,7 +34,7 @@ import { cn } from "../lib/utils";
  * configuration intent from live process availability.
  */
 export default function BackgroundStrength() {
-  const { status, health, loading, error } = useControlStatusValue();
+  const { status, health, loading, error, lastUpdated } = useControlStatusValue();
   const [jobs, setJobs] = useState<StrengthJobsResponse | null>(null);
   const strengthAuthorityKey = status?.epoch_initialized
     ? `${status.reset_receipt_digest ?? "missing"}:${status.active_bots.join("|")}`
@@ -81,6 +81,7 @@ export default function BackgroundStrength() {
         health={health}
         loading={loading}
         error={error}
+        lastUpdated={lastUpdated}
         variant="compact"
       />
       <PhaseAProjectionStrip

@@ -325,7 +325,7 @@ export default function BotManager() {
   const { active: streamedBots } = useBots();
   const h2hData = useH2H();
   const updateData = useUpdateData();
-  const { status, health, loading: statusLoading, error: statusError } = useControlStatusValue();
+  const { status, health, loading: statusLoading, error: statusError, lastUpdated } = useControlStatusValue();
   const [searchParams] = useSearchParams();
   const expandVersion = (() => {
     const raw = searchParams.get("v");
@@ -402,6 +402,7 @@ export default function BotManager() {
         health={health}
         loading={statusLoading}
         error={statusError}
+        lastUpdated={lastUpdated}
         variant="compact"
       />
       <PhaseAProjectionStrip

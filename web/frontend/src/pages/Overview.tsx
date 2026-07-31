@@ -119,7 +119,7 @@ export default function Overview() {
   const daemon = useDaemonStatus();
   const dataStream = useDataStreamStatus();
   const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
-  const { status: controlStatus, health: controlHealth, loading: controlLoading, error: controlError } = useControlStatusValue();
+  const { status: controlStatus, health: controlHealth, loading: controlLoading, error: controlError, lastUpdated } = useControlStatusValue();
   const [localElapsed, setLocalElapsed] = useState(0);
   const lastDaemonAgeRef = useRef<number | undefined>(undefined);
   const rateLimit = useRateLimit();
@@ -249,6 +249,7 @@ export default function Overview() {
         health={controlHealth}
         loading={controlLoading}
         error={controlError}
+        lastUpdated={lastUpdated}
         variant="full"
       />
 

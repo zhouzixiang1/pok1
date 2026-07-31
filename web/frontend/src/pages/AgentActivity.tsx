@@ -64,7 +64,7 @@ const transientStatusFallback = (task: TransientStatusTask | null): string => (
  * projections.
  */
 export default function AgentActivity() {
-  const { status, health, loading, error } = useControlStatusValue();
+  const { status, health, loading, error, lastUpdated } = useControlStatusValue();
   const streamAuthorityKey = epochStreamAuthorityKey(status);
   const epochReady = streamAuthorityKey !== null;
   const { agents } = useBoundAgentActivity(
@@ -427,6 +427,7 @@ export default function AgentActivity() {
         health={health}
         loading={loading}
         error={error}
+        lastUpdated={lastUpdated}
         variant="compact"
       />
       <PhaseAProjectionStrip

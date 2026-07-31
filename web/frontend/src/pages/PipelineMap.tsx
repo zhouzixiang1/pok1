@@ -30,7 +30,7 @@ import {
  * Pipeline Map — sole full generation stepper + handoff eight-step + diagnostics.
  */
 export default function PipelineMap() {
-  const { status, health, loading, error } = useControlStatusValue();
+  const { status, health, loading, error, lastUpdated } = useControlStatusValue();
   const { checkpoint } = usePipelineCheckpoint(5_000);
   const { agents } = useBoundAgentActivity(
     status?.active_generation,
@@ -61,6 +61,7 @@ export default function PipelineMap() {
         health={health}
         loading={loading}
         error={error}
+        lastUpdated={lastUpdated}
         variant="compact"
       />
       <PhaseAProjectionStrip

@@ -33,7 +33,7 @@ const RefreshIcon = ({ className }: { className?: string }) => (
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export default function ControlPanel() {
-  const { status, health, loading: statusLoading, error: statusError, refresh: refreshStatus } = useControlStatusValue();
+  const { status, health, loading: statusLoading, error: statusError, refresh: refreshStatus, lastUpdated } = useControlStatusValue();
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
@@ -250,6 +250,7 @@ export default function ControlPanel() {
           health={health}
           loading={statusLoading}
           error={statusError}
+          lastUpdated={lastUpdated}
           variant="compact"
           className="mb-0 flex-1"
         />
@@ -262,7 +263,7 @@ export default function ControlPanel() {
         manualRequired={operatorSituationView(status, health)?.manualRequired === true}
       />
 
-      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} />
+      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} />
 
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-sm font-semibold text-gray-800 dark:text-white">操作员授权</h2>

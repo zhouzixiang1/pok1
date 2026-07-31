@@ -1,7 +1,7 @@
 import { Link } from "react-router";
 import type { ControlHealth, ControlStatus } from "../../api/control";
 import { draftGenerations, primaryGenerationSlot } from "../../api/control";
-import { EvolutionSurface, EvolutionStatusBadge } from "./ui";
+import { EvolutionSurface, EvolutionStatusBadge, RefreshStatusBadge } from "./ui";
 import { cn } from "../../lib/utils";
 import { epochStateLabels } from "./EpochAuthorityStatus";
 
@@ -12,6 +12,8 @@ interface EvolutionPageHeaderProps {
   health?: ControlHealth | null;
   loading?: boolean;
   error?: string | null;
+  /** Epoch-ms of the last successful observation, for the refresh badge. */
+  lastUpdated?: number | null;
   /** full = dual identity strip; compact = single-line for subpages */
   variant?: "full" | "compact";
   className?: string;
@@ -27,6 +29,7 @@ export function EvolutionPageHeader({
   status,
   loading = false,
   error = null,
+  lastUpdated = null,
   variant = "full",
   className,
 }: EvolutionPageHeaderProps) {
@@ -38,9 +41,12 @@ export function EvolutionPageHeader({
     return (
       <EvolutionSurface className={cn("mb-4", className)} padding="sm">
         {loading ? (
-          <p className="text-sm text-gray-500">
-            {error ? "正在刷新运行权威…" : "正在核对严格进化与版本身份…"}
-          </p>
+          <div>
+            <p className="text-sm text-gray-500">
+              {error ? "正在刷新运行权威…" : "正在核对严格进化与版本身份…"}
+            </p>
+            <RefreshStatusBadge lastUpdated={lastUpdated} className="mt-1 block text-xs text-gray-400 dark:text-gray-500" />
+          </div>
         ) : (
           <div>
             <p className="font-semibold text-red-600 dark:text-red-300">无法确认版本与运行权威</p>

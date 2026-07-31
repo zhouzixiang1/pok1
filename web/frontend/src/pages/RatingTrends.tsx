@@ -19,7 +19,7 @@ type MetricMode = "glicko" | "h2h_wr";
 
 export default function RatingTrends() {
   const history = useHistory();
-  const { status, loading, error } = useControlStatusValue();
+  const { status, loading, error, lastUpdated } = useControlStatusValue();
   const [showConfidence, setShowConfidence] = useState(false);
   const [metric, setMetric] = useState<MetricMode>("h2h_wr");
 
@@ -149,7 +149,7 @@ export default function RatingTrends() {
     return (
       <>
         <PageMeta title="评分趋势 — Bot 自进化" description="严格 epoch 历史评分趋势" />
-        <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
+        <EpochAuthorityStatus status={status} loading={loading} error={error} lastUpdated={lastUpdated} compact className="mb-4" />
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
           <EmptyState message={emptyMessage} />
         </div>
@@ -160,7 +160,7 @@ export default function RatingTrends() {
   return (
     <>
       <PageMeta title="评分趋势 — Bot 自进化" description="历史评分趋势" />
-      <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
+      <EpochAuthorityStatus status={status} loading={loading} error={error} lastUpdated={lastUpdated} compact className="mb-4" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">评分趋势</h3>

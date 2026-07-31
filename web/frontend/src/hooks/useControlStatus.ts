@@ -136,6 +136,11 @@ export function useControlStatus(pollMs = 5_000) {
   const [health, setHealth] = useState<ControlHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Epoch-ms of the last successful /health observation (null until the first).
+  // Exposed so the dashboard can show "上次更新 …" + an auto-refresh countdown
+  // during the ~76s observer build, turning a frozen-looking "正在核对…" into
+  // explicit, live feedback that the data is not stale.
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
   const mounted = useRef(true);
   // True once a single /health observation has resolved into a coherent
@@ -166,6 +171,7 @@ export function useControlStatus(pollMs = 5_000) {
         setHealth(nextHealth);
         setError(null);
         setLoading(false);
+        setLastUpdated(Date.now());
       } catch (err) {
         if (!mounted.current) return;
         const retryable = err instanceof RetryableControlError;
@@ -224,5 +230,5 @@ export function useControlStatus(pollMs = 5_000) {
     };
   }, [pollMs, refresh]);
 
-  return { status, health, loading, error, refresh };
+  return { status, health, loading, error, refresh, lastUpdated };
 }

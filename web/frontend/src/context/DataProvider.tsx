@@ -26,6 +26,7 @@ const ControlStatusContext = createContext<ControlStatusValue>({
   loading: true,
   error: null,
   refresh: () => Promise.resolve(),
+  lastUpdated: null,
 });
 
 export function DataProvider({ children }: { children: ReactNode }) {

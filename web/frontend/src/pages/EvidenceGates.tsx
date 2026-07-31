@@ -44,7 +44,7 @@ const TONE_CLASS: Record<EvidenceAuthorityLabel["tone"], string> = {
  * verdict or a diagnostic Arena run for compliance or strength authority.
  */
 export default function EvidenceGates() {
-  const { status, health, loading, error } = useControlStatusValue();
+  const { status, health, loading, error, lastUpdated } = useControlStatusValue();
   const { agents } = useBoundAgentActivity(
     status?.active_generation,
     status?.epoch_initialized === true,
@@ -83,6 +83,7 @@ export default function EvidenceGates() {
         health={health}
         loading={loading}
         error={error}
+        lastUpdated={lastUpdated}
         variant="compact"
       />
       <PhaseAProjectionStrip

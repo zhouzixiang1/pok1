@@ -13,7 +13,7 @@ type ViewMode = "winrate" | "count";
 export default function MatchMatrix() {
   const data = useMatchMatrix();
   const h2hRaw = useH2H();
-  const { status, loading, error } = useControlStatusValue();
+  const { status, loading, error, lastUpdated } = useControlStatusValue();
   const [viewMode, setViewMode] = useState<ViewMode>("winrate");
 
   const { series, options } = useMemo(() => {
@@ -169,7 +169,7 @@ export default function MatchMatrix() {
     return (
       <>
         <PageMeta title="对局矩阵 — Bot 自进化" description="严格 epoch H2H 矩阵" />
-        <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
+        <EpochAuthorityStatus status={status} loading={loading} error={error} lastUpdated={lastUpdated} compact className="mb-4" />
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
           <EmptyState message={emptyMessage} />
         </div>
@@ -180,7 +180,7 @@ export default function MatchMatrix() {
   return (
     <>
       <PageMeta title="对局矩阵 — Bot 自进化" description="Bot 间的 Head-to-Head 胜率" />
-      <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
+      <EpochAuthorityStatus status={status} loading={loading} error={error} lastUpdated={lastUpdated} compact className="mb-4" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
         <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
           <div className="flex items-center justify-between">

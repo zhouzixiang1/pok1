@@ -245,7 +245,7 @@ export default function Logs() {
   const [tab, setTab] = useState<Tab>("generation");
 
   const generations = useGenerations();
-  const { status, loading: statusLoading, error: statusError } = useControlStatusValue();
+  const { status, loading: statusLoading, error: statusError, lastUpdated } = useControlStatusValue();
   const visibleGenerations = useMemo(
     () => status?.epoch_initialized ? generations : [],
     [generations, status?.epoch_initialized],
@@ -374,7 +374,7 @@ export default function Logs() {
   return (
     <>
       <PageMeta title="日志 — Bot 自进化" description="迭代日志与编排器日志" />
-      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} compact className="mb-4" />
+      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} compact className="mb-4" />
 
       {/* Tab bar */}
       <div className="mb-4 flex gap-1 flex-wrap">
