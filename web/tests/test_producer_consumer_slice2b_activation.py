@@ -1016,3 +1016,158 @@ def test_ensure_slice2b_consumer_running_relances_consumer_after_restart(tmp_pat
     finally:
         _o._slice2b_activation_registry("clear")
         os.environ.pop(SLICE2B_ENV_VAR, None)
+
+
+def test_canonical_gate_runner_calls_handlers_not_sdkmcp_tool_objects():
+    """B1 regression: the canonical gate runner must invoke the handler
+    coroutine, not the SdkMcpTool wrapper object.
+
+    The ``@tool`` decorator (``tool_runtime_guard.tool``) returns an
+    ``SdkMcpTool`` dataclass that has no ``__call__``.  The inline
+    deterministic-route path unwraps via ``.handler`` (11 call sites in
+    ``orchestrator_stage_routing.py``); the consumer gate-chain factory must
+    do the same.  Before the fix, ``await canonical(args)`` raised
+    ``TypeError: 'SdkMcpTool' object is not callable`` and the whole gate
+    chain died at the first gate (run_quality_gates).
+    """
+
+    from producer_consumer_slice2b_activation import canonical_gate_runner_factory
+    import tool_gates
+
+    # Monkeypatch .handler BEFORE building the factory, because make(name)
+    # binds canonical = handlers.get(name) at factory() call time.
+    called = {"n": 0}
+
+    async def fake_handler(args):
+        called["n"] += 1
+        return {"ok": True, "receipt_digest": DIGESTS["3"]}
+
+    original = tool_gates.run_quality_gates.handler
+    tool_gates.run_quality_gates.handler = fake_handler
+    try:
+        factory = canonical_gate_runner_factory(143, 142)
+        gates = factory()
+        snapshot = {"artifact_hash": DIGESTS["a"], "snapshot_digest": DIGESTS["b"]}
+        result = asyncio.run(gates["run_quality_gates"](snapshot))
+    finally:
+        tool_gates.run_quality_gates.handler = original
+    assert called["n"] == 1, "run_quality_gates.handler was not invoked"
+    assert result["outcome"] == "success"
+
+
+def test_recovery_reclaims_stale_running_lease_after_restart(tmp_path):
+    """B2 regression: after a process restart, recover() must reclaim a stale
+    "running" consumer effect (expired lease) instead of raising ValueError.
+
+    Before the fix, the death-proof resolver produced a proof missing
+    ``proof_digest`` and ``owner``, so ``reclaim_effect_lease`` raised
+    ``ValueError("effect lease reclaim proof digest is invalid")`` which
+    propagated out of the dispatcher and rejected the candidate (restart
+    deadlock).  After the fix the lease is reclaimed at a new epoch and the
+    gate chain proceeds.
+    """
+
+    adapter = _adapter(tmp_path)
+    activation = Slice2bActivation(adapter=adapter)
+    snapshot = _snapshot(next_v=143, source_v=142)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+
+    # Simulate the consumer task dying mid-run: the effect is status=running
+    # with an expired lease, and the in-memory consumer task is gone (restart).
+    # All ``now`` values stay inside the envelope deadline window
+    # (_DEADLINE: not_before=100, expires=1000).
+    pending = adapter.store.pending_outbox(now=200.0)
+    pc_pending = [
+        r for r in pending
+        if str(r.get("kind") or "").startswith("producer-consumer-job:")
+    ]
+    assert len(pc_pending) == 1, "sealed candidate should have one pending effect"
+    effect_id = str(pc_pending[0]["effect_id"])
+    # Claim the effect with a short lease so it expires.  The envelope
+    # deadline (_DEADLINE: not_before=100, expires=1000) bounds the lease time,
+    # so keep all ``now`` values well inside that window.
+    adapter.claim(effect_id, owner="slice2b-consumer", lease_seconds=1.0, now=200.0)
+    # Verify it is running with an expired lease at a later time (still inside
+    # the envelope deadline window: expires=1000).
+    now_later = 500.0
+    pending2 = adapter.store.pending_outbox(now=now_later)
+    pc_pending2 = [
+        r for r in pending2
+        if str(r.get("kind") or "").startswith("producer-consumer-job:")
+    ]
+    assert len(pc_pending2) == 1
+    assert pc_pending2[0]["status"] == "running"
+    # Drop in-memory state (restart).
+    activation._consumer_tasks.clear()
+    activation._sealed_snapshots[candidate_id] = dict(snapshot)
+
+    # Recover must reclaim the stale lease (not raise) and re-lease it.
+    recovered = adapter.recover(
+        recovery_id="test-restart",
+        owner="slice2b-consumer",
+        lease_seconds=300.0,
+        now=now_later,
+        death_proof_resolver=activation.death_proof_resolver(),
+    )
+    reclaimed_list = recovered["leases"] if isinstance(recovered, dict) else recovered
+    assert len(reclaimed_list) == 1, "recover should reclaim the one stale effect"
+    reclaimed = reclaimed_list[0]
+    assert reclaimed["lease_epoch"] == 2, "reclaim must advance lease_epoch"
+    # The candidate FSM is still SEALED (not rejected) -- reclaim succeeded.
+    assert not activation.ledger.is_terminal(candidate_id)
+
+
+def test_slice2b_consumer_rejected_returns_reason_after_reject(monkeypatch, tmp_path):
+    """B3 regression: after the consumer rejects a candidate, the helper must
+    surface the reject reason so the deterministic route can abandon the
+    generation instead of spinning at workers_done forever.
+    """
+
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    adapter = _adapter(tmp_path)
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    snapshot = _snapshot(next_v=143, source_v=142)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+    # Drive the consumer to a terminal REJECT.
+    _run_consumer(activation, candidate_id, _gate_runner_factory(fail_at="run_review"))
+    entry = activation.ledger.snapshot(candidate_id)
+    assert entry["validation_outcome"] == "rejected"
+
+    try:
+        checkpoint = _checkpoint(next_v=143, source_v=142)
+        reason = odr._slice2b_consumer_rejected(checkpoint, 143)
+        assert reason is not None
+        assert "gate_failed" in reason or "consumer_task" in reason
+    finally:
+        _o._slice2b_activation_registry("clear")
+
+
+def test_slice2b_consumer_rejected_returns_none_when_sealed_not_rejected(
+    monkeypatch, tmp_path,
+):
+    """B3 negative: a SEALED (not yet rejected) candidate is NOT rejected --
+    the helper must return None so the route seals/parks normally.
+    """
+
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    adapter = _adapter(tmp_path)
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    snapshot = _snapshot(next_v=144, source_v=142)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+    entry = activation.ledger.snapshot(candidate_id)
+    assert entry["validation_outcome"] != "rejected"
+
+    try:
+        checkpoint = _checkpoint(next_v=144, source_v=142)
+        assert odr._slice2b_consumer_rejected(checkpoint, 144) is None
+    finally:
+        _o._slice2b_activation_registry("clear")

@@ -1231,6 +1231,9 @@ from orchestrator_checkpoint_recovery import (  # noqa: E402,F401
 from orchestrator_deterministic_route import (  # noqa: E402,F401
     _advance_deterministic_recovery,
     _classify_recovery_after_deterministic_route,
+    _slice2b_abandon_rejected_candidate,
+    _slice2b_consumer_in_flight,
+    _slice2b_consumer_rejected,
     _slice2b_promotion_barrier,
     _slice2b_seal_at_workers_done,
     _try_deterministic_checkpoint_route,

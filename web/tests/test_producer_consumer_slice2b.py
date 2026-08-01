@@ -893,16 +893,33 @@ def test_recover_at_boot_skips_terminal_candidates(tmp_path):
 
 def test_death_proof_resolver_marks_absent_owner_dead(tmp_path):
     """The death-proof resolver proves prior-owner death when no live task
-    exists for the effect (the post-restart case)."""
+    exists for the effect (the post-restart case).
+
+    The proof must satisfy ``reclaim_effect_lease``'s content-bound validation:
+    an ``owner`` equal to the effect's ``lease_owner`` and a 64-hex
+    ``proof_digest`` equal to ``content_digest(unsigned_proof)``.
+    """
     from producer_consumer_slice2b_activation import Slice2bActivation
+    from workflow_kernel import content_digest
 
     adapter = _adapter(tmp_path)
     activation = Slice2bActivation(adapter=adapter)
     resolver = activation.death_proof_resolver()
-    # No consumer task registered -> owner is dead.
-    proof = resolver({"effect_id": "some-effect"})
+    # No consumer task registered -> owner is dead.  The effect carries its
+    # prior lease_owner (always "slice2b-consumer" in production).
+    proof = resolver({
+        "effect_id": "some-effect",
+        "lease_owner": "slice2b-consumer",
+        "envelope": {"candidate_id": "candidate-v143"},
+    })
     assert proof["owner_alive_in_process"] is False
-    assert proof["proof"] == "consumer_task_absent"
+    assert proof["reason"] == "consumer_task_absent"
+    assert proof["owner"] == "slice2b-consumer"
+    # proof_digest is 64-hex and equals content_digest(unsigned proof).
+    assert isinstance(proof["proof_digest"], str)
+    assert len(proof["proof_digest"]) == 64
+    unsigned = {k: v for k, v in proof.items() if k != "proof_digest"}
+    assert proof["proof_digest"] == content_digest(unsigned)
 
 
 # ---------------------------------------------------------------------------

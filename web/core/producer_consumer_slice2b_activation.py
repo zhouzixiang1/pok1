@@ -451,26 +451,46 @@ class Slice2bActivation:
         that by checking ``self._consumer_tasks``: if no live task owns the
         effect, the prior owner is dead and the lease may be reclaimed.  This
         is only safe to assert from the activation's own event loop thread.
+
+        The proof MUST satisfy ``reclaim_effect_lease``'s content-bound
+        validation (``workflow_kernel_effects.py``): it requires an ``owner``
+        field equal to the effect's prior ``lease_owner`` (always
+        ``"slice2b-consumer"`` here) AND a 64-hex ``proof_digest`` equal to
+        ``content_digest(unsigned_proof)`` (the proof minus ``proof_digest``).
+        A proof missing either field raises
+        ``ValueError("effect lease reclaim proof digest is invalid")`` which
+        propagates out of the dispatcher and rejects the candidate -- the
+        exact restart deadlock this resolver exists to prevent.
         """
 
         def _resolve(effect: Mapping[str, Any]) -> Mapping[str, Any]:
-            # The effect_id encodes the sealed candidate; if its consumer task
-            # is not live in THIS process, the prior owner is dead.  A restart
-            # always satisfies this (no tasks exist yet at boot).
             effect_id = str(effect.get("effect_id") or "")
-            task = self._consumer_tasks.get(effect_id) if effect_id else None
+            expected_owner = str(effect.get("lease_owner") or "")
+            # ``_consumer_tasks`` is keyed by candidate_id (set at launch in
+            # launch_consumer_task), NOT by effect_id.  Recover the candidate
+            # id from the sealed envelope carried on the effect row.
+            envelope = effect.get("envelope") or {}
+            candidate_id = str(envelope.get("candidate_id") or "")
+            task = self._consumer_tasks.get(candidate_id) if candidate_id else None
             owner_alive = task is not None and not task.done()
-            return {
+            proof = {
                 "schema": "slice2b-death-proof-v1",
+                "owner": expected_owner,
                 "effect_id": effect_id,
+                "candidate_id": candidate_id,
                 "owner_alive_in_process": bool(owner_alive),
-                "proof": (
+                "reason": (
                     "consumer_task_absent"
                     if not owner_alive
                     else "consumer_task_live"
                 ),
                 "observed_at": time.time(),
             }
+            from workflow_kernel import content_digest
+
+            unsigned = {k: v for k, v in proof.items() if k != "proof_digest"}
+            proof["proof_digest"] = content_digest(unsigned)
+            return proof
 
         return _resolve
 
@@ -610,12 +630,19 @@ def canonical_gate_runner_factory(next_v, source_v):
             from tool_gates import run_quality_gates, run_review, run_critic
             from tool_eval import run_precommit_eval
             from tool_commit import commit_bot
+            # The canonical gate handlers are @tool-decorated, so the module
+            # symbols resolve to SdkMcpTool wrapper objects (which have no
+            # __call__).  The inline deterministic-route path unwraps them
+            # via ``.handler`` (orchestrator_stage_routing.py); the consumer
+            # path must do the same -- otherwise ``await canonical(args)``
+            # raises ``TypeError: 'SdkMcpTool' object is not callable`` and
+            # the whole gate chain dies at the first gate.
             handlers = {
-                "run_quality_gates": run_quality_gates,
-                "run_review": run_review,
-                "run_critic": run_critic,
-                "run_precommit_eval": run_precommit_eval,
-                "commit_bot": commit_bot,
+                "run_quality_gates": run_quality_gates.handler,
+                "run_review": run_review.handler,
+                "run_critic": run_critic.handler,
+                "run_precommit_eval": run_precommit_eval.handler,
+                "commit_bot": commit_bot.handler,
             }
         except Exception:
             # If the canonical handlers cannot be resolved, return runners that

@@ -80,6 +80,120 @@ def _slice2b_consumer_in_flight(checkpoint, next_v) -> bool:
     return not activation.ledger.is_terminal(candidate_id)
 
 
+def _slice2b_consumer_rejected(checkpoint, next_v) -> str | None:
+    """The reject reason when a sealed candidate's consumer gate chain failed.
+
+    Returns the persisted ``terminal_reason`` (e.g.
+    ``consumer_task_infrastructure_failure`` / ``gate_failed:<gate>``) when the
+    sealed candidate for this generation reached the terminal ``rejected``
+    state, or ``None`` when there is no sealed candidate or it has not been
+    rejected.  Mirrors :func:`_slice2b_consumer_in_flight`'s activation /
+    candidate-id resolution so it stays accurate after a process restart.
+    """
+
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return None
+    if not slice2b_active():
+        return None
+    activation = _slice2b_ensure_activation()
+    if activation is None:
+        return None
+    candidate_id = str(
+        checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+    )
+    snapshot = activation.ledger.snapshot(candidate_id)
+    if snapshot is None:
+        return None
+    if snapshot.get("validation_outcome") == "rejected":
+        return str(
+            snapshot.get("terminal_reason") or "slice2b_consumer_rejected"
+        )
+    return None
+
+
+async def _slice2b_abandon_rejected_candidate(
+    checkpoint, next_v, source_v, *, ui, outcome, reject_reason: str
+) -> bool:
+    """Canonically abandon a generation whose slice2b consumer rejected it.
+
+    A rejected consumer candidate (infrastructure failure or gate failure)
+    can never be promoted, so the primary lane must not spin at
+    ``workers_done`` forever.  This mirrors the worker-terminal-abandon path
+    (the ``else`` branch around line 840): it calls the canonical
+    ``_do_abandon_generation`` with ``expected_abandon_identity``, applies the
+    same bounded ``forced_abandon_reason_stage_not_allowed`` fallback, and
+    crucially sets ``outcome["terminal_abandon_result"]`` so
+    ``_classify_recovery_after_deterministic_route`` recognizes the
+    ``generation_abandoned`` terminal action instead of looping on
+    ``deterministic_checkpoint_disappeared_without_proof``.
+
+    Returns True iff the generation was abandoned (checkpoint cleared).
+    """
+
+    from evolution_core import read_pipeline_checkpoint
+    from tool_bot_management import (
+        _do_abandon_generation,
+        expected_abandon_identity,
+    )
+
+    abandon_reason = "worker_terminal_abandon"
+    abandon_result = await _do_abandon_generation(
+        reason=abandon_reason,
+        **expected_abandon_identity(read_pipeline_checkpoint()),
+    )
+    abandoned = bool(abandon_result.get("abandoned"))
+    # Bounded fallback (mirrors the worker-terminal-abandon path): if the
+    # classified reason was refused solely because it is not authorized at
+    # this stage, retry once with the always-allowed generic reason.  A
+    # non-stage-guard refusal (e.g. a publication stage) is NOT retried.
+    if (
+        not abandoned
+        and abandon_result.get("blocked") is True
+        and abandon_result.get("reason")
+        == "forced_abandon_reason_stage_not_allowed"
+    ):
+        abandon_result = await _do_abandon_generation(
+            reason="abandon_generation",
+            **expected_abandon_identity(read_pipeline_checkpoint()),
+        )
+        abandoned = bool(abandon_result.get("abandoned"))
+    if outcome is not None:
+        outcome["router_abandon_result"] = abandon_result
+        outcome["terminal_abandon_result"] = (
+            _o._completed_abandon_tool_result(abandon_result)
+        )
+    msg_abandon = (
+        f"slice2b consumer rejected v{next_v} "
+        f"(reason={reject_reason}); "
+        f"{'abandoned generation' if abandoned else 'abandon did not complete'}."
+    )
+    if ui:
+        ui.log_history(
+            f"[Recovery] {msg_abandon}",
+            "error" if not abandoned else "warn",
+        )
+    else:
+        _o.log.warning(msg_abandon)
+    try:
+        _o.log_system_event(
+            "pipeline.deterministic_route_abandoned",
+            "warn" if abandoned else "error",
+            msg_abandon,
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "stage": "workers_done",
+                "slice2b_reject_reason": reject_reason,
+                "abandon_result": abandon_result,
+            },
+        )
+    except Exception:
+        pass
+    return abandoned
+
+
 def _slice2b_park_primary_consumer_gates(
     checkpoint,
     next_v,
@@ -558,6 +672,21 @@ async def _try_deterministic_checkpoint_route(
                 ui=ui,
                 outcome=outcome,
                 reason="consumer_gate_chain_in_flight",
+            )
+        # A rejected slice2b candidate (infrastructure failure or gate
+        # failure) can never be promoted, so the primary lane must not spin
+        # at workers_done forever.  Canonically abandon the generation so the
+        # epoch allocates a fresh successor instead of looping on the same
+        # dead checkpoint.
+        rejected_reason = _slice2b_consumer_rejected(checkpoint, next_v)
+        if rejected_reason is not None:
+            return await _slice2b_abandon_rejected_candidate(
+                checkpoint,
+                next_v,
+                source_v,
+                ui=ui,
+                outcome=outcome,
+                reject_reason=rejected_reason,
             )
         if await _slice2b_seal_at_workers_done(
             checkpoint, next_v, source_v, ui=ui, outcome=outcome
