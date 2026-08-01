@@ -6,6 +6,33 @@ import {
   type EventSourceControllerDependencies,
 } from "./eventSourceController.js";
 import { FIRST_STRICT_POLICY_VERSION } from "./canonicalGenerationIdentity.js";
+// Re-export the shared validators so existing importers keep working without
+// coupling to the new module path.  The controller is the historical owner of
+// these fail-closed guards.
+export {
+  type JsonObject,
+  isObject,
+  isNumber,
+  isInteger,
+  isOptional,
+  isNullableNumber,
+  isStringArray,
+  isHexDigest,
+  isEpochBlocked,
+  isBotRating,
+} from "./validators.js";
+import {
+  type JsonObject,
+  isObject,
+  isNumber,
+  isInteger,
+  isOptional,
+  isNullableNumber,
+  isStringArray,
+  isHexDigest,
+  isEpochBlocked,
+  isBotRating,
+} from "./validators.js";
 
 export type StreamType = "prompt" | "claude" | "thinking" | "tool" | "tool_result" | "error" | "default";
 
@@ -378,8 +405,6 @@ const EVOLUTION_EVENTS: readonly EvolutionEventType[] = [
   "post_publication_handoff",
 ];
 
-type JsonObject = Record<string, unknown>;
-
 const STREAM_TYPES = new Set<StreamType>([
   "prompt",
   "claude",
@@ -389,26 +414,6 @@ const STREAM_TYPES = new Set<StreamType>([
   "error",
   "default",
 ]);
-const isObject = (value: unknown): value is JsonObject => (
-  typeof value === "object" && value !== null && !Array.isArray(value)
-);
-const isNumber = (value: unknown): value is number => (
-  typeof value === "number" && Number.isFinite(value)
-);
-const isInteger = (value: unknown): value is number => (
-  isNumber(value) && Number.isSafeInteger(value)
-);
-const isOptional = (
-  value: unknown,
-  predicate: (candidate: unknown) => boolean,
-): boolean => value === undefined || predicate(value);
-const isNullableNumber = (value: unknown): boolean => value === null || isNumber(value);
-const isStringArray = (value: unknown): value is string[] => (
-  Array.isArray(value) && value.every((item) => typeof item === "string")
-);
-const isHexDigest = (value: unknown): value is string => (
-  typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
-);
 export const isTransientStatusTask = (value: unknown): value is TransientStatusTask => (
   isObject(value)
   && typeof value.present === "boolean"
@@ -496,43 +501,6 @@ export function observeTransientStatusTaskProjection(
     reason: "accepted",
   };
 }
-const isBotRating = (value: unknown): value is BotRating => (
-  isObject(value)
-  && typeof value.name === "string"
-  && isNumber(value.rating)
-  && isNumber(value.rd)
-  && isNumber(value.sigma)
-  && isNumber(value.conservative_rating)
-  && typeof value.confidence === "string"
-  && typeof value.last_period === "string"
-  && isOptional(value.rank, isInteger)
-  && [
-    value.win_rate,
-    value.h2h_avg_wr,
-    value.h2h_weighted_wr,
-    value.primary_70_hand_match_score,
-    value.secondary_net_chips_total,
-    value.secondary_net_chips_mean,
-  ].every((item) => isOptional(item, isNullableNumber))
-  && [
-    value.games,
-    value.h2h_games,
-    value.h2h_opponents,
-    value.h2h_opponents_total,
-    value.h2h_coverage,
-    value.leaderboard_score,
-    value.selection_score,
-    value.selection_penalty,
-    value.strength_sample_count,
-  ].every((item) => isOptional(item, isNumber))
-  && [
-    value.h2h_source,
-    value.rank_basis,
-    value.strength_confidence,
-    value.strength_note,
-  ].every((item) => isOptional(item, (candidate) => typeof candidate === "string"))
-  && isOptional(value.strength_order_contract, isStringArray)
-);
 const numericRecord = (value: unknown): value is Record<string, number> => (
   isObject(value) && Object.values(value).every(isNumber)
 );
@@ -554,18 +522,6 @@ const isGenerationCostPolicy = (value: unknown): boolean => (
   && value.same_uid_llm_resistance === false
   && value.candidate_sandbox_mutable === false
   && value.workflow_guarded_paths === true
-);
-const isEpochBlocked = (value: unknown): boolean => (
-  isObject(value)
-  && value.evaluation_epoch === "national_tcp_policy_v1"
-  && typeof value.epoch_state === "string"
-  && typeof value.epoch_initialized === "boolean"
-  && (value.epoch_reset_receipt_digest === null || isHexDigest(
-    value.epoch_reset_receipt_digest,
-  ))
-  && (value.stream_authority_digest === null || isHexDigest(
-    value.stream_authority_digest,
-  ))
 );
 const isPostPublicationHandoff = (value: unknown): boolean => {
   if (

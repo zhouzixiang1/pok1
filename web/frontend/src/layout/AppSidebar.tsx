@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { Link, useLocation } from "react-router";
-import { GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon, PlugInIcon, BoxIcon, FileIcon, VideoIcon } from "../icons";
+import { GridIcon, PieChartIcon, BoltIcon, PlugInIcon, BoxIcon } from "../icons";
 import { useSidebar } from "../context/SidebarContext";
 import { cn } from "../lib/utils";
 
@@ -11,29 +11,18 @@ type NavItem = {
   group?: string;
 };
 
+// Five user-facing core pages (2026-08 dashboard redesign).
+// Legacy routes still resolve (via redirects in App.tsx) but are no longer
+// surfaced in the navigation.
 const navItems: NavItem[] = [
-  // Command Center / overview (enhanced Overview, retains guarded strings).
-  { icon: <GridIcon />, name: "运行总览", path: "/", group: "概览" },
-  // Evolution views — single SSE on /agents; bots merged on /bots.
-  { icon: <BoltIcon />, name: "本代进度", path: "/pipeline", group: "进化" },
-  { icon: <ChatIcon />, name: "研发协作", path: "/agents", group: "进化" },
-  { icon: <PageIcon />, name: "发布资格", path: "/evidence", group: "进化" },
-  { icon: <BoxIcon />, name: "异常与恢复", path: "/failures", group: "进化" },
-  { icon: <PieChartIcon />, name: "后台 70 手评测", path: "/strength", group: "进化" },
-  { icon: <GridIcon />, name: "发布池", path: "/bots", group: "进化" },
-  // Matches / arena (unchanged).
-  { icon: <ChatIcon />, name: "对局回放", path: "/matches", group: "对局" },
-  { icon: <VideoIcon />, name: "国赛对弈", path: "/arena", group: "对局" },
-  { icon: <PieChartIcon />, name: "评分趋势", path: "/rating-trends", group: "对局" },
-  { icon: <TableIcon />, name: "对局矩阵", path: "/match-matrix", group: "对局" },
-  // Management (read-only contracts; names guarded by contract tests).
-  { icon: <PageIcon />, name: "迭代日志", path: "/logs", group: "管理" },
-  { icon: <PieChartIcon />, name: "LLM 调用日志", path: "/llm-metrics", group: "管理" },
+  { icon: <GridIcon />, name: "运行总览", path: "/", group: "进化" },
+  { icon: <BoltIcon />, name: "当代进度", path: "/generation", group: "进化" },
+  { icon: <BoxIcon />, name: "Bot 强度与回放", path: "/bots", group: "进化" },
+  { icon: <PieChartIcon />, name: "LLM 使用分析", path: "/llm", group: "管理" },
   { icon: <PlugInIcon />, name: "控制面板", path: "/control", group: "管理" },
-  { icon: <FileIcon />, name: "提示词契约", path: "/prompts", group: "管理" },
 ];
 
-const GROUP_ORDER = ["概览", "进化", "对局", "管理"];
+const GROUP_ORDER = ["进化", "管理"];
 
 const LogoIcon = ({ className }: { className?: string }) => (
   <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

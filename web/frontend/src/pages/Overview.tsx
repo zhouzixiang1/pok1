@@ -1,22 +1,32 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useRecentMatches, useH2H, useGenerations, useDataStreamStatus, useControlStatusValue } from "../context/DataProvider";
-import { api } from "../api/client";
 import {
-  controlSchedulerOwnsPrepareBoundary,
-} from "../api/control";
+  useRatings,
+  useMatchStats,
+  useDaemonStatus,
+  useRateLimit,
+  useRecentMatches,
+  useH2H,
+  useGenerations,
+  useDataStreamStatus,
+  useControlStatusValue,
+} from "../context/DataProvider";
+import { api } from "../api/client";
+import { controlSchedulerOwnsPrepareBoundary } from "../api/control";
+import type { LlmMetricsSummary } from "../api/types";
+import { useBoundPolling } from "../hooks/useBoundPolling";
+import { authorityNextVersion } from "../hooks/useControlStatus";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
 import { EmptyState } from "../components/shared/EmptyState";
-import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
-import { OperatorSituation } from "../components/evolution/OperatorSituation";
+import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaffold";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
-import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
-import { EvolutionSurface, EvolutionStatusBadge } from "../components/evolution/ui";
-import { operatorSituationView } from "../domain/operatorSituationView";
+import {
+  EvolutionSurface,
+  EvolutionStatusBadge,
+} from "../components/evolution/ui";
 import { stabilityPresentation } from "../lib/stabilityView";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
-import { authorityNextVersion } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
 import { canonicalGenerationLabel } from "../lib/canonicalGenerationIdentity";
 
@@ -98,18 +108,90 @@ function RecentActivityCard() {
   );
 }
 
-function Sparkline({ data, color }: { data: number[]; color: string }) {
-  if (data.length < 2) return null;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const range = max - min || 1;
-  const w = 40;
-  const h = 14;
-  const points = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - ((v - min) / range) * h}`).join(" ");
+/** LLM 今日用量摘要卡：用 useBoundPolling 统一拉取 /api/llm/metrics/summary。 */
+function LlmUsageCard({ epochReady }: { epochReady: boolean }) {
+  const { data: summary, loading, error } = useBoundPolling<LlmMetricsSummary | null>(
+    async () => (epochReady ? api.llmMetricsSummary() : Promise.resolve(null)),
+    { enabled: epochReady, pollMs: 30_000 },
+  );
+
+  if (!epochReady) {
+    return (
+      <EvolutionSurface padding="sm">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">LLM 今日用量</h3>
+        <p className="text-xs text-gray-400">严格进化尚未初始化；不会展示旧 LLM 用量。</p>
+      </EvolutionSurface>
+    );
+  }
+  if (loading && !summary) {
+    return (
+      <EvolutionSurface padding="sm">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">LLM 今日用量</h3>
+        <p className="text-xs text-gray-400">正在读取用量摘要…</p>
+      </EvolutionSurface>
+    );
+  }
+  if (error && !summary) {
+    return (
+      <EvolutionSurface padding="sm">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">LLM 今日用量</h3>
+        <p className="text-xs text-error-600 dark:text-error-400">用量摘要不可用：{error.message}</p>
+      </EvolutionSurface>
+    );
+  }
+
+  // total_count/overall_success_rate are optional backend totals; when absent,
+  // derive from by_role so the strip still reflects current usage (non-authoritative
+  // aggregation only — full figures live on /llm).
+  const total = summary?.total_count ?? summary?.by_role.reduce((a, r) => a + r.count, 0) ?? 0;
+  const totalCost = summary?.total_cost_usd ?? summary?.by_role.reduce((a, r) => a + (r.total_cost_usd ?? 0), 0) ?? 0;
+  const successCount = summary?.total_success_count
+    ?? summary?.by_role.reduce((a, r) => a + r.success_count, 0);
+  const successRate = summary?.overall_success_rate ?? (total > 0 && successCount != null ? successCount / total : null);
+  const avgElapsed = summary?.avg_total_elapsed_sec ?? null;
+
   return (
-    <svg width={w} height={h} className="inline-block">
-      <polyline fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" points={points} />
-    </svg>
+    <EvolutionSurface padding="sm">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">LLM 今日用量</h3>
+        <Link to="/llm" className="text-xs text-brand-600 hover:underline dark:text-brand-400">详细分析 →</Link>
+      </div>
+      {total === 0 ? (
+        <p className="mt-2 text-xs text-gray-400">暂无 LLM 调用记录。</p>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">{total}</span>
+            <span className="text-[11px] text-gray-500">总调用</span>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">
+              {totalCost != null ? `$${totalCost.toFixed(2)}` : "—"}
+            </span>
+            <span className="text-[11px] text-gray-500">总成本</span>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className={cn(
+              "text-xl font-bold tabular-nums",
+              successRate != null && successRate >= 0.95
+                ? "text-success-600 dark:text-success-400"
+                : successRate != null && successRate < 0.8
+                  ? "text-error-600 dark:text-error-400"
+                  : "text-gray-900 dark:text-white",
+            )}>
+              {successRate != null ? `${(successRate * 100).toFixed(1)}%` : "—"}
+            </span>
+            <span className="text-[11px] text-gray-500">成功率</span>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">
+              {avgElapsed != null ? `${avgElapsed.toFixed(1)}s` : "—"}
+            </span>
+            <span className="text-[11px] text-gray-500">平均耗时</span>
+          </div>
+        </div>
+      )}
+    </EvolutionSurface>
   );
 }
 
@@ -118,23 +200,17 @@ export default function Overview() {
   const stats = useMatchStats();
   const daemon = useDaemonStatus();
   const dataStream = useDataStreamStatus();
-  const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
-  const { status: controlStatus, health: controlHealth, loading: controlLoading, error: controlError, lastUpdated } = useControlStatusValue();
+  const { status: controlStatus, health: controlHealth } = useControlStatusValue();
   const [localElapsed, setLocalElapsed] = useState(0);
   const lastDaemonAgeRef = useRef<number | undefined>(undefined);
   const rateLimit = useRateLimit();
+  const epochReady = Boolean(controlStatus?.epoch_initialized);
 
+  // Local 1s tick so "X秒前" increments between SSE pushes (cheap timer, not a poll).
   useEffect(() => {
-    if (!controlStatus?.epoch_initialized) {
-      setSummary({});
-      return;
-    }
-    api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
-    const id = setInterval(() => {
-      api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
-    }, 15000);
-    return () => clearInterval(id);
-  }, [controlStatus?.epoch_initialized]);
+    const timer = setInterval(() => setLocalElapsed((e) => e + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Reset the local timer when SSE pushes a new daemon heartbeat age. Strength
   // cycle age is a separate evidence field and must not masquerade as liveness.
@@ -145,13 +221,7 @@ export default function Overview() {
     }
   }, [daemon?.heartbeat_age_seconds]);
 
-  // Local 1s tick so "X秒前" increments between SSE pushes
-  useEffect(() => {
-    const timer = setInterval(() => setLocalElapsed((e) => e + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const visibleRatings = controlStatus?.epoch_initialized
+  const visibleRatings = epochReady
     ? ratings.filter((bot) => Number.isFinite(bot.selection_score ?? bot.leaderboard_score))
     : [];
 
@@ -170,14 +240,14 @@ export default function Overview() {
       controlStatus.active_generation.next_v,
     )
     : null;
-  const strengthEmptyMessage = controlStatus?.epoch_initialized
-    ? controlStatus.active_bots.length === 0
+  const strengthEmptyMessage = epochReady
+    ? controlStatus!.active_bots.length === 0
       ? "当前严格发布池为空；尚无可进入评分周期的 Bot。"
       : "严格发布池正在等待首个绑定当前发布池的完整 70 手评分周期；不会用默认分伪造强度。"
     : nextAuthorityVersion != null
       ? `严格进化尚未初始化；v${controlStatus?.version_authority_high_water ?? 0} 只用于防止版本号倒退，初始化后首目标为 v${nextAuthorityVersion}。`
       : "当前无法验证严格进化身份；恢复前不声明下一版本或强度结果。";
-  const strengthSampleDisplay = controlStatus?.epoch_initialized && visibleRatings.length > 0
+  const strengthSampleDisplay = epochReady && visibleRatings.length > 0
     ? (stats?.total_strength_samples ?? stats?.total_games ?? 0).toLocaleString()
     : "—";
   const daemonAge = daemon?.heartbeat_age_seconds;
@@ -223,7 +293,7 @@ export default function Overview() {
     controlStatus,
     controlHealth,
   );
-  const daemonStatusLabel = !controlStatus?.epoch_initialized
+  const daemonStatusLabel = !epochReady
     ? "未初始化"
     : dataStream.state === "disconnected" ? "评分投影流已断开"
     : dataStream.state === "connecting" ? "评分投影流连接中"
@@ -239,33 +309,14 @@ export default function Overview() {
     : "评分实际状态不可用";
 
   return (
-    <>
+    <EvolutionPageScaffold
+      title="运行总览"
+      subtitle="系统健康 · 最新代次进度 · LLM 今日用量 · 最新发布 Bot 强度"
+    >
       <PageMeta title="运行总览 — Bot 自进化" description="现在发生什么、已发布什么、真实强度如何" />
 
-      <EvolutionPageHeader
-        title="运行总览"
-        subtitle="精简态势 · Phase A 摘要 · 流水线链到本代进度"
-        status={controlStatus}
-        health={controlHealth}
-        loading={controlLoading}
-        error={controlError}
-        lastUpdated={lastUpdated}
-        variant="full"
-      />
-
-      <PhaseAProjectionStrip
-        status={controlStatus}
-        manualRequired={operatorSituationView(controlStatus, controlHealth)?.manualRequired === true}
-      />
-
-      <OperatorSituation
-        status={controlStatus}
-        health={controlHealth}
-        className="mb-4"
-      />
-
       {/* 429 rate-limit warning banner */}
-      {controlStatus?.epoch_initialized && rateLimit?.blocked && (
+      {epochReady && rateLimit?.blocked && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5 mb-4 flex items-center gap-3">
           <span className="text-amber-400 text-lg">⏳</span>
           <div>
@@ -283,7 +334,7 @@ export default function Overview() {
         </div>
       )}
 
-      {/* Compact metric strip */}
+      {/* Compact metric strip: system health cards (epoch 状态/服务/daemon/版本权威) */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="flex items-baseline gap-2">
           <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{controlStatus?.active_bots.length ?? 0}</span>
@@ -316,7 +367,7 @@ export default function Overview() {
           >
             {daemonStatusLabel}
           </Badge>
-          {controlStatus?.epoch_initialized && (
+          {epochReady && (
             <span className="text-[10px] text-gray-400">控制操作请前往控制面板</span>
           )}
           <span className="text-[10px] text-gray-400">心跳 {daemonAgeStr}</span>
@@ -324,24 +375,13 @@ export default function Overview() {
             配置意图：{daemonConfigured == null ? "不可用" : daemonConfigured ? "启用" : "禁用"}
             {" · "}实际进程：{controlHealth?.daemon.alive == null ? "不可用" : controlHealth.daemon.alive ? "运行" : "停止"}
           </span>
-          {controlStatus?.epoch_initialized && (
-            <span className="text-[10px] text-gray-400">
-              {daemon?.strength_evidence_available
-                ? "强度周期已发布"
-                : daemon?.strength_evidence_status === "active_pool_empty"
-                  ? "发布池为空，无强度证据"
-                  : daemon?.strength_evidence_status === "active_pool_singleton"
-                    ? "单 Bot 无法形成强度样本"
-                    : "等待首个完整 70 手强度样本"}
-            </span>
-          )}
         </div>
       </div>
 
-      {/* Top 5 featured + Activity + Pipeline */}
+      {/* Top 5 featured bots (最新发布 bot 强度卡片) + Activity + LLM 用量 */}
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-6">
         {/* Top 5 podium */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {top5.length === 0 && (
               <div className="sm:col-span-2 lg:col-span-3 rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
@@ -353,9 +393,6 @@ export default function Overview() {
             {/* #1 — large featured card */}
             {top5[0] && (() => {
               const bot = top5[0];
-              const s = summary[bot.name];
-              const sparkData = s ? [s.peak_rating, (s.peak_rating + s.current_rating) / 2, s.current_rating] : [];
-              const sparkColor = s && s.trend > 0 ? "#12b76a" : s && s.trend < 0 ? "#f04438" : "#98a2b3";
               return (
                 <div className={cn(
                   "sm:col-span-2 lg:col-span-1 rounded-2xl border p-5 relative overflow-hidden",
@@ -380,16 +417,14 @@ export default function Overview() {
                     <Badge variant={strengthConfidenceVariant(bot.strength_confidence)} size="sm">
                       {strengthConfidenceLabel[bot.strength_confidence ?? ""] ?? "强度低置信"}
                     </Badge>
-                    {sparkData.length >= 2 && <Sparkline data={sparkData} color={sparkColor} />}
-                    {s && (s.wr_trend != null ? (
-                      <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
-                        {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"} {(Math.abs(s.wr_trend) * 100).toFixed(1)}pp
-                      </Badge>
-                    ) : (
-                      <Badge variant={s.trend > 0 ? "success" : s.trend < 0 ? "error" : "neutral"} size="sm">
-                        {s.trend > 0 ? "↑" : s.trend < 0 ? "↓" : "→"} {Math.abs(s.trend).toFixed(1)}
-                      </Badge>
-                    ))}
+                  </div>
+                  <div className="mt-3">
+                    <Link
+                      to="/bots"
+                      className="text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
+                    >
+                      查看 Bot 强度与回放 →
+                    </Link>
                   </div>
                 </div>
               );
@@ -397,7 +432,6 @@ export default function Overview() {
 
             {/* #2-5 — compact cards */}
             {top5.slice(1).map((bot) => {
-              const s = summary[bot.name];
               const scorePct = ((scoreOf(bot) - minScore) / scoreRange) * 100;
               return (
                 <div key={bot.name} className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
@@ -426,28 +460,19 @@ export default function Overview() {
                     <Badge variant={strengthConfidenceVariant(bot.strength_confidence)} size="sm">
                       {bot.strength_confidence === "high" ? "高置信" : bot.strength_confidence === "medium" ? "中置信" : "低置信"}
                     </Badge>
-                    {s && (s.wr_trend != null ? (
-                      <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
-                        {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"} {(Math.abs(s.wr_trend) * 100).toFixed(1)}pp
-                      </Badge>
-                    ) : s.trend !== 0 ? (
-                      <span className={s.trend > 0 ? "text-success-600 dark:text-success-400" : "text-error-600 dark:text-error-400"}>
-                        {s.trend > 0 ? "↑" : "↓"} {Math.abs(s.trend).toFixed(1)}
-                      </span>
-                    ) : null)}
                   </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Slim pipeline summary → /pipeline owns the full stepper + handoff */}
+          {/* Latest generation progress (slim) */}
           {controlStatus && (
             controlStatus.active_generation
             || controlStatus.post_publication_handoff.status !== "none"
             || schedulerOwnsPrepare
           ) && (
-            <EvolutionSurface className="mt-4 space-y-3" padding="sm">
+            <EvolutionSurface className="space-y-3" padding="sm">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <EvolutionStatusBadge
@@ -465,18 +490,21 @@ export default function Overview() {
                   </span>
                 </div>
                 <Link
-                  to="/pipeline"
+                  to="/generation"
                   className="shrink-0 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
                 >
-                  打开完整流水线 →
+                  打开本代进度 →
                 </Link>
               </div>
             </EvolutionSurface>
           )}
+
+          {/* LLM 今日用量摘要 */}
+          <LlmUsageCard epochReady={epochReady} />
         </div>
 
         {/* Right: Activity */}
-        {controlStatus?.epoch_initialized ? (
+        {epochReady ? (
           <RecentActivityCard />
         ) : (
           <div className="rounded-2xl border border-gray-200 bg-white p-4 text-xs text-gray-500 dark:border-border-subtle dark:bg-surface-1 dark:text-gray-400">
@@ -502,13 +530,11 @@ export default function Overview() {
                   <th className="px-5 py-2 font-medium">净筹码/70手</th>
                   <th className="px-5 py-2 font-medium">覆盖</th>
                   <th className="px-5 py-2 font-medium">场数</th>
-                  <th className="px-5 py-2 font-medium">趋势</th>
                   <th className="px-5 py-2 font-medium">强度置信</th>
                 </tr>
               </thead>
               <tbody>
                 {rest.map((bot) => {
-                  const s = summary[bot.name];
                   const scorePct = ((scoreOf(bot) - minScore) / scoreRange) * 100;
                   return (
                     <tr key={bot.name} className={cn(
@@ -541,17 +567,6 @@ export default function Overview() {
                       </td>
                       <td className="px-5 py-2.5 text-gray-500 text-xs tabular-nums">{bot.games ?? "—"}</td>
                       <td className="px-5 py-2.5">
-                        {s && (s.wr_trend != null ? (
-                          <Badge variant={s.wr_trend > 0 ? "success" : s.wr_trend < 0 ? "error" : "neutral"} size="sm">
-                            {s.wr_trend > 0 ? "↑" : s.wr_trend < 0 ? "↓" : "→"} {(Math.abs(s.wr_trend) * 100).toFixed(1)}pp
-                          </Badge>
-                        ) : s ? (
-                          <Badge variant={s.trend > 0 ? "success" : s.trend < 0 ? "error" : "neutral"} size="sm">
-                            {s.trend > 0 ? "↑" : s.trend < 0 ? "↓" : "→"} {Math.abs(s.trend).toFixed(1)}
-                          </Badge>
-                        ) : "—")}
-                      </td>
-                      <td className="px-5 py-2.5">
                         <Badge
                           variant={strengthConfidenceVariant(bot.strength_confidence)}
                           size="sm"
@@ -571,6 +586,6 @@ export default function Overview() {
           </div>
         </div>
       )}
-    </>
+    </EvolutionPageScaffold>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import {
   controlApi,
   controlAbandonAvailable,
@@ -16,10 +16,9 @@ import type { PipelineCheckpoint } from "../api/types";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { AsyncCertificationQueue } from "../components/evolution/AsyncCertificationQueue";
-import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
-import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
-import { operatorSituationView } from "../domain/operatorSituationView";
+import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaffold";
 import { authorityNextVersion } from "../hooks/useControlStatus";
+import { useBoundPolling } from "../hooks/useBoundPolling";
 import { useControlStatusValue } from "../context/DataProvider";
 import { getOperatorControlToken, setOperatorControlToken } from "../api/operatorControl";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
@@ -30,21 +29,60 @@ import { canonicalGenerationLabel } from "../lib/canonicalGenerationIdentity";
 const RefreshIcon = ({ className }: { className?: string }) => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
 );
+
+interface ControlConfigProjection {
+  decisions: Decision[];
+  config: AppConfig | null;
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export default function ControlPanel() {
   const { status, health, loading: statusLoading, error: statusError, refresh: refreshStatus, lastUpdated } = useControlStatusValue();
-  const [config, setConfig] = useState<AppConfig | null>(null);
-  const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
   const [editWorkers, setEditWorkers] = useState(12);
   const [editPairs, setEditPairs] = useState(5);
   const [editDaemon, setEditDaemon] = useState(true);
-  const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
-  const [connError, setConnError] = useState(false);
   const [operatorToken, setOperatorToken] = useState(getOperatorControlToken);
   const [mutationError, setMutationError] = useState("");
-  const checkpointRequestSequence = useRef(0);
+  const [configSynced, setConfigSynced] = useState(false);
+
+  // config + decisions：用 useBoundPolling 统一轮询（替换原 setInterval(3s)）。
+  const {
+    data: configProjection,
+    error: configError,
+    refresh: refreshConfig,
+  } = useBoundPolling<ControlConfigProjection>(
+    async () => {
+      const [decisions, config] = await Promise.all([
+        controlApi.decisions(),
+        controlApi.getConfig(),
+      ]);
+      return { decisions, config };
+    },
+    { pollMs: 3_000 },
+  );
+  // checkpoint：独立轮询（替换原 setInterval(5s)）。
+  const {
+    data: checkpoint,
+    refresh: refreshCheckpoint,
+  } = useBoundPolling<PipelineCheckpoint | null>(
+    async () => api.pipelineCheckpoint(),
+    { pollMs: 5_000 },
+  );
+
+  const decisions = configProjection?.decisions ?? [];
+  const config = configProjection?.config ?? null;
+  const connError = configError != null;
+
+  // 将后端 config 同步进编辑态（首次拿到 config 后对齐一次）。
+  const configReady = config != null;
+  if (configReady && !configSynced) {
+    setEditWorkers(config.daemon_workers);
+    setEditPairs(config.daemon_pairs);
+    setEditDaemon(config.daemon_enabled);
+    setConfigSynced(true);
+  }
 
   const updateOperatorToken = (value: string) => {
     setOperatorToken(value);
@@ -52,51 +90,9 @@ export default function ControlPanel() {
     setMutationError("");
   };
 
-  const refresh = useCallback(async () => {
-    try {
-      const [d, c] = await Promise.all([
-        controlApi.decisions(),
-        controlApi.getConfig(),
-      ]);
-      setDecisions(d);
-      setConfig(c);
-      setEditWorkers(c.daemon_workers);
-      setEditPairs(c.daemon_pairs);
-      setEditDaemon(c.daemon_enabled);
-      setConnError(false);
-    } catch {
-      setDecisions([]);
-      setConfig(null);
-      setConnError(true);
-    }
-  }, []);
-
-  const refreshCheckpoint = useCallback(async () => {
-    const requestSequence = ++checkpointRequestSequence.current;
-    try {
-      const value = await api.pipelineCheckpoint();
-      if (requestSequence !== checkpointRequestSequence.current) return;
-      setCheckpoint(value);
-      setConnError(false);
-    } catch {
-      if (requestSequence !== checkpointRequestSequence.current) return;
-      setCheckpoint(null);
-      setConnError(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    const requestSequenceRef = checkpointRequestSequence;
-    refresh();
-    refreshCheckpoint();
-    const id = setInterval(refresh, 3000);
-    const checkpointId = setInterval(refreshCheckpoint, 5000);
-    return () => {
-      ++requestSequenceRef.current;
-      clearInterval(id);
-      clearInterval(checkpointId);
-    };
-  }, [refresh, refreshCheckpoint]);
+  const refresh = useCallback(() => {
+    void refreshConfig();
+  }, [refreshConfig]);
 
   const handleSaveConfig = async () => {
     if (status?.running || (health?.task.present && health.task.done === false)) return;
@@ -107,7 +103,7 @@ export default function ControlPanel() {
     } catch (error) {
       setMutationError(error instanceof Error ? error.message : String(error));
     } finally { setLoading(null); }
-    try { await refresh(); } catch (e) { console.error("[ControlPanel] refresh after save failed:", e); }
+    try { await refreshConfig(); } catch (e) { console.error("[ControlPanel] refresh after save failed:", e); }
   };
 
   const handleStart = async () => {
@@ -117,7 +113,7 @@ export default function ControlPanel() {
     try { await controlApi.start(); }
     catch (error) { setMutationError(error instanceof Error ? error.message : String(error)); }
     finally { setLoading(null); }
-    await Promise.all([refresh(), refreshStatus()]);
+    await Promise.all([refreshConfig(), refreshStatus()]);
   };
 
   const handleStop = async () => {
@@ -126,7 +122,7 @@ export default function ControlPanel() {
     try { await controlApi.stop(); }
     catch (error) { setMutationError(error instanceof Error ? error.message : String(error)); }
     finally { setLoading(null); }
-    await Promise.all([refresh(), refreshStatus()]);
+    await Promise.all([refreshConfig(), refreshStatus()]);
   };
 
   const handleAbandon = async () => {
@@ -147,12 +143,12 @@ export default function ControlPanel() {
     } finally {
       setLoading(null);
     }
-    await Promise.all([refresh(), refreshStatus(), refreshCheckpoint()]);
+    await Promise.all([refreshConfig(), refreshStatus(), refreshCheckpoint()]);
   };
 
   const formatTime = (ts: number) => new Date(ts * 1000).toLocaleTimeString();
 
-  const configDirty = config && (
+  const configDirty = config && configSynced && (
     editWorkers !== config.daemon_workers ||
     editPairs !== config.daemon_pairs ||
     editDaemon !== config.daemon_enabled
@@ -241,27 +237,16 @@ export default function ControlPanel() {
   const daemonEffective = health?.daemon;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <EvolutionPageHeader
-          title="控制面板"
-          subtitle="启停 / abandon / config / async 队列 / daemon pairs — 唯一突变入口"
-          status={status}
-          health={health}
-          loading={statusLoading}
-          error={statusError}
-          lastUpdated={lastUpdated}
-          variant="compact"
-          className="mb-0 flex-1"
-        />
+    <EvolutionPageScaffold
+      title="控制面板"
+      subtitle="启停 / 受控放弃 / daemon 配置 / epoch 权威 / 异步认证队列"
+    >
+      <div className="space-y-6">
+      <div className="flex items-center justify-end gap-3 -mb-2">
         <button onClick={() => void Promise.all([refresh(), refreshStatus(), refreshCheckpoint()])} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1 shrink-0">
           <RefreshIcon /> 刷新
         </button>
       </div>
-      <PhaseAProjectionStrip
-        status={status}
-        manualRequired={operatorSituationView(status, health)?.manualRequired === true}
-      />
 
       <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} />
 
@@ -494,6 +479,7 @@ export default function ControlPanel() {
       <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 p-4 text-sm text-blue-800 dark:text-blue-200">
         生成、质量门、预提交评估和正式认证只能由编排器按 checkpoint 顺序推进；网页不提供可绕过流程的通用工具执行入口。
       </div>
-    </div>
+      </div>
+    </EvolutionPageScaffold>
   );
 }

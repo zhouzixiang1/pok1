@@ -17,6 +17,35 @@ import {
   type EventSourceControllerDependencies,
 } from "./eventSourceController.js";
 import { canonicalGenerationIdentityIssues } from "./canonicalGenerationIdentity.js";
+// Re-export the shared validators so existing importers (and any future test
+// fixture) keep working without coupling to the new module path.  The
+// controllers are the historical owners of these fail-closed guards.
+export {
+  type JsonObject,
+  isObject,
+  isNumber,
+  isInteger,
+  isOptional,
+  isNullableNumber,
+  isNullableString,
+  isStringArray,
+  isHexDigest,
+  isEpochBlocked,
+  isBotRating,
+} from "./validators.js";
+import {
+  type JsonObject,
+  isObject,
+  isNumber,
+  isInteger,
+  isOptional,
+  isNullableNumber,
+  isNullableString,
+  isStringArray,
+  isHexDigest,
+  isEpochBlocked,
+  isBotRating,
+} from "./validators.js";
 
 export type DataStore = {
   ratings: BotRating[];
@@ -72,20 +101,6 @@ const DATA_EVENTS = [
   "bot_stats",
 ] as const;
 
-type JsonObject = Record<string, unknown>;
-
-const isObject = (value: unknown): value is JsonObject => (
-  typeof value === "object" && value !== null && !Array.isArray(value)
-);
-const isNumber = (value: unknown): value is number => (
-  typeof value === "number" && Number.isFinite(value)
-);
-const isInteger = (value: unknown): value is number => (
-  isNumber(value) && Number.isSafeInteger(value)
-);
-const isStringArray = (value: unknown): value is string[] => (
-  Array.isArray(value) && value.every((item) => typeof item === "string")
-);
 const isGenerationLogId = (value: unknown): value is string => (
   typeof value === "string"
   && (
@@ -93,70 +108,8 @@ const isGenerationLogId = (value: unknown): value is string => (
     || /^strict@[0-9a-f]{32}@[a-z0-9_]+_io\.txt$/.test(value)
   )
 );
-const isHexDigest = (value: unknown): value is string => (
-  typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
-);
-const isOptional = (
-  value: unknown,
-  predicate: (candidate: unknown) => boolean,
-): boolean => value === undefined || predicate(value);
-const isNullableNumber = (value: unknown): boolean => value === null || isNumber(value);
-const isBotRating = (value: unknown): value is BotRating => (
-  isObject(value)
-  && typeof value.name === "string"
-  && isNumber(value.rating)
-  && isNumber(value.rd)
-  && isNumber(value.sigma)
-  && isNumber(value.conservative_rating)
-  && typeof value.confidence === "string"
-  && typeof value.last_period === "string"
-  && isOptional(value.rank, isInteger)
-  && [
-    value.win_rate,
-    value.h2h_avg_wr,
-    value.h2h_weighted_wr,
-    value.primary_70_hand_match_score,
-    value.secondary_net_chips_total,
-    value.secondary_net_chips_mean,
-  ].every((item) => isOptional(item, isNullableNumber))
-  && [
-    value.games,
-    value.h2h_games,
-    value.h2h_opponents,
-    value.h2h_opponents_total,
-    value.h2h_coverage,
-    value.leaderboard_score,
-    value.selection_score,
-    value.selection_penalty,
-    value.strength_sample_count,
-  ].every((item) => isOptional(item, isNumber))
-  && [
-    value.h2h_source,
-    value.rank_basis,
-    value.strength_confidence,
-    value.strength_note,
-  ].every((item) => isOptional(item, (candidate) => typeof candidate === "string"))
-  && isOptional(value.strength_order_contract, isStringArray)
-);
 const isObjectArray = (value: unknown): value is JsonObject[] => (
   Array.isArray(value) && value.every(isObject)
-);
-const isEpochBlocked = (value: unknown): boolean => (
-  isObject(value)
-  && value.evaluation_epoch === "national_tcp_policy_v1"
-  && typeof value.epoch_state === "string"
-  && typeof value.epoch_initialized === "boolean"
-  && (
-    value.epoch_reset_receipt_digest == null
-    || (
-      typeof value.epoch_reset_receipt_digest === "string"
-      && /^[0-9a-f]{64}$/.test(value.epoch_reset_receipt_digest)
-    )
-  )
-  && (
-    value.stream_authority_digest == null
-    || isHexDigest(value.stream_authority_digest)
-  )
 );
 
 const DAEMON_STATUSES = new Set([
@@ -298,10 +251,6 @@ const FORMAL_AUTHORITIES = new Set([
   "none",
   "pipeline_attached_full_v5_job",
 ]);
-
-const isNullableString = (value: unknown): boolean => (
-  value === null || typeof value === "string"
-);
 
 const isFormalSummary = (value: unknown): boolean => (
   isObject(value)

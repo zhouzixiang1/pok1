@@ -1,18 +1,26 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useMemo, useState, useCallback } from "react";
 import Chart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
 import { api } from "../api/client";
 import type { LlmCallMetric, LlmMetricsSummary, LlmRoleSummary } from "../api/types";
+import { useBoundPolling } from "../hooks/useBoundPolling";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
 import { Card, CardHeader, EmptyState } from "../components/shared";
+import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaffold";
 import { cn } from "../lib/utils";
 
 /**
- * LLM 调用日志与指标页。
+ * LLM 使用分析页。
+ *
+ * 重构要点：
+ * - 用 useBoundPolling 统一拉取 /api/llm/metrics 与 /api/llm/metrics/summary，
+ *   替换原散落的 useEffect+setInterval；fail-closed（错误时清空，不展示陈旧数据）。
+ * - 用 EvolutionPageScaffold 作为统一页头三件套。
+ * - 增加按 role / token / cost 的快速筛选。
  *
  * 所有数值字段由后端权威写入；前端只读展示，不推断、不回填 null。
- * null 一律表示“未记录”，UI 渲染为 “—”，绝不当成 0。
+ * null 一律表示"未记录"，UI 渲染为 "—"，绝不当成 0。
  */
 
 const REFRESH_INTERVAL_MS = 15_000;
@@ -27,7 +35,6 @@ const CHART_COLORS = {
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
 
-/** null / undefined / NaN 一律显示占位符；调用方不应自行把 null 变成 0。 */
 function fmtNum(value: number | null | undefined, digits = 2, suffix = ""): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(digits)}${suffix}`;
@@ -68,7 +75,6 @@ function shortTs(ts: string): string {
   }
 }
 
-/** null 安全求和：跳过未记录值。 */
 function sumValid(values: Array<number | null | undefined>): number {
   let total = 0;
   for (const v of values) if (v != null && Number.isFinite(v)) total += v;
@@ -84,54 +90,51 @@ function avgValid(values: Array<number | null | undefined>): number | null {
 // ── 类型 ──────────────────────────────────────────────────────────────────
 
 type ChartKind = "elapsed" | "tokens" | "cost" | "ttft";
-
 type SortKey = "ts" | "total_elapsed_sec" | "cost_usd" | "total_tokens";
+type RoleFilter = string; // "" = 全部
 
 // ── 页面 ──────────────────────────────────────────────────────────────────
 
 export default function LlmMetrics() {
-  const [metrics, setMetrics] = useState<LlmCallMetric[]>([]);
-  const [summary, setSummary] = useState<LlmMetricsSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  // 调用日志：fail-closed 轮询。
+  const {
+    data: rawMetrics,
+    loading: metricsLoading,
+    error: metricsError,
+    refresh: refreshMetrics,
+    lastUpdated,
+  } = useBoundPolling<LlmCallMetric[]>(
+    async () => api.llmMetrics(200),
+    { pollMs: REFRESH_INTERVAL_MS },
+  );
+  // 按 role 聚合 summary：独立轮询；后端不可用时回退 null。
+  const {
+    data: summary,
+    error: summaryError,
+  } = useBoundPolling<LlmMetricsSummary | null>(
+    async () => api.llmMetricsSummary().catch(() => null),
+    { pollMs: REFRESH_INTERVAL_MS },
+  );
+
   const [chartKind, setChartKind] = useState<ChartKind>("elapsed");
   const [sortKey, setSortKey] = useState<SortKey>("ts");
   const [sortDesc, setSortDesc] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("");
 
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
+  // 后端可能按任意顺序返回；为时间序列稳定性按 epoch_ts 升序排序。
+  const metrics = useMemo(() => {
+    if (!rawMetrics) return [];
+    return [...rawMetrics].sort((a, b) => a.epoch_ts - b.epoch_ts);
+  }, [rawMetrics]);
 
-  const refresh = useCallback(async () => {
-    try {
-      const [list, sum] = await Promise.all([
-        api.llmMetrics(200),
-        api.llmMetricsSummary().catch(() => null),
-      ]);
-      if (!mountedRef.current) return;
-      // 后端可能按任意顺序返回；为时间序列稳定性按 epoch_ts 升序排序。
-      const ordered = [...list].sort((a, b) => a.epoch_ts - b.epoch_ts);
-      setMetrics(ordered);
-      setSummary(sum);
-      setError(null);
-      setLastUpdated(Date.now());
-    } catch (e) {
-      if (!mountedRef.current) return;
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-    const id = window.setInterval(() => { void refresh(); }, REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [refresh]);
+  const loading = metricsLoading && metrics.length === 0;
+  const error = metricsError && metrics.length === 0 ? metricsError.message : null;
+  const allRoles = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of metrics) if (m.role) set.add(m.role);
+    return Array.from(set).sort();
+  }, [metrics]);
 
   // ── 概览聚合（前端从明细二次派生，仅用于速览，不覆盖后端 summary 权威字段） ──
   const overview = useMemo(() => {
@@ -169,8 +172,9 @@ export default function LlmMetrics() {
   }, [metrics]);
 
   // ── 图表数据 ──
+  const chartMetrics = roleFilter ? metrics.filter((m) => m.role === roleFilter) : metrics;
   const chartData = useMemo(() => {
-    const categories = metrics.map((m) => shortTs(m.ts));
+    const categories = chartMetrics.map((m) => shortTs(m.ts));
     switch (chartKind) {
       case "elapsed":
         return {
@@ -178,7 +182,7 @@ export default function LlmMetrics() {
           series: [{
             name: "总耗时 (s)",
             type: "line" as const,
-            data: metrics.map((m) => m.total_elapsed_sec),
+            data: chartMetrics.map((m) => m.total_elapsed_sec),
             color: CHART_COLORS.elapsed,
           }],
           yTitle: "秒 (s)",
@@ -187,9 +191,9 @@ export default function LlmMetrics() {
         return {
           categories,
           series: [
-            { name: "输入 tokens", type: "line" as const, data: metrics.map((m) => m.input_tokens), color: CHART_COLORS.input },
-            { name: "输出 tokens", type: "line" as const, data: metrics.map((m) => m.output_tokens), color: CHART_COLORS.output },
-            { name: "思考 tokens", type: "line" as const, data: metrics.map((m) => m.thinking_tokens_estimated), color: CHART_COLORS.thinking },
+            { name: "输入 tokens", type: "line" as const, data: chartMetrics.map((m) => m.input_tokens), color: CHART_COLORS.input },
+            { name: "输出 tokens", type: "line" as const, data: chartMetrics.map((m) => m.output_tokens), color: CHART_COLORS.output },
+            { name: "思考 tokens", type: "line" as const, data: chartMetrics.map((m) => m.thinking_tokens_estimated), color: CHART_COLORS.thinking },
           ],
           yTitle: "tokens",
         };
@@ -199,10 +203,9 @@ export default function LlmMetrics() {
           series: [{
             name: "累积成本 ($)",
             type: "area" as const,
-            // 累积成本：跳过 null，保持单调非减。
             data: (() => {
               let acc = 0;
-              return metrics.map((m) => {
+              return chartMetrics.map((m) => {
                 if (m.cost_usd != null && Number.isFinite(m.cost_usd)) acc += m.cost_usd;
                 return Number(acc.toFixed(6));
               });
@@ -217,7 +220,7 @@ export default function LlmMetrics() {
           series: [{
             name: "首 token 延迟 (s)",
             type: "line" as const,
-            data: metrics.map((m) => m.first_token_latency_sec),
+            data: chartMetrics.map((m) => m.first_token_latency_sec),
             color: CHART_COLORS.ttft,
           }],
           yTitle: "秒 (s)",
@@ -225,7 +228,7 @@ export default function LlmMetrics() {
       default:
         return { categories, series: [], yTitle: "" };
     }
-  }, [metrics, chartKind]);
+  }, [chartMetrics, chartKind]);
 
   const chartOptions: ApexOptions = useMemo(() => {
     const isArea = chartKind === "cost";
@@ -270,9 +273,9 @@ export default function LlmMetrics() {
     };
   }, [chartData, chartKind]);
 
-  // ── 明细排序 ──
+  // ── 明细排序 + 筛选 ──
   const sortedMetrics = useMemo(() => {
-    const arr = [...metrics];
+    let arr = roleFilter ? metrics.filter((m) => m.role === roleFilter) : [...metrics];
     arr.sort((a, b) => {
       let va: number | string;
       let vb: number | string;
@@ -288,7 +291,7 @@ export default function LlmMetrics() {
       return 0;
     });
     return arr.slice(0, 100);
-  }, [metrics, sortKey, sortDesc]);
+  }, [metrics, sortKey, sortDesc, roleFilter]);
 
   const toggleSort = useCallback((key: SortKey) => {
     setSortKey((prev) => {
@@ -304,45 +307,43 @@ export default function LlmMetrics() {
 
   // ── 渲染 ────────────────────────────────────────────────────────────────
 
-  if (loading && metrics.length === 0) {
+  if (loading) {
     return (
-      <>
-        <PageMeta title="LLM 调用日志 — Bot 自进化" description="LLM 调用记录与指标" />
+      <EvolutionPageScaffold title="LLM 使用分析" subtitle="调用日志、输入输出详情与按角色聚合统计">
+        <PageMeta title="LLM 使用分析 — Bot 自进化" description="LLM 调用记录与指标" />
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
           <EmptyState message="正在加载 LLM 调用记录…" />
         </div>
-      </>
+      </EvolutionPageScaffold>
     );
   }
 
-  if (error && metrics.length === 0) {
+  if (error) {
     return (
-      <>
-        <PageMeta title="LLM 调用日志 — Bot 自进化" description="LLM 调用记录与指标" />
+      <EvolutionPageScaffold title="LLM 使用分析" subtitle="调用日志、输入输出详情与按角色聚合统计">
+        <PageMeta title="LLM 使用分析 — Bot 自进化" description="LLM 调用记录与指标" />
         <div className="rounded-2xl border border-error-200 bg-error-50 px-4 py-3 text-sm text-error-700 dark:border-error-900/30 dark:bg-error-950/20 dark:text-error-300">
           加载失败：{error}
-          <button onClick={() => { setLoading(true); void refresh(); }} className="ml-3 underline">
-            重试
-          </button>
+          <button onClick={() => refreshMetrics()} className="ml-3 underline">重试</button>
         </div>
-      </>
+      </EvolutionPageScaffold>
     );
   }
 
   if (metrics.length === 0) {
     return (
-      <>
-        <PageMeta title="LLM 调用日志 — Bot 自进化" description="LLM 调用记录与指标" />
+      <EvolutionPageScaffold title="LLM 使用分析" subtitle="调用日志、输入输出详情与按角色聚合统计">
+        <PageMeta title="LLM 使用分析 — Bot 自进化" description="LLM 调用记录与指标" />
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
           <EmptyState message="暂无 LLM 调用记录。后端开始记录后此处会自动刷新。" />
         </div>
-      </>
+      </EvolutionPageScaffold>
     );
   }
 
   return (
-    <>
-      <PageMeta title="LLM 调用日志 — Bot 自进化" description="LLM 调用记录与指标" />
+    <EvolutionPageScaffold title="LLM 使用分析" subtitle="调用日志、输入输出详情与按角色聚合统计">
+      <PageMeta title="LLM 使用分析 — Bot 自进化" description="LLM 调用记录与指标" />
 
       {/* 顶部状态条 */}
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
@@ -356,13 +357,16 @@ export default function LlmMetrics() {
           每 {REFRESH_INTERVAL_MS / 1000}s 自动刷新
         </span>
         <button
-          onClick={() => { setLoading(true); void refresh(); }}
+          onClick={() => refreshMetrics()}
           className="text-xs text-brand-600 hover:text-brand-700 dark:text-brand-400 underline"
         >
           立即刷新
         </button>
-        {error && (
-          <span className="text-xs text-error-600 dark:text-error-400">（上次刷新部分失败：{error}）</span>
+        {metricsError && (
+          <span className="text-xs text-error-600 dark:text-error-400">（调用日志刷新失败：{metricsError.message}）</span>
+        )}
+        {summaryError && (
+          <span className="text-xs text-amber-600 dark:text-amber-400">（角色聚合暂不可用：{summaryError.message}）</span>
         )}
       </div>
 
@@ -469,9 +473,19 @@ export default function LlmMetrics() {
         </Card>
       )}
 
-      {/* 调用明细表 */}
+      {/* 调用明细表（含 role / token / cost 筛选） */}
       <Card padding="p-0">
-        <CardHeader title="调用明细" subtitle={`最近 ${sortedMetrics.length} 条（点击行展开完整字段）`} />
+        <CardHeader
+          title="调用明细"
+          subtitle={`最近 ${sortedMetrics.length} 条（点击行展开完整字段）`}
+          actions={
+            <RoleFilterControl
+              roles={allRoles}
+              value={roleFilter}
+              onChange={setRoleFilter}
+            />
+          }
+        />
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] text-left text-xs">
             <thead className="border-b border-gray-100 bg-gray-50 text-[10px] uppercase tracking-wide text-gray-500 dark:border-gray-800 dark:bg-white/[0.02] dark:text-gray-400">
@@ -511,7 +525,7 @@ export default function LlmMetrics() {
           </table>
         </div>
       </Card>
-    </>
+    </EvolutionPageScaffold>
   );
 }
 
@@ -538,6 +552,32 @@ function SortHeader({ label, active, desc, onClick }: { label: string; active: b
       {label}
       <span className="text-[8px]">{active ? (desc ? "▼" : "▲") : "↕"}</span>
     </button>
+  );
+}
+
+function RoleFilterControl({
+  roles,
+  value,
+  onChange,
+}: {
+  roles: string[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-xs text-gray-500">
+      <span>筛选 Role</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="rounded border border-gray-200 px-2 py-1 text-xs dark:border-border-subtle dark:bg-surface-1"
+      >
+        <option value="">全部 ({roles.length})</option>
+        {roles.map((role) => (
+          <option key={role} value={role}>{role}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -672,7 +712,7 @@ function DetailRow({
   );
 }
 
-/** 完整字段网格（展开行），null 一律显示 “—”。 */
+/** 完整字段网格（展开行），null 一律显示 "—"。 */
 function ExpandedFields({ metric: m }: { metric: LlmCallMetric }) {
   const fields: Array<[string, string]> = [
     ["完整时间", fmtTime(m.ts)],
