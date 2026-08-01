@@ -645,3 +645,18 @@ def test_checkpoint_data_and_sidecar_symlinks_fail_closed(
     ) is False
     assert evolution_infra.clear_pipeline_checkpoint() is False
     assert outside.read_text(encoding="utf-8") == "{}"
+
+
+def test_publishing_refreshes_repo_baseline_after_commit(monkeypatch, tmp_path):
+    """Regression: commit_bot writes stage=publishing BEFORE the git commit,
+    so the frozen baseline head is the pre-commit HEAD.  Publishing must be in
+    _REPO_BASELINE_VALIDATION_STAGES so that re-writing the publishing checkpoint
+    after the commit (when HEAD has moved forward) refreshes the baseline to
+    the post-commit HEAD.  Without this, a crash-recovery of the post-publication
+    handoff sees baseline_head != current_head → repo_baseline_head_mismatch.
+    """
+    from evolution_infra_checkpoint_cas import _REPO_BASELINE_VALIDATION_STAGES
+    assert "publishing" in _REPO_BASELINE_VALIDATION_STAGES, (
+        "publishing must refresh repo_baseline so commit_bot's post-commit "
+        "checkpoint write captures the new HEAD, not the pre-commit one"
+    )

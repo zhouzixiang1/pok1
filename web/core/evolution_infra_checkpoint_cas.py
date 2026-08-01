@@ -149,6 +149,7 @@ _REPO_BASELINE_VALIDATION_STAGES = frozenset({
     "official_certifying",
     "official_failed",
     "official_inconclusive",
+    "publishing",
 })
 _REPO_BASELINE_VALIDATION_GATES = {
     "quality_failed": "quality",

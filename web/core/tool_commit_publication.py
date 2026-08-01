@@ -479,6 +479,40 @@ def _resume_publication_transaction(v, source_v, ckpt):
         "completed_sentinel_written": True,
         "checkpoint_cleared": False,
     }
+    # Refresh the checkpoint's repo_baseline.head to the post-commit HEAD.
+    # commit_bot writes stage=publishing BEFORE the git commit (tool_commit.py),
+    # so the frozen baseline head is the pre-commit HEAD.  If the post-
+    # publication handoff crashes after the commit (which moved HEAD forward)
+    # but before clearing the checkpoint, recovery sees baseline_head !=
+    # current_head and refuses to resume with repo_baseline_head_mismatch.
+    # Publishing's requires_contract_unchanged=True + branch_alias_allowed=False
+    # makes this a hard block.  Re-write the publishing checkpoint AFTER the
+    # commit succeeded (HEAD has moved) so publishing is now in
+    # _REPO_BASELINE_VALIDATION_STAGES and the CAS writer captures the
+    # post-commit HEAD.  A crash-recovery of the handoff then sees the
+    # correct post-commit baseline.
+    commit_oid = local_state.get("commit_oid")
+    if isinstance(commit_oid, str) and len(commit_oid) >= 40:
+        try:
+            post_commit_ckpt = _tc.read_pipeline_checkpoint()
+            if isinstance(post_commit_ckpt, dict):
+                frozen_rb = post_commit_ckpt.get("repo_baseline") or {}
+                if frozen_rb.get("head") != commit_oid:
+                    _tc.write_pipeline_checkpoint(
+                        int(post_commit_ckpt["next_v"]),
+                        int(post_commit_ckpt["source_v"]),
+                        "publishing",
+                        publication_intent=post_commit_ckpt.get("publication_intent"),
+                        expected_checkpoint_revision=post_commit_ckpt.get("checkpoint_revision"),
+                        expected_checkpoint_stage="publishing",
+                        expected_workflow_run_id=post_commit_ckpt.get("workflow_run_id"),
+                    )
+        except Exception:
+            # Best-effort: if the CAS fails (e.g. concurrent writer), the
+            # handoff still proceeds; the baseline refresh is an optimization
+            # for crash recovery, not a correctness requirement for the
+            # current transaction.
+            pass
     try:
         from post_publication_handoff import ensure_post_publication_handoff
 
