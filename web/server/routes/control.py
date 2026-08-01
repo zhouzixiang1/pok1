@@ -1681,11 +1681,28 @@ def _sync_evolution_fields(
         def load_epoch() -> dict[str, Any]:
             return strict_epoch_projection(ledger_fresh=ledger_fresh)
 
+        def handoff_for(value: dict[str, Any]) -> dict[str, Any]:
+            return post_publication_handoff_projection(
+                enabled=bool(value.get("initialized"))
+            )
+
+        # The coherence bracket exists to prove the epoch did not drift while a
+        # post-publication handoff was being observed: Archivist may advance
+        # epoch/handoff state concurrently while it runs.  When no handoff is
+        # active the projection is "none" and nothing races the epoch, so the two
+        # extra re-samples can never help -- they only cost up to ~50s of
+        # repeated strict_epoch_projection calls.  ``needs_bracket`` is evaluated
+        # on the already-loaded handoff (no extra epoch/handoff read), so a "none"
+        # status collapses the loop to a single bracketed sample.  Any uncertainty
+        # (active handoff, blocked, or a status the fast path does not recognise)
+        # keeps the full three attempts and the original guarantee.
+        def needs_bracket(handoff_value: dict[str, Any]) -> bool:
+            return str(handoff_value.get("status") or "none") != "none"
+
         epoch, handoff, stable_sample = stable_epoch_handoff_sample(
             load_epoch,
-            lambda value: post_publication_handoff_projection(
-                enabled=bool(value.get("initialized"))
-            ),
+            handoff_for,
+            needs_bracket=needs_bracket,
         )
         if not stable_sample:
             raise RuntimeError(

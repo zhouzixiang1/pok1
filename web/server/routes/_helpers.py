@@ -21,6 +21,7 @@ def stable_epoch_handoff_sample(
     handoff_loader: Callable[[dict[str, Any]], dict[str, Any]],
     *,
     max_attempts: int = 3,
+    needs_bracket: Callable[[dict[str, Any]], bool] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     """Bracket one handoff projection between identical epoch snapshots.
 
@@ -29,11 +30,23 @@ def stable_epoch_handoff_sample(
     A handoff revision may advance immediately after this read and remains a
     valid complete snapshot.  What is forbidden is combining it with an epoch
     that changed while the handoff was being observed.
+
+    ``needs_bracket`` is evaluated once, on the already-loaded handoff
+    projection, to decide whether the multi-attempt retry loop is required.
+    When it returns ``False`` (e.g. no active post-publication handoff) there
+    is no concurrent writer that could advance the epoch, so a single
+    before/after sample is sufficient and up to ``max_attempts-1`` expensive
+    ``epoch_loader`` re-samples are skipped.  The single sample is still
+    compared: an actual drift surfaces as an unstable result rather than
+    being silently accepted.  Any uncertainty (the predicate is omitted or
+    raises, or the handoff is active) keeps the full retry budget and the
+    original guarantee.
     """
 
     latest_epoch: dict[str, Any] = {}
     latest_handoff: dict[str, Any] = {}
-    for _attempt in range(max(1, int(max_attempts))):
+    attempt_budget = max(1, int(max_attempts))
+    for _attempt in range(attempt_budget):
         before = epoch_loader()
         before_bytes = json.dumps(
             before,
@@ -54,6 +67,18 @@ def stable_epoch_handoff_sample(
         latest_epoch, latest_handoff = after, handoff
         if before_bytes == after_bytes:
             return after, handoff, True
+        # Decide whether the bracket's retry loop can help.  Only an active
+        # handoff can race the epoch; when none is active the single sample is
+        # authoritative and re-sampling would only repeat slow projection work
+        # that cannot change the verdict.
+        if needs_bracket is not None:
+            try:
+                if not needs_bracket(handoff):
+                    return after, handoff, False
+            except Exception:
+                # A failed predicate must never weaken the bracket: fall through
+                # to the next retry attempt instead of short-circuiting.
+                pass
     return latest_epoch, latest_handoff, False
 
 

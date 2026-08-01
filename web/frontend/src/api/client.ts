@@ -228,7 +228,7 @@ export const api = {
   orchestratorSession: () => fetchJSON<OrchestratorSession>(`${BASE}/control/orchestrator/session`),
 
   // LLM call metrics
-  llmMetrics: (limit = 200) => fetchJSON<LlmCallMetric[]>(`${BASE}/llm/metrics?limit=${limit}`),
+  llmMetrics: (limit = 50) => fetchJSON<LlmCallMetric[]>(`${BASE}/llm/metrics?limit=${limit}`),
   llmMetricsSummary: () => fetchJSON<LlmMetricsSummary>(`${BASE}/llm/metrics/summary`),
 
 };

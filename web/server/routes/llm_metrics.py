@@ -73,9 +73,13 @@ def _get_metrics_blocking(limit: int) -> list[dict]:
 
 @router.get("/metrics")
 async def get_metrics(
-    limit: int = Query(200, ge=1, le=1000, description="Number of most recent records"),
+    limit: int = Query(50, ge=1, le=1000, description="Number of most recent records"),
 ):
     """Return the most recent N LLM call metric records (newest first).
+
+    Defaults to 50 records so the common dashboard poll stays light; clients
+    that need more history pass an explicit larger ``limit`` (up to 1000).
+    The upper bound is unchanged, so a request for 200 records still works.
 
     Offloaded to an isolated worker thread: ``_read_metrics_lines`` reads and
     parses the entire ``llm_call_metrics.jsonl`` under a shared lock — blocking

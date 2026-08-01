@@ -96,7 +96,9 @@ type RoleFilter = string; // "" = 全部
 // ── 页面 ──────────────────────────────────────────────────────────────────
 
 export default function LlmMetrics() {
-  // 调用日志：fail-closed 轮询。
+  // 调用日志：fail-closed 轮询。默认只拉最近 50 条以保持轮询轻量；
+  // 点 "加载更多" 提升到 200（按需加载，不在常规轮询里固定拉 200）。
+  const [metricsLimit, setMetricsLimit] = useState(50);
   const {
     data: rawMetrics,
     loading: metricsLoading,
@@ -104,8 +106,8 @@ export default function LlmMetrics() {
     refresh: refreshMetrics,
     lastUpdated,
   } = useBoundPolling<LlmCallMetric[]>(
-    async () => api.llmMetrics(200),
-    { pollMs: REFRESH_INTERVAL_MS },
+    async () => api.llmMetrics(metricsLimit),
+    { pollMs: REFRESH_INTERVAL_MS, identityKey: String(metricsLimit) },
   );
   // 按 role 聚合 summary：独立轮询；后端不可用时回退 null。
   const {
@@ -524,6 +526,17 @@ export default function LlmMetrics() {
             </tbody>
           </table>
         </div>
+        {metricsLimit < 200 && (
+          <div className="flex items-center justify-center border-t border-gray-100 p-3 dark:border-gray-800">
+            <button
+              type="button"
+              onClick={() => setMetricsLimit(200)}
+              className="rounded-lg border border-gray-200 bg-white px-4 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-border-subtle dark:bg-surface-1 dark:text-gray-300 dark:hover:bg-white/[0.04]"
+            >
+              加载更多（至 200 条）
+            </button>
+          </div>
+        )}
       </Card>
     </EvolutionPageScaffold>
   );
