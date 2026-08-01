@@ -113,6 +113,10 @@ clean editable checkout use:
 git pull --ff-only --tags
 ```
 
+Feature/fix branches cut from this line are merged back into
+`origin/tencent-cloud-runtime` and deleted once the work lands — see the
+branch-management working rule below.
+
 If dirty, on a user branch, or not safely fast-forwardable, use
 `git fetch --tags origin` and create a temporary worktree from updated
 `origin/tencent-cloud-runtime`. Do not switch branches, reset, or develop
@@ -1229,6 +1233,19 @@ fingerprint values above describe that trust policy as committed.
 - Search with `rg`/`rg --files` first.
 - Use `apply_patch` for hand edits; preserve unrelated dirty changes.
 - Never reset, checkout, or delete user work to obtain a clean tree.
+- **Keep the branch tree clean: merge development branches back into
+  `tencent-cloud-runtime` and delete them when done.** Any feature/fix branch
+  cut from `tencent-cloud-runtime` (this line) must be merged or
+  fast-forwarded back into `origin/tencent-cloud-runtime` and its local +
+  remote refs deleted promptly once the work lands, so dead branch refs do
+  not accumulate. Before deleting, confirm the branch is fully merged with
+  `git rev-list --count tencent-cloud-runtime..<branch>` (0 = fully merged)
+  and use `git branch -d` (safe delete; refuses if not merged), never `-D`
+  to force. Independent platform / research lines that are NOT part of this
+  evolution line — currently `origin/codex/*`, `origin/botzone-platform`,
+  `origin/pok-arena`, and `origin/main` — are out of scope and maintained
+  separately; do not merge them into `tencent-cloud-runtime` and do not
+  delete them under this rule.
 - Keep bot/runtime code stdlib-only unless an existing system boundary says
   otherwise.
 - Test in proportion to risk: compile touched Python, run focused tests, then

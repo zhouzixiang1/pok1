@@ -18,7 +18,10 @@ drive an active generation.
 Use the outer checkout (`/home/ubuntu/pok1` on the cloud runtime) for
 development and `.evolution_pok` for the running service; synchronize through
 Git only (on this branch, through `origin/tencent-cloud-runtime`). Before
-edits, follow `docs/evolution-dual-checkout-sync-policy.md`.
+edits, follow `docs/evolution-dual-checkout-sync-policy.md`. Feature/fix
+branches cut from this line are merged back into `origin/tencent-cloud-runtime`
+and deleted once the work lands (see the branch-management working rule in
+`AGENTS.md`); keep the branch tree clean.
 
 Strict Master/Reviewer/Critic calls never share a flat role log. Each accepted
 call binds exactly one generation-scoped `strict_invocations/<invocation_id>`
