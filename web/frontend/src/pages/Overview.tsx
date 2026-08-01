@@ -143,10 +143,11 @@ function LlmUsageCard({ epochReady }: { epochReady: boolean }) {
   // total_count/overall_success_rate are optional backend totals; when absent,
   // derive from by_role so the strip still reflects current usage (non-authoritative
   // aggregation only — full figures live on /llm).
-  const total = summary?.total_count ?? summary?.by_role.reduce((a, r) => a + r.count, 0) ?? 0;
-  const totalCost = summary?.total_cost_usd ?? summary?.by_role.reduce((a, r) => a + (r.total_cost_usd ?? 0), 0) ?? 0;
+  const byRole = summary?.by_role ?? [];
+  const total = summary?.total_count ?? byRole.reduce((a, r) => a + r.count, 0);
+  const totalCost = summary?.total_cost_usd ?? byRole.reduce((a, r) => a + (r.total_cost_usd ?? 0), 0);
   const successCount = summary?.total_success_count
-    ?? summary?.by_role.reduce((a, r) => a + r.success_count, 0);
+    ?? byRole.reduce((a, r) => a + r.success_count, 0);
   const successRate = summary?.overall_success_rate ?? (total > 0 && successCount != null ? successCount / total : null);
   const avgElapsed = summary?.avg_total_elapsed_sec ?? null;
 
