@@ -1347,6 +1347,25 @@ def main():
     )
 
     active_bots = get_active_bots()
+    # The rating pool requires ROLE_RATING_POOL eligibility (signed full
+    # certificate).  A published-but-uncertified bot (staging tier) would
+    # crash bot_path() with signed_full_official_certificate_required when
+    # pick_matches tries to launch it.  Filter here (before the minimum-pool
+    # wait loop) so the daemon degrades gracefully (idle when too few are
+    # certified) instead of crash-looping.
+    rating_eligible = []
+    for _b in active_bots:
+        try:
+            _edp.bot_path(_b)
+        except Exception:
+            if args.verbose:
+                log.info(
+                    "Skipping rating-ineligible bot %s (no signed certificate)",
+                    _b,
+                )
+            continue
+        rating_eligible.append(_b)
+    active_bots = rating_eligible
     n_workers = args.workers
     n_pairs = args.pairs
 
