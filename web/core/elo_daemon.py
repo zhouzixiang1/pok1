@@ -1525,7 +1525,7 @@ def main():
                             ):
                                 match_queue.append(
                                     _internal_match_job(
-                                        ma, mb, bot_path(ma), bot_path(mb), n_pairs
+                                        ma, mb, _safe_bot_path(ma, verbose=args.verbose), _safe_bot_path(mb, verbose=args.verbose), n_pairs
                                     )
                                 )
                         while len(in_flight) < n_workers and match_queue:
@@ -1613,7 +1613,7 @@ def main():
                                     for ea, eb in eval_pairs:
                                         match_queue.append(
                                             _internal_match_job(
-                                                ea, eb, bot_path(ea), bot_path(eb), n_pairs
+                                                ea, eb, _safe_bot_path(ea, verbose=args.verbose), _safe_bot_path(eb, verbose=args.verbose), n_pairs
                                             )
                                         )
                                     if args.verbose:
@@ -1634,7 +1634,7 @@ def main():
                             for ma, mb in matches:
                                 match_queue.append(
                                     _internal_match_job(
-                                        ma, mb, bot_path(ma), bot_path(mb), n_pairs
+                                        ma, mb, _safe_bot_path(ma, verbose=args.verbose), _safe_bot_path(mb, verbose=args.verbose), n_pairs
                                     )
                                 )
                             if match_queue:
@@ -1747,8 +1747,8 @@ def main():
                                                 _internal_match_job(
                                                     _a,
                                                     _b,
-                                                    bot_path(_a),
-                                                    bot_path(_b),
+                                                    _safe_bot_path(_a, verbose=args.verbose),
+                                                    _safe_bot_path(_b, verbose=args.verbose),
                                                     n_pairs,
                                                 )
                                             )
