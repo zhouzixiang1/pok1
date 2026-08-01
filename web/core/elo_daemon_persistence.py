@@ -230,6 +230,26 @@ def _reconcile_rating_pool_membership(
     # Read get_active_bots through the parent module so a test
     # monkeypatch.setattr(elo_daemon, "get_active_bots", ...) is observed.
     active_bots = _ed.get_active_bots()
+    # The rating pool requires ROLE_RATING_POOL eligibility (a signed full
+    # official certificate).  A published-but-uncertified bot (staging tier)
+    # is NOT rating-eligible: bot_path() would raise
+    # ``signed_full_official_certificate_required`` and crash the daemon when
+    # pick_matches tries to launch it.  Filter to only rating-eligible bots
+    # so the daemon degrades gracefully (idle when too few are certified)
+    # instead of crash-looping on every published staging bot.
+    rating_eligible = []
+    for bot in active_bots:
+        try:
+            bot_path(bot)
+        except Exception:
+            if verbose:
+                _log.info(
+                    "Skipping rating-ineligible bot %s (no signed certificate)",
+                    bot,
+                )
+            continue
+        rating_eligible.append(bot)
+    active_bots = rating_eligible
     added = sorted(set(active_bots) - set(previous_active_bots))
     removed = sorted(set(previous_active_bots) - set(active_bots))
     for bot in active_bots:
