@@ -583,7 +583,7 @@ def _legacy_ledger_summary(raw: bytes) -> dict:
             row_hashes.append(_sha256(encoded))
             continue
         match = re.fullmatch(
-            r"generation:143:workflow-v([1-9][0-9]*)",
+            rf"generation:{FIRST_STRICT_POLICY_VERSION}:workflow-v([1-9][0-9]*)",
             str(row.get("workflow_run_id") or ""),
         )
         if not match:
@@ -1501,18 +1501,13 @@ def _build_plan() -> dict:
         # Cloud epoch with already-published bots: the legacy quarantine path
         # requires a live checkpoint + candidate to abandon, which does not
         # apply when the only problem is a stale ledger with pre-current-epoch
-        # entries whose parent identity is incomplete.  In this state (no live
-        # checkpoint, bots already published), archive the stale ledger so a
-        # fresh allocation authority can compute next_v from the published
-        # high-water without the stale entries blocking the health projection.
-        if not os.path.lexists(CHECKPOINT):
-            return _cloud_epoch_ledger_archive_plan(published)
-        checkpoint_raw = _safe_read_bytes(CHECKPOINT)
-        if not checkpoint_raw.strip():
-            return _cloud_epoch_ledger_archive_plan(published)
-        raise RuntimeError(
-            "legacy reconciliation requires unpublished v143 and v142 high-water"
-        )
+        # entries whose parent identity is incomplete.  Archive the stale
+        # ledger so a fresh allocation authority can compute next_v from the
+        # published high-water.  This applies whether or not a live checkpoint
+        # exists: a stale ledger cannot be re-validated (cert environment
+        # drift), so it blocks both the health projection AND any canonical
+        # abandon that appends to it.  Archiving it first unblocks both.
+        return _cloud_epoch_ledger_archive_plan(published)
     ledger_raw = _safe_read_bytes(LEDGER)
     legacy = _legacy_ledger_summary(ledger_raw)
     checkpoint_raw = _safe_read_bytes(CHECKPOINT)
