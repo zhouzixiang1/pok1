@@ -387,6 +387,28 @@ def bot_path(bot_name):
     return _edp.bot_path(bot_name)
 
 
+def _safe_bot_path(bot_name, *, verbose=False):
+    """Return the bot entrypoint path, or None if the bot is rating-ineligible.
+
+    A published-but-uncertified bot (staging tier, no signed certificate) is
+    not rating-eligible.  Rather than crash the daemon (which happened
+    repeatedly: signed_full_official_certificate_required → rc=1 loop), skip
+    it so the daemon degrades gracefully.  This is the authoritative filter
+    applied at every match-scheduling site, independent of pool membership
+    reconciliation timing.
+    """
+
+    try:
+        return bot_path(bot_name)
+    except Exception:
+        if verbose:
+            log.info(
+                "Skipping rating-ineligible bot %s (no signed certificate)",
+                bot_name,
+            )
+        return None
+
+
 def save_ratings(
     ratings,
     save_num=None,
@@ -1423,7 +1445,10 @@ def main():
     match_queue = deque()
     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
     for a, b in matches:
-        match_queue.append(_internal_match_job(a, b, bot_path(a), bot_path(b), n_pairs))
+        pa, pb = _safe_bot_path(a, verbose=args.verbose), _safe_bot_path(b, verbose=args.verbose)
+        if pa is None or pb is None:
+            continue
+        match_queue.append(_internal_match_job(a, b, pa, pb, n_pairs))
 
     # Eval round manager for deterministic evaluation cycles
     eval_round_mgr = EvalRoundManager()
@@ -1854,10 +1879,11 @@ def main():
                     match_queue = deque()
                     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
                     for a, b in matches:
+                        pa, pb = _safe_bot_path(a, verbose=args.verbose), _safe_bot_path(b, verbose=args.verbose)
+                        if pa is None or pb is None:
+                            continue
                         match_queue.append(
-                            _internal_match_job(
-                                a, b, bot_path(a), bot_path(b), n_pairs
-                            )
+                            _internal_match_job(a, b, pa, pb, n_pairs)
                         )
                     while len(in_flight) < n_workers and match_queue:
                         m = match_queue.popleft()
