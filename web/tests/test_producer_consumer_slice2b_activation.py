@@ -946,3 +946,73 @@ def test_advance_recovery_emits_slice2b_consumer_parked_terminal_action(
         assert advanced["outcome"]["result"]["slice2b_sealed"] is True
     finally:
         _o._slice2b_activation_registry("clear")
+
+
+def test_ensure_slice2b_consumer_running_relances_consumer_after_restart(tmp_path):
+    """Regression: the park-path consumer drive must (re)launch the consumer.
+
+    After a process restart, ``recover_at_boot`` re-stashes the consumer
+    factory but does NOT launch the asyncio.Task.  Before the fix the primary
+    lane parked at ``workers_done`` forever waiting for a consumer that was
+    never running (restart deadlock).  ``_ensure_slice2b_consumer_running``
+    must re-launch the consumer task from the persisted SEALED/CONSUMING FSM
+    state even when the in-memory ``_scheduled_factories`` /
+    ``_consumer_tasks`` are empty (the post-restart condition).
+    """
+
+    import os
+
+    os.environ[SLICE2B_ENV_VAR] = "1"
+
+    import orchestrator as _o
+    import orchestrator_loop_phases as olp
+
+    adapter = _adapter(tmp_path)
+    # Use the registered (production) activation so ``_ensure_slice2b_consumer_running``
+    # resolves the SAME instance that was sealed.
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    snapshot = _snapshot(next_v=143, source_v=142)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+
+    # Simulate a process restart: persist the FSM (already done by seal) then
+    # DROP the in-memory registries.  This is exactly the post-restart state
+    # recover_at_boot runs in -- the factory is re-stashed, but no live task.
+    activation._scheduled_factories.clear()
+    activation._consumer_tasks.clear()
+    activation._sealed_snapshots.clear()
+    activation._dispatch_clocks.clear()
+
+    # recover_at_boot re-stashes the factory from the persisted lifecycle but
+    # does NOT create the asyncio.Task.  After it runs, _scheduled_factories
+    # has the entry but _consumer_tasks is still empty.
+    activation.recover_at_boot()
+    assert candidate_id in activation._scheduled_factories
+    assert candidate_id not in activation._consumer_tasks
+
+    _o._slice2b_gate_runner_factory = lambda nv, sv: _gate_runner_factory()
+    checkpoint = _checkpoint(next_v=143, source_v=142)
+    try:
+
+        async def driver():
+            # Drive the consumer in the same loop so the launched task does
+            # not die when driver() returns.
+            await olp._ensure_slice2b_consumer_running(checkpoint)
+            # THE REGRESSION: before the fix the consumer task was never
+            # launched, so this dict stayed empty (deadlock).  After the fix
+            # the helper (re)launches the task from the persisted FSM state.
+            assert candidate_id in activation._consumer_tasks
+            task = activation._consumer_tasks[candidate_id]
+            await task
+
+        asyncio.run(driver())
+
+        # The consumer task ran to terminal (promoted or rejected) -- the key
+        # point is it was DRIVEN, which never happened before the fix.  The
+        # one-ahead slot is drained either way, proving the gate chain ran.
+        entry = activation.ledger.snapshot(candidate_id)
+        assert entry["validation_outcome"] in {"promoted", "rejected"}
+        assert activation.producer_may_advance() is True
+    finally:
+        _o._slice2b_activation_registry("clear")
+        os.environ.pop(SLICE2B_ENV_VAR, None)

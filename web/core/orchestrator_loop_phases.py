@@ -688,11 +688,25 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                         "slice2b_consumer_parked",
                     }:
                         # Sealed candidate (gen N) with the consumer gate chain
-                        # running in the background.  Attempt a one-ahead draft
-                        # prepare for gen N+1 to fill LLM idle time.  This is the
-                        # one-ahead producer that keeps the 2-permit LLM pool
-                        # busy while gen N's quality->review->critic->precommit
-                        # chain runs concurrently in the consumer.  Best-effort and
+                        # running in the background.  The primary lane is parked
+                        # here while the consumer owns gen N's gates.  After a
+                        # process restart, recover_at_boot re-stashed the
+                        # consumer factory but does NOT launch the asyncio.Task;
+                        # if we never (re)launch it the primary parks forever
+                        # waiting for a consumer that is not running (restart
+                        # deadlock).  Drive the consumer task first, then fill
+                        # LLM idle time with a one-ahead draft for gen N+1.
+                        try:
+                            await _ensure_slice2b_consumer_running(
+                                (recovery or {}).get("checkpoint") or {}
+                            )
+                        except Exception:
+                            pass
+                        # Attempt a one-ahead draft prepare for gen N+1 to fill
+                        # LLM idle time.  This is the one-ahead producer that
+                        # keeps the producer LLM permits busy while gen N's
+                        # quality->review->critic->precommit chain runs
+                        # concurrently in the consumer.  Best-effort and
                         # non-fatal: any failure simply continues the canonical
                         # spin-wait on the primary slot.
                         try:
@@ -1430,6 +1444,90 @@ def _reconcile_orphan_draft_at_boot(ui):
         )
     except Exception:
         pass
+
+async def _ensure_slice2b_consumer_running(checkpoint: dict) -> None:
+    """Ensure the Slice 2b consumer gate-chain task is actually running.
+
+    The primary lane parks at ``workers_done`` when a sealed candidate's
+    consumer owns the canonical gate chain (quality->review->critic->precommit
+    ->commit).  ``recover_at_boot`` re-stashes the consumer factory after a
+    process restart, but it does NOT launch the asyncio.Task -- only
+    ``ensure_consumer_running`` (or the original seal seam) does.  Without
+    this drive, the primary parks forever waiting for a consumer that is not
+    running (restart deadlock), while the loop spins re-emitting the same
+    "Resuming at workers_done" line every second.
+
+    This is idempotent: if the consumer task is already live it returns it
+    immediately; if no candidate is sealed/in-flight it is a no-op.
+    """
+
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return
+    if not slice2b_active():
+        return
+    try:
+        activation = _orch._slice2b_activation_registry("get")
+    except Exception:
+        activation = None
+    if activation is None:
+        return
+    # Resolve the sealed candidate id for the parked primary checkpoint.  Only
+    # drive the consumer for a candidate that is sealed but not terminal; a
+    # terminal candidate has already published/been-rejected and the promotion
+    # barrier / inline path owns the rest.
+    next_v = int(checkpoint.get("next_v") or 0)
+    if next_v <= 0:
+        return
+    candidate_id = str(checkpoint.get("candidate_id") or f"candidate-v{next_v}")
+    try:
+        snapshot = activation.ledger.snapshot(candidate_id)
+    except Exception:
+        snapshot = None
+    if snapshot is None:
+        return
+    try:
+        if activation.ledger.is_terminal(candidate_id):
+            return
+    except Exception:
+        return
+    # Re-stash the sealed snapshot into the in-memory registry if it was lost
+    # across the restart (recover_at_boot does this too, but be defensive).
+    if candidate_id not in activation._sealed_snapshots:
+        try:
+            recovered = activation.ledger.recover_snapshot(candidate_id)
+        except Exception:
+            recovered = None
+        if recovered is not None:
+            activation._sealed_snapshots[candidate_id] = dict(recovered)
+            timing_plan = recovered.get("quality_native_match_timing_plan") or {}
+            activation._dispatch_clocks[candidate_id] = float(
+                timing_plan.get("submitted_at_epoch") or 0.0
+            )
+    # Ensure a factory is scheduled (recover_at_boot schedules it; if for any
+    # reason it is missing, schedule the canonical chain now).
+    if candidate_id not in activation._scheduled_factories:
+        try:
+            from producer_consumer_slice2b_activation import (
+                canonical_gate_runner_factory,
+            )
+
+            rv = int(snapshot.get("next_v") or next_v)
+            sv = int(snapshot.get("source_v") or 0)
+            activation.schedule_consumer(
+                candidate_id=candidate_id,
+                gate_runner_factory=canonical_gate_runner_factory(rv, sv),
+            )
+        except Exception:
+            pass
+    # Launch (or confirm) the consumer task.  This is the load-bearing call:
+    # without it the gate chain never runs after a restart.
+    try:
+        await activation.ensure_consumer_running(candidate_id)
+    except Exception:
+        pass
+
 
 def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     """Best-effort one-ahead draft prepare for gen N+1 after a seal.
