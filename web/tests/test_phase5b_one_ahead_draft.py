@@ -437,3 +437,22 @@ async def test_run_draft_cycle_clears_draft_on_terminal_action(monkeypatch):
     await orchestrator_loop_phases._run_draft_cycle(None, None, 11)
     # Terminal action -> draft cleared.
     assert read_pipeline_checkpoint(slot_id="draft") is None
+
+
+def test_speculative_prepare_branch_logic():
+    """Verify the speculative-prepare branch: slot_id is not None → skip daemon
+    wait. This is a static analysis of the prepare_generation code path.
+
+    A draft (slot_id is not None) skips the blocking wait_for_daemon_eval and
+    proceeds with the existing rating, keeping the LLM productive while the
+    daemon rates the parent. The primary lane (slot_id=None) still waits."""
+    import inspect
+    import generation_scheduler
+
+    source = inspect.getsource(generation_scheduler.prepare_generation)
+    # The speculative branch must exist and be gated on slot_id.
+    assert "slot_id is not None" in source
+    assert "Speculative draft prepare: skipping daemon eval wait" in source
+    assert "eval_ok = True" in source
+    # The primary lane still awaits.
+    assert "await wait_for_daemon_eval" in source

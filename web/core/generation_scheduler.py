@@ -1266,7 +1266,24 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     if min_games is not None:
         eval_kwargs["min_games"] = min_games
     _ensure_priority_eval_signal(active_bot_name, eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL))
-    eval_ok = await wait_for_daemon_eval(active_bot_name, **eval_kwargs)
+    # Speculative preparation: a draft (slot_id is not None) skips the blocking
+    # wait_for_daemon_eval and proceeds with the existing (possibly stale)
+    # evaluation snapshot. This keeps the LLM producing (Master/Workers) while
+    # the daemon rates the just-published parent. If the rating drifts enough
+    # to change the parent selection, the draft is marked stale and reaped
+    # (cost = LLM tokens only; no matches/gates run for a draft). The primary
+    # lane (slot_id=None) always waits — its parent choice must be correct.
+    if slot_id is not None:
+        # Draft: don't block on daemon eval. Use whatever rating exists now.
+        eval_ok = True
+        if ui:
+            ui.log_history(
+                "Speculative draft prepare: skipping daemon eval wait "
+                f"(slot={slot_id}); using existing rating for {active_bot_name}",
+                "info",
+            )
+    else:
+        eval_ok = await wait_for_daemon_eval(active_bot_name, **eval_kwargs)
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
     if not eval_ok:
