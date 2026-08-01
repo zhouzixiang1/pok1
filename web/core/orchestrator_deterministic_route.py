@@ -113,6 +113,38 @@ def _slice2b_consumer_rejected(checkpoint, next_v) -> str | None:
     return None
 
 
+def _slice2b_consumer_promoted(checkpoint, next_v) -> bool:
+    """True when the sealed candidate's consumer gate chain already promoted it.
+
+    Once the consumer reaches the terminal ``promoted`` state (commit_bot ran
+    successfully), ``_slice2b_consumer_in_flight`` returns False (promoted is
+    terminal).  Without this guard the primary lane would fall through its
+    park checks and re-run the consumer-owned gates (quality/review/critic/
+    precommit) inline -- a double-execution that re-submits the consumer jobs
+    and trips ``producer_consumer_idempotency_conflict``.  When this returns
+    True the primary lane must fast-forward to ``commit_bot`` (where the
+    promotion barrier is a no-op because the candidate is already promoted),
+    not re-enter the consumer-owned gates.
+    """
+
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return False
+    if not slice2b_active():
+        return False
+    activation = _slice2b_ensure_activation()
+    if activation is None:
+        return False
+    candidate_id = str(
+        checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+    )
+    snapshot = activation.ledger.snapshot(candidate_id)
+    if snapshot is None:
+        return False
+    return snapshot.get("validation_outcome") == "promoted"
+
+
 async def _slice2b_abandon_rejected_candidate(
     checkpoint, next_v, source_v, *, ui, outcome, reject_reason: str
 ) -> bool:
@@ -708,6 +740,21 @@ async def _try_deterministic_checkpoint_route(
             outcome=outcome,
             reason="consumer_gate_chain_in_flight",
         )
+
+    # Slice 2b promoted fast-forward: once the consumer has PROMOTED the
+    # candidate (its commit_bot ran successfully), the consumer-owned gates
+    # (quality/review/critic/precommit) are already done.  ``_slice2b_consumer_in_flight``
+    # returns False for a terminal promoted candidate, so without this guard
+    # the primary lane falls through and re-runs run_quality_gates inline --
+    # a double-execution that re-submits the consumer jobs and trips
+    # ``producer_consumer_idempotency_conflict``.  Fast-forward directly to
+    # commit_bot, where the promotion barrier is a no-op (candidate already
+    # promoted) and the canonical commit_bot publishes idempotently.
+    if (
+        next_tool in _SLICE2B_CONSUMER_OWNED_GATES
+        and _slice2b_consumer_promoted(checkpoint, next_v)
+    ):
+        next_tool = "commit_bot"
 
     # Slice 2b promotion barrier: at commit_bot, the canonical publication may
     # only proceed once the background consumer has promoted the sealed

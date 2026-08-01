@@ -1171,3 +1171,36 @@ def test_slice2b_consumer_rejected_returns_none_when_sealed_not_rejected(
         assert odr._slice2b_consumer_rejected(checkpoint, 144) is None
     finally:
         _o._slice2b_activation_registry("clear")
+
+
+def test_slice2b_consumer_promoted_returns_true_after_promotion(monkeypatch, tmp_path):
+    """Promoted fast-forward regression: after the consumer PROMOTES a
+    candidate, the helper must return True so the primary lane fast-forwards
+    to commit_bot instead of re-running the consumer-owned gates (double-
+    execution that trips producer_consumer_idempotency_conflict).
+    """
+
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    adapter = _adapter(tmp_path)
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    checkpoint = _checkpoint(next_v=145, source_v=142)
+    snapshot = _snapshot(checkpoint=checkpoint)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+    # Drive the consumer to a terminal PROMOTE (all gates succeed).
+    _run_consumer(activation, candidate_id, _gate_runner_factory())
+    entry = activation.ledger.snapshot(candidate_id)
+    assert entry["validation_outcome"] == "promoted"
+
+    try:
+        assert odr._slice2b_consumer_promoted(checkpoint, 145) is True
+        # A non-promoted (sealed, in-flight) candidate is NOT promoted.
+        ck2 = _checkpoint(next_v=146, source_v=142)
+        snap2 = _snapshot(checkpoint=ck2)
+        activation.seal_at_workers_done(**_seal_kwargs(snap2))
+        assert odr._slice2b_consumer_promoted(ck2, 146) is False
+    finally:
+        _o._slice2b_activation_registry("clear")
