@@ -185,6 +185,13 @@ def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
     monkeypatch.setattr(
         evolution_infra, "find_latest_rating_eligible_active_v", lambda: 144
     )
+    # The post-wait coherence check filters the live active pool to the
+    # rating-eligible subset (raw pool flickers with remote-tag cache waves).
+    # In these tests the active pool IS the rating-eligible pool, so all
+    # discovered bots must pass the eligibility filter.
+    monkeypatch.setattr(
+        generation_scheduler, "_is_rating_pool_eligible_bot", lambda _bot: True
+    )
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -217,6 +224,9 @@ def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatc
     monkeypatch.setattr(
         evolution_infra, "find_latest_rating_eligible_active_v", lambda: 143
     )
+    monkeypatch.setattr(
+        generation_scheduler, "_is_rating_pool_eligible_bot", lambda _bot: True
+    )
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -247,6 +257,11 @@ def test_post_wait_evidence_rejects_active_pool_change_while_loading(monkeypatch
     monkeypatch.setattr(
         evolution_infra, "find_latest_rating_eligible_active_v", lambda: 143
     )
+    # The coherence check compares the rating-eligible subset; here both
+    # snapshots are rating-eligible so the pool change is still detected.
+    monkeypatch.setattr(
+        generation_scheduler, "_is_rating_pool_eligible_bot", lambda _bot: True
+    )
     monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_args: None)
 
     evidence = generation_scheduler._load_post_wait_evaluation_evidence(
@@ -260,3 +275,42 @@ def test_post_wait_evidence_rejects_active_pool_change_while_loading(monkeypatch
     )
 
     assert evidence is None
+
+
+def test_post_wait_evidence_ignores_flickering_ineligible_bots(monkeypatch):
+    """The live ``get_active_bots()`` pool can flicker over the 600s eval-wait
+    window because of remote-tag cache waves (a staging bot without a full cert
+    appears/disappears). The coherence check must compare only the
+    rating-eligible subset, not the raw pool, so an ineligible bot flickering
+    in/out between the before/after reads does NOT cause a false rejection."""
+    eligible = ["national_v143", "national_v144"]
+    ineligible = "national_v140"  # staging, no full cert — flickers
+    # Before-snapshot: eligible only. After-snapshot: eligible + ineligible.
+    # Without the eligibility filter this would trigger
+    # active_pool_changed_while_loading_snapshot.
+    pools = iter([list(eligible), eligible + [ineligible]])
+    monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: list(next(pools)))
+    monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 144)
+    monkeypatch.setattr(
+        evolution_infra, "find_latest_rating_eligible_active_v", lambda: 144
+    )
+    # Only the two eligible bots pass; the flickering staging bot is excluded.
+    monkeypatch.setattr(
+        generation_scheduler,
+        "_is_rating_pool_eligible_bot",
+        lambda bot: bot in eligible,
+    )
+    monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_args: None)
+
+    evidence = generation_scheduler._load_post_wait_evaluation_evidence(
+        active_v=144,
+        active_bot_name="national_v144",
+        min_games=24,
+        rd_threshold=110,
+        rd_min_games=12,
+        expected_active_bots=eligible,
+        snapshot_bundle=_evaluation_snapshot_bundle(eligible),
+    )
+
+    # Evidence is coherent: the rating-eligible subset did not change.
+    assert evidence is not None

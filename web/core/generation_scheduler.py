@@ -383,7 +383,10 @@ def _load_post_wait_evaluation_evidence(
         get_active_bots,
     )
 
-    active_bots_before = tuple(sorted(get_active_bots()))
+    _raw_active_bots_before = tuple(sorted(get_active_bots()))
+    active_bots_before = tuple(
+        sorted(b for b in _raw_active_bots_before if _is_rating_pool_eligible_bot(b))
+    )
     # Re-derive with the same rating-eligible selector used to bind the eval
     # source, so the "did the source change?" check is consistent with binding.
     refreshed_active_v = find_latest_rating_eligible_active_v()
@@ -459,7 +462,10 @@ def _load_post_wait_evaluation_evidence(
         readiness_reason = "not_ready"
         issues.append("post_wait_readiness_not_reproducible")
 
-    active_bots_after = tuple(sorted(get_active_bots()))
+    _raw_active_bots_after = tuple(sorted(get_active_bots()))
+    active_bots_after = tuple(
+        sorted(b for b in _raw_active_bots_after if _is_rating_pool_eligible_bot(b))
+    )
     if active_bots_after != active_bots_before:
         issues.append("active_pool_changed_while_loading_snapshot")
     cutoffs = {
