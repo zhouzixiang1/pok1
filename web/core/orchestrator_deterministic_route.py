@@ -80,6 +80,106 @@ def _slice2b_consumer_in_flight(checkpoint, next_v) -> bool:
     return not activation.ledger.is_terminal(candidate_id)
 
 
+def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
+    """Detect and reap a zombie consumer task, returning True if reaped.
+
+    A candidate can be left non-terminal (``consuming``) when its consumer
+    asyncio task exited without reaching a terminal ledger state -- this
+    happens when a gate records ``infrastructure_failure`` (the dispatcher
+    returns without rejecting, intending the next ``run_once`` to retry) but
+    nothing re-drives ``run_once``.  The result is a zombie: the persisted
+    candidate stays ``consuming`` forever (so ``_slice2b_consumer_in_flight``
+    keeps returning True) while the actual asyncio task is ``done()`` and the
+    effect lease is expired.  The primary lane then busy-parks every second
+    waiting for a consumer that will never finish.
+
+    This fail-closed reaper detects that exact state -- candidate non-terminal
+    AND its consumer task done/absent AND (defensively) the effect lease
+    expired -- and marks the candidate ``rejected`` so the primary lane's
+    ``_slice2b_consumer_rejected`` check canonically abandons the generation
+    and the epoch allocates a fresh successor.  We prefer this over silently
+    restarting the consumer because the lease-reclaim path for an expired
+    ``running`` effect is fragile (the death-proof resolver cannot distinguish
+    a freshly-restarted live task from the original dead owner), and a
+    generation lost to an infrastructure failure is recoverable on the next
+    attempt, whereas an infinite busy-park is not.
+    """
+
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        return False
+    if not slice2b_active():
+        return False
+    activation = _slice2b_ensure_activation()
+    if activation is None:
+        return False
+    candidate_id = str(
+        checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+    )
+    try:
+        if activation.ledger.is_terminal(candidate_id):
+            return False
+    except Exception:
+        return False
+    # The consumer task is created at launch and stored in _consumer_tasks.
+    # A live (not-done) task means the gate chain is genuinely still running
+    # (even if slow); do NOT reap in that case.  Only reap when the task is
+    # done or absent for a non-terminal candidate (the zombie state).
+    task = activation._consumer_tasks.get(candidate_id)
+    if task is not None and not task.done():
+        return False
+    # Defensive second check: confirm the consumer effect lease is actually
+    # expired before reaping, so a transient lease-renewal gap never reaps a
+    # live consumer.  Read the workflow store directly.
+    try:
+        import sqlite3
+        import time as _time
+        from evolution_infra import RESULTS_DIR
+        db = RESULTS_DIR / "workflow" / "events.sqlite3"
+        if db.exists():
+            conn = sqlite3.connect(str(db))
+            try:
+                row = conn.execute(
+                    "SELECT lease_until FROM effects "
+                    "WHERE kind LIKE 'producer-consumer%' "
+                    "AND status = 'running' LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is not None and row[0] is not None:
+                if float(row[0]) > _time.time():
+                    # Lease still valid; consumer may still be working.  Do
+                    # not reap.
+                    return False
+    except Exception:
+        # If we cannot read the lease, fall through to the reap decision
+        # based on the task state (the authoritative zombie signal).
+        pass
+    # Zombie confirmed: mark the candidate rejected so the primary lane
+    # abandons this generation and the epoch retries.
+    try:
+        activation.ledger.reject(
+            candidate_id=candidate_id,
+            reason="consumer_task_zombie_reaped",
+            completed_at=__import__("time").time(),
+        )
+        _o.log_system_event(
+            "pipeline.slice2b_consumer_zombie_reaped",
+            "warn",
+            (
+                f"Slice 2b reaped zombie consumer for v{next_v}: candidate "
+                f"{candidate_id} non-terminal but its consumer task is "
+                f"done/absent with an expired lease; generation will be "
+                f"abandoned and retried."
+            ),
+            {"next_v": next_v, "candidate_id": candidate_id},
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _slice2b_consumer_rejected(checkpoint, next_v) -> str | None:
     """The reject reason when a sealed candidate's consumer gate chain failed.
 
@@ -1047,15 +1147,27 @@ async def _try_deterministic_checkpoint_route(
     # high-water full), this returns False and the inline path runs unchanged.
     if next_tool == "run_quality_gates" and stage == "workers_done":
         if _slice2b_consumer_in_flight(checkpoint, next_v):
-            return _slice2b_park_primary_consumer_gates(
-                checkpoint,
-                next_v,
-                source_v,
-                next_tool,
-                ui=ui,
-                outcome=outcome,
-                reason="consumer_gate_chain_in_flight",
-            )
+            # Before parking, reap any zombie consumer: a candidate left
+            # non-terminal (``consuming``) whose asyncio task is done/absent
+            # with an expired effect lease.  Without this the primary lane
+            # busy-parks every second forever waiting for a consumer that
+            # will never finish.  ``_slice2b_reap_dead_consumer`` marks the
+            # candidate rejected; the ``_slice2b_consumer_rejected`` check
+            # below then canonically abandons the generation.
+            if _slice2b_reap_dead_consumer(checkpoint, next_v):
+                # Candidate is now terminal-rejected; fall through to the
+                # rejected-candidate abandon path below (do NOT park).
+                pass
+            else:
+                return _slice2b_park_primary_consumer_gates(
+                    checkpoint,
+                    next_v,
+                    source_v,
+                    next_tool,
+                    ui=ui,
+                    outcome=outcome,
+                    reason="consumer_gate_chain_in_flight",
+                )
         # A rejected slice2b candidate (infrastructure failure or gate
         # failure) can never be promoted, so the primary lane must not spin
         # at workers_done forever.  Canonically abandon the generation so the
@@ -1082,15 +1194,21 @@ async def _try_deterministic_checkpoint_route(
         next_tool in _SLICE2B_CONSUMER_OWNED_GATES
         and _slice2b_consumer_in_flight(checkpoint, next_v)
     ):
-        return _slice2b_park_primary_consumer_gates(
-            checkpoint,
-            next_v,
-            source_v,
-            next_tool,
-            ui=ui,
-            outcome=outcome,
-            reason="consumer_gate_chain_in_flight",
-        )
+        # Reap any zombie consumer before parking (see the workers_done branch
+        # above for the full rationale).  If reaped, the candidate is now
+        # terminal-rejected; fall through to the rejected-candidate abandon.
+        if _slice2b_reap_dead_consumer(checkpoint, next_v):
+            pass
+        else:
+            return _slice2b_park_primary_consumer_gates(
+                checkpoint,
+                next_v,
+                source_v,
+                next_tool,
+                ui=ui,
+                outcome=outcome,
+                reason="consumer_gate_chain_in_flight",
+            )
 
     # Slice 2b promoted fast-forward: once the consumer has PROMOTED the
     # candidate (its commit_bot ran successfully), the consumer-owned gates
