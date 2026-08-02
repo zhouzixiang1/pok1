@@ -798,7 +798,20 @@ async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
     candidate_id = str(
         checkpoint.get("candidate_id") or f"candidate-v{next_v}"
     )
-    if candidate_id not in activation._sealed_snapshots:
+    # Check BOTH the in-memory registry AND the persisted lifecycle: after a
+    # process restart the in-memory _sealed_snapshots may not yet contain a
+    # candidate that was sealed in a prior process (recover_at_boot rehydrates
+    # it, but this barrier can run before that completes). The persisted ledger
+    # is the source of truth for "was this candidate sealed?".
+    _persisted_entry = None
+    try:
+        _persisted_entry = activation.ledger.snapshot(candidate_id)
+    except Exception:
+        _persisted_entry = None
+    if (
+        candidate_id not in activation._sealed_snapshots
+        and _persisted_entry is None
+    ):
         # No one-ahead seal for this generation: canonical inline path.
         return False
     # Capture the QUIESCENT primary snapshot BEFORE awaiting promotion: this is
