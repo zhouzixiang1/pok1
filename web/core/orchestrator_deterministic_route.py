@@ -613,6 +613,30 @@ async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, out
     if activation is None:
         return False
 
+    # ALREADY-SEALED GUARD: this seam is re-entered on every orchestrator route
+    # hit while the primary stays parked at workers_done. If the candidate is
+    # already sealed (lifecycle SEALED/CONSUMING, not terminal), do NOT re-seal
+    # / re-seed / re-schedule — return False so the route falls through to the
+    # _slice2b_park_primary_consumer_gates branch (which sleeps the primary
+    # while the consumer owns the gate chain). Without this guard the seam
+    # returns True on every tick, the primary re-routes, and the loop spins
+    # forever (observed: "Resuming v30 at workers_done" every ~4s, consumer
+    # slot checkpoint_revision climbing to 900+).
+    _already_candidate_id = str(
+        checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+    )
+    try:
+        _existing = activation.ledger.snapshot(_already_candidate_id)
+    except Exception:
+        _existing = None
+    if _existing is not None and not activation.ledger.is_terminal(
+        _already_candidate_id
+    ):
+        return False
+
+
+        return False
+
     # The orchestrator already computed the content-bound artifact/manifest/
     # charter digests for the canonical gate chain; Slice 2b reuses them.  When
     # they are not present on the checkpoint projection (e.g. an older
