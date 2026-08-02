@@ -629,9 +629,17 @@ async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, out
         _existing = activation.ledger.snapshot(_already_candidate_id)
     except Exception:
         _existing = None
-    if _existing is not None and not activation.ledger.is_terminal(
-        _already_candidate_id
-    ):
+    if _existing is not None:
+        # Candidate is already sealed (SEALED/CONSUMING) OR already terminal
+        # (PROMOTED/REJECTED). Either way, do NOT re-seal/re-seed/re-schedule.
+        # Return False so the route falls through:
+        #   - SEALED/CONSUMING (not terminal) -> the park branch sleeps the
+        #     primary while the consumer owns the gate chain.
+        #   - PROMOTED -> the promoted fast-forward (next_tool="commit_bot")
+        #     publishes without re-running the consumer-owned gates.
+        #   - REJECTED -> the rejected-candidate abandon path.
+        # Returning True here (as the original seam did on every re-entry)
+        # makes the primary re-route and spin forever.
         return False
 
 
