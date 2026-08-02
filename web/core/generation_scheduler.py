@@ -577,6 +577,22 @@ def _mechanical_urgent_intervention_eligible(
     return source_score <= leader_score - 0.05
 
 
+def _is_rating_pool_eligible_bot(bot_name: str) -> bool:
+    """True iff the bot resolves as ROLE_RATING_POOL-eligible.
+
+    Used to filter the expected_active_bots passed to the post-eval-wait
+    evidence check so it matches the daemon's filtered rating pool (the daemon
+    only rates eligible bots). Without this filter the raw active pool (incl
+    staging-uncertified bots) is compared against the cycle's eligible-only
+    pool → cycle_active_pool_mismatch → prepare retries forever.
+    """
+    try:
+        from bot_namespace import resolve_national_bot_spec, ROLE_RATING_POOL
+        return bool(resolve_national_bot_spec(bot_name, ROLE_RATING_POOL).eligible)
+    except Exception:
+        return False
+
+
 def _ensure_priority_eval_signal(bot: str, min_games: int) -> None:
     """Ask the daemon to prioritize the bot that prepare is about to wait for."""
     try:
@@ -1375,7 +1391,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         min_games=int(eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL)),
         rd_threshold=float(eval_kwargs.get("rd_threshold", 90.0)),
         rd_min_games=int(eval_kwargs.get("rd_min_games", 30)),
-        expected_active_bots=active_bots,
+        expected_active_bots=[
+            b for b in active_bots
+            if _is_rating_pool_eligible_bot(b)
+        ],
         snapshot_bundle=frozen_bundle,
     )
     if evidence is None:
