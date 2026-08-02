@@ -182,6 +182,9 @@ def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
     active = ["national_v143", "national_v144"]
     monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: list(active))
     monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 144)
+    monkeypatch.setattr(
+        evolution_infra, "find_latest_rating_eligible_active_v", lambda: 144
+    )
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -211,6 +214,9 @@ def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatc
     active = ["national_v143"]
     monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: ["national_v143"])
     monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 143)
+    monkeypatch.setattr(
+        evolution_infra, "find_latest_rating_eligible_active_v", lambda: 143
+    )
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -238,6 +244,9 @@ def test_post_wait_evidence_rejects_active_pool_change_while_loading(monkeypatch
     pools = iter([active, ["national_v143", "national_v144"]])
     monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: list(next(pools)))
     monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 143)
+    monkeypatch.setattr(
+        evolution_infra, "find_latest_rating_eligible_active_v", lambda: 143
+    )
     monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_args: None)
 
     evidence = generation_scheduler._load_post_wait_evaluation_evidence(

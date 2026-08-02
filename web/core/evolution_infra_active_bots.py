@@ -415,3 +415,38 @@ def find_latest_active_v():
     if not active:
         return 0
     return max(version_sort_key(b) for b in active)
+
+
+def find_latest_rating_eligible_active_v():
+    """Find the highest *rating-pool-eligible* (fully certified / completed)
+    version in the strict published active pool.
+
+    The eval-source selection must pick from bots that are actually completed —
+    a newly published staging master that has not yet closed the two-tier gap
+    (no signed full certificate) is structurally excluded from the rating
+    daemon's match queue, so it can never accrue the strength sample the next
+    generation waits on. Selecting it would deadlock the next generation on an
+    unreachable games floor. This returns the newest bot that CAN be evaluated,
+    falling back past any not-yet-certified higher versions.
+
+    Returns 0 if the active pool is empty or no active bot is rating-eligible.
+    """
+    active = _ei.get_active_bots()
+    if not active:
+        return 0
+    eligible_versions: list[int] = []
+    for bot in active:
+        version = version_sort_key(bot)
+        try:
+            from bot_namespace import resolve_national_bot_spec, ROLE_RATING_POOL
+
+            spec = resolve_national_bot_spec(bot, role=ROLE_RATING_POOL)
+            if getattr(spec, "eligible", False):
+                eligible_versions.append(version)
+        except Exception:
+            # An unreadable/unresolvable bot is not rating-eligible; skip it
+            # rather than letting discovery fail closed for the whole pool.
+            continue
+    if not eligible_versions:
+        return 0
+    return max(eligible_versions)

@@ -379,11 +379,14 @@ def _load_post_wait_evaluation_evidence(
     from evolution_infra import (
         Glicko2Player,
         find_latest_active_v,
+        find_latest_rating_eligible_active_v,
         get_active_bots,
     )
 
     active_bots_before = tuple(sorted(get_active_bots()))
-    refreshed_active_v = find_latest_active_v()
+    # Re-derive with the same rating-eligible selector used to bind the eval
+    # source, so the "did the source change?" check is consistent with binding.
+    refreshed_active_v = find_latest_rating_eligible_active_v()
     issues = []
     if refreshed_active_v != active_v:
         issues.append(
@@ -812,7 +815,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     from evolution_infra import (
         MAX_ACTIVE_BOTS, find_latest_active_v, get_active_bots,
         wait_for_daemon_eval, ensure_publish_ready_for_new_generation,
-        MIN_GAMES_FOR_EVAL,
+        MIN_GAMES_FOR_EVAL, find_latest_rating_eligible_active_v,
     )
 
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -1138,7 +1141,15 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         )
     except Exception:
         pass
-    active_v = find_latest_active_v()  # strict published active pool
+    # Pick the eval source from COMPLETED bots: a staging-published master that
+    # has not yet closed the two-tier gap (no signed full certificate) is
+    # structurally excluded from the rating pool and can never accrue the
+    # strength sample this generation waits on. find_latest_rating_eligible_active_v
+    # returns the newest rating-pool-eligible (fully certified) active bot,
+    # falling back past any not-yet-certified higher versions. 1A's
+    # EvalSourceRatingIneligible precheck below stays as a fail-closed backstop
+    # for the case where NO active bot is rating-eligible.
+    active_v = find_latest_rating_eligible_active_v()
     active_bots = get_active_bots()
     # Re-open the namespace after active-pool discovery.  A paired tag/reset/
     # abandon transaction racing the first projection invalidates every source,
@@ -1232,7 +1243,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     # Bind the wait target only after that mutation has finished; the post-wait
     # evidence loader checks the same identity again before planning.
     refreshed_active_bots = get_active_bots()
-    refreshed_active_v = find_latest_active_v()
+    refreshed_active_v = find_latest_rating_eligible_active_v()
     if refreshed_active_v <= 0 or not refreshed_active_bots:
         log_system_event(
             "pipeline.prepare_no_active_source",

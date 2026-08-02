@@ -1113,6 +1113,16 @@ def find_latest_active_v():
     return _ab.find_latest_active_v()
 
 
+def find_latest_rating_eligible_active_v():
+    """Delegate to evolution_infra_active_bots.
+
+    Highest rating-pool-eligible (fully certified / completed) version — the
+    eval source must be picked from completed bots, not staging-published ones
+    still pending certification (they cannot accrue rating games).
+    """
+    return _ab.find_latest_rating_eligible_active_v()
+
+
 # ──────────────────────────────────────────────
 # Ratings
 # ──────────────────────────────────────────────

@@ -116,6 +116,17 @@ def _patch_prepare_upstream(monkeypatch, *, active_v, active_bots):
     # Active pool with more than one bot avoids the singleton/bootstrap branch
     # (len(active_bots) <= 1) and the reap branch (len > MAX_ACTIVE_BOTS).
     monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: int(active_v))
+    # Source selection now uses the rating-eligible selector; the test treats
+    # `active_v` as the (eligible) selected source, so the selector returns it.
+    monkeypatch.setattr(
+        evolution_infra, "find_latest_rating_eligible_active_v", lambda: int(active_v)
+    )
+    monkeypatch.setattr(
+        generation_scheduler,
+        "find_latest_rating_eligible_active_v",
+        lambda: int(active_v),
+        raising=False,
+    )
     monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: list(active_bots))
 
     # Noop the cost-scope binding and log-context binding (filesystem/ledger).
@@ -267,3 +278,38 @@ def test_prepare_or_fail_propagates_eval_source_ineligible(monkeypatch):
 
     with pytest.raises(EvalSourceRatingIneligible):
         asyncio.run(orchestrator._prepare_or_fail(None, ui=None, min_games=24))
+
+
+def test_find_latest_rating_eligible_skips_higher_ineligible_version(monkeypatch):
+    """Source selection picks the newest COMPLETED bot, not the highest version.
+
+    A staging-published master (no full cert) must not be chosen as the eval
+    source even when it is the highest version: it cannot accrue rating games.
+    The selector falls back to the next-newest rating-pool-eligible bot.
+    """
+    import evolution_infra_active_bots as ab
+
+    # Pool: v27 (eligible) + v29 (staging, ineligible). Selector must pick 27.
+    monkeypatch.setattr(
+        ab._ei, "get_active_bots", lambda: ["national_cloud_v27", "national_cloud_v29"]
+    )
+
+    def fake_resolve(bot, role=None, **_kw):
+        # v29 is staging-ineligible; v27 is certified-eligible.
+        class _Spec:
+            def __init__(self, eligible):
+                self.eligible = eligible
+
+        return _Spec(eligible=bot.endswith("_v27"))
+
+    monkeypatch.setattr(ab, "resolve_national_bot_spec", fake_resolve, raising=False)
+    # The helper imports resolve_national_bot_spec lazily inside the function;
+    # patch it where it imports from (bot_namespace) so the lazy import picks it up.
+    import bot_namespace
+
+    monkeypatch.setattr(bot_namespace, "resolve_national_bot_spec", fake_resolve)
+    monkeypatch.setattr(bot_namespace, "ROLE_RATING_POOL", "rating_pool")
+
+    assert ab.find_latest_rating_eligible_active_v() == 27
+    # Raw max would be 29 — confirm the selector does NOT return it.
+    assert ab.find_latest_active_v() == 29
