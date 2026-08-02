@@ -1775,10 +1775,11 @@ def main():
                                 ratings.pop(b, None)
                                 bot_stats.pop(b, None)
                                 h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
-                            for b in set(new_bots) - set(active_bots):
-                                if b not in ratings:
-                                    ratings[b] = Glicko2Player()
                             active_bots = _rating_eligible_bots(new_bots, verbose=args.verbose)
+                            # Only add ELIGIBLE new bots to ratings ( ineligible bots would
+                            # re-pollute ratings and trip ratings_active_pool_mismatch on save_cycle).
+                            for b in set(active_bots) - set(ratings):
+                                ratings[b] = Glicko2Player()
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
@@ -1851,10 +1852,10 @@ def main():
                                 ratings.pop(b, None)
                                 bot_stats.pop(b, None)
                                 h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
-                            for b in added:
-                                if b not in ratings:
-                                    ratings[b] = Glicko2Player()
                             active_bots = _rating_eligible_bots(new_bots, verbose=args.verbose)
+                            # Only add ELIGIBLE new bots to ratings (filter runs first).
+                            for b in set(active_bots) - set(ratings):
+                                ratings[b] = Glicko2Player()
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
@@ -1872,7 +1873,9 @@ def main():
                         new_bots = get_active_bots()
                         added = set(new_bots) - set(active_bots)
                         removed = set(active_bots) - set(new_bots)
-                        for b in added:
+                        active_bots = _rating_eligible_bots(new_bots, verbose=args.verbose)
+                        # Only add ELIGIBLE new bots to ratings (filter runs first).
+                        for b in set(active_bots) - set(ratings):
                             ratings[b] = Glicko2Player()
                             if args.verbose:
                                 log.info("New bot: %s", b)
@@ -1883,8 +1886,6 @@ def main():
                                 log.info("Retired: %s", b)
                         for b in removed:
                             h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
-                        if added or removed:
-                            active_bots = _rating_eligible_bots(new_bots, verbose=args.verbose)
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
