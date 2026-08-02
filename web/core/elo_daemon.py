@@ -506,6 +506,26 @@ def _load_priority_eval():
         return None
 
 
+def _should_drop_queue_for_priority_change(
+    prev_bot, prev_mtime, new_bot, new_mtime
+):
+    """Decide whether a priority_eval.json rewrite should drop queued matches.
+
+    The queue is dropped ONLY when the priority bot actually changed (a new
+    commit redirected evaluation to a different bot). A rewrite for the SAME
+    bot — e.g. the orchestrator re-asserting the same eval-wait after a 600s
+    timeout — must preserve the queue, otherwise matches never accumulate
+    (starvation loop: timeout → rewrite → drop → never reaches min_games).
+
+    Returns ``(drop, tracked_bot, tracked_mtime)``: ``drop`` is True only on a
+    real bot change; the tracked values are always updated to the new state so
+    the caller can assign them unconditionally.
+    """
+    if new_bot != prev_bot:
+        return True, new_bot, new_mtime
+    return False, new_bot, new_mtime
+
+
 def _consume_reap_signal(path=None):
     """Consume one daemon-refresh signal without racing its atomic writer."""
 
@@ -1483,13 +1503,19 @@ def main():
         # H4 (2026-06-29): track priority_eval.json mtime so a newly-committed bot's
         # priority signal takes effect without waiting for the current match_queue
         # (potentially hundreds of daemon matches) to drain. When the file's mtime
-        # changes, queued internal matches are cleared so the next refill
-        # re-reads the updated priority. Initialized to the current mtime so a
-        # fresh start does not immediately discard the seed queue.
+        # changes AND the priority bot actually changed, queued internal matches
+        # are cleared so the next refill re-reads the updated priority. A rewrite
+        # for the SAME bot (e.g. the orchestrator re-asserting the same eval-wait
+        # after a 600s timeout) must NOT drop queued matches — doing so created a
+        # starvation loop where matches never accumulated. Initialized to the
+        # current mtime/bot so a fresh start does not immediately discard the seed
+        # queue.
         _priority_eval_mtime = 0.0
+        _priority_eval_bot = None
         try:
             if PRIORITY_EVAL_FILE.exists():
                 _priority_eval_mtime = os.path.getmtime(PRIORITY_EVAL_FILE)
+                _priority_eval_bot = _load_priority_eval()
         except OSError:
             pass
 
@@ -1498,23 +1524,35 @@ def main():
                 while running:
                     # H4: hot-reload priority signal. If priority_eval.json was
                     # rewritten (new commit), drop queued matches so the next
-                    # pick_matches call uses the new priority bot.
+                    # pick_matches call uses the new priority bot — but ONLY when
+                    # the priority bot actually changed. A same-bot rewrite (e.g.
+                    # the orchestrator re-asserting the same eval-wait after a
+                    # 600s timeout) must preserve the queue, otherwise matches
+                    # never accumulate (starvation loop).
                     try:
                         if PRIORITY_EVAL_FILE.exists():
                             _mt = os.path.getmtime(PRIORITY_EVAL_FILE)
                             if _mt != _priority_eval_mtime:
-                                _dropped = len(match_queue)
-                                if _dropped > 0:
-                                    match_queue.clear()
-                                    _priority_bot_now = _load_priority_eval()
-                                    log.info(
-                                        "H4: priority_eval.json changed (mtime %.0f→%.0f); "
-                                        "dropped %d queued match(es); "
-                                        "priority_bot=%s",
-                                        _priority_eval_mtime, _mt, _dropped,
+                                _priority_bot_now = _load_priority_eval()
+                                _prev_tracked_bot = _priority_eval_bot
+                                _drop, _priority_eval_bot, _priority_eval_mtime = (
+                                    _should_drop_queue_for_priority_change(
+                                        _priority_eval_bot,
+                                        _priority_eval_mtime,
                                         _priority_bot_now,
+                                        _mt,
                                     )
-                                _priority_eval_mtime = _mt
+                                )
+                                if _drop:
+                                    _dropped = len(match_queue)
+                                    if _dropped > 0:
+                                        match_queue.clear()
+                                        log.info(
+                                            "H4: priority_eval.json changed priority_bot "
+                                            "(%s→%s, mtime %.0f→%.0f); dropped %d queued match(es)",
+                                            _prev_tracked_bot, _priority_bot_now,
+                                            _priority_eval_mtime, _mt, _dropped,
+                                        )
                     except OSError:
                         pass
 
