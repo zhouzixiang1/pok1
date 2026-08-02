@@ -555,3 +555,75 @@ def test_consumer_slot_id_convention():
         odr._slice2b_consumer_slot_id("candidate-v143")
         == "consumer-candidate-v143"
     )
+
+
+# ---------------------------------------------------------------------------
+# Re-seed idempotency guard (defect: seal seam re-fired on every route hit
+# while primary parked at workers_done, overwriting consumer gate progress)
+# ---------------------------------------------------------------------------
+
+
+def test_seed_consumer_checkpoint_is_idempotent_and_preserves_gate_progress():
+    """Re-entering _slice2b_seed_consumer_checkpoint must NOT overwrite an
+    existing consumer slot that already has gate progress.
+
+    Root cause fixed: the seal seam (_slice2b_seal_at_workers_done) fires on
+    every orchestrator route hit while the primary stays parked at
+    workers_done. Without the guard, the re-seed overwrites the consumer slot
+    with the primary's gate_results=[] / workers_done state, destroying the
+    consumer's quality/review/critic results and spinning checkpoint_revision
+    in a tight loop. The guard makes seeding first-time-only.
+    """
+    import orchestrator_deterministic_route as odr
+    from evolution_infra import (
+        write_pipeline_checkpoint,
+        read_pipeline_checkpoint,
+    )
+
+    next_v, source_v = 144, 143
+    consumer_slot = odr._slice2b_consumer_slot_id(f"candidate-v{next_v}")
+
+    # Primary checkpoint the seal sees (workers_done, no gate_results).
+    primary_ckpt = {
+        "next_v": next_v,
+        "source_v": source_v,
+        "stage": "workers_done",
+        "master_plan": {"analysis": "seeded"},
+        "gate_results": {},
+        "checkpoint_revision": 1,
+    }
+
+    # First seed: materialises the consumer slot.
+    assert odr._slice2b_seed_consumer_checkpoint(primary_ckpt, consumer_slot) is not False
+    seeded = read_pipeline_checkpoint(slot_id=consumer_slot)
+    assert seeded is not None
+    assert seeded["next_v"] == next_v
+
+    # Simulate the consumer gate chain advancing the slot (quality passed).
+    write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "quality_passed",
+        slot_id=consumer_slot,
+        master_plan=primary_ckpt["master_plan"],
+        gate_results={"quality": {"passed": True}},
+        expected_checkpoint_stage="workers_done",
+        expected_workflow_run_id=seeded.get("workflow_run_id"),
+    )
+    advanced = read_pipeline_checkpoint(slot_id=consumer_slot)
+    assert advanced["stage"] == "quality_passed"
+    assert advanced["gate_results"] == {"quality": {"passed": True}}
+    consumer_rev_after_gate = advanced["checkpoint_revision"]
+
+    # Re-enter the seal seam (primary still workers_done, route hit again).
+    # The guard must detect the existing consumer slot and NOT overwrite it.
+    odr._slice2b_seed_consumer_checkpoint(primary_ckpt, consumer_slot)
+
+    preserved = read_pipeline_checkpoint(slot_id=consumer_slot)
+    # Gate progress preserved (NOT reset to workers_done / empty gate_results).
+    assert preserved["stage"] == "quality_passed", (
+        f"re-seed destroyed consumer progress: stage={preserved['stage']!r}"
+    )
+    assert preserved["gate_results"] == {"quality": {"passed": True}}
+    # Revision did not reset (the re-seed did not overwrite).
+    assert preserved["checkpoint_revision"] == consumer_rev_after_gate

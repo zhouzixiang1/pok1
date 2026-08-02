@@ -370,13 +370,32 @@ def _slice2b_seed_consumer_checkpoint(checkpoint, consumer_slot_id):
     """
 
     try:
-        from evolution_infra import write_pipeline_checkpoint
+        from evolution_infra import write_pipeline_checkpoint, read_pipeline_checkpoint, pipeline_state_path
     except Exception:
         return False
     next_v = int(checkpoint.get("next_v") or 0)
     source_v = int(checkpoint.get("source_v") or 0)
     if next_v < 1:
         return False
+    # IDEMPOTENCY GUARD: the seal seam (_slice2b_seal_at_workers_done) is
+    # re-entered on every orchestrator route hit while the primary stays parked
+    # at workers_done. Without this guard, the re-seed overwrites the consumer
+    # slot with the primary's (gate_results=[] / workers_done) state on every
+    # tick, destroying the consumer's accumulated gate progress (quality/review/
+    # critic results) and resetting checkpoint_revision — a tight high-frequency
+    # loop (rev 600+ in minutes) that never lets the gate chain advance.
+    # Only seed on the FIRST seal; once the consumer slot file exists with any
+    # revision, the consumer owns it.
+    try:
+        consumer_slot_path = pipeline_state_path(consumer_slot_id)
+        if consumer_slot_path is not None and consumer_slot_path.exists():
+            existing = read_pipeline_checkpoint(slot_id=consumer_slot_id)
+            if isinstance(existing, dict) and existing.get("next_v") == next_v:
+                # Consumer slot already seeded for this generation; do NOT
+                # overwrite. Return True so the seam reports handled.
+                return True
+    except Exception:
+        pass
     promote_fields = {
         "next_v": next_v,
         "source_v": source_v,
