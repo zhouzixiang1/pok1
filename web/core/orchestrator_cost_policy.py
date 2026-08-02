@@ -53,6 +53,46 @@ class OperatorGenerationCostLimitExceeded(RuntimeError):
         self.status = dict(status or {})
 
 
+class EvalSourceRatingIneligible(RuntimeError):
+    """The active bot selected as the next generation's eval source is not
+    rating-pool-eligible (e.g. a staging master published without a full signed
+    certificate), so the rating daemon will structurally never schedule matches
+    for it -- accruing 0 games -- and ``wait_for_daemon_eval`` would loop forever
+    on an unreachable games floor.
+
+    This is a terminal outer-loop control signal, NOT a disposable prepare
+    failure eligible for exponential retry: it mirrors
+    ``OperatorGenerationCostLimitExceeded`` and must propagate out of
+    ``_prepare_or_fail`` so the outer loop parks for operator action (complete
+    the full official certificate) instead of silently degrading the games floor.
+    """
+
+    def __init__(
+        self,
+        *,
+        bot_name: str,
+        version: int | None,
+        issues,
+        publication_tier: str | None = None,
+    ):
+        self.bot_name = str(bot_name or "")
+        self.version = version
+        self.issues = tuple(issues or ())
+        self.publication_tier = publication_tier
+        message = (
+            f"eval source {self.bot_name} (v{self.version}) is not rating-pool "
+            f"eligible (publication_tier={self.publication_tier!r}, "
+            f"issues={list(self.issues)})"
+        )
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return (
+            f"eval source {self.bot_name} (v{self.version}) is not rating-pool "
+            f"eligible; issues={list(self.issues)}"
+        )
+
+
 def _canonical_digest(payload: Mapping[str, object]) -> str:
     raw = json.dumps(
         dict(payload),

@@ -23,9 +23,14 @@ test("evolution ui primitives export surface language", () => {
   assert.match(tokens, /rounded-2xl/);
 });
 
-test("App redirects evolution and bots-inventory", () => {
+test("App redirects legacy routes to the 5 core pages", () => {
   const app = readFileSync(join(root, "App.tsx"), "utf8");
-  assert.match(app, /path="\/evolution".*Navigate to="\/agents"/s);
+  // IA-merge (2026-07-30) collapsed the 15-page layout into 5 core pages
+  // (/, /generation, /bots, /llm, /control). Legacy routes redirect there.
+  // /evolution and /agents both now redirect to /generation (the sole full
+  // generation stepper + research SSE page); /bots-inventory -> /bots.
+  assert.match(app, /path="\/evolution".*Navigate to="\/generation"/s);
+  assert.match(app, /path="\/agents".*Navigate to="\/generation"/s);
   assert.match(app, /path="\/bots-inventory".*Navigate to="\/bots"/s);
 });
 

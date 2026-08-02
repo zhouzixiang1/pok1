@@ -358,24 +358,18 @@ export default function Bots() {
     : 0;
 
   const emptyStrengthMessage = !epochReady
-    ? "严格进化尚未初始化；不会展示旧版本强度排行。"
+    ? "未初始化"
     : status!.active_bots.length === 0
-      ? "当前严格发布池为空；尚无可进入评分周期的 Bot。"
-      : "严格发布池正在等待首个绑定当前发布池的完整 70 手评分周期；不会用默认分伪造强度。";
+      ? "发布池为空"
+      : "等待首个评分周期";
 
   return (
-    <EvolutionPageScaffold
-      title="Bot 强度与回放"
-      subtitle="Glicko-2 强度排行 · H2H 胜率矩阵 · 点击 bot 观看对局回放"
-    >
+    <EvolutionPageScaffold title="Bot 强度与回放">
       <PageMeta title="Bot 强度与回放 — Bot 自进化" description="严格发布池的强度排行、H2H 矩阵与对局回放" />
 
       {/* Glicko-2 强度排行表 */}
       <EvolutionSurface padding="sm" className="space-y-3">
-        <EvolutionSection
-          title="Glicko-2 强度排行"
-          subtitle="点击 Bot 名加载其最近一场权威对局回放；选择分与强度均由后端 epoch 权威投影"
-        />
+        <EvolutionSection title="Glicko-2 强度排行" />
         {botsLoading && rankedBots.length === 0 ? (
           <Skeleton.Card count={2} />
         ) : rankedBots.length === 0 ? (
@@ -448,16 +442,25 @@ export default function Bots() {
       <EvolutionSurface className="mt-4" padding="sm">
         <EvolutionSection
           title="Head-to-Head 胜率矩阵"
-          subtitle="每格表示行 Bot 对列 Bot 的胜率（蓝=强，红=弱）"
+          actions={
+            <span className="flex items-center gap-2 text-xs text-gray-400">
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-2.5 w-2.5 rounded-sm bg-brand-600" />强
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-600" />弱
+              </span>
+            </span>
+          }
         />
         <div className="mt-3">
           {!epochReady || !matrix || matrix.evidence_available !== true || !matrix.bots.length ? (
             <EmptyState message={
               !epochReady
-                ? "epoch 尚未初始化；旧 H2H 矩阵已从权威视图移除。"
+                ? "未初始化"
                 : status!.active_bots.length === 0
-                  ? "当前严格发布池为空；尚无可构成 H2H 矩阵的 Bot。"
-                  : "等待首个同发布池 evaluation cycle 形成完整 70 手 H2H 矩阵。"
+                  ? "发布池为空"
+                  : "等待首个评分周期"
             } />
           ) : matrixChart.series.length === 0 ? (
             <div className="py-12 text-center text-sm text-gray-400">当前矩阵无可绘制数据</div>
@@ -476,7 +479,6 @@ export default function Bots() {
       <EvolutionSurface className="mt-4" padding="sm">
         <EvolutionSection
           title="对局回放"
-          subtitle="national_tcp_policy_v1 hand_records 回放；只加载当前严格 epoch 的权威对局"
           actions={
             visibleMatches.length > 0 ? (
               <span className="text-xs text-gray-400">可回放对局 {visibleMatches.length} 场</span>
@@ -492,10 +494,10 @@ export default function Bots() {
                 {visibleMatches.length === 0 && (
                   <div className="text-xs text-gray-500">
                     {!epochReady
-                      ? "epoch 尚未初始化；旧回放已从权威视图移除。"
+                      ? "未初始化"
                       : status!.active_bots.length === 0
-                        ? "当前严格发布池为空，尚无回放。"
-                        : "等待首个同发布池、同 evaluation identity 的完整 70 手回放。"}
+                        ? "发布池为空"
+                        : "等待首个评分周期"}
                   </div>
                 )}
                 {visibleMatches.map((match) => (
@@ -620,7 +622,6 @@ export default function Bots() {
         <EvolutionSurface className="mt-4" padding="sm">
           <EvolutionSection
             title="已发布 Bot 证书"
-            subtitle="展开查看签名证书与发布源码；身份均由后端 epoch 权威投影"
             actions={
               expandVersion != null ? (
                 <EvolutionStatusBadge tone="info">展开 v{expandVersion}</EvolutionStatusBadge>

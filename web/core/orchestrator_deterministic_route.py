@@ -325,6 +325,234 @@ def _slice2b_ensure_activation():
         return None
 
 
+def _slice2b_consumer_slot_id(candidate_id):
+    """Return the consumer checkpoint slot id for a sealed candidate.
+
+    Convention: ``consumer-<candidate_id>``.  This is intentionally NOT a
+    ``draft``-prefixed slot (``is_draft_slot`` only matches the ``draft``
+    prefix -- ``evolution_infra.py:63-70``), so the consumer slot is treated as
+    a *live* allocation holding the real gen-N ``next_v``.  That is correct:
+    the consumer gate chain validates the same generation the primary lane
+    sealed, so its checkpoint carries the same ``next_v``/``source_v``/
+    ``epoch_binding`` and the live floor+1 CAS at
+    ``evolution_infra_checkpoint_cas.py:752`` is satisfied naturally (the slot
+    was seeded from the primary's already-valid epoch binding).  The consumer
+    slot is fully isolated from the primary by a distinct file
+    (``pipeline_state_consumer-<candidate_id>.json``), so the gate handlers'
+    no-``slot_id`` reads/writes hit it instead of racing the primary.
+    """
+
+    return "consumer-" + str(candidate_id)
+
+
+def _slice2b_seed_consumer_checkpoint(checkpoint, consumer_slot_id):
+    """Copy the FULL primary checkpoint projection into the consumer slot.
+
+    The consumer gate chain (``run_quality_gates`` / ``run_review`` /
+    ``run_critic`` / ``run_precommit_eval``) reads and writes the checkpoint
+    exclusively through the override-aware funnel (``_matching_checkpoint`` /
+    ``read_pipeline_checkpoint`` / ``write_pipeline_checkpoint`` /
+    ``_record_gate`` -- all take NO ``slot_id``, verified exhaustively in
+    tool_gates.py / tool_gates_critic_review.py / tool_eval.py /
+    tool_helpers.py).  Under ``active_slot_override(consumer_slot_id)`` those
+    calls hit ``pipeline_state_<consumer_slot>.json`` instead of the primary
+    file.  This seed materialises a complete starting checkpoint in that slot
+    so the first gate handler's ``read_pipeline_checkpoint()`` returns the same
+    gen-N state the primary sealed at ``workers_done``.
+
+    Enumerates every persisted field (mirroring ``_promote_draft_to_primary``'s
+    ``promote_fields`` completeness) so the consumer's repo_baseline /
+    epoch_binding / gate_results / charter digests / master_plan all survive
+    the slot copy -- the gate handlers depend on them.  Writes with an explicit
+    ``slot_id`` so it lands on the consumer file regardless of the ambient
+    override (an explicit non-None ``slot_id`` wins over the ContextVar,
+    ``evolution_infra.py:194``).
+    """
+
+    try:
+        from evolution_infra import write_pipeline_checkpoint
+    except Exception:
+        return False
+    next_v = int(checkpoint.get("next_v") or 0)
+    source_v = int(checkpoint.get("source_v") or 0)
+    if next_v < 1:
+        return False
+    promote_fields = {
+        "next_v": next_v,
+        "source_v": source_v,
+        "stage": str(checkpoint.get("stage") or "workers_done"),
+        "master_plan": checkpoint.get("master_plan"),
+        "parent2_v": checkpoint.get("parent2_v"),
+        "direction_audit": checkpoint.get("direction_audit"),
+        "audit_context": checkpoint.get("audit_context"),
+        "gate_results": checkpoint.get("gate_results"),
+        "worker_failure_count": checkpoint.get("worker_failure_count"),
+        "worker_invocation_count": checkpoint.get("worker_invocation_count"),
+        "reviewer_feedback": checkpoint.get("reviewer_feedback") or "",
+        "charter_digest": checkpoint.get("charter_digest"),
+        "candidate_artifact_hash": checkpoint.get("candidate_artifact_hash"),
+        "candidate_manifest_digest": checkpoint.get("candidate_manifest_digest"),
+        "workflow_run_id": checkpoint.get("workflow_run_id"),
+        "audit_attempt": checkpoint.get("audit_attempt"),
+        "precommit_attempt": checkpoint.get("precommit_attempt"),
+        "precommit_rework_count": checkpoint.get("precommit_rework_count"),
+        "official_rework_count": checkpoint.get("official_rework_count"),
+        "timeout_extensions": checkpoint.get("timeout_extensions"),
+        "literature_probe": checkpoint.get("literature_probe"),
+        "prepare_scope_files": checkpoint.get("prepare_scope_files"),
+        "official_job": checkpoint.get("official_job"),
+        "repair_baseline_artifact_hash": checkpoint.get(
+            "repair_baseline_artifact_hash"
+        ),
+        "review_attempt_journal": checkpoint.get("review_attempt_journal"),
+        "identity_replan_history": checkpoint.get("identity_replan_history"),
+        "publication_tier": checkpoint.get("publication_tier"),
+        "generation_attempt": checkpoint.get("generation_attempt"),
+    }
+    try:
+        ok = bool(
+            write_pipeline_checkpoint(slot_id=consumer_slot_id, **promote_fields)
+        )
+    except Exception:
+        return False
+    if ok:
+        try:
+            _o.log_system_event(
+                "pipeline.slice2b_consumer_slot_seeded",
+                "info",
+                (
+                    f"Sealed candidate consumer slot seeded for v{next_v} "
+                    f"at {consumer_slot_id}; gate chain isolated from primary."
+                ),
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "consumer_slot_id": consumer_slot_id,
+                },
+            )
+        except Exception:
+            pass
+    return ok
+
+
+def _promote_consumer_slot_to_primary(
+    consumer_slot_id, next_v, source_v, *, published_primary
+):
+    """CAS-collapse the consumer slot's final checkpoint onto the primary.
+
+    After the consumer gate chain reaches PROMOTED (precommit passed), the
+    consumer slot file holds gen-N's complete evidence: quality/review/critic/
+    precommit ``gate_results``, ``master_plan``, ``audit_context``,
+    ``reviewer_feedback``, ``review_attempt_journal``, ``stage`` (the consumer
+    advanced through ``critic_checked`` / ``verified``).  The primary lane's
+    ``commit_bot`` must see that evidence without re-running the gates.
+
+    This reads the consumer slot under ``no_slot_override()`` (so an explicit
+    ``slot_id`` read is not shadowed by any ambient override), builds the
+    promote payload, and writes it to PRIMARY as a single CAS against the
+    primary's ``expected_checkpoint_revision`` / ``expected_checkpoint_stage``
+    / ``expected_workflow_run_id`` (captured from the parked primary).  The CAS
+    refuses harmlessly if the primary moved -- the canonical fast-forward then
+    re-runs the gates inline (the worst case is double work, never corruption).
+
+    Modeled on ``_promote_draft_to_primary`` (the inverse draft->primary
+    collapse).  Non-fatal: any exception is swallowed by the caller so the
+    publication path never raises from the collapse.
+    """
+
+    try:
+        from evolution_infra import (
+            read_pipeline_checkpoint,
+            write_pipeline_checkpoint,
+            no_slot_override,
+        )
+    except Exception:
+        return False
+    with no_slot_override():
+        consumer = read_pipeline_checkpoint(slot_id=consumer_slot_id)
+    if not isinstance(consumer, dict) or not consumer:
+        return False
+    if int(consumer.get("next_v") or 0) != int(next_v):
+        return False
+    # Primary CAS expectations come from the snapshot captured when the primary
+    # was parked (the quiescent reference).  ``published_primary`` is that
+    # snapshot; absent it, fall back to the live primary read.
+    primary_ref = published_primary if isinstance(published_primary, dict) else None
+    if primary_ref is None:
+        with no_slot_override():
+            primary_ref = read_pipeline_checkpoint() or {}
+    expected_revision = primary_ref.get("checkpoint_revision")
+    expected_stage = primary_ref.get("stage")
+    expected_run_id = primary_ref.get("workflow_run_id")
+    # The PRIMARY's workflow_run_id is the publication identity the collapse
+    # targets.  The consumer slot was seeded from the primary so they share it
+    # in production, but pin the primary's value explicitly so a divergent
+    # consumer run_id (defensive: legacy / cross-process drift) cannot trip the
+    # identity-replacement guard (``Refusing checkpoint workflow identity
+    # replacement``).  The CAS ``expected_workflow_run_id`` already pins the
+    # existing primary id; this ``workflow_run_id`` arg pins the request id.
+    promote_fields = {
+        "next_v": int(next_v),
+        "source_v": int(source_v),
+        "stage": str(consumer.get("stage") or "verified"),
+        "master_plan": consumer.get("master_plan"),
+        "parent2_v": consumer.get("parent2_v"),
+        "direction_audit": consumer.get("direction_audit"),
+        "audit_context": consumer.get("audit_context"),
+        "gate_results": consumer.get("gate_results"),
+        "worker_failure_count": consumer.get("worker_failure_count"),
+        "worker_invocation_count": consumer.get("worker_invocation_count"),
+        "reviewer_feedback": consumer.get("reviewer_feedback") or "",
+        "charter_digest": consumer.get("charter_digest"),
+        "candidate_artifact_hash": consumer.get("candidate_artifact_hash"),
+        "candidate_manifest_digest": consumer.get("candidate_manifest_digest"),
+        "workflow_run_id": expected_run_id or consumer.get("workflow_run_id"),
+        "audit_attempt": consumer.get("audit_attempt"),
+        "precommit_attempt": consumer.get("precommit_attempt"),
+        "precommit_rework_count": consumer.get("precommit_rework_count"),
+        "official_rework_count": consumer.get("official_rework_count"),
+        "timeout_extensions": consumer.get("timeout_extensions"),
+        "literature_probe": consumer.get("literature_probe"),
+        "prepare_scope_files": consumer.get("prepare_scope_files"),
+        "official_job": consumer.get("official_job"),
+        "repair_baseline_artifact_hash": consumer.get(
+            "repair_baseline_artifact_hash"
+        ),
+        "review_attempt_journal": consumer.get("review_attempt_journal"),
+        "identity_replan_history": consumer.get("identity_replan_history"),
+        "publication_tier": consumer.get("publication_tier"),
+        "generation_attempt": consumer.get("generation_attempt"),
+        "expected_checkpoint_revision": expected_revision,
+        "expected_checkpoint_stage": expected_stage,
+        "expected_workflow_run_id": expected_run_id,
+    }
+    try:
+        with no_slot_override():
+            ok = bool(write_pipeline_checkpoint(**promote_fields))
+    except Exception:
+        return False
+    if ok:
+        try:
+            _o.log_system_event(
+                "pipeline.slice2b_consumer_slot_promoted",
+                "info",
+                (
+                    f"Consumer slot collapsed to primary for v{next_v} "
+                    f"({consumer_slot_id}); commit_bot may publish from primary."
+                ),
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "consumer_slot_id": consumer_slot_id,
+                    "expected_revision": expected_revision,
+                    "expected_stage": expected_stage,
+                },
+            )
+        except Exception:
+            pass
+    return ok
+
+
 async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, outcome):
     """Seal the candidate and launch the background consumer gate chain.
 
@@ -336,6 +564,16 @@ async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, out
     producer is cleared to begin the next ``prepare_generation``.  The
     promotion barrier at ``commit_bot`` (see :func:`_slice2b_promotion_barrier`)
     synchronizes publication.
+
+    FROZEN-SNAPSHOT ISOLATION: the consumer slot is seeded with a FULL copy of
+    the primary checkpoint (``_slice2b_seed_consumer_checkpoint``) at seal
+    time, and the gate chain runs under ``active_slot_override(consumer_slot)``
+    (see :func:`producer_consumer_slice2b_activation._run_gate_chain`).  This
+    isolates every consumer gate read/write to
+    ``pipeline_state_consumer-<candidate_id>.json`` so the parked primary
+    ``pipeline_state.json`` is never raced.  At promotion, the consumer slot is
+    CAS-collapsed back onto primary (:func:`_promote_consumer_slot_to_primary`)
+    so ``commit_bot`` sees the consumer's evidence.
     """
 
     try:
@@ -416,6 +654,22 @@ async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, out
         runtime_digest=str(checkpoint.get("runtime_digest") or charter_digest),
     )
 
+    # FROZEN-SNAPSHOT ISOLATION: seed a consumer checkpoint slot with a FULL
+    # copy of the primary checkpoint, so the background gate chain (which runs
+    # under active_slot_override(consumer_slot)) reads/writes an isolated file
+    # instead of racing the parked primary.  Persist the consumer slot id on
+    # the candidate lifecycle so it survives a restart (boot recovery re-enters
+    # the override with the same id).
+    consumer_slot_id = _slice2b_consumer_slot_id(candidate_id)
+    _slice2b_seed_consumer_checkpoint(checkpoint, consumer_slot_id)
+    try:
+        activation.ledger.set_consumer_checkpoint_slot(
+            candidate_id=candidate_id,
+            consumer_checkpoint_slot=consumer_slot_id,
+        )
+    except Exception:
+        pass
+
     # Schedule the background consumer task running the canonical gate chain.
     # The seam runs synchronously (outside the orchestrator event loop), so we
     # register the factory here; the promotion barrier or the orchestrator loop
@@ -423,6 +677,7 @@ async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, out
     activation.schedule_consumer(
         candidate_id=candidate_id,
         gate_runner_factory=_o._slice2b_gate_runner_factory(next_v, source_v),
+        consumer_slot_id=consumer_slot_id,
     )
     # Launch the consumer task immediately so the gate chain starts running in
     # the background while the producer advances to the next prepare.  This is
@@ -495,11 +750,43 @@ async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
     if candidate_id not in activation._sealed_snapshots:
         # No one-ahead seal for this generation: canonical inline path.
         return False
+    # Capture the QUIESCENT primary snapshot BEFORE awaiting promotion: this is
+    # the CAS target the consumer-slot collapse will compare against.  The
+    # primary is parked (stage stays ``workers_done``) for the whole consumer
+    # window, so this snapshot is the reference the collapse CAS expects.
+    # Read under no_slot_override() so an ambient draft override never shadows
+    # the primary read.
+    try:
+        from evolution_infra import read_pipeline_checkpoint, no_slot_override
+
+        with no_slot_override():
+            parked_primary = read_pipeline_checkpoint() or {}
+    except Exception:
+        parked_primary = {}
     if activation.ledger.is_promoted(candidate_id):
         # Already promoted by the consumer; canonical commit_bot may publish.
+        # Still collapse the consumer slot if it has evidence the primary lacks
+        # (idempotent: a second collapse CAS-fails harmlessly once primary
+        # matches).  ``is_promoted`` on a hot restart means the consumer already
+        # finished in a prior process; the slot file may already be collapsed.
+        consumer_slot = _slice2b_consumer_slot_id(candidate_id)
+        _promote_consumer_slot_to_primary(
+            consumer_slot, next_v, source_v, published_primary=parked_primary
+        )
         return False
     # Slice 2b owns this publication: wait for the consumer to finish.
     await activation.await_promotion(candidate_id=candidate_id)
+    # FROZEN-SNAPSHOT ISOLATION: collapse the consumer slot's final checkpoint
+    # (carrying the consumer's quality/review/critic/precommit gate_results +
+    # stage) onto the PRIMARY as a single CAS write, so the primary
+    # ``commit_bot`` sees the consumer's evidence without re-running the gates.
+    # Non-fatal: a CAS refusal (primary moved) leaves the canonical fast-
+    # forward to re-run the gates inline -- the worst case is double work,
+    # never corruption.
+    consumer_slot = _slice2b_consumer_slot_id(candidate_id)
+    _promote_consumer_slot_to_primary(
+        consumer_slot, next_v, source_v, published_primary=parked_primary
+    )
     # Best-effort draft promotion now that gen N's consumer has promoted.
     try:
         _promote_draft_to_primary(next_v)
@@ -1368,6 +1655,27 @@ async def _advance_deterministic_recovery(
         )
         if cleanup_ok is True:
             classified = None
+            # C1 fix: single chokepoint for async-certification self-heal.
+            # EVERY ``publication_handoff_completed`` terminal action that
+            # passes post-generation cleanup schedules the best-effort async
+            # official certification here, regardless of which loop branch
+            # (resume / selected-deterministic / actionable-handoff / one-gen
+            # CLI) consumed the handoff.  Previously this was wired into only
+            # 1 of 4 terminal sites, so depending on the active recovery route
+            # the staging tier silently never got promoted to certified.
+            #
+            # Lazy import: ``orchestrator_loop_phases`` imports ``orchestrator``
+            # (which imports this module), so a top-level import would cycle.
+            try:
+                from orchestrator_loop_phases import (
+                    _try_schedule_async_certification,
+                )
+
+                await _try_schedule_async_certification(ui, shutdown_mgr)
+            except Exception:
+                # Non-fatal: certification can be retried by a future tick or
+                # by the operator via scripts/official_certify.py.
+                pass
         else:
             classified = {
                 "action": "blocked",

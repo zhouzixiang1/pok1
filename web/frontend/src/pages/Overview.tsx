@@ -119,7 +119,7 @@ function LlmUsageCard({ epochReady }: { epochReady: boolean }) {
     return (
       <EvolutionSurface padding="sm">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">LLM 今日用量</h3>
-        <p className="text-xs text-gray-400">严格进化尚未初始化；不会展示旧 LLM 用量。</p>
+        <p className="text-xs text-gray-400">未初始化</p>
       </EvolutionSurface>
     );
   }
@@ -243,11 +243,11 @@ export default function Overview() {
     : null;
   const strengthEmptyMessage = epochReady
     ? controlStatus!.active_bots.length === 0
-      ? "当前严格发布池为空；尚无可进入评分周期的 Bot。"
-      : "严格发布池正在等待首个绑定当前发布池的完整 70 手评分周期；不会用默认分伪造强度。"
+      ? "发布池为空"
+      : "等待首个评分周期"
     : nextAuthorityVersion != null
-      ? `严格进化尚未初始化；v${controlStatus?.version_authority_high_water ?? 0} 只用于防止版本号倒退，初始化后首目标为 v${nextAuthorityVersion}。`
-      : "当前无法验证严格进化身份；恢复前不声明下一版本或强度结果。";
+      ? `未初始化（首目标 v${nextAuthorityVersion}）`
+      : "数据不可用";
   const strengthSampleDisplay = epochReady && visibleRatings.length > 0
     ? (stats?.total_strength_samples ?? stats?.total_games ?? 0).toLocaleString()
     : "—";
@@ -310,10 +310,7 @@ export default function Overview() {
     : "评分实际状态不可用";
 
   return (
-    <EvolutionPageScaffold
-      title="运行总览"
-      subtitle="系统健康 · 最新代次进度 · LLM 今日用量 · 最新发布 Bot 强度"
-    >
+    <EvolutionPageScaffold title="运行总览">
       <PageMeta title="运行总览 — Bot 自进化" description="现在发生什么、已发布什么、真实强度如何" />
 
       {/* 429 rate-limit warning banner */}
@@ -509,7 +506,7 @@ export default function Overview() {
           <RecentActivityCard />
         ) : (
           <div className="rounded-2xl border border-gray-200 bg-white p-4 text-xs text-gray-500 dark:border-border-subtle dark:bg-surface-1 dark:text-gray-400">
-            旧对局、旧 H2H 和旧代次日志不会混入当前视图；完成一次性初始化后才展示新周期证据。
+            未初始化
           </div>
         )}
       </div>

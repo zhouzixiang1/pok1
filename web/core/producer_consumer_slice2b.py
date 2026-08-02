@@ -309,6 +309,7 @@ def _empty_lifecycle_row(candidate_id: str) -> dict[str, Any]:
         "reserved_next_v": None,  # draft version reserved for ordered promotion
         "slot_id": None,  # which draft slot owns this candidate
         "sealed_at_epoch": None,  # when the SEALED transition happened
+        "consumer_checkpoint_slot": None,  # consumer-<candidate_id> frozen-snapshot slot
     }
 
 
@@ -379,6 +380,13 @@ class CandidateLifecycle:
             self._ensure_column(connection, "reserved_next_v", "INTEGER")
             self._ensure_column(connection, "slot_id", "TEXT")
             self._ensure_column(connection, "sealed_at_epoch", "REAL")
+            # Schema v2.1 (frozen-snapshot isolation, defect E (b) Phase 2): the
+            # consumer checkpoint slot id (``consumer-<candidate_id>``) whose
+            # ``pipeline_state_<slot>.json`` isolates the consumer gate chain
+            # from the parked primary.  Distinct from the draft ``slot_id``
+            # column (which is the one-ahead draft version-reservation slot);
+            # a consumer slot holds the real gen-N checkpoint, not a shadow.
+            self._ensure_column(connection, "consumer_checkpoint_slot", "TEXT")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS slice2b_lifecycle_meta(
@@ -471,9 +479,10 @@ class CandidateLifecycle:
                 mutator(entry)
             # Persist.  UPSERT so the SEALED insert and the terminal UPDATE
             # share one code path.  Multi-ahead columns (reserved_next_v,
-            # slot_id, sealed_at_epoch) are written on the SEALED insert and
-            # preserved on subsequent transitions (excluded.* carries the
-            # mutator-updated value, defaulting to the existing row value).
+            # slot_id, sealed_at_epoch, consumer_checkpoint_slot) are written on
+            # the SEALED insert and preserved on subsequent transitions
+            # (excluded.* / COALESCE carries the mutator-updated value,
+            # defaulting to the existing row value).
             connection.execute(
                 """
                 INSERT INTO slice2b_candidate_lifecycle(
@@ -481,8 +490,9 @@ class CandidateLifecycle:
                     envelope_effect_id, envelope_digest, gate_results_json,
                     promotion_receipt_json, terminal_reason, completed_at,
                     sealed_snapshot_json, updated_at,
-                    reserved_next_v, slot_id, sealed_at_epoch
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reserved_next_v, slot_id, sealed_at_epoch,
+                    consumer_checkpoint_slot
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(candidate_id) DO UPDATE SET
                     state=excluded.state,
                     sealed_artifact_hash=excluded.sealed_artifact_hash,
@@ -499,7 +509,10 @@ class CandidateLifecycle:
                     slot_id=COALESCE(excluded.slot_id,
                         slice2b_candidate_lifecycle.slot_id),
                     sealed_at_epoch=COALESCE(excluded.sealed_at_epoch,
-                        slice2b_candidate_lifecycle.sealed_at_epoch)
+                        slice2b_candidate_lifecycle.sealed_at_epoch),
+                    consumer_checkpoint_slot=COALESCE(
+                        excluded.consumer_checkpoint_slot,
+                        slice2b_candidate_lifecycle.consumer_checkpoint_slot)
                 """,
                 (
                     candidate_id,
@@ -524,6 +537,7 @@ class CandidateLifecycle:
                     entry.get("reserved_next_v"),
                     entry.get("slot_id"),
                     entry.get("sealed_at_epoch"),
+                    entry.get("consumer_checkpoint_slot"),
                 ),
             )
             connection.commit()
@@ -558,6 +572,7 @@ class CandidateLifecycle:
             "reserved_next_v": row["reserved_next_v"],
             "slot_id": row["slot_id"],
             "sealed_at_epoch": row["sealed_at_epoch"],
+            "consumer_checkpoint_slot": row["consumer_checkpoint_slot"],
         }
         return entry
 
@@ -763,6 +778,58 @@ class CandidateLifecycle:
             return None
         snap = entry.get("sealed_snapshot")
         return deepcopy(snap) if snap is not None else None
+
+    # -- consumer checkpoint slot (frozen-snapshot isolation) ---------------
+
+    def set_consumer_checkpoint_slot(
+        self,
+        *,
+        candidate_id: str,
+        consumer_checkpoint_slot: str,
+    ) -> None:
+        """Persist the consumer checkpoint slot id for ``candidate_id``.
+
+        The slot id (``consumer-<candidate_id>``) identifies the isolated
+        ``pipeline_state_<slot>.json`` file the consumer gate chain runs
+        against.  Persisting it lets ``recover_at_boot`` re-enter the
+        ``active_slot_override`` with the same id after a restart so the
+        resumed gate chain keeps targeting the same file.  Idempotent: a second
+        call for the same candidate preserves the first value (COALESCE in the
+        UPSERT), matching the draft ``slot_id`` semantics.
+        """
+
+        _require_safe_id(candidate_id, "candidate_id")
+        if not isinstance(consumer_checkpoint_slot, str) or not consumer_checkpoint_slot.strip():
+            raise Slice2bError("consumer_checkpoint_slot_missing")
+        slot = _require_safe_id(consumer_checkpoint_slot, "consumer_checkpoint_slot")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT consumer_checkpoint_slot FROM slice2b_candidate_lifecycle "
+                "WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is None:
+                connection.rollback()
+                raise Slice2bError(
+                    "consumer_checkpoint_slot_candidate_not_started:" + candidate_id
+                )
+            if str(existing["consumer_checkpoint_slot"] or "") == "":
+                connection.execute(
+                    "UPDATE slice2b_candidate_lifecycle "
+                    "SET consumer_checkpoint_slot = ?, updated_at = ? "
+                    "WHERE candidate_id = ?",
+                    (slot, time.time(), candidate_id),
+                )
+            connection.commit()
+
+    def consumer_checkpoint_slot(self, candidate_id: str) -> str | None:
+        """Return the persisted consumer checkpoint slot id, or None."""
+        entry = self.snapshot(candidate_id)
+        if entry is None:
+            return None
+        slot = entry.get("consumer_checkpoint_slot")
+        return str(slot) if slot else None
 
     # -- multi-ahead version reservation registry ---------------------------
 

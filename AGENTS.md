@@ -365,6 +365,59 @@ so requiring them blocked every staging-tier `commit_bot` from birth
 bc668676). Regression:
 `tests/test_publication_transaction.py::test_staging_intent_from_verified_stage_passes_structure_validation`.
 
+### Staging eval-source deadlock — full certification is mandatory before the next generation
+
+A staging-tier publish is **not** self-sufficient. A staging-published master
+has no signed full certificate and no `national-cloud-certified-v<N>` tag, so
+`resolve_national_bot_spec(..., ROLE_RATING_POOL)` returns `eligible=False`
+with `signed_full_official_certificate_required`
+(`bot_namespace.py`, `ACTIVE_PUBLISHED_ROLES` → `certificate_required=True`).
+The rating daemon's `_reconcile_rating_pool_membership`
+(`elo_daemon_persistence.py`) filters every such bot out of the match queue via
+the `bot_path()` raise, and `_safe_bot_path` returns `None` at each of the 7
+scheduling sites. The bot therefore accrues a **structurally permanent 0
+games** — it is never even attempted, never crashed-after-launch. This is
+distinct from "scheduling is slow"; the bot cannot enter the queue at all.
+
+This turns into a **hard, silent deadlock** the moment that staging master is
+selected as the next generation's eval source: `wait_for_daemon_eval`
+(`evolution_infra.py`) waits for `games >= min_games`, but the source bot can
+never accrue games. The orchestrator's degraded-floor logic
+(`orchestrator_loop_phases.py`, the `评估等待连续超时，降低评估要求` path)
+lowers `min_games` (e.g. 24 → 12) after consecutive prep timeouts — but that is
+a **boolean threshold, not a scaling factor**, so it settles at 12 and never
+goes lower; and even a floor of 1 is unreachable when the game count is
+structurally 0. There is **no** force-prepare, abandon, or operator-action
+escape: the loop is infinite, and it emits only generic `评估超时` warnings
+with no signal that the root cause is a *certification/eligibility* defect.
+
+**Rules:**
+1. **A bot selected as an eval source must be rating-pool-eligible.** Before
+   entering the eval-wait loop, resolve the source bot under
+   `ROLE_RATING_POOL`; if `eligible=False`, emit a distinct operator-actionable
+   signal carrying the `issues` tuple (e.g. `eval_source_rating_ineligible`),
+   and either fail-closed or auto-route to certification — **never** degrade
+   the games floor for a bot that is structurally excluded from the pool.
+   Degraded-floor logic is for "matches are slow but happening", not for
+   "the source bot is ineligible".
+2. **Closing the two-tier gap is part of publication for a staging master that
+   may become an eval source.** The recovery is the documented two-command
+   sequence against the already-published bytes:
+   `python scripts/official_certify.py full bots/national_cloud_v<N> --published --wait-if-busy`
+   then
+   `python scripts/official_certify.py publish-certified bots/national_cloud_v<N> --execute --acknowledge-reannotate-completion-tag`,
+   then refresh/restart the daemon (reconcile also re-runs at idle cadence
+   without a restart). `--published` is mandatory here because a published
+   bot's pipeline checkpoint is already cleared. The smoke cert
+   (`official-inconclusive`) is **not** a substitute and never admits to the
+   pool.
+3. **A certificate existing is necessary but not sufficient.** A bot can still
+   read `eligible=False` after certification with `certificate_identity_stale`
+   / `status_identity_stale` (e.g. legacy staging candidates whose
+   completion-tag / ledger identity drifted). Recovery must produce a
+   *currently-valid* cert and tag, and the eligibility call above is the source
+   of truth — not the presence of a status file.
+
 ### GLM 429 quota exhaustion and recovery-window waiting
 
 GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the

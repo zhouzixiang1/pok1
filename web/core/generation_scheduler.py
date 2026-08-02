@@ -1283,6 +1283,23 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                 "info",
             )
     else:
+        # Primary lane only: before blocking on the eval wait, verify the
+        # selected source bot can ever accrue rating-pool games. A staging
+        # master without a full signed certificate is structurally excluded
+        # from the daemon's match queue (0 games), so wait_for_daemon_eval
+        # would loop forever on an unreachable games floor. Fail closed with a
+        # typed signal instead of silently degrading the floor. Drafts skip
+        # this (they intentionally use stale ratings and run no matches).
+        from bot_namespace import resolve_national_bot_spec, ROLE_RATING_POOL
+        eval_spec = resolve_national_bot_spec(active_bot_name, ROLE_RATING_POOL)
+        if not eval_spec.eligible:
+            from orchestrator_cost_policy import EvalSourceRatingIneligible
+            raise EvalSourceRatingIneligible(
+                bot_name=active_bot_name,
+                version=active_v,
+                issues=tuple(eval_spec.issues),
+                publication_tier=getattr(eval_spec, "publication_tier", None),
+            )
         eval_ok = await wait_for_daemon_eval(active_bot_name, **eval_kwargs)
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None

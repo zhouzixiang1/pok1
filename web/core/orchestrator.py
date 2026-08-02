@@ -73,6 +73,7 @@ from evaluation_contract import evaluate_head_drift
 from blocking_runtime import run_blocking_isolated
 from orchestrator_cost_policy import (
     CostPolicyConfigurationError,
+    EvalSourceRatingIneligible,
     GenerationCostPolicy,
     OperatorGenerationCostLimitExceeded,
     activate_generation_cost_scope,
@@ -572,6 +573,12 @@ async def _prepare_or_fail(shutdown_mgr, ui, min_games=None):
         # Operator policy is a terminal outer-loop control signal, not a
         # disposable prepare failure eligible for exponential retry.
         raise
+    except EvalSourceRatingIneligible:
+        # The selected eval source can never accrue rating-pool games (e.g. a
+        # staging master missing its full certificate); wait_for_daemon_eval
+        # would loop forever. Propagate so the outer loop parks for operator
+        # action instead of silently degrading the games floor.
+        raise
     except LLMAvailabilityBlocked:
         # Provider availability is a durable outer-loop pause.  Returning None
         # would turn it into a disposable prepare retry and lose typed control.
@@ -851,6 +858,28 @@ async def _run_one_generation_cli(
         _clear_orchestrator_session(reason="one_gen_llm_pause_state_invalid")
         log.error("One-gen LLM pause control failed closed: %s", exc)
         return ORCH_LLM_AVAILABILITY_BLOCKED_COST
+    except EvalSourceRatingIneligible as exc:
+        # Park for operator action: the eval source cannot enter the rating
+        # pool (staging master missing a full certificate), so the daemon will
+        # structurally never schedule matches for it.
+        _clear_orchestrator_session(reason="one_gen_eval_source_rating_ineligible")
+        try:
+            log_system_event(
+                "orchestrator.eval_source_rating_ineligible",
+                "error",
+                str(exc),
+                {
+                    "bot_name": exc.bot_name,
+                    "version": exc.version,
+                    "issues": list(exc.issues),
+                    "publication_tier": exc.publication_tier,
+                    "operator_action_required": True,
+                },
+            )
+        except Exception:
+            pass
+        log.error("One-gen parked: eval source rating-ineligible: %s", exc)
+        return ORCH_OPERATOR_ACTION_REQUIRED_COST
     except Exception as exc:
         log.exception("One-gen control failure: %s", exc)
         try:

@@ -237,10 +237,7 @@ export default function ControlPanel() {
   const daemonEffective = health?.daemon;
 
   return (
-    <EvolutionPageScaffold
-      title="控制面板"
-      subtitle="启停 / 受控放弃 / daemon 配置 / epoch 权威 / 异步认证队列"
-    >
+    <EvolutionPageScaffold title="控制面板">
       <div className="space-y-6">
       <div className="flex items-center justify-end gap-3 -mb-2">
         <button onClick={() => void Promise.all([refresh(), refreshStatus(), refreshCheckpoint()])} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1 shrink-0">
@@ -271,7 +268,7 @@ export default function ControlPanel() {
             清除
           </button>
         </div>
-        <p className="mt-2 text-xs text-gray-500">令牌只保存在当前页面进程内存中，刷新页面即清除；本机同源访问无需令牌。</p>
+        <p className="mt-2 text-xs text-gray-500" title="令牌只保存在当前页面进程内存中，刷新页面即清除；本机同源访问无需令牌。">仅存内存</p>
         {mutationError && <p className="mt-2 text-xs text-red-600">操作失败：{mutationError}</p>}
       </div>
 
@@ -354,25 +351,18 @@ export default function ControlPanel() {
                   <p className="font-mono text-[10px] text-gray-400">允许工具：{route.allowed_tools.length > 0 ? route.allowed_tools.join(", ") : "[]"}</p>
                 </div>
               ) : status.post_publication_handoff.status === "blocked" ? (
-                <p className="text-xs text-red-600 dark:text-red-300">
-                  发布后交接已阻断；不会从旧 checkpoint 或阶段名称猜测下一工具。
-                </p>
+                <p className="text-xs text-red-600 dark:text-red-300">发布交接阻断</p>
               ) : pipelineBlocked ? (
                 <p className="text-xs text-red-600 dark:text-red-300">
-                  流水线恢复已阻断；不会显示或执行 checkpoint route。
-                  {pipelineIssues.length > 0 ? ` ${pipelineIssues.join("、")}` : ""}
+                  流水线恢复阻断
+                  {pipelineIssues.length > 0 ? `：${pipelineIssues.join("、")}` : ""}
                 </p>
               ) : schedulerOwnsPrepare ? (
-                <p className="text-xs text-amber-700 dark:text-amber-300">
-                  外层 generation scheduler 持有无 checkpoint 边界；下一动作是系统非 MCP
-                  <span className="font-mono"> prepare_generation</span>，不是可由页面调用的流水线工具。
-                </p>
+                <p className="text-xs text-amber-700 dark:text-amber-300">无 checkpoint 边界</p>
               ) : !status.active_generation && status.post_publication_handoff.status === "none" ? (
-                <p className="text-xs text-gray-500">当前没有活跃代次或发布后交接；运行已停止或调度权威不可用。</p>
+                <p className="text-xs text-gray-500">无活跃代次</p>
               ) : (
-                <p className="text-xs text-red-600 dark:text-red-300">
-                  权威 route 不可用或与 active_generation 不一致；页面不从 stage 猜测下一工具。
-                </p>
+                <p className="text-xs text-red-600 dark:text-red-300">route 不一致</p>
               )}
             </div>
           </div>
@@ -388,9 +378,6 @@ export default function ControlPanel() {
           <div>
             <span className="text-xs text-gray-500 block mb-1">Provider history</span>
             <span className="text-sm text-gray-800 dark:text-gray-200">禁止持久化与恢复</span>
-            <p className="mt-1 max-w-xl text-xs text-gray-500">
-              重启只从已验证 checkpoint 重建确定性上下文，并创建全新的 provider stream；opaque session ID 不构成恢复权威。
-            </p>
           </div>
           {status?.active_generation && (
             <div>
@@ -426,9 +413,6 @@ export default function ControlPanel() {
             {daemonEffective.pairs_drift ? " · 检测到 pairs_drift" : ""}
           </p>
         )}
-        <p className="mb-3 text-xs text-gray-500">
-          每次配对数是写入 evaluation identity 的完整 70 手样本预算（1–8），只影响评分周期的采样量与吞吐；它本身不是 Bot 强度证明。
-        </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="flex items-center gap-3">
             <label className="text-sm text-gray-600 dark:text-gray-300">评分引擎</label>
@@ -477,7 +461,7 @@ export default function ControlPanel() {
       </div>
 
       <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 p-4 text-sm text-blue-800 dark:text-blue-200">
-        生成、质量门、预提交评估和正式认证只能由编排器按 checkpoint 顺序推进；网页不提供可绕过流程的通用工具执行入口。
+        无绕过入口
       </div>
       </div>
     </EvolutionPageScaffold>

@@ -675,12 +675,11 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                         advanced["terminal_action"]
                         == "publication_handoff_completed"
                     ):
-                        # Phase 3b: best-effort async certification for staging
-                        # publications. Non-fatal; runs in background.
-                        try:
-                            await _try_schedule_async_certification(ui, shutdown_mgr)
-                        except Exception:
-                            pass
+                        # Async-certification self-heal for staging publications
+                        # is now scheduled in the single chokepoint inside
+                        # ``_advance_deterministic_recovery`` (reached by every
+                        # ``publication_handoff_completed`` terminal action), so
+                        # no explicit scheduling is needed at any call site.
                         if not _publication_accounting_allows_successor():
                             break
                     elif advanced["terminal_action"] in {
@@ -1199,6 +1198,43 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
             _orch._project_generation_cost_runtime(ui)
         _orch.log.error("Operator generation cost limit stopped evolution: %s", exc)
         terminal_outcome = _orch.ORCH_OPERATOR_COST_LIMIT_COST
+    except _orch.EvalSourceRatingIneligible as exc:
+        # The active bot chosen as the eval source is structurally excluded
+        # from the rating pool (e.g. a staging master published without a full
+        # signed certificate), so the daemon schedules 0 matches for it and
+        # wait_for_daemon_eval would loop forever on an unreachable floor.
+        # Park for operator action instead of silently degrading the floor.
+        _orch._clear_orchestrator_session(reason="eval_source_rating_ineligible")
+        try:
+            _orch.log_system_event(
+                "orchestrator.eval_source_rating_ineligible",
+                "error",
+                str(exc),
+                {
+                    "bot_name": exc.bot_name,
+                    "version": exc.version,
+                    "issues": list(exc.issues),
+                    "publication_tier": exc.publication_tier,
+                    "operator_action_required": True,
+                },
+            )
+        except Exception:
+            pass
+        if ui:
+            ui.set_status(
+                f"Stopped: eval source {exc.bot_name} rating-ineligible",
+                is_working=False,
+            )
+            ui.log_history(
+                f"评估源 {exc.bot_name} (v{exc.version}) 不在评分池"
+                f"（publication_tier={exc.publication_tier}，资格: "
+                f"{list(exc.issues)}）；需完成 full 认证后评级 daemon 才会排赛。"
+                "停车等待。",
+                "error",
+            )
+            ui.log_history(str(exc), "error")
+        _orch.log.error("Eval source rating-ineligible stopped evolution: %s", exc)
+        terminal_outcome = _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST
     except _orch.LLMAvailabilityBlocked as exc:
         # Defensive boundary for an LLM role outside the normal stream/direct
         # route wrappers. Never relabel a provider stop as an orchestrator crash.
@@ -1993,35 +2029,57 @@ async def _run_async_official_certification(version, ui):
 
 
 def _create_certified_tag(version, cert_result):
-    """Create the certified-tier annotated tag at the staging commit.
+    """Promote a staging-published bot to the certified tier after async cert.
 
-    The certified tag points to the same commit as the staging completion tag,
-    marking that async official certification has passed.
+    Closes the C2 gap: previously this only created the ``certified`` tag, which
+    left ``certificate_validation`` False (no published attestation, no
+    official-* completion-tag annotation) so the bot stayed rating-ineligible.
+
+    Now delegates to the shared ``publish_full_certified_tier`` helper, the same
+    single source of truth used by ``scripts/official_certify.py
+    publish-certified``.  That helper performs the full 4-step sequence:
+    attestation-write + git commit + completion-tag reannotation + certified-tag
+    creation.  Idempotent and best-effort: callers wrap this in try/except and
+    failures are non-fatal (the operator can re-run the script).
     """
     try:
-        from bot_namespace import bot_tag, certified_tag
+        from evolution_infra import get_bot_dir
+        from official_certification_authority import publish_full_certified_tier
 
-        # Resolve the staging commit from the completion tag.
-        commit_oid = _orch._git(
-            "rev-parse", f"refs/tags/{bot_tag(version)}^{{commit}}"
-        ).strip()
-        if not commit_oid:
-            return
-
-        _ct = certified_tag(version)
-        # Create the certified tag (create-only, like the staging tag).
-        _orch._git(
-            "tag", "-a", _ct, commit_oid,
-            "-m", f"National bot v{version} (certified): async official certification passed\n\n"
-                  f"certified-version: {version}\n"
-                  f"publication-tier: certified",
+        bot_dir = get_bot_dir(version)
+        result = publish_full_certified_tier(
+            version,
+            bot_dir,
+            repo_root=_orch.PROJECT_ROOT,
         )
-
-        # Push the certified tag if remote publication is enabled.
+        if result.get("ok"):
+            _orch.log_system_event(
+                "orchestrator.async_certification_tier_promoted",
+                "info",
+                f"Async certification promoted v{version} to certified tier",
+                {
+                    "version": version,
+                    "completion_tag": result.get("completion_tag"),
+                    "certified_tag": result.get("certified_tag"),
+                    "certificate_digest": result.get("certificate_digest"),
+                    "published_attestation_path": result.get("published_attestation_path"),
+                },
+            )
+        else:
+            _orch.log_system_event(
+                "orchestrator.async_certification_tier_promotion_failed",
+                "warn",
+                f"Async certification tier promotion failed for v{version}: {result.get('reason', 'unknown')}",
+                {"version": version, "reason": result.get("reason"), "result": result},
+            )
+    except Exception as exc:
         try:
-            _orch._git("push", "origin", _ct, check=False)
+            _orch.log_system_event(
+                "orchestrator.async_certification_tier_promotion_failed",
+                "error",
+                f"Async certification tier promotion error for v{version}: {type(exc).__name__}: {exc}",
+                {"version": version},
+            )
         except Exception:
             pass
-    except Exception:
-        pass
 

@@ -311,7 +311,7 @@ export default function LlmMetrics() {
 
   if (loading) {
     return (
-      <EvolutionPageScaffold title="LLM 使用分析" subtitle="调用日志、输入输出详情与按角色聚合统计">
+      <EvolutionPageScaffold title="LLM 使用分析">
         <PageMeta title="LLM 使用分析 — Bot 自进化" description="LLM 调用记录与指标" />
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
           <EmptyState message="正在加载 LLM 调用记录…" />
@@ -322,7 +322,7 @@ export default function LlmMetrics() {
 
   if (error) {
     return (
-      <EvolutionPageScaffold title="LLM 使用分析" subtitle="调用日志、输入输出详情与按角色聚合统计">
+      <EvolutionPageScaffold title="LLM 使用分析">
         <PageMeta title="LLM 使用分析 — Bot 自进化" description="LLM 调用记录与指标" />
         <div className="rounded-2xl border border-error-200 bg-error-50 px-4 py-3 text-sm text-error-700 dark:border-error-900/30 dark:bg-error-950/20 dark:text-error-300">
           加载失败：{error}
@@ -334,10 +334,10 @@ export default function LlmMetrics() {
 
   if (metrics.length === 0) {
     return (
-      <EvolutionPageScaffold title="LLM 使用分析" subtitle="调用日志、输入输出详情与按角色聚合统计">
+      <EvolutionPageScaffold title="LLM 使用分析">
         <PageMeta title="LLM 使用分析 — Bot 自进化" description="LLM 调用记录与指标" />
         <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
-          <EmptyState message="暂无 LLM 调用记录。后端开始记录后此处会自动刷新。" />
+          <EmptyState message="暂无调用记录" />
         </div>
       </EvolutionPageScaffold>
     );
@@ -394,7 +394,6 @@ export default function LlmMetrics() {
       <Card className="mb-4" padding="p-0">
         <CardHeader
           title="调用趋势"
-          subtitle="按时间排列的单次调用指标"
           actions={
             <div className="flex flex-wrap gap-1">
               {([
@@ -435,7 +434,7 @@ export default function LlmMetrics() {
 
       {/* 按 Role 分组统计表 */}
       <Card className="mb-4" padding="p-0">
-        <CardHeader title="按 Role 分组统计" subtitle="每个角色的调用数、耗时、token、成本与成功率" />
+        <CardHeader title="按 Role 分组统计" />
         <RoleSummaryTable
           rows={summary?.by_role ?? null}
           fallbackRows={metrics}
@@ -479,7 +478,7 @@ export default function LlmMetrics() {
       <Card padding="p-0">
         <CardHeader
           title="调用明细"
-          subtitle={`最近 ${sortedMetrics.length} 条（点击行展开完整字段）`}
+          subtitle={`最近 ${sortedMetrics.length} 条`}
           actions={
             <RoleFilterControl
               roles={allRoles}

@@ -79,6 +79,14 @@ doctor and valid unused `first_strict_control_v1` at artifact hash
 official 5+3 dependency is present. Only the checkpoint stage
 `official_bootstrap_required` unlocks the operator action.
 
+A staging-tier published master is **not** rating-pool-eligible until it
+receives a signed full certificate (`official_certify.py full --published` →
+`publish-certified --execute`). If a staging master is selected as the next
+generation's eval source before that, `wait_for_daemon_eval` loops forever on
+an unreachable games floor (the bot is structurally excluded from the match
+queue, not slow), and the degraded-floor logic cannot recover it. See the
+"Staging eval-source deadlock" section of `AGENTS.md` for the full contract.
+
 ## Documentation synchronization rule
 
 Any functional change — a feature added, removed, or modified — must update the

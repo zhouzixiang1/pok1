@@ -233,8 +233,6 @@ def _publish_certified(args) -> int:
     tag`` is required because re-annotating an existing completion tag is an
     explicit operator action outside the create-only publication transaction.
     """
-    import subprocess
-
     from bot_artifact import hash_path, published_bot_identity
     from bot_namespace import bot_tag, bot_name, certified_tag, parse_bot_version
     from official_certification import (
@@ -244,7 +242,6 @@ def _publish_certified(args) -> int:
     )
     from official_certification_authority import (
         official_full_certified,
-        publish_certificate_attestation,
     )
 
     candidate_path = Path(args.candidate).expanduser().resolve()
@@ -317,73 +314,38 @@ def _publish_certified(args) -> int:
         }, ensure_ascii=False, indent=2))
         return 2
 
-    # 1. Write the published attestation wrapper.  publish_certificate_attestation
-    # returns a dict with path/relative_path/digests on success (no explicit
-    # "ok" flag); verify the file was actually written.
-    publish_result = publish_certificate_attestation(status, candidate_path)
-    cert_abs = ROOT / cert_rel
-    if not cert_abs.exists():
-        print(json.dumps({
-            "status": "publish-certified-failed",
-            "reason": "publish_certificate_attestation_failed",
-            "publish_result": publish_result,
-        }, ensure_ascii=False, indent=2))
-        return 2
-    # 2. Commit the cert file so it is reachable at the tagged commit.
-    subprocess.run(["git", "add", "--", cert_rel], cwd=str(ROOT), check=True)
-    commit_msg = f"cert(publish): official certificate for {candidate_path.name}\n\nofficial-certificate: {certificate_digest}\nofficial-candidate-hash: {candidate_hash}\nofficial-policy: {FULL_POLICY_ID}"
-    commit_rc = subprocess.run(
-        ["git", "commit", "-m", commit_msg, "--", cert_rel],
-        cwd=str(ROOT), capture_output=True, text=True,
-    )
-    # A no-op commit (file already committed) is fine.
-    if commit_rc.returncode not in (0,):
-        print(json.dumps({
-            "status": "publish-certified-failed",
-            "reason": "git_commit_failed",
-            "stdout": commit_rc.stdout[:500],
-            "stderr": commit_rc.stderr[:500],
-        }, ensure_ascii=False, indent=2))
-        return 2
+    # Execute the 4-step publish-certified sequence via the shared helper in
+    # official_certification_authority.  This is the single source of truth; the
+    # orchestrator's async-certification self-heal calls the same function, so
+    # the script and the orchestrator can never diverge on the publish sequence.
+    from official_certification_authority import publish_full_certified_tier
 
-    # 3. Re-annotate the completion tag with official-* metadata (force update).
-    tag_msg = (
-        f"{candidate_path.name}: official-certified\n\n"
-        f"official-certificate: {certificate_digest}\n"
-        f"official-candidate-hash: {candidate_hash}\n"
-        f"official-policy: {FULL_POLICY_ID}\n"
+    result = publish_full_certified_tier(
+        version,
+        candidate_path,
+        repo_root=ROOT,
     )
-    tag_rc = subprocess.run(
-        ["git", "tag", "-a", "-f", completion_tag, "-m", tag_msg, "HEAD"],
-        cwd=str(ROOT), capture_output=True, text=True,
-    )
-    if tag_rc.returncode != 0:
+    if not result.get("ok"):
         print(json.dumps({
             "status": "publish-certified-failed",
-            "reason": "completion_tag_reannotate_failed",
-            "stderr": tag_rc.stderr[:500],
+            "reason": result.get("reason"),
+            "candidate": str(candidate_path),
+            "version": version,
+            "stdout": result.get("stdout"),
+            "stderr": result.get("stderr"),
+            "error": result.get("error"),
+            "step": result.get("step"),
         }, ensure_ascii=False, indent=2))
         return 2
-
-    # 4. Create the certified tag at the same commit (tier classification).
-    cert_tag_msg = (
-        f"{candidate_path.name}: certified-tier\n\n"
-        f"certified-version: {version}\n"
-        f"publication-tier: certified\n"
-    )
-    subprocess.run(
-        ["git", "tag", "-a", "-f", cert_tag, "-m", cert_tag_msg, completion_tag],
-        cwd=str(ROOT), capture_output=True, text=True, check=False,
-    )
 
     print(json.dumps({
         "status": "publish-certified-complete",
         "candidate": str(candidate_path),
         "version": version,
-        "completion_tag": completion_tag,
-        "certified_tag": cert_tag,
-        "certificate_digest": certificate_digest,
-        "published_attestation": cert_rel,
+        "completion_tag": result.get("completion_tag"),
+        "certified_tag": result.get("certified_tag"),
+        "certificate_digest": result.get("certificate_digest"),
+        "published_attestation": result.get("published_attestation_path"),
     }, ensure_ascii=False, indent=2))
     return 0
 

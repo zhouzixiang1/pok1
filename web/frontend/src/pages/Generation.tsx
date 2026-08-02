@@ -437,17 +437,11 @@ export default function Generation() {
   const streamInterrupted = epochReady && !authoritativeWorking && status2 === "连接中..." && messages.length === 0;
 
   return (
-    <EvolutionPageScaffold
-      title="当代进度"
-      subtitle="完整 generation stepper · 国赛 EXE 认证 · LLM 实时输入输出 · 交接八步"
-    >
+    <EvolutionPageScaffold title="当代进度">
       <PageMeta title="当代进度 — Bot 自进化" description="当前 Bot 从研发到发布的真实进度" />
 
       <EvolutionSurface>
-        <EvolutionSection
-          title="本代从研发到发布的进度"
-          subtitle="只把真正通过的步骤标为完成；重试与认证等待不伪装成功"
-        />
+        <EvolutionSection title="本代从研发到发布的进度" />
         <div className="mt-3">
           <PipelineStatus
             checkpoint={checkpoint}
@@ -469,7 +463,7 @@ export default function Generation() {
         {/* 研发角色 + 异常处理（左） */}
         <div className="space-y-4 lg:col-span-1">
           <EvolutionSurface padding="sm">
-            <EvolutionSection title="谁正在做什么" subtitle="只显示当前这次研发任务绑定的角色" />
+            <EvolutionSection title="谁正在做什么" />
             <div className="mt-3 space-y-2">
               {!epochReady && <p className="text-xs text-gray-400">严格进化尚未初始化，当前没有研发角色。</p>}
               {epochReady && !view && <p className="text-xs text-gray-400">当前没有可验证的研发工作流。</p>}
@@ -529,10 +523,7 @@ export default function Generation() {
           <PipelineDiagnostics status={status} health={health} />
 
           <EvolutionSurface padding="sm">
-            <EvolutionSection
-              title="当前异常如何处理"
-              subtitle="自动重试、受控修复、结束本次尝试或人工介入"
-            />
+            <EvolutionSection title="当前异常如何处理" />
             <div className="mt-3 space-y-2">
               {isTimeout && activeStage && (
                 <TimeoutLeaseCard stage={activeStage} />
@@ -622,10 +613,10 @@ export default function Generation() {
           >
             <div ref={ioRef}>
               {!epochReady && (
-                <EmptyState message="严格进化尚未初始化；不会把旧模型输出混入当前代次。" />
+                <EmptyState message="未初始化" />
               )}
               {epochReady && messages.length === 0 && (
-                <EmptyState message={taskActive ? "当前没有新的模型输出；请以上方状态机的下一步为准。" : "当前没有活跃模型任务。"} />
+                <EmptyState message={taskActive ? "无活跃任务" : "无活跃任务"} />
               )}
               {messages.map((msg) => (
                 <div key={msg.id}>
@@ -673,9 +664,6 @@ function TimeoutLeaseCard({ stage }: { stage: "timed_out" | "infra_timed_out" })
         <span className="font-mono text-xs text-gray-500">{stage}</span>
       </div>
       <p className="mb-2 text-xs text-error-700 dark:text-error-300">{lease.description}</p>
-      <p className="text-xs text-gray-500">
-        该状态不计入成功进度；页面会等待后端指定的安全恢复入口，而不是猜测下一步。
-      </p>
       <div className="mt-1 font-mono text-xs text-gray-500">
         stage: {stage} · next_tool: {lease.nextTool}
       </div>

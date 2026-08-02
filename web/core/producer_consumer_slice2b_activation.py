@@ -242,6 +242,7 @@ class Slice2bActivation:
         now: float | None = None,
         lease_seconds: float = 300.0,
         loop: asyncio.AbstractEventLoop | None = None,
+        consumer_slot_id: str | None = None,
     ) -> asyncio.Task:
         """Launch the background consumer task for one sealed candidate.
 
@@ -260,6 +261,14 @@ class Slice2bActivation:
         loop), use :meth:`schedule_consumer` to register the factory, then
         :meth:`drain_scheduled_consumer` from within the loop to create and
         await the task.
+
+        ``consumer_slot_id`` binds the FROZEN-SNAPSHOT ISOLATION override: the
+        entire gate chain (``dispatcher.run_once`` and every gate handler it
+        awaits) runs inside ``active_slot_override(consumer_slot_id)`` so every
+        no-``slot_id`` checkpoint read/write targets
+        ``pipeline_state_<consumer_slot>.json`` instead of racing the parked
+        primary.  When None (legacy callers / tests), the override is skipped
+        and the gate chain targets the ambient slot (back-compat).
         """
 
         if candidate_id not in self._sealed_snapshots:
@@ -285,16 +294,50 @@ class Slice2bActivation:
         dispatcher = self.dispatcher
         ledger = self.ledger
         coordinator = self.coordinator
+        # Resolve the consumer slot override.  Prefer the explicit argument;
+        # fall back to the slot persisted on the candidate lifecycle (set at
+        # seal time) so a recovery path that omits the arg still isolates.
+        if consumer_slot_id is None:
+            try:
+                consumer_slot_id = ledger.consumer_checkpoint_slot(candidate_id)
+            except Exception:
+                consumer_slot_id = None
+        # Bind the override name once so the task body can re-enter it without a
+        # late import on every run.
+        slot_override_ctx = None
+        if consumer_slot_id is not None:
+            try:
+                from evolution_infra import active_slot_override
+
+                slot_override_ctx = active_slot_override
+            except Exception:
+                slot_override_ctx = None
 
         async def _run_gate_chain() -> None:
             gates = gate_runner_factory()
-            try:
+
+            async def _dispatch() -> None:
                 await dispatcher.run_once(
                     sealed_snapshots={candidate_id: snapshot},
                     gates=gates,
                     now=dispatch_now,
                     lease_seconds=lease_seconds,
                 )
+
+            try:
+                # FROZEN-SNAPSHOT ISOLATION: run the entire gate chain under
+                # the consumer slot override so its checkpoint I/O is isolated
+                # from the parked primary.  ``active_slot_override`` is a
+                # ContextVar; entering it HERE (inside the task body) guarantees
+                # the override applies to every await within, regardless of how
+                # the task was created.  When no slot is bound (legacy callers
+                # / unit tests without a seeded slot), dispatch targets the
+                # ambient slot unchanged (back-compat).
+                if slot_override_ctx is not None and consumer_slot_id is not None:
+                    with slot_override_ctx(consumer_slot_id):
+                        await _dispatch()
+                else:
+                    await _dispatch()
             except Exception:
                 # The dispatcher records infrastructure failures into the
                 # ledger itself; if it raised, ensure the ledger reflects a
@@ -336,24 +379,31 @@ class Slice2bActivation:
         gate_runner_factory: Callable[[], Mapping[str, Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]]],
         now: float | None = None,
         lease_seconds: float = 300.0,
+        consumer_slot_id: str | None = None,
     ) -> None:
         """Register a consumer launch to be driven by the orchestrator loop.
 
         The orchestrator seam runs synchronously (outside any event loop) when
         it seals at ``workers_done``.  It cannot create an ``asyncio.Task``
         directly because there is no running loop.  This method stashes the
-        factory; :meth:`drain_scheduled_consumer` (called from the loop) or the
+        factory (and the consumer slot id for frozen-snapshot isolation);
+        :meth:`drain_scheduled_consumer` (called from the loop) or the
         promotion barrier (which runs inside the loop) creates and awaits the
         task.  If no factory is scheduled, the promotion barrier creates a task
         on-demand from the registered activation using
-        :attr:`default_gate_runner_factory`.
+        :attr:`default_gate_runner_factory}.
         """
 
         if candidate_id not in self._sealed_snapshots:
             raise Slice2bError(
                 "slice2b_consumer_unknown_candidate:" + candidate_id
             )
-        self._scheduled_factories[candidate_id] = (gate_runner_factory, now, lease_seconds)
+        self._scheduled_factories[candidate_id] = (
+            gate_runner_factory,
+            now,
+            lease_seconds,
+            consumer_slot_id,
+        )
 
     async def ensure_consumer_running(self, candidate_id: str) -> asyncio.Task | None:
         """Create the consumer task for a scheduled candidate from the loop.
@@ -371,12 +421,19 @@ class Slice2bActivation:
         scheduled = self._scheduled_factories.get(candidate_id)
         if scheduled is None:
             return None
-        factory, now, lease_seconds = scheduled
+        # Back-compat: the tuple grew a 4th element (consumer_slot_id).  Older
+        # scheduled entries from before frozen-snapshot isolation have 3.
+        if len(scheduled) == 4:
+            factory, now, lease_seconds, consumer_slot_id = scheduled
+        else:
+            factory, now, lease_seconds = scheduled
+            consumer_slot_id = None
         return self.launch_consumer_task(
             candidate_id=candidate_id,
             gate_runner_factory=factory,
             now=now,
             lease_seconds=lease_seconds,
+            consumer_slot_id=consumer_slot_id,
         )
 
     def consumer_task(self, candidate_id: str) -> asyncio.Task | None:
@@ -433,10 +490,63 @@ class Slice2bActivation:
             next_v = int(snapshot.get("next_v") or 0)
             source_v = int(snapshot.get("source_v") or 0)
             factory = canonical_gate_runner_factory(next_v, source_v)
+            # FROZEN-SNAPSHOT ISOLATION boot recovery: re-enter the consumer
+            # slot override with the persisted consumer_checkpoint_slot id.
+            # Option (b): the consumer slot file (pipeline_state_<slot>.json)
+            # is a normal file in RESULTS_DIR, so it PERSISTS across restart.
+            # We reuse it if present; if it was cleaned up (operator wipe),
+            # re-seed it from the primary checkpoint so the resumed gate chain
+            # has a starting point.  Either way the override id is threaded
+            # through schedule_consumer so _run_gate_chain re-binds it.
+            consumer_slot_id = None
+            try:
+                consumer_slot_id = self.ledger.consumer_checkpoint_slot(
+                    candidate_id
+                )
+            except Exception:
+                consumer_slot_id = None
+            if consumer_slot_id:
+                # Re-seed only if the slot file is missing.  read_pipeline_checkpoint
+                # with an explicit slot_id bypasses the ambient override (the
+                # activation may be running inside a draft override at boot).
+                try:
+                    from evolution_infra import (
+                        read_pipeline_checkpoint as _read_ckpt,
+                        no_slot_override,
+                    )
+
+                    with no_slot_override():
+                        slot_ckpt = _read_ckpt(slot_id=consumer_slot_id)
+                except Exception:
+                    slot_ckpt = None
+                if slot_ckpt is None:
+                    # Slot file gone: re-seed from the live primary checkpoint
+                    # (gen N is still at workers_done for a sealed-but-
+                    # unresolved candidate).  Mirror the seal-time seed.
+                    try:
+                        from evolution_infra import (
+                            read_pipeline_checkpoint as _read_ckpt,
+                            no_slot_override,
+                        )
+
+                        with no_slot_override():
+                            primary_ckpt = _read_ckpt() or {}
+                    except Exception:
+                        primary_ckpt = {}
+                    if primary_ckpt and int(primary_ckpt.get("next_v") or 0) == next_v:
+                        try:
+                            import orchestrator_deterministic_route as _odr
+
+                            _odr._slice2b_seed_consumer_checkpoint(
+                                primary_ckpt, consumer_slot_id
+                            )
+                        except Exception:
+                            pass
             self.schedule_consumer(
                 candidate_id=candidate_id,
                 gate_runner_factory=factory,
                 now=dispatch_epoch,
+                consumer_slot_id=consumer_slot_id,
             )
             recovered["rescheduled"].append(
                 {"candidate_id": candidate_id, "artifact_hash": artifact_hash}
