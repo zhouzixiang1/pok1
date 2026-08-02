@@ -1105,6 +1105,31 @@ async def _try_deterministic_checkpoint_route(
         next_tool in _SLICE2B_CONSUMER_OWNED_GATES
         and _slice2b_consumer_promoted(checkpoint, next_v)
     ):
+        # The consumer promoted the candidate.  BEFORE rewriting next_tool to
+        # commit_bot, collapse the consumer slot's verified gate evidence onto
+        # the primary so the primary advances past workers_done to verified/
+        # critic_checked.  Without this collapse the primary stays at
+        # workers_done, the route guard blocks commit_bot
+        # (pipeline_route_guard_blocked), and the generation deadlocks even
+        # though the consumer already finished.  The collapse is idempotent
+        # (CAS-fails harmlessly if the primary already matches).
+        try:
+            _candidate_id = str(
+                checkpoint.get("candidate_id") or f"candidate-v{next_v}"
+            )
+            _consumer_slot = _slice2b_consumer_slot_id(_candidate_id)
+            from evolution_infra import read_pipeline_checkpoint, no_slot_override
+
+            with no_slot_override():
+                _parked_primary = read_pipeline_checkpoint() or {}
+            _promote_consumer_slot_to_primary(
+                _consumer_slot,
+                next_v,
+                source_v,
+                published_primary=_parked_primary,
+            )
+        except Exception:
+            pass
         next_tool = "commit_bot"
 
     # Slice 2b promotion barrier: at commit_bot, the canonical publication may
