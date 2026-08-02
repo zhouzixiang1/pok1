@@ -409,6 +409,24 @@ def _safe_bot_path(bot_name, *, verbose=False):
         return None
 
 
+def _rating_eligible_bots(bots, *, verbose=False):
+    """Filter a bot-name list to rating-pool-eligible bots.
+
+    Reused at daemon startup and at every periodic bot refresh so the active
+    pool never contains a bot whose path would resolve to None (a staging/
+    uncertified bot). Without this the periodic refresh (``active_bots =
+    get_active_bots()``) re-admitted ineligible bots, pick_matches selected
+    them, and ``Path(None)`` in run_single_match silently dropped those
+    matches (regression from the _safe_bot_path wrapping, commit e355d016
+    which only half-applied the None guard at the scheduling sites).
+    """
+    eligible = []
+    for _b in bots:
+        if _safe_bot_path(_b, verbose=verbose) is not None:
+            eligible.append(_b)
+    return eligible
+
+
 def save_ratings(
     ratings,
     save_num=None,
@@ -1395,19 +1413,7 @@ def main():
     # pick_matches tries to launch it.  Filter here (before the minimum-pool
     # wait loop) so the daemon degrades gracefully (idle when too few are
     # certified) instead of crash-looping.
-    rating_eligible = []
-    for _b in active_bots:
-        try:
-            _edp.bot_path(_b)
-        except Exception:
-            if args.verbose:
-                log.info(
-                    "Skipping rating-ineligible bot %s (no signed certificate)",
-                    _b,
-                )
-            continue
-        rating_eligible.append(_b)
-    active_bots = rating_eligible
+    active_bots = _rating_eligible_bots(active_bots, verbose=args.verbose)
     n_workers = args.workers
     n_pairs = args.pairs
 
@@ -1760,7 +1766,7 @@ def main():
                             for b in set(new_bots) - set(active_bots):
                                 if b not in ratings:
                                     ratings[b] = Glicko2Player()
-                            active_bots = new_bots
+                            active_bots = _rating_eligible_bots(new_bots, verbose=args.verbose)
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
@@ -1836,7 +1842,7 @@ def main():
                             for b in added:
                                 if b not in ratings:
                                     ratings[b] = Glicko2Player()
-                            active_bots = new_bots
+                            active_bots = _rating_eligible_bots(new_bots, verbose=args.verbose)
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
@@ -1866,7 +1872,7 @@ def main():
                         for b in removed:
                             h2h = {k: v for k, v in h2h.items() if b not in k.split(" vs ")}
                         if added or removed:
-                            active_bots = new_bots
+                            active_bots = _rating_eligible_bots(new_bots, verbose=args.verbose)
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
