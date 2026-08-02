@@ -240,7 +240,7 @@ class Slice2bActivation:
         candidate_id: str,
         gate_runner_factory: Callable[[], Mapping[str, Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]]],
         now: float | None = None,
-        lease_seconds: float = 300.0,
+        lease_seconds: float = 3600.0,
         loop: asyncio.AbstractEventLoop | None = None,
         consumer_slot_id: str | None = None,
     ) -> asyncio.Task:
@@ -269,6 +269,13 @@ class Slice2bActivation:
         ``pipeline_state_<consumer_slot>.json`` instead of racing the parked
         primary.  When None (legacy callers / tests), the override is skipped
         and the gate chain targets the ambient slot (back-compat).
+
+        ``lease_seconds`` defaults to 3600 (1 hour) to cover the full gate
+        chain under GLM ``effort=max`` (quality+review+critic+precommit can
+        take 30-60 min).  The former 300s default expired mid-chain, turning
+        every slow generation into a zombie/reap/retry cycle.  Cross-process
+        recovery is unaffected: the death-proof resolver + zombie reaper
+        detect a genuinely-dead consumer task independently of lease expiry.
         """
 
         if candidate_id not in self._sealed_snapshots:
@@ -378,7 +385,7 @@ class Slice2bActivation:
         candidate_id: str,
         gate_runner_factory: Callable[[], Mapping[str, Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]]],
         now: float | None = None,
-        lease_seconds: float = 300.0,
+        lease_seconds: float = 3600.0,
         consumer_slot_id: str | None = None,
     ) -> None:
         """Register a consumer launch to be driven by the orchestrator loop.
