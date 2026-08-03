@@ -412,6 +412,85 @@ def test_consumer_dispatcher_is_idle_when_queue_empty(tmp_path):
     assert result["reason"] == "no_leasable_envelope"
 
 
+def test_consumer_dispatcher_resumes_from_last_persisted_gate(tmp_path):
+    """A lease-expiry restart must not re-run already-passed gates.
+
+    Regression: the gate chain runs under a single bounded lease; the precommit
+    native match takes 50-90 min, so a lease expiry + restart re-dispatches the
+    effect.  Without resume-from-last-gate logic the dispatcher re-ran the
+    ENTIRE chain (quality->review->critic->precommit) from scratch, throwing
+    away the passed quality/review/critic work and burning an attempt each
+    restart until the effect exhausted (abandoning an otherwise-healthy
+    candidate).  Gates persisted as ``success`` must be skipped on re-dispatch.
+    """
+    adapter = _adapter(tmp_path)
+    snapshot = _snapshot()
+    sealed = _seal(adapter, snapshot=snapshot)
+    candidate_id = snapshot["candidate_id"]
+    ledger = ValidationLedger()
+    dispatcher = ConsumerDispatcher(adapter, ledger, owner="consumer-a")
+
+    # Seed the ledger the way a prior (interrupted) dispatch would have: the
+    # quality/review/critic gates already recorded as success.  This mimics a
+    # dispatch that reached critic_checked before its lease expired mid-
+    # precommit, then got re-dispatched.
+    ledger.start(
+        candidate_id=candidate_id,
+        sealed_artifact_hash=snapshot["artifact_hash"],
+        envelope_effect_id=sealed["effect_id"],
+        envelope_digest=sealed["envelope_digest"],
+    )
+    ledger.begin_consuming(candidate_id=candidate_id)
+    _now = 100.0
+    for gate_name in ("run_quality_gates", "run_review", "run_critic"):
+        ledger.record_gate(
+            candidate_id=candidate_id,
+            gate_name=gate_name,
+            outcome="success",
+            result_digest=DIGESTS["3"],
+            finished_at=_now,
+            detail={"gate": gate_name, "prior_dispatch": True},
+        )
+
+    # Gate runners that record which gates actually executed this dispatch.
+    called = []
+
+    def make(gate_name):
+        async def run(snapshot):
+            called.append(gate_name)
+            return {
+                "outcome": "success",
+                "result_digest": DIGESTS["9"],
+                "promotion_receipt_digest": DIGESTS["9"],
+                "receipt_digest": DIGESTS["9"],
+                "detail": {"gate": gate_name},
+            }
+
+        return run
+
+    gates = {name: make(name) for name in CONSUMER_GATE_CHAIN_ORDER}
+
+    result = asyncio.run(
+        dispatcher.run_once(
+            sealed_snapshots={candidate_id: snapshot},
+            gates=gates,
+            now=200.0,
+            lease_seconds=50.0,
+        )
+    )
+    # Only the precommit gate should have executed; the three pre-seeded gates
+    # were skipped (resumed past).
+    assert called == ["run_precommit_eval"]
+    assert result["dispatched"] is True
+    assert result["promoted"] is True
+    entry = ledger.snapshot(candidate_id)
+    assert entry["validation_outcome"] == "promoted"
+    # All four gates are present in the ledger (3 pre-seeded + 1 just-run).
+    assert set(entry["gate_results"]) == set(CONSUMER_GATE_CHAIN_ORDER)
+    for gate_name in CONSUMER_GATE_CHAIN_ORDER:
+        assert entry["gate_results"][gate_name]["outcome"] == "success"
+
+
 def test_consumer_dispatcher_force_reclaims_non_expired_lease_after_restart(tmp_path):
     """After a restart, a running effect's non-expired lease blocks recover().
 

@@ -1223,7 +1223,32 @@ class ConsumerDispatcher:
         # envelope and is about to run the gate chain.  Idempotent on retry.
         self._ledger.begin_consuming(candidate_id=candidate_id)
 
+        # RESUME FROM LAST PERSISTED GATE: the gate chain runs under a single
+        # bounded lease (default 3600s).  The precommit native match alone takes
+        # 50-90 min, so a lease expiry + restart re-dispatches this effect and,
+        # without this resume logic, would re-run the ENTIRE chain from
+        # ``run_quality_gates`` -- throwing away already-passed quality/review/
+        # critic work and (worse) the partial precommit progress.  Each gate
+        # result is persisted to the durable ledger by ``record_gate`` below, so
+        # a fresh dispatch can skip every gate already recorded as ``success``.
+        # This turns a lease-expiry restart from "full re-run + attempt burn"
+        # into "resume at the first non-success gate".  Gates recorded with a
+        # non-success outcome (candidate_failure / infrastructure_failure) are
+        # NOT skipped: a candidate_failure already drove the ledger to
+        # ``rejected`` (terminal, never re-dispatched), and an
+        # infrastructure_failure is exactly the transient case worth retrying.
+        _resume_entry = self._ledger.snapshot(candidate_id) or {}
+        _completed_gates = {
+            name
+            for name, res in (_resume_entry.get("gate_results") or {}).items()
+            if isinstance(res, dict) and res.get("outcome") == "success"
+        }
+
         for gate_name in CONSUMER_GATE_CHAIN_ORDER:
+            if gate_name in _completed_gates:
+                # Already passed in a prior (possibly interrupted) dispatch;
+                # resume past it without re-running the gate.
+                continue
             runner = gates[gate_name]
             try:
                 gate_result = await runner(snapshot)

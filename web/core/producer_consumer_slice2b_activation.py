@@ -73,6 +73,17 @@ from producer_consumer_workflow_store import ProducerConsumerWorkflowAdapter
 SLICE2B_ENV_VAR = "POK_SLICE2B_ENABLED"
 SLICE2B_ACTIVATION_VERSION = "producer-consumer-slice2b-activation-v1"
 
+# Consumer gate-chain lease duration.  The precommit native match alone runs
+# 5 rounds x 70 hands and takes 50-90 min under GLM; the full quality->review->
+# critic->precommit chain must complete inside a single lease or the dispatcher
+# reclaims the effect on lease expiry, burns an attempt, and (without the
+# resume-from-last-gate logic in the dispatcher) re-runs the whole chain.
+# Default 4h matches the one-ahead envelope deadline so a single attempt can
+# absorb the worst-case chain plus GLM variability; override via env.
+DEFAULT_CONSUMER_LEASE_SECONDS = float(
+    os.environ.get("POK_SLICE2B_CONSUMER_LEASE_SECONDS", "14400.0")
+)
+
 
 def slice2b_active(context: Mapping[str, Any] | None = None) -> bool:
     """Return True iff the operator has explicitly enabled Slice 2b.
@@ -227,6 +238,20 @@ class Slice2bActivation:
 
         return self.coordinator.producer_may_prepare_next()
 
+    def producer_may_draft_behind(self) -> bool:
+        """Producer may launch a one-ahead draft behind the consumer.
+
+        Alias of :meth:`producer_may_prepare_next`; the underlying coordinator
+        gate returns True whenever at least one sealed-but-unresolved candidate
+        is in flight.  This accessor is required because
+        ``_try_launch_draft_prepare`` in ``orchestrator_loop_phases`` calls it
+        by name; without it the call raised ``AttributeError`` and was silently
+        swallowed by the launcher's broad ``except``, leaving the producer LLM
+        idle 0% of the time while the consumer ran its native gate chain.
+        """
+
+        return self.coordinator.producer_may_draft_behind()
+
     def producer_may_advance(self) -> bool:
         """Producer may seal another candidate (high-water capacity check)."""
 
@@ -240,7 +265,7 @@ class Slice2bActivation:
         candidate_id: str,
         gate_runner_factory: Callable[[], Mapping[str, Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]]],
         now: float | None = None,
-        lease_seconds: float = 3600.0,
+        lease_seconds: float = DEFAULT_CONSUMER_LEASE_SECONDS,
         loop: asyncio.AbstractEventLoop | None = None,
         consumer_slot_id: str | None = None,
     ) -> asyncio.Task:
@@ -270,12 +295,19 @@ class Slice2bActivation:
         primary.  When None (legacy callers / tests), the override is skipped
         and the gate chain targets the ambient slot (back-compat).
 
-        ``lease_seconds`` defaults to 3600 (1 hour) to cover the full gate
-        chain under GLM ``effort=max`` (quality+review+critic+precommit can
-        take 30-60 min).  The former 300s default expired mid-chain, turning
-        every slow generation into a zombie/reap/retry cycle.  Cross-process
-        recovery is unaffected: the death-proof resolver + zombie reaper
-        detect a genuinely-dead consumer task independently of lease expiry.
+        ``lease_seconds`` defaults to ``DEFAULT_CONSUMER_LEASE_SECONDS`` (4h,
+        env ``POK_SLICE2B_CONSUMER_LEASE_SECONDS``) to cover the full gate
+        chain under GLM ``effort=max``: the precommit native match alone is
+        50-90 min (5 rounds x 70 hands), and the whole quality->review->critic
+        ->precommit chain must complete inside a single lease or the dispatcher
+        reclaims the effect on lease expiry and burns an attempt.  The earlier
+        300s/3600s defaults expired mid-chain, turning every slow generation
+        into a zombie/reap/retry cycle that exhausted attempts and abandoned
+        otherwise-healthy candidates.  The dispatcher now also resumes from the
+        last persisted gate, so even a genuine lease expiry preserves the
+        quality/review/critic work.  Cross-process recovery is unaffected: the
+        death-proof resolver + zombie reaper detect a genuinely-dead consumer
+        task independently of lease expiry.
         """
 
         if candidate_id not in self._sealed_snapshots:
@@ -411,7 +443,7 @@ class Slice2bActivation:
         candidate_id: str,
         gate_runner_factory: Callable[[], Mapping[str, Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]]],
         now: float | None = None,
-        lease_seconds: float = 3600.0,
+        lease_seconds: float = DEFAULT_CONSUMER_LEASE_SECONDS,
         consumer_slot_id: str | None = None,
     ) -> None:
         """Register a consumer launch to be driven by the orchestrator loop.

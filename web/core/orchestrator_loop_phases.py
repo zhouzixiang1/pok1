@@ -712,6 +712,15 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
                         except Exception:
                             pass
+                        # Primary is parked for the background consumer gate
+                        # chain: sleep for a bounded interval instead of
+                        # re-cycling every second.  The promotion barrier at
+                        # commit_bot is what unblocks publication; here we just
+                        # avoid a CPU/log busy-spin while the (native, slow)
+                        # consumer runs.  Shutdown remains interruptible.
+                        if advanced["terminal_action"] == "slice2b_consumer_parked":
+                            if await _parked_sleep(shutdown_mgr, seconds=45.0):
+                                break
                     recovery = advanced["recovery"]
                     await _orch.asyncio.sleep(1)
                     continue
@@ -834,6 +843,11 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                                 _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
                             except Exception:
                                 pass
+                            # Bounded park sleep to avoid the busy-spin (see
+                            # the primary seal branch above for rationale).
+                            if advanced["terminal_action"] == "slice2b_consumer_parked":
+                                if await _parked_sleep(shutdown_mgr, seconds=45.0):
+                                    break
                         recovery = advanced["recovery"]
                         await _orch.asyncio.sleep(1)
                         continue
@@ -1481,6 +1495,33 @@ def _reconcile_orphan_draft_at_boot(ui):
     except Exception:
         pass
 
+async def _parked_sleep(shutdown_mgr, seconds: float = 45.0) -> bool:
+    """Bounded, shutdown-interruptible sleep used when the primary is parked.
+
+    When Slice 2b parks the primary at ``workers_done`` for the background
+    consumer gate chain, the primary has nothing productive to do until the
+    consumer either promotes the candidate or rejects it.  Re-cycling every
+    second (the previous behavior) wastes CPU and floods the log/event stream
+    with "Resuming at workers_done" + incrementing cycle numbers (observed:
+    cycles 1006..1013 in ~27s).  Instead, sleep for a bounded interval that is
+    still short enough to react promptly once the consumer finishes and the
+    promotion barrier clears.
+
+    Returns ``True`` if shutdown fired during the wait (caller should break),
+    ``False`` if the timeout elapsed normally.
+    """
+    if shutdown_mgr:
+        try:
+            await _orch.asyncio.wait_for(
+                shutdown_mgr.wait_for_shutdown(), timeout=seconds
+            )
+            return True  # shutdown fired
+        except _orch.asyncio.TimeoutError:
+            return False
+    await _orch.asyncio.sleep(seconds)
+    return False
+
+
 async def _ensure_slice2b_consumer_running(checkpoint: dict) -> None:
     """Ensure the Slice 2b consumer gate-chain task is actually running.
 
@@ -1600,7 +1641,19 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
 
     try:
         may_prepare = bool(activation.producer_may_draft_behind())
-    except Exception:
+    except Exception as exc:  # pragma: no cover - defensive
+        # A bug here (e.g. a missing accessor on the activation) previously
+        # raised AttributeError that was silently swallowed, disabling the
+        # one-ahead producer entirely and leaving the LLM idle.  Log loudly so
+        # the regression cannot hide again.
+        try:
+            _orch.log_system_event(
+                "orchestrator.slice2b_draft_prepare_guard_failed",
+                "warn",
+                f"_try_launch_draft_prepare gate raised {type(exc).__name__}: {exc}",
+            )
+        except Exception:
+            pass
         return
     if not may_prepare:
         # Multi-ahead buffer is full (number of sealed-but-unresolved

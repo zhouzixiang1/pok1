@@ -302,6 +302,25 @@ def test_seal_at_workers_done_registers_one_ahead_slot(tmp_path):
     assert sealed_again["effect_id"] == sealed["effect_id"]
 
 
+def test_activation_exposes_producer_may_draft_behind_accessor(tmp_path):
+    # Regression: _try_launch_draft_prepare in orchestrator_loop_phases calls
+    # activation.producer_may_draft_behind() by name.  Without this accessor the
+    # call raised AttributeError and was silently swallowed by the launcher's
+    # broad except, disabling the one-ahead producer entirely and leaving the
+    # LLM idle 0% of the time while the consumer ran its native gate chain.
+    activation = Slice2bActivation(adapter=_adapter(tmp_path))
+    # Before any seal: 0 in flight -> neither gate may draft.
+    assert activation.producer_may_draft_behind() is False
+    assert activation.producer_may_draft_behind() is activation.producer_may_prepare_next() or (
+        activation.producer_may_draft_behind() == activation.producer_may_prepare_next()
+    )
+    # After a seal: >=1 in flight -> draft behind is permitted (unbounded).
+    activation.seal_at_workers_done(**_seal_kwargs(_snapshot()))
+    assert activation.producer_may_draft_behind() is True
+    # The two accessors are aliases over the same coordinator gate.
+    assert activation.producer_may_draft_behind() == activation.producer_may_prepare_next()
+
+
 def test_seal_at_workers_done_high_water_refuses_second_candidate(tmp_path):
     activation = Slice2bActivation(adapter=_adapter(tmp_path))
     snap_a = _snapshot(_checkpoint(next_v=143, source_v=142))
