@@ -153,16 +153,34 @@ def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
                 cp_path = pipeline_state_path(consumer_slot)
                 if cp_path.exists():
                     stale_age = _stale_time.time() - cp_path.stat().st_mtime
-                    # 20 min with zero checkpoint progress = wedged.  Each gate
-                    # writes its result to the consumer checkpoint on completion
-                    # (quality/review/critic ~5-10 min each, precommit's native
-                    # matches write intermediate progress), so a 20-min silent
-                    # gap after the last gate result is a real stall -- the
-                    # consumer's precommit native-match spawn blocked the event
-                    # loop on a synchronous subprocess.Popen/flock under daemon
-                    # contention.  Reap so the generation retries instead of
-                    # wedging for the full 60-min lease.
-                    if stale_age > 1200.0:
+                    # When the consumer is in the precommit native-match phase,
+                    # the checkpoint does NOT update between rounds (precommit
+                    # writes its result only after ALL rounds complete, which can
+                    # take 30-50 min).  A stale checkpoint alone would falsely
+                    # reap a healthy consumer.  Detect active native matches
+                    # (bwrap processes spawned by the consumer's precommit) and
+                    # extend the stale threshold when they are running: a live
+                    # bwrap process consuming CPU is genuine progress, not a
+                    # wedge.  Only reap when there is NO native activity AND the
+                    # checkpoint is stale (the real wedge signature: task live,
+                    # checkpoint stale, zero native processes = loop blocked).
+                    native_active = False
+                    try:
+                        import subprocess as _sp
+                        _ps = _sp.run(
+                            ["pgrep", "-f", "bwrap.*national"],
+                            capture_output=True,
+                            text=True,
+                            timeout=5.0,
+                        )
+                        native_active = bool(_ps.stdout.strip())
+                    except Exception:
+                        native_active = False
+                    # 20 min stale + no native activity = wedged (loop blocked
+                    # on synchronous spawn/lock).  50 min stale even WITH native
+                    # activity = the matches themselves hung (defensive ceiling).
+                    threshold = 3000.0 if native_active else 1200.0
+                    if stale_age > threshold:
                         _o.log_system_event(
                             "pipeline.slice2b_consumer_stale_reaped",
                             "warn",
