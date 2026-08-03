@@ -153,10 +153,16 @@ def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
                 cp_path = pipeline_state_path(consumer_slot)
                 if cp_path.exists():
                     stale_age = _stale_time.time() - cp_path.stat().st_mtime
-                    # 45 min with zero checkpoint progress = wedged.  Generous
-                    # enough that even a slow GLM gate chain (quality+review+
-                    # critic+precommit, each 5-10 min) finishes well under this.
-                    if stale_age > 2700.0:
+                    # 20 min with zero checkpoint progress = wedged.  Each gate
+                    # writes its result to the consumer checkpoint on completion
+                    # (quality/review/critic ~5-10 min each, precommit's native
+                    # matches write intermediate progress), so a 20-min silent
+                    # gap after the last gate result is a real stall -- the
+                    # consumer's precommit native-match spawn blocked the event
+                    # loop on a synchronous subprocess.Popen/flock under daemon
+                    # contention.  Reap so the generation retries instead of
+                    # wedging for the full 60-min lease.
+                    if stale_age > 1200.0:
                         _o.log_system_event(
                             "pipeline.slice2b_consumer_stale_reaped",
                             "warn",
