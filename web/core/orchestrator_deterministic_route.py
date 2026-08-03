@@ -194,9 +194,15 @@ def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
                     except Exception:
                         native_active = False
                     # 20 min stale + no native activity = wedged (loop blocked
-                    # on synchronous spawn/lock).  50 min stale even WITH native
+                    # on synchronous spawn/lock).  120 min stale even WITH native
                     # activity = the matches themselves hung (defensive ceiling).
-                    threshold = 3000.0 if native_active else 1200.0
+                    # The 120-min native ceiling accommodates the precommit native
+                    # regression under GLM effort=max: 5 rounds x 70 hands x ~10
+                    # min/round (slow GLM bot decisions) can take 50-90 min, and
+                    # the consumer runs it on the shared event loop (no parallelism
+                    # across rounds).  Without this headroom the reaper kills every
+                    # healthy precommit.
+                    threshold = 7200.0 if native_active else 1200.0
                     if stale_age > threshold:
                         _o.log_system_event(
                             "pipeline.slice2b_consumer_stale_reaped",
