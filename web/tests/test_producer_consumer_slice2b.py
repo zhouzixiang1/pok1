@@ -456,14 +456,18 @@ def _seal_into_fsm(ledger, candidate_id, artifact_hash=DIGESTS["a"]):
 def test_producer_may_advance_when_buffer_has_capacity():
     ledger = ValidationLedger()
     coord = AheadCoordinator(ledger)
-    # Empty FSM: buffer has full capacity (producer may draft behind / seal).
+    # Empty FSM: buffer has full capacity (producer may seal); no candidate to
+    # draft behind yet.
     assert coord.producer_may_advance() is True
-    assert coord.producer_may_draft_behind() is True
+    assert coord.producer_may_draft_behind() is False  # nothing in flight
     _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
-    # Single-ahead (max_ahead=1): the slot is occupied, no room for another.
-    assert coord.producer_may_draft_behind() is False
-    assert coord.producer_may_advance() is False
+    # Single-ahead (max_ahead=1): the seal slot is occupied, no room to SEAL
+    # another.  But drafting is UNBOUNDED (draft is LLM planning that doesn't
+    # consume a publication slot), so the producer may always draft behind an
+    # in-flight consumer to fill LLM idle time.
+    assert coord.producer_may_draft_behind() is True  # unbounded draft
+    assert coord.producer_may_advance() is False  # bounded seal (max_ahead=1)
 
 
 def test_high_water_refuses_second_seal_in_minimum_slice():
@@ -495,13 +499,16 @@ def test_coordinator_derives_from_lifecycle_no_in_flight():
     ledger = ValidationLedger()
     coord = AheadCoordinator(ledger)
     assert coord.in_flight() == {}
-    assert coord.producer_may_draft_behind() is True
+    # Empty FSM: nothing in flight to draft behind.
+    assert coord.producer_may_draft_behind() is False
     _seal_into_fsm(ledger, "c1")
     # The coordinator sees the sealed candidate WITHOUT any note_sealed call --
     # it reads the FSM directly.  This is correct immediately after a restart.
     fresh_coord = AheadCoordinator(ledger)
     assert fresh_coord.in_flight() == {"c1": DIGESTS["a"]}
-    assert fresh_coord.producer_may_draft_behind() is False
+    # Drafting is unbounded (LLM planning that fills idle time behind the
+    # in-flight consumer); always True when something is in flight.
+    assert fresh_coord.producer_may_draft_behind() is True
 
 
 def test_promotion_barrier_blocks_until_consumer_promotes():
@@ -530,9 +537,11 @@ def test_promotion_barrier_blocks_until_consumer_promotes():
 
     entry = asyncio.run(driver())
     assert entry["validation_outcome"] == "promoted"
-    # After promotion the buffer drains and the producer is cleared to seal again.
+    # After promotion the candidate leaves non-terminal (0 in flight): the
+    # bounded SEAL slot has capacity again, but there is nothing in flight to
+    # draft behind, so unbounded drafting is False.
     assert coord.producer_may_advance() is True
-    assert coord.producer_may_draft_behind() is True
+    assert coord.producer_may_draft_behind() is False  # 0 in flight
 
 
 def test_promotion_barrier_fails_closed_on_rejection():
@@ -1072,8 +1081,11 @@ def test_multi_ahead_two_drafts_distinct_versions_ordered_promotion(tmp_path):
     assert v2 == 144
     assert v1 != v2
 
-    # The coordinator (max_ahead=2) has room for both before any seal.
-    assert coord.producer_may_draft_behind() is True
+    # Before any seal the FSM is empty (0 in flight): drafting is False under
+    # the new unbounded-draft semantics (draft only behind an in-flight
+    # consumer).  Note: SEALING has capacity (producer_may_advance True), but
+    # drafting itself is gated on something being in flight.
+    assert coord.producer_may_draft_behind() is False  # 0 in flight
 
     # Both drafts seal into the FSM (the real seal path: ledger.start).
     lifecycle.start(
@@ -1096,8 +1108,9 @@ def test_multi_ahead_two_drafts_distinct_versions_ordered_promotion(tmp_path):
     )
     coord.note_sealed(candidate_id="candidate-v144", artifact_hash=DIGESTS["c"])
 
-    # Buffer is now full (2 sealed, max_ahead=2): no room for a third draft.
-    assert coord.producer_may_draft_behind() is False
+    # Buffer is now full (2 sealed, max_ahead=2): SEALING is bounded, but
+    # drafting is UNBOUNDED -- it only requires >=1 in flight, so it stays True.
+    assert coord.producer_may_draft_behind() is True  # unbounded draft
     assert coord.in_flight() == {
         "candidate-v143": DIGESTS["a"],
         "candidate-v144": DIGESTS["c"],
@@ -1119,12 +1132,14 @@ def test_multi_ahead_two_drafts_distinct_versions_ordered_promotion(tmp_path):
 
 
 def test_multi_ahead_max_ahead_one_preserves_single_ahead_behavior(tmp_path):
-    """max_ahead=1 (the default) preserves the original single-ahead behavior:
-    one sealed candidate fills the buffer and blocks a second."""
+    """max_ahead=1 (the default) preserves the original single-ahead SEAL
+    semantics: one sealed candidate fills the bounded seal buffer.  Drafting
+    is now unbounded (LLM planning), so it stays True whenever >=1 is in
+    flight regardless of max_ahead."""
     lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
     coord = AheadCoordinator(lifecycle, max_ahead=1)
     assert coord.max_ahead == 1
-    assert coord.producer_may_draft_behind() is True  # empty buffer
+    assert coord.producer_may_draft_behind() is False  # empty FSM, 0 in flight
     lifecycle.start(
         candidate_id="candidate-v143",
         sealed_artifact_hash=DIGESTS["a"],
@@ -1132,5 +1147,7 @@ def test_multi_ahead_max_ahead_one_preserves_single_ahead_behavior(tmp_path):
         envelope_digest=DIGESTS["b"],
     )
     coord.note_sealed(candidate_id="candidate-v143", artifact_hash=DIGESTS["a"])
-    # Buffer full: no room for a second draft (single-ahead semantics).
-    assert coord.producer_may_draft_behind() is False
+    # Buffer full (1 sealed, max_ahead=1): SEALING is bounded (no room), but
+    # drafting is UNBOUNDED and stays True (>=1 candidate in flight).
+    assert coord.producer_may_advance() is False  # bounded seal (max_ahead=1)
+    assert coord.producer_may_draft_behind() is True  # unbounded draft

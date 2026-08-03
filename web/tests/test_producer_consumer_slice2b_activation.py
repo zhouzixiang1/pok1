@@ -292,10 +292,11 @@ def test_seal_at_workers_done_registers_one_ahead_slot(tmp_path):
     snapshot = _snapshot()
     sealed = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
     assert sealed["candidate_id"] == "candidate-v143"
-    # The one-ahead buffer is full (max_ahead=1): no room for another draft
-    # until the consumer finishes and drains the slot.
-    assert activation.producer_may_prepare_next() is False
-    assert activation.producer_may_advance() is False
+    # After seal there is 1 candidate in flight.  SEALING is bounded by
+    # max_ahead=1 (buffer full -> False), but drafting (prepare_next) is
+    # UNBOUNDED and returns True whenever >=1 is in flight.
+    assert activation.producer_may_prepare_next() is True  # unbounded draft
+    assert activation.producer_may_advance() is False  # bounded seal (max_ahead=1)
     # Sealing the same candidate again is idempotent and does not raise.
     sealed_again = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
     assert sealed_again["effect_id"] == sealed["effect_id"]
@@ -346,9 +347,11 @@ def test_consumer_task_promotes_and_drains_one_ahead_slot(tmp_path):
     entry = activation.ledger.snapshot(candidate_id)
     assert entry["validation_outcome"] == "promoted"
     assert set(entry["gate_results"]) == set(CONSUMER_GATE_CHAIN_ORDER)
-    # The one-ahead slot drained after promotion: buffer has capacity again.
-    assert activation.producer_may_advance() is True
-    assert activation.producer_may_prepare_next() is True
+    # The one-ahead slot drained after promotion (0 in flight): SEALING has
+    # capacity again, but drafting (prepare_next) is False -- there is nothing
+    # in flight to draft behind under the unbounded-draft semantics.
+    assert activation.producer_may_advance() is True  # bounded seal has room
+    assert activation.producer_may_prepare_next() is False  # 0 in flight
 
 
 def test_consumer_task_rejects_on_candidate_failure(tmp_path):
@@ -362,9 +365,11 @@ def test_consumer_task_rejects_on_candidate_failure(tmp_path):
     entry = activation.ledger.snapshot(candidate_id)
     assert entry["validation_outcome"] == "rejected"
     assert entry["terminal_reason"] == "gate_failed:run_review"
-    # The slot drains even on rejection so the producer is not permanently stuck.
+    # The slot drains even on rejection (terminal -> 0 in flight): SEALING has
+    # capacity again, but drafting (prepare_next) is False -- nothing in flight
+    # to draft behind under the unbounded-draft semantics.
     assert activation.producer_may_advance() is True
-    assert activation.producer_may_prepare_next() is True
+    assert activation.producer_may_prepare_next() is False  # 0 in flight
 
 
 def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
@@ -402,9 +407,10 @@ def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
     first_gate = next(iter(gates))
     assert gates[first_gate]["outcome"] == "infrastructure_failure"
     # The candidate is still in flight (infra retries, not terminal), so the
-    # buffer is full and the producer may not draft another.
-    assert activation.producer_may_prepare_next() is False
-    assert activation.producer_may_advance() is False
+    # bounded SEAL buffer is full (max_ahead=1 -> no room to seal another), but
+    # drafting (prepare_next) is UNBOUNDED and stays True (>=1 in flight).
+    assert activation.producer_may_prepare_next() is True  # unbounded draft
+    assert activation.producer_may_advance() is False  # bounded seal (max_ahead=1)
 
 
 # ---------------------------------------------------------------------------
@@ -596,10 +602,11 @@ def test_seal_seam_seals_and_schedules_consumer_when_active(monkeypatch, tmp_pat
             assert result is True
             assert outcome["result"]["slice2b_sealed"] is True
             assert outcome["result"]["candidate_id"] == "candidate-v143"
-            # The buffer is full (sealed candidate in flight): no room for
-            # another draft until the consumer finishes.
-            assert activation.producer_may_prepare_next() is False
-            assert activation.producer_may_advance() is False
+            # The buffer is full (1 sealed candidate in flight, max_ahead=1):
+            # SEALING is bounded (no room), but drafting (prepare_next) is
+            # UNBOUNDED and returns True (>=1 in flight).
+            assert activation.producer_may_prepare_next() is True  # unbounded draft
+            assert activation.producer_may_advance() is False  # bounded seal (max_ahead=1)
             # The consumer task was launched by the seal (ensure_consumer_running).
             task = activation.consumer_task("candidate-v143")
             assert task is not None
@@ -607,9 +614,11 @@ def test_seal_seam_seals_and_schedules_consumer_when_active(monkeypatch, tmp_pat
 
         asyncio.run(driver())
         assert activation.ledger.is_promoted("candidate-v143")
-        # After promotion the slot drains: buffer has capacity again.
+        # After promotion the candidate leaves non-terminal (0 in flight): the
+        # bounded SEAL slot has capacity again, but drafting is False because
+        # nothing is in flight to draft behind.
         assert activation.producer_may_advance() is True
-        assert activation.producer_may_prepare_next() is True
+        assert activation.producer_may_prepare_next() is False  # 0 in flight
     finally:
         _o._slice2b_activation_registry("clear")
 

@@ -871,7 +871,14 @@ async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, out
         deadline={
             "submitted_at_epoch": float(checkpoint.get("last_update_ts") or 0.0),
             "not_before_epoch": float(checkpoint.get("last_update_ts") or 0.0),
-            "expires_at_epoch": float(checkpoint.get("last_update_ts") or 0.0) + 3600.0,
+            # 4-hour envelope deadline: the consumer gate chain under GLM
+            # effort=max (quality+review+critic+precommit, each 5-10 min) plus
+            # precommit native matches (~30-50 min) plus fault-retry restarts
+            # can easily exceed 1 hour.  An expired envelope makes
+            # _bounded_lease_seconds reject every reclaim, wedging the consumer
+            # forever.  4 hours gives generous headroom for a full generation
+            # including restarts.
+            "expires_at_epoch": float(checkpoint.get("last_update_ts") or 0.0) + 14400.0,
         },
         evaluation_contract_digest=str(
             checkpoint.get("evaluation_contract_digest") or charter_digest

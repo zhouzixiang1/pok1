@@ -1382,16 +1382,28 @@ class AheadCoordinator:
     def producer_may_draft_behind(self) -> bool:
         """Producer may begin another ``prepare_generation`` draft.
 
-        True iff the number of sealed-but-unresolved candidates is below
-        ``max_ahead`` (there is room to prepare one more draft behind the
-        in-flight consumer(s)).  Derived from the FSM, so it is correct after a
-        restart without any in-memory replay.
+        Draft preparation is LLM planning work (prepare->master->workers) that
+        does NOT consume a publication slot until it is sealed and promoted.
+        It is therefore unbounded: the producer may always draft behind an
+        in-flight consumer to fill LLM idle time during the consumer's gate
+        chain (quality->review->critic->precommit).  Only SEALING is bounded by
+        ``max_ahead`` (see :meth:`producer_may_seal_another`); drafting is not.
+
+        Returns True iff at least one candidate is sealed-but-unresolved (there
+        is something to draft behind).  Derived from the FSM, so it is correct
+        after a restart without any in-memory replay.
         """
-        return self._non_terminal_count() < self.max_ahead
+        return self._non_terminal_count() >= 1
 
     def producer_may_advance(self) -> bool:
-        """Alias of :meth:`producer_may_draft_behind` (capacity to seal another)."""
-        return self.producer_may_draft_behind()
+        """Producer may SEAL another candidate (advance the high-water).
+
+        Unlike :meth:`producer_may_draft_behind` (which is unbounded -- drafting
+        is LLM planning that doesn't consume a publication slot), sealing IS
+        bounded by ``max_ahead``: the producer may not seal more candidates
+        than the configured high-water allows.  Derived from the FSM.
+        """
+        return self._non_terminal_count() < self.max_ahead
 
     # Backwards-compatible alias used by the control-plane projection.
     def producer_may_prepare_next(self) -> bool:
