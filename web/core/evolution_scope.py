@@ -301,11 +301,20 @@ def is_foreign_active_bot_path(
     path: str,
     candidate_v: int | None,
     contract_bot_versions: Any = None,
+    allowed_bot_versions: Any = None,
 ) -> bool:
     version = active_bot_version(path)
     if version is None:
         return False
     if candidate_v is not None and version == int(candidate_v):
+        return False
+    # Explicit allowance (e.g. a one-ahead draft running concurrently with the
+    # parked PRIMARY generation: the primary's candidate dir is legitimately
+    # present and must NOT be treated as a foreign bot).  This is distinct from
+    # ``contract_bot_versions`` (which are evaluation-contract versions that are
+    # actively BLOCKED when present, not allowed).
+    _allowed = _normalize_bot_versions(allowed_bot_versions)
+    if _allowed is not None and version in _allowed:
         return False
     allowed_versions = _normalize_bot_versions(contract_bot_versions)
     if allowed_versions is None:
@@ -342,6 +351,7 @@ def classify_path(
     candidate_v: int | None,
     contract_bot_versions: Any = None,
     evaluation_contract: dict[str, Any] | None = None,
+    allowed_bot_versions: Any = None,
 ) -> str:
     """Classify a repo path for in-place evolution ownership checks."""
     path = normalize_repo_path(path)
@@ -353,8 +363,20 @@ def classify_path(
         return "external"
     if is_candidate_bot_path(path, candidate_v):
         return "candidate"
-    if is_foreign_active_bot_path(path, candidate_v, contract_bot_versions):
+    if is_foreign_active_bot_path(
+        path,
+        candidate_v,
+        contract_bot_versions,
+        allowed_bot_versions=allowed_bot_versions,
+    ):
         return "foreign_active_bot"
+    # An explicitly-allowed bot dir (e.g. a parked primary during one-ahead)
+    # is tolerated as an ignored external entry, not a blocking foreign bot.
+    _allowed = _normalize_bot_versions(allowed_bot_versions)
+    if _allowed is not None:
+        version = active_bot_version(path)
+        if version is not None and version in _allowed:
+            return "external"
     if evaluation_contract is not None:
         return "critical" if _is_contract_path(path, evaluation_contract) else "external"
     if is_critical_evolution_path(path):
@@ -367,6 +389,7 @@ def classify_status_entries(
     candidate_v: int | None,
     contract_bot_versions: Any = None,
     evaluation_contract: dict[str, Any] | None = None,
+    allowed_bot_versions: Any = None,
 ) -> dict[str, Any]:
     """Classify porcelain status entries into blocking and ignored groups."""
     groups: dict[str, list[str]] = {
@@ -389,6 +412,7 @@ def classify_status_entries(
                 candidate_v,
                 contract_bot_versions,
                 evaluation_contract=evaluation_contract,
+                allowed_bot_versions=allowed_bot_versions,
             )
             for path in paths
         }

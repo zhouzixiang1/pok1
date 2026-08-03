@@ -497,6 +497,43 @@ def _contract_versions_for_candidate(candidate_v: int | None) -> list[int] | Non
     return contract_bot_versions(candidate_v=candidate_v, checkpoint=checkpoint)
 
 
+def _parked_primary_version_for_draft(candidate_v: int | None) -> int | None:
+    """The in-flight PRIMARY generation's next_v, for the one-ahead allowance.
+
+    A draft prepare (candidate_v = the draft's reserved next_v) runs
+    concurrently with the PARKED PRIMARY generation, whose own candidate
+    directory ``bots/<prefix>v<N>/`` is legitimately present in the worktree
+    until the primary publishes.  Without an allowance the runtime git guard
+    classifies that primary candidate dir as a "foreign active bot" and blocks
+    every draft prepare for the entire parked window -- structurally defeating
+    one-ahead.  Returns the primary's ``next_v`` when this call is running
+    under a draft slot override AND the primary's in-flight next_v differs from
+    ``candidate_v``; otherwise None (no allowance needed).
+    """
+    if candidate_v is None:
+        return None
+    try:
+        from evolution_infra import current_slot_override, no_slot_override
+    except Exception:
+        return None
+    if current_slot_override() is None:
+        return None  # not a draft/concurrent-slot context
+    try:
+        with no_slot_override():
+            primary_checkpoint = read_pipeline_checkpoint()
+    except Exception:
+        return None
+    if not isinstance(primary_checkpoint, dict):
+        return None
+    try:
+        primary_next_v = int(primary_checkpoint.get("next_v") or -1)
+    except Exception:
+        return None
+    if primary_next_v > 0 and primary_next_v != int(candidate_v):
+        return primary_next_v
+    return None
+
+
 def _evaluation_contract_for_candidate(candidate_v: int | None) -> dict[str, Any] | None:
     if candidate_v is None:
         return None
@@ -520,11 +557,18 @@ def _evaluation_contract_for_candidate(candidate_v: int | None) -> dict[str, Any
 
 
 def _scope(snapshot: dict[str, Any], candidate_v: int | None) -> dict[str, Any]:
+    # One-ahead: when this guard runs inside a draft slot override (preparing
+    # the next generation), the parked PRIMARY's candidate dir is legitimately
+    # present in the worktree and must be allowed, not classified as a foreign
+    # bot.  Resolve the primary's in-flight next_v and pass it as an explicit
+    # allowance to the worktree classifier.
+    _primary_v = _parked_primary_version_for_draft(candidate_v)
     return classify_status_entries(
         snapshot.get("entries") or [],
         candidate_v,
         contract_bot_versions=_contract_versions_for_candidate(candidate_v),
         evaluation_contract=_evaluation_contract_for_candidate(candidate_v),
+        allowed_bot_versions=[_primary_v] if _primary_v is not None else None,
     )
 
 

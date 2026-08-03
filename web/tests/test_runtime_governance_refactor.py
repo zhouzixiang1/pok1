@@ -1499,6 +1499,63 @@ def test_runtime_guard_blocks_foreign_national_bot_dir(monkeypatch):
     assert f"?? bots/{bot_name(299)}/" in payload["unexpected_entries"]
 
 
+def test_runtime_guard_allows_parked_primary_candidate_dir_for_draft(monkeypatch):
+    """One-ahead draft prepare must tolerate the parked primary's candidate dir.
+
+    Regression: a draft prepare (candidate_v = the draft's reserved next_v) runs
+    concurrently with the PARKED PRIMARY generation, whose own candidate
+    directory bots/<prefix>v<N>/ is legitimately present until the primary
+    publishes.  Without a primary-candidate allowance, the runtime git guard
+    classified that primary dir as a "foreign active bot" and blocked every
+    draft prepare for the entire parked window -- structurally defeating the
+    one-ahead producer/consumer design.  The guard must allow the primary's
+    in-flight next_v as an extra contract version when a draft is running.
+    """
+    import evolution_infra
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    # Worktree contains the PRIMARY's candidate dir (v299) plus the draft's own
+    # reserved dir (v300).  Under the draft override candidate_v=300.
+    snapshot = {
+        "ok": True,
+        "branch": f"{EVOLUTION_BRANCH}...origin/{EVOLUTION_BRANCH}",
+        "head": "abc123",
+        "entries": [f"?? bots/{bot_name(299)}/"],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    # read_pipeline_checkpoint() must reflect the active slot: the DRAFT slot
+    # (next_v=300) under the draft override, and the PRIMARY (next_v=299) under
+    # no_slot_override().  Mock it off the live ContextVar.
+    draft_ckpt = {"next_v": 300, "source_v": 299}
+    primary_ckpt = {"next_v": 299, "source_v": 298}
+
+    def _mock_read_checkpoint():
+        override = evolution_infra.current_slot_override()
+        return draft_ckpt if override is not None else primary_ckpt
+
+    monkeypatch.setattr(
+        tool_runtime_guard, "read_pipeline_checkpoint", _mock_read_checkpoint
+    )
+
+    # Enter the draft slot override the way _draft_prepare_task does.  The draft
+    # prepare calls ensure_runtime_git_guard("prepare_generation", ...) (not a
+    # _PIPELINE_ROUTE_TOOL, so the route guard is skipped -- only the worktree
+    # classification matters here).
+    with evolution_infra.active_slot_override("draft"):
+        ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+            "prepare_generation",
+            {"next_v": 300, "source_v": 299},
+        )
+
+    # The parked primary's v299 candidate dir must be ALLOWED (not blocking).
+    assert ok is True
+    assert payload.get("reason") != "unexpected_worktree_entries"
+    assert payload.get("unexpected_entries", []) == []
+
+
 def test_runtime_guard_blocks_truncated_snapshot(monkeypatch):
     import tool_runtime_guard
 
