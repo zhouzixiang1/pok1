@@ -1357,12 +1357,27 @@ class ConsumerDispatcher:
             if _next_stage is not None:
                 try:
                     _advance_consumer_stage(candidate_id, _next_stage)
-                except Exception:
+                except Exception as _adv_exc:
                     # If the stage cannot be advanced, the next gate's route
                     # guard will block -- which the envelope-decode fix now
                     # surfaces as infrastructure_failure (fail-closed) rather
-                    # than a silent wrongful success.
-                    pass
+                    # than a silent wrongful success.  Log the error so a broken
+                    # advance cannot hide (it would stall the whole gate chain).
+                    try:
+                        from orchestrator_helpers import log_system_event
+
+                        log_system_event(
+                            "pipeline.slice2b_consumer_stage_advance_failed",
+                            "error",
+                            (
+                                f"Consumer slot stage advance to "
+                                f"{_next_stage} after {gate_name} raised "
+                                f"{type(_adv_exc).__name__}: {_adv_exc}"
+                            ),
+                            {"candidate_id": candidate_id, "gate": gate_name},
+                        )
+                    except Exception:
+                        pass
 
         # Consumer validation completes at precommit; ``commit_bot`` is owned by
         # the primary orchestrator behind the promotion barrier.
