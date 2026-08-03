@@ -131,6 +131,58 @@ def test_reaper_does_not_reap_live_consumer_task(monkeypatch, tmp_path):
     assert "candidate-v31" not in ledger.rejected
 
 
+def test_reaper_reaps_wedged_consumer_with_stale_checkpoint(monkeypatch, tmp_path):
+    """A live task whose consumer checkpoint is unchanged for >45 min is reaped.
+
+    The task may be alive (``done()=False``) but wedged inside a gate handler
+    that never returns (e.g. ``run_precommit_eval`` blocked on a hung native
+    match).  A 45-min silent gap (no checkpoint progress) is a real stall, not
+    normal slow operation -- the gate chain writes intermediate progress.
+    """
+    import orchestrator as _o
+    import orchestrator_deterministic_route as route
+
+    results_dir = tmp_path / "results"
+    _seed_expired_effect(results_dir, expired=True)
+    monkeypatch.setattr("evolution_infra.RESULTS_DIR", results_dir)
+
+    ledger = _FakeLedger(terminal=False)
+    activation = _FakeActivation(ledger, task_done=True)  # wedged (done)
+
+    monkeypatch.setattr(
+        route, "_slice2b_ensure_activation", lambda: activation
+    )
+    monkeypatch.setattr(
+        "producer_consumer_slice2b_activation.slice2b_active", lambda: True
+    )
+
+    # Write a stale consumer checkpoint (mtime 1 hour ago).
+    consumer_slot = "consumer-candidate-v31"
+    (results_dir).mkdir(parents=True, exist_ok=True)
+    import os
+    cp_path = results_dir / f"pipeline_state_{consumer_slot}.json"
+    cp_path.write_text("{}")
+    stale_time = time.time() - 3600.0  # 1 hour ago
+    os.utime(cp_path, (stale_time, stale_time))
+
+    def fake_pipeline_state_path(slot_id):
+        return results_dir / f"pipeline_state_{slot_id}.json"
+
+    monkeypatch.setattr("evolution_infra.pipeline_state_path", fake_pipeline_state_path)
+
+    class _LedgerWithSlot(_FakeLedger):
+        def consumer_checkpoint_slot(self, candidate_id):
+            return consumer_slot
+
+    activation.ledger = _LedgerWithSlot(terminal=False)
+
+    checkpoint = {"candidate_id": "candidate-v31", "next_v": 31}
+    reaped = route._slice2b_reap_dead_consumer(checkpoint, 31)
+
+    assert reaped is True
+    assert activation.ledger.rejected.get("candidate-v31") == "consumer_task_zombie_reaped"
+
+
 def test_reaper_does_not_reap_when_lease_still_valid(monkeypatch, tmp_path):
     """A non-terminal candidate with a done task but VALID lease is NOT reaped
     (the consumer may be mid-renewal; fail-open to avoid killing live work)."""

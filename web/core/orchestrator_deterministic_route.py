@@ -128,7 +128,59 @@ def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
     # done or absent for a non-terminal candidate (the zombie state).
     task = activation._consumer_tasks.get(candidate_id)
     if task is not None and not task.done():
-        return False
+        # The task is still "live", but it may be wedged inside a gate handler
+        # that never returns (e.g. ``run_precommit_eval`` blocked on a native
+        # match that hung).  Detect that by checking the consumer checkpoint's
+        # last-update time: if no gate progress for STALE_THRESHOLD seconds, the
+        # consumer is effectively dead even though the asyncio task has not
+        # raised.  Reap it so the generation is abandoned + retried instead of
+        # wedging the primary lane forever.  This is a heuristic fence; a
+        # genuinely-slow gate (e.g. a long precommit native regression) will
+        # write intermediate checkpoint updates as it progresses, so a long
+        # silent gap is a real stall, not normal operation.
+        try:
+            from evolution_infra import pipeline_state_path
+            import time as _stale_time
+            consumer_slot = str(checkpoint.get("consumer_checkpoint_slot") or "")
+            if not consumer_slot:
+                try:
+                    consumer_slot = activation.ledger.consumer_checkpoint_slot(
+                        candidate_id
+                    )
+                except Exception:
+                    consumer_slot = ""
+            if consumer_slot:
+                cp_path = pipeline_state_path(consumer_slot)
+                if cp_path.exists():
+                    stale_age = _stale_time.time() - cp_path.stat().st_mtime
+                    # 45 min with zero checkpoint progress = wedged.  Generous
+                    # enough that even a slow GLM gate chain (quality+review+
+                    # critic+precommit, each 5-10 min) finishes well under this.
+                    if stale_age > 2700.0:
+                        _o.log_system_event(
+                            "pipeline.slice2b_consumer_stale_reaped",
+                            "warn",
+                            (
+                                f"Slice 2b reaping stale consumer for v{next_v}: "
+                                f"task live but consumer checkpoint unchanged "
+                                f"for {int(stale_age)}s (gate chain wedged); "
+                                f"generation will be abandoned and retried."
+                            ),
+                            {
+                                "next_v": next_v,
+                                "candidate_id": candidate_id,
+                                "stale_age_sec": int(stale_age),
+                            },
+                        )
+                        # Fall through to the reject below.
+                    else:
+                        return False
+                else:
+                    return False
+            else:
+                return False
+        except Exception:
+            return False
     # Defensive second check: confirm the consumer effect lease is actually
     # expired before reaping, so a transient lease-renewal gap never reaps a
     # live consumer.  Read the workflow store directly.
