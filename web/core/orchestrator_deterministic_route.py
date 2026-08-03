@@ -127,6 +127,20 @@ def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
     # (even if slow); do NOT reap in that case.  Only reap when the task is
     # done or absent for a non-terminal candidate (the zombie state).
     task = activation._consumer_tasks.get(candidate_id)
+    if task is None:
+        # RESTART-RECOVERY WINDOW: after a process restart, _consumer_tasks is
+        # empty (it is an in-memory dict).  recover_at_boot re-stashes the
+        # consumer factory into _scheduled_factories, but does NOT launch the
+        # asyncio.Task -- only ensure_consumer_running (called later in the
+        # loop, AFTER this reaper) materializes it.  Treating an empty task
+        # registry as a death signal therefore false-positives EVERY restart
+        # and reaps a legitimately-running (or about-to-be-relaunched) consumer
+        # whose 4h lease is still valid.  If there is a scheduled factory for
+        # this candidate, the task simply has not been relaunched yet -- do NOT
+        # reap.  Only when there is no factory AND no task do we consider the
+        # candidate truly orphaned (and still defer to the lease check below).
+        if candidate_id in getattr(activation, "_scheduled_factories", {}):
+            return False
     if task is not None and not task.done():
         # The task is still "live", but it may be wedged inside a gate handler
         # that never returns (e.g. ``run_precommit_eval`` blocked on a native
@@ -230,31 +244,57 @@ def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
             return False
     # Defensive second check: confirm the consumer effect lease is actually
     # expired before reaping, so a transient lease-renewal gap never reaps a
-    # live consumer.  Read the workflow store directly.
+    # live consumer.  Read the workflow store directly, SCOPED to this
+    # candidate's own effect (not a global LIMIT 1, which can return an
+    # unrelated candidate's lease).  Fail OPEN on read errors OR a missing
+    # database: a consumer whose lease cannot be positively proven expired
+    # must not be reaped (reaping abandons a generation -- an irreversible
+    # action that must require positive proof of death, not the absence of a
+    # readable lease).
+    import sqlite3
+    import time as _time
+    from evolution_infra import RESULTS_DIR
+    db = RESULTS_DIR / "workflow" / "events.sqlite3"
+    if not db.exists():
+        # No workflow store to prove the lease expired -> cannot reap.
+        return False
+    # Resolve this candidate's envelope effect id from the ledger so the lease
+    # query is scoped, not a global LIMIT 1.
+    _envelope_effect_id = None
     try:
-        import sqlite3
-        import time as _time
-        from evolution_infra import RESULTS_DIR
-        db = RESULTS_DIR / "workflow" / "events.sqlite3"
-        if db.exists():
-            conn = sqlite3.connect(str(db))
-            try:
+        _snap = activation.ledger.snapshot(candidate_id)
+        if isinstance(_snap, dict):
+            _envelope_effect_id = _snap.get("envelope_effect_id")
+    except Exception:
+        _envelope_effect_id = None
+    try:
+        conn = sqlite3.connect(str(db))
+        try:
+            if _envelope_effect_id:
+                row = conn.execute(
+                    "SELECT lease_until FROM effects WHERE effect_id = ?",
+                    (_envelope_effect_id,),
+                ).fetchone()
+            else:
+                # Fallback: producer-consumer effects for this generation.
                 row = conn.execute(
                     "SELECT lease_until FROM effects "
                     "WHERE kind LIKE 'producer-consumer%' "
                     "AND status = 'running' LIMIT 1"
                 ).fetchone()
-            finally:
-                conn.close()
-            if row is not None and row[0] is not None:
-                if float(row[0]) > _time.time():
-                    # Lease still valid; consumer may still be working.  Do
-                    # not reap.
-                    return False
+        finally:
+            conn.close()
     except Exception:
-        # If we cannot read the lease, fall through to the reap decision
-        # based on the task state (the authoritative zombie signal).
-        pass
+        # Fail OPEN: cannot prove the lease is expired, so do not reap.
+        return False
+    # Reap ONLY when positive proof exists that the lease is expired: a row
+    # was read AND its lease_until is in the past.  No row / null lease means
+    # we cannot prove expiry -> do not reap.
+    if row is None or row[0] is None:
+        return False
+    if float(row[0]) > _time.time():
+        # Lease still valid; consumer may still be working.  Do not reap.
+        return False
     # Zombie confirmed: mark the candidate rejected so the primary lane
     # abandons this generation and the epoch retries.
     try:
