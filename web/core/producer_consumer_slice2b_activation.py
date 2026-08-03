@@ -882,7 +882,54 @@ def canonical_gate_runner_factory(next_v, source_v):
                             "name": name,
                         },
                     }
-                data = result
+                # DECODE THE MCP TOOL-RESULT ENVELOPE.  Canonical handlers return
+                # an MCP envelope {"content":[{"type":"text","text":<json>}]}, NOT
+                # a bare dict of fields.  The previous code used ``data = result``
+                # (the raw envelope), so every classification branch read
+                # envelope-level keys that never exist -- causing EVERY gate
+                # (whether route-guard-blocked, raised, or genuinely successful)
+                # to fall through to ``outcome="success"`` with a zero digest, and
+                # an unproven candidate was PROMOTED.  Decode exactly the way the
+                # primary inline path does (orchestrator_tool_result_classification.
+                # _extract_tool_result_json).
+                try:
+                    from orchestrator_tool_result_classification import (
+                        _extract_tool_result_json,
+                    )
+
+                    data = _extract_tool_result_json(result)
+                except Exception:
+                    data = {}
+                if not isinstance(data, dict) or not data:
+                    return {
+                        "outcome": "infrastructure_failure",
+                        "result_digest": zero_digest,
+                        "detail": {
+                            "reason": "canonical_handler_undecodable_result",
+                            "name": name,
+                        },
+                    }
+                # A runtime/route-guard block is NOT a candidate failure: the
+                # gate never ran (e.g. wrong_pipeline_stage because the consumer
+                # slot stage was not advanced).  Treat it as infrastructure so the
+                # promotion barrier fails closed/retryable instead of either
+                # spuriously promoting OR spuriously rejecting the candidate.
+                if (
+                    data.get("blocked") is True
+                    or data.get("error") == "runtime_git_guard_blocked"
+                    or data.get("error") == "pipeline_route_guard_blocked"
+                ):
+                    return {
+                        "outcome": "infrastructure_failure",
+                        "result_digest": zero_digest,
+                        "detail": {
+                            "reason": "canonical_handler_route_guard_blocked",
+                            "error": data.get("error"),
+                            "checkpoint_stage": data.get("checkpoint_stage"),
+                            "allowed_tools": data.get("allowed_tools"),
+                            "name": name,
+                        },
+                    }
                 # Distinguish infrastructure-class failures (transient/retryable:
                 # the dispatcher pauses the ledger so a later run can recover)
                 # from genuine candidate failures (the candidate itself is bad

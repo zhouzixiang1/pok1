@@ -1068,7 +1068,17 @@ def test_canonical_gate_runner_calls_handlers_not_sdkmcp_tool_objects():
 
     async def fake_handler(args):
         called["n"] += 1
-        return {"ok": True, "receipt_digest": DIGESTS["3"]}
+        # Canonical handlers return an MCP tool-result ENVELOPE
+        # {"content":[{"type":"text","text":<json>}]}; the gate-runner wrapper
+        # decodes this envelope (mirroring the primary inline path) before
+        # classifying the outcome.  Return the envelope shape, not a bare dict.
+        import json as _json
+
+        return {
+            "content": [
+                {"type": "text", "text": _json.dumps({"ok": True, "receipt_digest": DIGESTS["3"]})}
+            ]
+        }
 
     original = tool_gates.run_quality_gates.handler
     tool_gates.run_quality_gates.handler = fake_handler
@@ -1081,6 +1091,59 @@ def test_canonical_gate_runner_calls_handlers_not_sdkmcp_tool_objects():
         tool_gates.run_quality_gates.handler = original
     assert called["n"] == 1, "run_quality_gates.handler was not invoked"
     assert result["outcome"] == "success"
+    assert result["result_digest"] == DIGESTS["3"]
+
+
+def test_canonical_gate_runner_route_guard_block_is_infrastructure_failure():
+    """A route-guard-blocked gate must be infrastructure_failure, NOT success.
+
+    Regression: the canonical gate-runner wrapper used ``data = result`` (the raw
+    MCP envelope) instead of decoding it, so EVERY gate -- including ones blocked
+    by the route guard with wrong_pipeline_stage -- fell through to
+    ``outcome="success"`` with a zero digest.  An unproven candidate was then
+    PROMOTED with no gate having actually been validated.  The wrapper must
+    decode the envelope and classify a route-guard block as infrastructure
+    (fail-closed/retryable), never success.
+    """
+    import json as _json
+    from producer_consumer_slice2b_activation import canonical_gate_runner_factory
+    import tool_gates
+
+    async def blocked_handler(args):
+        # Real handlers return this MCP envelope when _pipeline_route_guard
+        # blocks them with wrong_pipeline_stage.
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": _json.dumps(
+                        {
+                            "error": "pipeline_route_guard_blocked",
+                            "blocked": True,
+                            "reason": "wrong_pipeline_stage",
+                            "tool": "run_review",
+                            "checkpoint_stage": "workers_done",
+                            "allowed_tools": ["run_quality_gates"],
+                        }
+                    ),
+                }
+            ]
+        }
+
+    original = tool_gates.run_review.handler
+    tool_gates.run_review.handler = blocked_handler
+    try:
+        factory = canonical_gate_runner_factory(143, 142)
+        gates = factory()
+        snapshot = {"artifact_hash": DIGESTS["a"], "snapshot_digest": DIGESTS["b"]}
+        result = asyncio.run(gates["run_review"](snapshot))
+    finally:
+        tool_gates.run_review.handler = original
+    # Must NOT be success (the previous bug promoted on this).  A route-guard
+    # block is infrastructure (the gate never ran -- not a property of the
+    # candidate), so the barrier fails closed/retryable.
+    assert result["outcome"] == "infrastructure_failure"
+    assert result["result_digest"] == "0" * 64
 
 
 def test_recovery_reclaims_stale_running_lease_after_restart(tmp_path):
