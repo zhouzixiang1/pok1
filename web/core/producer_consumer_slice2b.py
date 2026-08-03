@@ -86,46 +86,6 @@ CONSUMER_GATE_CHAIN_ORDER = (
 # Full publication chain (consumer precommit + primary commit_bot).
 GATE_CHAIN_ORDER = CONSUMER_GATE_CHAIN_ORDER + ("commit_bot",)
 
-# The stage each consumer gate transitions the consumer slot to on success.
-# The route guard (tool_runtime_guard) enforces strict stage ordering, so the
-# consumer dispatcher must advance its OWN slot checkpoint's stage after each
-# successful gate or the next gate is blocked with wrong_pipeline_stage.  These
-# mirror the stages the canonical handlers write on the primary path
-# (tool_gates.py / tool_gates_critic_review.py / tool_eval.py).
-_GATE_SUCCESS_NEXT_STAGE = {
-    "run_quality_gates": "quality_passed",
-    "run_review": "reviewed",
-    "run_critic": "critic_checked",
-    "run_precommit_eval": "verified",
-}
-
-
-def _advance_consumer_stage(candidate_id: str, stage: str) -> None:
-    """Advance the consumer slot checkpoint's stage after a successful gate.
-
-    Reads/writes the consumer slot file under the active slot override (the
-    consumer task runs inside ``active_slot_override(consumer_slot)``), so this
-    targets the isolated consumer checkpoint, not the parked primary.  Rewrites
-    the checkpoint with the new stage (preserving next_v/source_v/gate_results)
-    and touches the stage timestamp so observers/reapers see fresh progress.
-    """
-    from evolution_infra import (
-        read_pipeline_checkpoint,
-        write_pipeline_checkpoint,
-    )
-
-    ckpt = read_pipeline_checkpoint()
-    if not isinstance(ckpt, dict):
-        return
-    write_pipeline_checkpoint(
-        ckpt.get("next_v"),
-        ckpt.get("source_v"),
-        stage,
-        gate_results=ckpt.get("gate_results"),
-        touch_stage_timestamp=True,
-    )
-
-
 _VALID_SUBSTATE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -1291,7 +1251,17 @@ class ConsumerDispatcher:
                 continue
             runner = gates[gate_name]
             try:
-                gate_result = await runner(snapshot)
+                # Mark this call as part of the consumer's in-chain gate loop.
+                # The frozen-snapshot consumer slot checkpoint deliberately
+                # stays at ``workers_done`` for the whole chain; the route
+                # guard skips its stage-ordering check under this authority
+                # (the gate order is owned by CONSUMER_GATE_CHAIN_ORDER here,
+                # not by the checkpoint stage).  Worktree/branch/HEAD guards
+                # still apply.
+                from tool_runtime_guard import consumer_in_chain_gate_authority
+
+                with consumer_in_chain_gate_authority():
+                    gate_result = await runner(snapshot)
             except Exception as exc:  # gate-runner contract violation
                 self._ledger.record_gate(
                     candidate_id=candidate_id,
@@ -1343,41 +1313,6 @@ class ConsumerDispatcher:
                     "reason": "infrastructure_failure",
                     "now": now,
                 }
-            # ADVANCE THE CONSUMER SLOT STAGE after a successful gate.  The
-            # consumer checkpoint is seeded at ``workers_done`` and the route
-            # guard enforces strict stage ordering (workers_done allows only
-            # run_quality_gates; run_review needs quality_passed; etc.).  The
-            # canonical handlers DO write the next stage on success, but to make
-            # the consumer chain self-contained and robust against a handler
-            # that omits the write (or a re-seeded slot), the dispatcher owns the
-            # transition explicitly here.  Without this, run_review/run_critic/
-            # run_precommit_eval are route-guard-blocked at workers_done and the
-            # chain never truly validates the candidate.
-            _next_stage = _GATE_SUCCESS_NEXT_STAGE.get(gate_name)
-            if _next_stage is not None:
-                try:
-                    _advance_consumer_stage(candidate_id, _next_stage)
-                except Exception as _adv_exc:
-                    # If the stage cannot be advanced, the next gate's route
-                    # guard will block -- which the envelope-decode fix now
-                    # surfaces as infrastructure_failure (fail-closed) rather
-                    # than a silent wrongful success.  Log the error so a broken
-                    # advance cannot hide (it would stall the whole gate chain).
-                    try:
-                        from orchestrator_helpers import log_system_event
-
-                        log_system_event(
-                            "pipeline.slice2b_consumer_stage_advance_failed",
-                            "error",
-                            (
-                                f"Consumer slot stage advance to "
-                                f"{_next_stage} after {gate_name} raised "
-                                f"{type(_adv_exc).__name__}: {_adv_exc}"
-                            ),
-                            {"candidate_id": candidate_id, "gate": gate_name},
-                        )
-                    except Exception:
-                        pass
 
         # Consumer validation completes at precommit; ``commit_bot`` is owned by
         # the primary orchestrator behind the promotion barrier.

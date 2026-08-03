@@ -927,6 +927,51 @@ def test_pipeline_route_guard_blocks_mutating_tools_without_checkpoint(monkeypat
         assert "not an MCP tool" in payload["directive"]
 
 
+def test_pipeline_route_guard_consumer_in_chain_skips_stage_ordering(monkeypatch):
+    """Slice-2b consumer in-chain gate calls skip stage-ordering.
+
+    Regression: the consumer dispatcher drives the gates in a fixed order
+    (CONSUMER_GATE_CHAIN_ORDER) under a frozen-snapshot slot checkpoint that
+    stays at ``workers_done`` for the whole chain.  Without the
+    consumer_in_chain_gate_authority marker, run_review/run_critic/
+    run_precommit_eval were route-guard-blocked at workers_done (which only
+    allows run_quality_gates).  When the marker is active, the route guard
+    must allow every pipeline-route tool regardless of the checkpoint stage.
+    """
+    import tool_runtime_guard
+
+    # A consumer slot checkpoint frozen at workers_done -- review/critic/
+    # precommit would normally be blocked here.
+    frozen = {"next_v": 300, "source_v": 299, "stage": "workers_done"}
+    monkeypatch.setattr(
+        tool_runtime_guard, "read_pipeline_checkpoint", lambda: frozen
+    )
+    monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *_args: None)
+
+    # Outside the consumer in-chain scope, run_review must be blocked at
+    # workers_done.
+    ok, _payload = tool_runtime_guard._pipeline_route_guard(
+        tool_name="run_review",
+        args={},
+        candidate_v=300,
+        source_v=299,
+    )
+    assert ok is False
+
+    # Inside the consumer in-chain scope, EVERY pipeline-route tool must be
+    # allowed (stage-ordering skipped; the dispatcher owns gate order).
+    with tool_runtime_guard.consumer_in_chain_gate_authority():
+        for tool_name in ("run_quality_gates", "run_review", "run_critic",
+                          "run_precommit_eval"):
+            ok, payload = tool_runtime_guard._pipeline_route_guard(
+                tool_name=tool_name,
+                args={},
+                candidate_v=300,
+                source_v=299,
+            )
+            assert ok is True, f"{tool_name} blocked under consumer in-chain: {payload}"
+
+
 def test_pipeline_route_guard_no_checkpoint_keeps_scheduler_and_read_only_exceptions(monkeypatch):
     import tool_runtime_guard
 

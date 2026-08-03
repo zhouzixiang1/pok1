@@ -50,6 +50,39 @@ _SYSTEM_DETERMINISTIC_ROUTE = ContextVar(
     default=None,
 )
 
+# Marks a gate call running INSIDE the Slice-2b consumer's in-chain gate loop.
+# The consumer dispatcher drives run_quality_gates -> run_review -> run_critic
+# -> run_precommit_eval in a fixed order (CONSUMER_GATE_CHAIN_ORDER) under
+# active_slot_override(consumer_slot); its frozen-snapshot slot checkpoint
+# deliberately stays at ``workers_done`` for the whole chain.  Without this
+# marker the stage-ordering route guard would block review/critic/precommit at
+# ``workers_done`` (which only allows run_quality_gates).  When this flag is
+# set, the route guard skips stage-ordering for pipeline-route tools: the gate
+# sequence is already authoritatively owned by the dispatcher, not by the
+# checkpoint stage.  (The worktree/branch/HEAD guards still apply.)
+_CONSUMER_IN_CHAIN_GATE = ContextVar(
+    "pok_consumer_in_chain_gate",
+    default=False,
+)
+
+
+@contextmanager
+def consumer_in_chain_gate_authority():
+    """Mark the active scope as the Slice-2b consumer in-chain gate loop.
+
+    Entered by ConsumerDispatcher.run_once around each canonical gate handler
+    invocation.  While active, _pipeline_route_guard skips the
+    stage-ordering check (the gate order is owned by the dispatcher's
+    CONSUMER_GATE_CHAIN_ORDER, not by the frozen consumer-slot checkpoint
+    stage).  All other runtime guards (worktree, branch, HEAD stability) still
+    apply.
+    """
+    token = _CONSUMER_IN_CHAIN_GATE.set(True)
+    try:
+        yield
+    finally:
+        _CONSUMER_IN_CHAIN_GATE.reset(token)
+
 
 @contextmanager
 def system_deterministic_route_authority(tool_name: str, checkpoint: dict):
@@ -213,6 +246,18 @@ def _pipeline_route_guard(
     """Block LLM/tool-call stage skips before the expensive tool body runs."""
     if tool_name not in _PIPELINE_ROUTE_TOOLS:
         return True, {}
+    # Slice-2b consumer in-chain gate loop: the dispatcher drives the gates in
+    # a fixed order (CONSUMER_GATE_CHAIN_ORDER) under a frozen-snapshot slot
+    # checkpoint that deliberately stays at ``workers_done``.  The stage-
+    # ordering check below would otherwise block review/critic/precommit at
+    # ``workers_done``.  The gate sequence is authoritatively owned by the
+    # dispatcher, not the checkpoint stage, so skip stage-ordering here.  The
+    # worktree/branch/HEAD guards in ensure_runtime_git_guard still apply.
+    try:
+        if _CONSUMER_IN_CHAIN_GATE.get():
+            return True, {}
+    except LookupError:
+        pass
     checkpoint = read_pipeline_checkpoint()
     if not isinstance(checkpoint, dict) or not checkpoint.get("stage"):
         # commit_bot deliberately clears the active checkpoint before the
