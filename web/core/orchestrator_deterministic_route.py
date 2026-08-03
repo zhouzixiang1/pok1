@@ -164,16 +164,33 @@ def _slice2b_reap_dead_consumer(checkpoint, next_v) -> bool:
                     # wedge.  Only reap when there is NO native activity AND the
                     # checkpoint is stale (the real wedge signature: task live,
                     # checkpoint stale, zero native processes = loop blocked).
+                    #
+                    # The native-activity check uses TWO signals to avoid a
+                    # round-gap false negative: a single ``pgrep bwrap`` snapshot
+                    # can return empty during the brief window between one native
+                    # match round ending and the next starting, which would drop
+                    # the threshold to 1200s and falsely reap a healthy consumer
+                    # mid-precommit.  We also check for python3.12 match worker
+                    # processes (the actual bot processes inside bwrap) and the
+                    # orchestrator's own CPU (high CPU = active consumer work).
                     native_active = False
                     try:
                         import subprocess as _sp
-                        _ps = _sp.run(
-                            ["pgrep", "-f", "bwrap.*national"],
-                            capture_output=True,
-                            text=True,
-                            timeout=5.0,
-                        )
-                        native_active = bool(_ps.stdout.strip())
+                        # Check for bwrap national matches OR python3.12
+                        # processes spawned by the native match runtime.
+                        for pattern in (
+                            "bwrap.*national",
+                            "python3.12.*national_bot",
+                        ):
+                            _ps = _sp.run(
+                                ["pgrep", "-f", pattern],
+                                capture_output=True,
+                                text=True,
+                                timeout=5.0,
+                            )
+                            if _ps.stdout.strip():
+                                native_active = True
+                                break
                     except Exception:
                         native_active = False
                     # 20 min stale + no native activity = wedged (loop blocked
