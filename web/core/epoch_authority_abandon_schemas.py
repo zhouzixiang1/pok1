@@ -329,9 +329,18 @@ def _validate_schema2_active_claim_state(claim: dict[str, Any], *, results_dir: 
         phase = 'source' if source_exists else 'quarantine'
     rows = infra.load_abandoned_version_receipts(path=results_dir / 'abandoned_versions.jsonl', project_root=infra.PROJECT_ROOT)
     abandon_receipt = _ea.validate_abandon_ledger_history(claim, rows, require_active_head=True)
+    # Abandon authority is definitionally PRIMARY-scoped: an abandon finalizes
+    # the primary generation's checkpoint, never a concurrent draft/consumer
+    # slot.  Read under no_slot_override() so an ambient draft override (e.g.
+    # this validator reached via strict_epoch_projection under
+    # active_slot_override("draft")) cannot make the primary checkpoint
+    # observation disagree with the existence check or the abandon claim's
+    # bound checkpoint digest.
     checkpoint_path = Path(infra.PIPELINE_STATE_FILE)
-    if os.path.lexists(checkpoint_path):
-        checkpoint = infra.read_pipeline_checkpoint()
+    with infra.no_slot_override():
+        checkpoint_exists = os.path.lexists(checkpoint_path)
+        checkpoint = infra.read_pipeline_checkpoint() if checkpoint_exists else None
+    if checkpoint_exists:
         if not isinstance(checkpoint, dict) or _ea._canonical_object_digest(checkpoint) != claim['checkpoint']['digest']:
             raise RuntimeError('recorded_abandon_active_checkpoint_changed')
         if abandon_receipt is None and phase not in {'source', 'absent'}:

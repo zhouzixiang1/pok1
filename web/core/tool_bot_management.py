@@ -38,6 +38,7 @@ from evolution_infra import (
     recorded_abandon_receipt_for_checkpoint,
     read_pipeline_checkpoint,
     record_reaped_bot,
+    no_slot_override,
     _fsync_regular_state_file_and_parent,
     _git as _evolution_git,
 )
@@ -858,19 +859,29 @@ def _finalize_checkpoint_abandon_transaction(
 
     from evolution_core import PIPELINE_STATE_FILE
 
+    # Abandon finalization is PRIMARY-scoped: it clears the primary generation's
+    # checkpoint.  Run the existence check and the slot-aware clear under
+    # no_slot_override() so an ambient draft override cannot point the clear at
+    # the draft slot file (leaving the abandoned primary checkpoint live) or
+    # make the existence flag disagree with the clear target.
     checkpoint_path = Path(PIPELINE_STATE_FILE)
     if _current_abandon_git_state(
         int(claim["checkpoint"]["next_v"])
     ) != claim["git_state"]:
         raise RuntimeError("recorded_abandon_active_git_state_changed")
-    if os.path.lexists(checkpoint_path):
-        cleared = bool(clear_pipeline_state(
-            expected_workflow_run_id=claim["checkpoint"]["workflow_run_id"],
-            expected_next_v=claim["checkpoint"]["next_v"],
-            expected_source_v=claim["checkpoint"]["source_v"],
-            expected_checkpoint_revision=claim["checkpoint"]["checkpoint_revision"],
-            expected_checkpoint_stage=claim["checkpoint"]["stage"],
-        ))
+    with no_slot_override():
+        checkpoint_exists = os.path.lexists(checkpoint_path)
+        if checkpoint_exists:
+            cleared = bool(clear_pipeline_state(
+                expected_workflow_run_id=claim["checkpoint"]["workflow_run_id"],
+                expected_next_v=claim["checkpoint"]["next_v"],
+                expected_source_v=claim["checkpoint"]["source_v"],
+                expected_checkpoint_revision=claim["checkpoint"]["checkpoint_revision"],
+                expected_checkpoint_stage=claim["checkpoint"]["stage"],
+            ))
+        else:
+            cleared = True  # nothing to clear; only the parent fsync is needed
+    if checkpoint_exists:
         if not cleared:
             raise RuntimeError("checkpoint_identity_conflict")
     else:
@@ -1417,8 +1428,15 @@ async def _do_abandon_generation(
             "reason": "forced_abandon_checkpoint_identity_required",
             "action": "stale_rejection_ignored",
         }
-    checkpoint_exists = PIPELINE_STATE_FILE.exists()
-    checkpoint = read_pipeline_checkpoint() if checkpoint_exists else None
+    # Abandon operates on the PRIMARY generation's checkpoint.  The existence
+    # check uses the primary PIPELINE_STATE_FILE constant intentionally; the
+    # slot-aware read_pipeline_checkpoint() must therefore also target the
+    # primary, so read it under no_slot_override() (an ambient draft override
+    # would otherwise read the draft slot while the existence flag still
+    # reflects the primary — a split-brain).
+    with no_slot_override():
+        checkpoint_exists = PIPELINE_STATE_FILE.exists()
+        checkpoint = read_pipeline_checkpoint() if checkpoint_exists else None
     if checkpoint_exists and not isinstance(checkpoint, dict):
         return {
             "abandoned": False,
@@ -1814,7 +1832,10 @@ async def _do_abandon_generation(
     )
     try:
         with lock_context:
-            latest = read_pipeline_checkpoint() if os.path.lexists(PIPELINE_STATE_FILE) else None
+            # Re-read the PRIMARY checkpoint (no_slot_override) for the CAS
+            # identity/conflict check — abandon is primary-scoped.
+            with no_slot_override():
+                latest = read_pipeline_checkpoint() if os.path.lexists(PIPELINE_STATE_FILE) else None
             if isinstance(latest, dict):
                 latest_conflict = expected_identity_conflict(latest)
                 if latest_conflict:

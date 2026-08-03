@@ -1697,6 +1697,10 @@ def test_epoch_status_revalidates_schema2_live_git_and_filesystem_state(
                 evolution_infra.load_abandoned_version_receipts
             ),
             read_pipeline_checkpoint=lambda: checkpoint,
+            # The abandon validators now read the primary checkpoint under
+            # no_slot_override() (infra is the injected evolution_infra
+            # namespace in production); mirror that member here.
+            no_slot_override=evolution_infra.no_slot_override,
         )
 
     valid = epoch_authority._runtime_reconciliation_claim_status(

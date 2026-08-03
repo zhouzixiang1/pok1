@@ -31,10 +31,15 @@ def _validate_active_abandon_claim(claim: dict) -> dict:
     rows = _tbm.load_abandoned_version_receipts(path=_tbm.Path(_tbm.RESULTS_DIR) / 'abandoned_versions.jsonl', project_root=_tbm.PROJECT_ROOT)
     abandon_receipt = _tbm.validate_abandon_ledger_history(claim, rows, require_active_head=True)
     from evolution_core import PIPELINE_STATE_FILE
+    from evolution_infra import no_slot_override
     checkpoint_path = _tbm.Path(PIPELINE_STATE_FILE)
-    checkpoint_exists = _tbm.os.path.lexists(checkpoint_path)
+    # Abandon authority is PRIMARY-scoped; read the primary checkpoint under
+    # no_slot_override() so an ambient draft override cannot make the existence
+    # check or the bound checkpoint-digest comparison target the wrong slot.
+    with no_slot_override():
+        checkpoint_exists = _tbm.os.path.lexists(checkpoint_path)
+        checkpoint = _tbm.read_pipeline_checkpoint() if checkpoint_exists else None
     if checkpoint_exists:
-        checkpoint = _tbm.read_pipeline_checkpoint()
         if not isinstance(checkpoint, dict) or _tbm.canonical_digest(checkpoint) != checkpoint_identity['digest'] or _tbm._checkpoint_transaction_identity(checkpoint) != checkpoint_identity:
             raise RuntimeError('recorded_abandon_active_checkpoint_changed')
         if abandon_receipt is None and state not in {'source', 'absent'}:

@@ -374,27 +374,38 @@ def _coerce_event_ts(value) -> float:
 
 
 def _pipeline_checkpoint_observation():
-    """Read checkpoint bytes while preserving absent-vs-invalid authority."""
+    """Read checkpoint bytes while preserving absent-vs-invalid authority.
+
+    Resolves the checkpoint path through ``pipeline_state_path()`` so the
+    existence/observation flags target the SAME slot-aware file as the
+    override-aware ``read_pipeline_checkpoint()`` read.  Previously the
+    existence flags used the hard-coded primary ``PIPELINE_STATE_FILE`` while
+    the read honored the active slot override — a split-brain in which a draft
+    task's absent draft slot was reported as a "claimed but unreadable" primary
+    checkpoint.
+    """
 
     try:
-        from evolution_core import PIPELINE_STATE_FILE, read_pipeline_checkpoint
+        from evolution_core import read_pipeline_checkpoint
+        from evolution_infra import pipeline_state_path
     except Exception as exc:
         return {
             "checkpoint": None,
             "path_exists": None,
             "error": f"checkpoint_import_failed:{type(exc).__name__}",
         }
-    path_exists_before = os.path.lexists(PIPELINE_STATE_FILE)
+    _checkpoint_file = pipeline_state_path()
+    path_exists_before = os.path.lexists(_checkpoint_file)
     try:
         checkpoint = read_pipeline_checkpoint()
     except Exception as exc:
         return {
             "checkpoint": None,
-            "path_exists": os.path.lexists(PIPELINE_STATE_FILE),
+            "path_exists": os.path.lexists(_checkpoint_file),
             "path_existed_before": path_exists_before,
             "error": f"checkpoint_read_failed:{type(exc).__name__}",
         }
-    path_exists = os.path.lexists(PIPELINE_STATE_FILE)
+    path_exists = os.path.lexists(_checkpoint_file)
     if checkpoint is None:
         return {
             "checkpoint": None,

@@ -208,20 +208,23 @@ def current_proc() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _read_ckpt_nolock() -> dict:
-    """Read pipeline_state.json WITHOUT fcntl (best-effort correlation fallback).
+    """Read the active-slot pipeline checkpoint WITHOUT fcntl (best-effort).
 
-    The checkpoint is written atomically (tmp + fsync + os.replace in
-    write_pipeline_checkpoint), so a plain read never observes a torn file. We
-    deliberately do NOT take LOCK_SH here: emit() can be reached from inside
-    write_pipeline_checkpoint's LOCK_EX scope (log_system_event is invoked
-    mid-write by the pipeline), and fcntl.flock is per-process — a nested
-    LOCK_SH request on the same file self-deadlocks (EX blocks SH even within
-    a single process). That deadlock surfaced as 30s pytest timeouts in
+    Resolves the path through ``pipeline_state_path()`` so it honors the active
+    slot override (e.g. a draft task's ``active_slot_override("draft")``);
+    previously it opened the hard-coded primary ``PIPELINE_STATE_FILE`` even
+    while a draft override was bound, a split-brain that correlated events
+    against the wrong generation's checkpoint.  ``emit()`` can be reached from
+    inside ``write_pipeline_checkpoint``'s LOCK_EX scope (log_system_event is
+    invoked mid-write), so this deliberately does NOT take LOCK_SH — fcntl.flock
+    is per-process and a nested LOCK_SH self-deadlocks (EX blocks SH within one
+    process); that deadlock surfaced as 30s pytest timeouts in
     test_mcp_pipeline / test_precommit_attempt_checkpoint during Phase 0.
     """
     try:
-        from evolution_infra import PIPELINE_STATE_FILE
-        with open(PIPELINE_STATE_FILE, "r", encoding="utf-8") as f:
+        from evolution_infra import pipeline_state_path
+
+        with open(pipeline_state_path(), "r", encoding="utf-8") as f:
             return json.load(f) or {}
     except Exception:
         return {}
