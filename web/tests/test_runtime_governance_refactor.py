@@ -1556,6 +1556,52 @@ def test_runtime_guard_allows_parked_primary_candidate_dir_for_draft(monkeypatch
     assert payload.get("unexpected_entries", []) == []
 
 
+def test_runtime_guard_allows_parked_primary_when_draft_checkpoint_absent(monkeypatch):
+    """First prepare: draft checkpoint does not exist yet (candidate_v unknown).
+
+    Regression: the draft's candidate_v is read from its OWN draft-slot
+    checkpoint, but that checkpoint is created BY prepare_generation -- so on
+    the very first prepare candidate_v resolves to None.  The primary-candidate
+    allowance must still apply (the parked primary's dir is legitimate
+    regardless of the draft's candidate_v), otherwise the first draft prepare
+    is always blocked by the primary's candidate dir.
+    """
+    import evolution_infra
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshot = {
+        "ok": True,
+        "branch": f"{EVOLUTION_BRANCH}...origin/{EVOLUTION_BRANCH}",
+        "head": "abc123",
+        "entries": [f"?? bots/{bot_name(299)}/"],
+    }
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
+
+    # Draft slot has NO checkpoint yet (None under the override); primary is
+    # next_v=299.  candidate_v thus resolves to None inside the guard.
+    primary_ckpt = {"next_v": 299, "source_v": 298}
+
+    def _mock_read_checkpoint():
+        override = evolution_infra.current_slot_override()
+        return None if override is not None else primary_ckpt
+
+    monkeypatch.setattr(
+        tool_runtime_guard, "read_pipeline_checkpoint", _mock_read_checkpoint
+    )
+
+    with evolution_infra.active_slot_override("draft"):
+        ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+            "prepare_generation",
+            {},
+        )
+
+    assert ok is True
+    assert payload.get("reason") != "unexpected_worktree_entries"
+    assert payload.get("unexpected_entries", []) == []
+
+
 def test_runtime_guard_blocks_truncated_snapshot(monkeypatch):
     import tool_runtime_guard
 

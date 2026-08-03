@@ -508,10 +508,9 @@ def _parked_primary_version_for_draft(candidate_v: int | None) -> int | None:
     every draft prepare for the entire parked window -- structurally defeating
     one-ahead.  Returns the primary's ``next_v`` when this call is running
     under a draft slot override AND the primary's in-flight next_v differs from
-    ``candidate_v``; otherwise None (no allowance needed).
+    ``candidate_v`` (or candidate_v is unknown, as during the very first
+    prepare before the draft checkpoint exists); otherwise None.
     """
-    if candidate_v is None:
-        return None
     try:
         from evolution_infra import current_slot_override, no_slot_override
     except Exception:
@@ -529,7 +528,13 @@ def _parked_primary_version_for_draft(candidate_v: int | None) -> int | None:
         primary_next_v = int(primary_checkpoint.get("next_v") or -1)
     except Exception:
         return None
-    if primary_next_v > 0 and primary_next_v != int(candidate_v):
+    if primary_next_v <= 0:
+        return None
+    # Allowance applies whenever the primary's in-flight version is not the
+    # candidate itself.  When candidate_v is None (draft checkpoint not yet
+    # created during the first prepare), the primary version is always a
+    # different generation, so the allowance is valid.
+    if candidate_v is None or primary_next_v != int(candidate_v):
         return primary_next_v
     return None
 
