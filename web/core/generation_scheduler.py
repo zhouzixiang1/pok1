@@ -917,18 +917,26 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         )
         return None
     if _epoch_projection.get("ignored_checkpoint"):
-        log_system_event(
-            "pipeline.prepare_blocked_checkpoint_authority",
-            "error",
-            "Prepare generation refused an unreadable or incompatible checkpoint",
-            dict(_epoch_projection["ignored_checkpoint"]),
-        )
-        if ui:
-            ui.log_history(
-                "Prepare blocked: active checkpoint requires operator reconciliation.",
+        # Only the PRIMARY prepare path may be refused on the basis of an
+        # unreadable/incompatible checkpoint.  A one-ahead draft prepare
+        # (slot_id set) runs concurrently with the parked primary; its OWN
+        # draft slot legitimately has no checkpoint yet, and it must not be
+        # refused because of the primary's checkpoint state.  Mirrors the
+        # draft bypass at the ``slot_id is None`` guard below on
+        # ``_existing_generation``.
+        if slot_id is None:
+            log_system_event(
+                "pipeline.prepare_blocked_checkpoint_authority",
                 "error",
+                "Prepare generation refused an unreadable or incompatible checkpoint",
+                dict(_epoch_projection["ignored_checkpoint"]),
             )
-        return None
+            if ui:
+                ui.log_history(
+                    "Prepare blocked: active checkpoint requires operator reconciliation.",
+                    "error",
+                )
+            return None
     _existing_generation = _epoch_projection.get("active_generation")
     # Only the primary prepare path may early-return an existing in-flight
     # generation.  A draft prepare (slot_id set) must continue so it can build

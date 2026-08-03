@@ -1795,3 +1795,78 @@ def test_epoch_claim_reader_rejects_same_inode_same_size_rewrite(
     with pytest.raises(RuntimeError, match="claim_json_unsafe"):
         epoch_authority._read_bounded_regular_json(path)
     assert injected == [True]
+
+
+def test_strict_epoch_projection_honors_draft_slot_override(tmp_path, monkeypatch):
+    """A one-ahead draft prepare must not be refused via the primary checkpoint.
+
+    Regression: ``strict_epoch_projection`` used the hard-coded
+    ``PIPELINE_STATE_FILE`` constant for its checkpoint existence/claimed
+    detection while reading via the override-aware ``read_pipeline_checkpoint()``.
+    Inside the draft task's ``active_slot_override("draft")`` this split-brain
+    saw the PRIMARY's parked checkpoint as "claimed but unreadable" and set
+    ``ignored_checkpoint``, which ``prepare_generation`` treated as a hard
+    refusal -- so the one-ahead draft never got to create its own draft-slot
+    checkpoint.  The existence check must resolve through the same slot-aware
+    path as the read.
+    """
+    import epoch_authority
+    import evolution_infra as infra
+
+    # Primary checkpoint exists on disk (parked at workers_done for the consumer).
+    primary_state = tmp_path / "pipeline_state.json"
+    primary_state.write_text(
+        json.dumps(
+            {
+                "next_v": STRICT_TARGET_V + 1,
+                "source_v": STRICT_TARGET_V,
+                "stage": "workers_done",
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Draft slot checkpoint does NOT exist yet (this is the whole point: the
+    # draft is about to create it).
+    draft_state = tmp_path / "pipeline_state_draft.json"
+    assert not draft_state.exists()
+
+    monkeypatch.setattr(infra, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(infra, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(infra, "PIPELINE_STATE_FILE", primary_state)
+
+    # Canonical version-authority stubs (not under test here).
+    _stub_namespace(monkeypatch, epoch_authority, infra)
+
+    # The read returns None because the draft slot has no checkpoint.  Without
+    # the fix, the primary's existence (via the hard-coded constant) would flip
+    # checkpoint_claimed=True and set ignored_checkpoint.
+    monkeypatch.setattr(infra, "read_pipeline_checkpoint", lambda: None)
+
+    # Enter the draft slot override the way _draft_prepare_task does.
+    with infra.active_slot_override("draft"):
+        projection = epoch_authority.strict_epoch_projection()
+
+    # The draft prepare must NOT be refused on the basis of the primary's
+    # parked checkpoint.  No ignored_checkpoint, no operator archive action.
+    assert projection.get("ignored_checkpoint") is None
+    assert projection.get("operator_action") != "archive_incompatible_checkpoint"
+
+
+def _stub_namespace(monkeypatch, epoch_authority, infra):
+    """Minimal version-authority stubs shared by draft-override tests."""
+    monkeypatch.setattr(
+        infra,
+        "find_current_v",
+        lambda: STRICT_TARGET_V,
+    )
+    monkeypatch.setattr(
+        infra,
+        "find_max_committed_v",
+        lambda: STRICT_TARGET_V,
+    )
+    monkeypatch.setattr(
+        infra,
+        "abandoned_version_authority",
+        lambda **_kw: {"floor": STRICT_TARGET_V, "head_digest": "a" * 64, "receipt_count": 0},
+    )
+

@@ -1013,7 +1013,7 @@ def strict_epoch_projection(
     if not include_checkpoint:
         return projection
 
-    checkpoint_path = Path(infra.PIPELINE_STATE_FILE)
+    checkpoint_path = Path(infra.pipeline_state_path())
     checkpoint_read_error = None
     checkpoint_path_existed_before = os.path.lexists(checkpoint_path)
     try:
