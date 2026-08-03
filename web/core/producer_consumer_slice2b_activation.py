@@ -340,11 +340,37 @@ class Slice2bActivation:
                 # the task was created.  When no slot is bound (legacy callers
                 # / unit tests without a seeded slot), dispatch targets the
                 # ambient slot unchanged (back-compat).
-                if slot_override_ctx is not None and consumer_slot_id is not None:
-                    with slot_override_ctx(consumer_slot_id):
+                #
+                # NATIVE-MATCH HEARTBEAT: the precommit gate's native TCP
+                # matches run for 30-50 min.  The native-match heartbeat
+                # reporter (which refreshes the checkpoint during matches, so
+                # the stale-watchdog sees live progress) is DISABLED unless a
+                # dispatch nonce is active.  The inline path activates the
+                # nonce from the provider attempt UUID; the consumer does not
+                # run through the provider loop, so it must activate its own
+                # nonce here.  Without this, the checkpoint stays stale
+                # during precommit native matches, the stale-watchdog reaps a
+                # healthy consumer at the 50-min ceiling, the abandon removes
+                # the candidate dir, and the in-flight matches crash with
+                # ArtifactIntegrityError → 0W-0L-0D.
+                import hashlib as _hashlib
+
+                _nonce_material = f"slice2b-consumer-{candidate_id}-{dispatch_now}".encode()
+                _consumer_nonce = _hashlib.sha256(_nonce_material).hexdigest()[:32]
+                from pipeline_state import (
+                    activate_native_match_dispatch_nonce,
+                    reset_native_match_dispatch_nonce,
+                )
+
+                _nonce_token = activate_native_match_dispatch_nonce(_consumer_nonce)
+                try:
+                    if slot_override_ctx is not None and consumer_slot_id is not None:
+                        with slot_override_ctx(consumer_slot_id):
+                            await _dispatch()
+                    else:
                         await _dispatch()
-                else:
-                    await _dispatch()
+                finally:
+                    reset_native_match_dispatch_nonce(_nonce_token)
             except Exception:
                 # The dispatcher records infrastructure failures into the
                 # ledger itself; if it raised, ensure the ledger reflects a
