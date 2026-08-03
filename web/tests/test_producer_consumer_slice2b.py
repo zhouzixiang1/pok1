@@ -412,6 +412,32 @@ def test_consumer_dispatcher_is_idle_when_queue_empty(tmp_path):
     assert result["reason"] == "no_leasable_envelope"
 
 
+def test_consumer_dispatcher_force_reclaims_non_expired_lease_after_restart(tmp_path):
+    """After a restart, a running effect's non-expired lease blocks recover().
+
+    The consumer dispatcher force-reclaims its own running effect (the prior
+    process is dead but the lease row persists with a non-expired lease_until).
+    Without force-reclaim, the restarted consumer spins forever in
+    no_leasable_envelope until the full lease elapses.
+    """
+    adapter = _adapter(tmp_path)
+    snapshot = _snapshot()
+    sealed = _seal(adapter, snapshot=snapshot)
+    effect_id = sealed["effect_id"]
+    ledger = ValidationLedger()
+    # Claim the effect (status -> running) with a far-future lease, simulating
+    # the prior process's lease surviving a restart.
+    adapter.claim(effect_id, owner="consumer-a", lease_seconds=3600.0, now=110.0)
+
+    # recover() returns nothing (lease not expired at now=120), but
+    # force-reclaim finds the running consumer effect and reclaims it.
+    dispatcher = ConsumerDispatcher(adapter, ledger, owner="consumer-a")
+    found = dispatcher._force_recover_consumer_effect(lease_seconds=3600.0, now=120.0)
+    assert found is not None
+    assert len(found) == 1
+    assert found[0]["effect_id"] == effect_id
+
+
 # ---------------------------------------------------------------------------
 # AheadCoordinator (derives all state from the CandidateLifecycle FSM)
 # ---------------------------------------------------------------------------

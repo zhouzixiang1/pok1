@@ -257,6 +257,66 @@ class ProducerConsumerWorkflowAdapter:
         effect, envelope = self._validated_effect(effect_id)
         return {"effect": deepcopy(effect), "envelope": envelope}
 
+    def find_running_consumer_effect(self, *, owner: str) -> dict[str, Any] | None:
+        """Find the one running consumer effect leased by ``owner``.
+
+        Returns the effect row (flattened, with ``envelope`` attached at the
+        top level) or ``None`` if no running consumer-owned effect exists.
+        Used by the consumer dispatcher to force-reclaim an effect whose
+        non-expired lease survived a process restart.
+        """
+
+        rows = self.store._running_effects_by_kind_prefix(EFFECT_KIND_PREFIX)
+        for row in rows:
+            if str(row.get("lease_owner") or "") == owner:
+                try:
+                    payload = row.get("input_payload") or {}
+                    envelope = payload.get("envelope")
+                    if isinstance(envelope, dict):
+                        # Flatten: the death-proof resolver + reclaim path
+                        # access effect_id/lease_owner/lease_epoch/envelope at
+                        # the top level (matching the recover() projection).
+                        flat = dict(row)
+                        flat["envelope"] = envelope
+                        return flat
+                except Exception:
+                    pass
+        return None
+
+    def reclaim_consumer_effect(
+        self,
+        *,
+        effect_id: str,
+        expected_owner: str,
+        expected_lease_epoch: int,
+        owner: str,
+        lease_seconds: float,
+        causation_id: str,
+        proof: dict[str, Any],
+        now: float,
+    ) -> dict[str, Any]:
+        """Reclaim one running consumer effect after a death-proof.
+
+        Thin wrapper over the kernel's ``reclaim_effect_lease`` used by the
+        consumer dispatcher's force-reclaim path.  Returns the lease projection.
+        """
+
+        _, envelope = self._validated_effect(effect_id)
+        bounded_seconds = _bounded_lease_seconds(
+            envelope, now=now, requested=lease_seconds
+        )
+        lease = self.store.reclaim_effect_lease(
+            effect_id,
+            expected_owner=expected_owner,
+            expected_lease_epoch=expected_lease_epoch,
+            owner=owner,
+            lease_seconds=bounded_seconds,
+            causation_id=causation_id,
+            proof=proof,
+            now=now,
+        )
+        return _lease_projection(lease, envelope)
+
     def claim(
         self,
         effect_id: str,

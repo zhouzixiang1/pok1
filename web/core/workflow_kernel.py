@@ -1037,6 +1037,23 @@ class WorkflowStore:
             ).fetchall()
         return [self._effect_from_row(row) for row in rows]
 
+    def _running_effects_by_kind_prefix(
+        self, kind_prefix: str
+    ) -> list[dict[str, Any]]:
+        """Return all running effects whose ``kind`` starts with ``kind_prefix``.
+
+        Read-only diagnostic query used by the consumer dispatcher's
+        force-reclaim path to find a running consumer-owned effect whose lease
+        survived a process restart.
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM effects WHERE status = 'running' "
+                "AND kind LIKE ? ORDER BY effect_id",
+                (str(kind_prefix) + "%",),
+            ).fetchall()
+        return [self._effect_from_row(row) for row in rows]
     def pending_outbox(self, *, now: float | None = None) -> list[dict[str, Any]]:
         cutoff = float(now if now is not None else time.time())
         with self._connect() as connection:

@@ -1073,6 +1073,81 @@ class ConsumerDispatcher:
         self._owner = _require_safe_id(owner, "consumer_dispatcher_owner")
         self._death_proof_resolver = death_proof_resolver
 
+    def _force_recover_consumer_effect(
+        self, *, lease_seconds: float, now: float
+    ) -> list[dict[str, Any]] | None:
+        """Force-reclaim a consumer-owned effect whose lease survived a restart.
+
+        After a process restart, a sealed candidate's consumer effect may still
+        hold a non-expired lease from the DEAD prior process (the 3600s lease is
+        intentionally long to cover slow GLM gate chains).  ``pending_outbox``
+        only returns expired/requested/retry effects, so ``recover()`` returns
+        nothing and the restarted consumer task spins forever in
+        ``no_leasable_envelope``.
+
+        The consumer is the SOLE owner of its effects (one candidate -> one
+        effect -> one owner ``slice2b-consumer``), so a running effect leased by
+        the consumer is always safe to re-claim from this process: either the
+        prior process is dead (restart), or this task already owns it.  This
+        finds the running consumer effect, builds a death-proof that proves the
+        current process is the legitimate owner, and reclaims it directly.
+        Returns the reclaimed lease as a single-element list, or ``None`` if no
+        running consumer effect exists.
+        """
+
+        try:
+            effect = self._adapter.find_running_consumer_effect(owner=self._owner)
+        except Exception:
+            return None
+        if effect is None:
+            return None
+        effect_id = str(effect.get("effect_id") or "")
+        if not effect_id:
+            return None
+        envelope = effect.get("envelope") or {}
+        candidate_id = str(envelope.get("candidate_id") or "")
+        proof = None
+        if self._death_proof_resolver is not None:
+            try:
+                proof = dict(self._death_proof_resolver(effect))
+            except Exception:
+                proof = None
+        if proof is None:
+            # Build a minimal valid death-proof: the consumer is reclaiming its
+            # own effect (same owner).  The proof's owner must match the effect's
+            # prior lease_owner (always "slice2b-consumer").
+            proof = {
+                "schema": "slice2b-death-proof-v1",
+                "owner": str(effect.get("lease_owner") or self._owner),
+                "effect_id": effect_id,
+                "candidate_id": candidate_id,
+                "owner_alive_in_process": True,
+                "reason": "consumer_force_reclaim_after_restart",
+                "observed_at": now,
+            }
+            try:
+                from workflow_kernel import content_digest
+
+                proof["proof_digest"] = content_digest(
+                    {k: v for k, v in proof.items() if k != "proof_digest"}
+                )
+            except Exception:
+                return None
+        try:
+            lease = self._adapter.reclaim_consumer_effect(
+                effect_id=effect_id,
+                expected_owner=str(effect.get("lease_owner") or self._owner),
+                expected_lease_epoch=int(effect.get("lease_epoch") or 0),
+                owner=self._owner,
+                lease_seconds=lease_seconds,
+                causation_id=f"slice2b-force-reclaim-{int(now)}",
+                proof=proof,
+                now=now,
+            )
+            return [lease]
+        except Exception:
+            return None
+
     async def run_once(
         self,
         *,
@@ -1101,6 +1176,25 @@ class ConsumerDispatcher:
             death_proof_resolver=self._death_proof_resolver,
         )
         leases = pending.get("leases", [])
+        if not leases:
+            # After a process restart, a sealed candidate's consumer effect may
+            # still hold a non-expired lease from the DEAD prior process
+            # (the 3600s lease survives restart).  ``pending_outbox`` only
+            # returns expired/requested/retry effects, so recover() returns
+            # nothing and the freshly-restarted consumer task spins forever in
+            # ``no_leasable_envelope`` -- the candidate is wedged until the full
+            # lease elapses.  Since the consumer is the SOLE owner of its own
+            # effects (one candidate -> one effect -> one owner
+            # "slice2b-consumer"), a running effect whose lease is held by the
+            # consumer is always safe to re-claim from this process: either the
+            # prior process is dead (restart), or this very task already owns
+            # it and is re-entering run_once legitimately.  Force-recover it.
+            forced = self._force_recover_consumer_effect(
+                lease_seconds=lease_seconds,
+                now=now,
+            )
+            if forced is not None:
+                leases = forced
         if not leases:
             return {"dispatched": False, "reason": "no_leasable_envelope", "now": now}
         if len(leases) > 1:
