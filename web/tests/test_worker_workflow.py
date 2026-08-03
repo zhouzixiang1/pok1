@@ -849,3 +849,20 @@ def test_unknown_worker_history_event_fails_closed(tmp_path):
     )
     with pytest.raises(RuntimeError, match="unsupported Worker history event"):
         workflow.state()
+
+
+def test_effect_lease_reclaimed_event_is_replayable(tmp_path):
+    """EffectLeaseReclaimed (from slice2b consumer force-reclaim after restart)
+    is a kernel-level lease-management event that must pass through Worker
+    replay without crashing.  Regression for 'Orchestrator crashed: unsupported
+    Worker history event: EffectLeaseReclaimed'."""
+    workflow = _workflow(tmp_path)
+    workflow.store.append_event(
+        workflow.run_id,
+        "EffectLeaseReclaimed",
+        {"effect_id": "test-effect", "reason": "consumer_force_reclaim"},
+        causation_id="reclaim",
+    )
+    # Must NOT raise; the event is a pass-through (no projection side effect).
+    state = workflow.state()
+    assert state is not None

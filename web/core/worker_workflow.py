@@ -455,6 +455,13 @@ def replay_worker_events(
         "EffectInterrupted",
         "EffectResumed",
         "EffectCompleted",
+        # EffectLeaseReclaimed is a kernel-level lease-management event appended
+        # by reclaim_effect_lease (e.g. the slice2b consumer's force-reclaim
+        # after a restart).  It does not change the Worker projection state
+        # (it only updates the effect's lease ownership/epoch), so it is a
+        # pass-through during replay -- the same as the other Effect* events
+        # above that have no projection side effect.
+        "EffectLeaseReclaimed",
         "WorkerSemanticFailed",
         "WorkerFailureProjected",
         "WorkerOutputReady",
