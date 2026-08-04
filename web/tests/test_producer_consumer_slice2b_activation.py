@@ -1146,6 +1146,55 @@ def test_canonical_gate_runner_route_guard_block_is_infrastructure_failure():
     assert result["result_digest"] == "0" * 64
 
 
+def test_canonical_gate_runner_precommit_regression_is_candidate_failure():
+    """A FAILED precommit (passed=False) must be candidate_failure, NOT success.
+
+    Regression: the wrapper decoded the MCP envelope but only checked
+    ``error``/``success``/``failure_class=="infrastructure"``.  The precommit
+    handler signals a native-match regression (e.g. 0W-0L-0D) via ``passed=False``
+    and ``failure_class="regression"`` -- neither of which the wrapper checked.
+    So a failed precommit was misclassified as success, the candidate was
+    PROMOTED, the consumer slot collapsed onto a primary left at stage
+    ``precommit_failed``, and commit_bot's route guard blocked publication --
+    wedging the generation (promoted but can't publish).  The wrapper must
+    classify ``passed is False`` as candidate_failure so the candidate is rejected.
+    """
+    import json as _json
+    from producer_consumer_slice2b_activation import canonical_gate_runner_factory
+    import tool_eval
+
+    async def failed_precommit_handler(args):
+        # Real run_precommit_eval returns this on a 0W-0L-0D native regression:
+        # passed=False, failure_class="regression", NO top-level error/success.
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": _json.dumps(
+                        {
+                            "passed": False,
+                            "failure_class": "regression",
+                            "directive": "national_precommit_regression",
+                        }
+                    ),
+                }
+            ]
+        }
+
+    original = tool_eval.run_precommit_eval.handler
+    tool_eval.run_precommit_eval.handler = failed_precommit_handler
+    try:
+        factory = canonical_gate_runner_factory(143, 142)
+        gates = factory()
+        snapshot = {"artifact_hash": DIGESTS["a"], "snapshot_digest": DIGESTS["b"]}
+        result = asyncio.run(gates["run_precommit_eval"](snapshot))
+    finally:
+        tool_eval.run_precommit_eval.handler = original
+    # Must be candidate_failure (rejected), NOT success (promoted).
+    assert result["outcome"] == "candidate_failure"
+    assert result["result_digest"] == "0" * 64
+
+
 def test_recovery_reclaims_stale_running_lease_after_restart(tmp_path):
     """B2 regression: after a process restart, recover() must reclaim a stale
     "running" consumer effect (expired lease) instead of raising ValueError.

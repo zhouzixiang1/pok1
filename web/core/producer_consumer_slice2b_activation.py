@@ -951,6 +951,41 @@ def canonical_gate_runner_factory(next_v, source_v):
                             "name": name,
                         },
                     }
+                # GATE-VERDICT FAILURE CHECK: each canonical gate signals a
+                # genuine candidate failure through a gate-specific verdict
+                # field that is NEITHER top-level ``error`` NOR ``success``.
+                # Without these checks a failed gate (e.g. precommit native
+                # regression 0W-0L-0D, quality compile/smoke fail, or reviewer
+                # rejection) is misclassified as success and the candidate is
+                # wrongly PROMOTED -- then commit_bot's route guard blocks
+                # publication at the failed stage, wedging the generation.
+                #   run_quality_gates -> all_passed (tool_gates.py)
+                #   run_review        -> approved    (tool_gates_critic_review.py)
+                #   run_precommit_eval-> passed      (tool_eval.py)
+                # run_critic is ADVISORY (approved is always True; a low score
+                # is not a hard reject) so it is intentionally absent here.
+                # Test ``is False`` (not falsy) so a missing/None field on a
+                # non-verdict control-flow return is not treated as a failure.
+                _gate_verdict_failed = False
+                if name == "run_quality_gates" and data.get("all_passed") is False:
+                    _gate_verdict_failed = True
+                elif name == "run_review" and data.get("approved") is False:
+                    _gate_verdict_failed = True
+                elif name == "run_precommit_eval" and data.get("passed") is False:
+                    _gate_verdict_failed = True
+                if _gate_verdict_failed:
+                    return {
+                        "outcome": "candidate_failure",
+                        "result_digest": zero_digest,
+                        "detail": {
+                            "reason": "canonical_handler_gate_verdict_failed",
+                            "failure_class": data.get("failure_class"),
+                            "all_passed": data.get("all_passed"),
+                            "approved": data.get("approved"),
+                            "passed": data.get("passed"),
+                            "name": name,
+                        },
+                    }
                 if data.get("error") or data.get("success") is False:
                     return {
                         "outcome": "candidate_failure",
