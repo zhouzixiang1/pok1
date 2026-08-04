@@ -477,6 +477,42 @@ def select_acceptance_opponents(candidate_label: str, source_v: int | None, limi
     return chosen[:limit]
 
 
+# Cache directories/files forbidden inside a strict bot dir by
+# ``strict_artifact_layout_errors`` (bot_namespace.py).  Worker py_compile /
+# import-time compilation can leave these in the candidate dir; they must be
+# purged before native validation or the native match fails with 0W-0L-0D.
+_PURGE_CACHE_DIR_NAMES = frozenset({"__pycache__", ".pytest_cache"})
+_PURGE_CACHE_FILE_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+
+def _purge_execution_cache(bot_dir) -> None:
+    """Remove forbidden execution-cache artifacts from a candidate bot dir.
+
+    Deletes ``__pycache__``/``.pytest_cache`` directories and ``*.pyc``/``*.pyo``
+    files anywhere under ``bot_dir`` (non-recursive into the cache dirs
+    themselves -- ``shutil.rmtree`` handles those).  Only well-known cache
+    names/suffixes are touched; source files are never modified.  Failures are
+    swallowed (best-effort): a purge failure surfaces later as the original
+    ``artifact_execution_cache_directory_forbidden`` error, which is the same
+    outcome as not purging.
+    """
+    import shutil
+
+    try:
+        root = Path(bot_dir)
+        for path in root.rglob("*"):
+            try:
+                name = path.name
+                if path.is_dir() and name in _PURGE_CACHE_DIR_NAMES:
+                    shutil.rmtree(path, ignore_errors=True)
+                elif path.is_file() and path.suffix.lower() in _PURGE_CACHE_FILE_SUFFIXES:
+                    path.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _prepare_native_spec(
     label: str,
     bot_dir: Path,
@@ -490,6 +526,18 @@ def _prepare_native_spec(
     exception to the active ``bots/`` namespace is the receipt-bound first
     strict system control, which is validated by its own materializer.
     """
+
+    # PURGE execution-cache artifacts (``__pycache__``, ``.pytest_cache``,
+    # ``*.pyc``, ``*.pyo``) left in the candidate bot dir by Worker
+    # ``py_compile`` / import-time compilation.  ``strict_artifact_layout_errors``
+    # (bot_namespace.py) FORBIDS these, so without this purge a candidate that
+    # was py_compiled during quality gates reaches precommit contaminated and
+    # ``resolve_bot`` raises ``artifact_execution_cache_directory_forbidden``
+    # -> the native match produces 0W-0L-0D -> precommit wrongly fails as a
+    # strategy regression (observed: v46).  This purge is the single highest-
+    # leverage fix for that failure class.  It only removes well-known cache
+    # names/suffixes inside the bot dir; it never touches source files.
+    _purge_execution_cache(bot_dir)
 
     from bot_artifact import canonical_digest, hash_path
     from bot_namespace import (
