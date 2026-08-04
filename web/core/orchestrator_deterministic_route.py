@@ -1096,6 +1096,15 @@ async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
             consumer_slot, next_v, source_v, published_primary=parked_primary
         )
         return False
+    if activation.ledger.is_terminal(candidate_id) and not activation.ledger.is_promoted(candidate_id):
+        # Defense-in-depth: a REJECTED candidate reaching the commit_bot barrier
+        # (e.g. via a future checkpoint-stage race) must NOT proceed to
+        # await_promotion, which raises Slice2bError(one_ahead_barrier_rejected)
+        # and would propagate as an unhandled infra crash.  Route to the
+        # canonical rejected-candidate abandon path instead (return False so the
+        # router re-derives the next route, where _slice2b_consumer_rejected
+        # drives the abandon).
+        return False
     # Slice 2b owns this publication: wait for the consumer to finish.
     await activation.await_promotion(candidate_id=candidate_id)
     # FROZEN-SNAPSHOT ISOLATION: collapse the consumer slot's final checkpoint

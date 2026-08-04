@@ -53,13 +53,15 @@ _SYSTEM_DETERMINISTIC_ROUTE = ContextVar(
 # Marks a gate call running INSIDE the Slice-2b consumer's in-chain gate loop.
 # The consumer dispatcher drives run_quality_gates -> run_review -> run_critic
 # -> run_precommit_eval in a fixed order (CONSUMER_GATE_CHAIN_ORDER) under
-# active_slot_override(consumer_slot); its frozen-snapshot slot checkpoint
-# deliberately stays at ``workers_done`` for the whole chain.  Without this
-# marker the stage-ordering route guard would block review/critic/precommit at
-# ``workers_done`` (which only allows run_quality_gates).  When this flag is
-# set, the route guard skips stage-ordering for pipeline-route tools: the gate
-# sequence is already authoritatively owned by the dispatcher, not by the
-# checkpoint stage.  (The worktree/branch/HEAD guards still apply.)
+# active_slot_override(consumer_slot).  The canonical handlers advance the
+# consumer slot's stage (workers_done -> quality_passed -> reviewed ->
+# critic_checked -> verified) as each gate succeeds, BUT the route guard reads
+# the checkpoint concurrently with those writes and can transiently observe a
+# not-yet-advanced stage, blocking the next gate with wrong_pipeline_stage.
+# When this flag is set, the route guard skips stage-ordering for pipeline-
+# route tools: the gate sequence is authoritatively owned by the dispatcher's
+# CONSUMER_GATE_CHAIN_ORDER, not by the checkpoint stage.  (The worktree/
+# branch/HEAD guards still apply.)
 _CONSUMER_IN_CHAIN_GATE = ContextVar(
     "pok_consumer_in_chain_gate",
     default=False,
