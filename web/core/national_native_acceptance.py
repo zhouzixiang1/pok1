@@ -30,6 +30,13 @@ import national_native as _nn
 def _acceptance_opponent_runtime_mode(label: str, path: Path) -> str:
     """Prove that an acceptance opponent is a strict direct artifact."""
 
+    # An in-flight crossover smoke opponent (a frozen-parent content-addressed
+    # snapshot under RESULTS_DIR/workflow/artifacts/) bypasses resolve_bot
+    # (which requires bots/).  It was already structurally validated (the five
+    # strict ABI files) by run_native_tcp_smoke's in_flight_opponent_dir path,
+    # so trust the label prefix here.
+    if label.startswith("in_flight_crossover_smoke_opponent:"):
+        return "direct_content_bound_policy_artifact"
     resolved_label, resolved_path = _nn.resolve_bot(path)
     if resolved_label != label or resolved_path != Path(path).absolute():
         raise RuntimeError("strict_policy_opponent_identity_mismatch")
@@ -47,6 +54,7 @@ async def run_native_tcp_smoke(
     timing_plan: _nn.NativeMatchTimingPlan | dict[str, Any] | None = None,
     progress_callback: Any = None,
     in_flight_candidate_dir: str | Path | None = None,
+    in_flight_opponent_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run a minimal direct-TCP national smoke match for a candidate bot.
 
@@ -54,10 +62,14 @@ async def run_native_tcp_smoke(
     candidate that has not yet been materialized under ``bots/``: the candidate
     is validated structurally (the five strict ABI files must be present) and
     run from its transient workspace directory, bypassing the strict-namespace
-    ``resolve_bot`` (which requires ``bots/``). The opponent is still resolved
-    through ``resolve_bot`` so a transient candidate can never masquerade as a
-    published strict artifact. The synthetic label is namespaced so it can
-    never collide with a real ``national_cloud_v*`` bot.
+    ``resolve_bot`` (which requires ``bots/``).  ``in_flight_opponent_dir`` is
+    the analogous opt-in for the opponent when it is a frozen-parent snapshot
+    (content-addressed artifact-store path, not a published ``bots/`` artifact):
+    it is structurally validated and run directly, bypassing ``resolve_bot``.
+    Without it the crossover smoke opponent (a frozen snapshot) is rejected by
+    ``resolve_bot`` as "outside the active strict namespace" and every crossover
+    smoke fails deterministically.  The synthetic labels are namespaced so they
+    can never collide with a real ``national_cloud_v*`` bot.
     """
     hands = max(1, min(70, int(hands)))
     if in_flight_candidate_dir is not None:
@@ -108,6 +120,36 @@ async def run_native_tcp_smoke(
         }
     if self_play:
         opponents = [(candidate_label, candidate_dir)]
+    elif in_flight_opponent_dir is not None:
+        # The opponent is a frozen-parent content-addressed snapshot (e.g. the
+        # crossover's frozen_parent_a_dir under RESULTS_DIR/workflow/artifacts/),
+        # NOT a published bots/ artifact.  resolve_bot would reject it as
+        # "outside the active strict namespace".  Validate it structurally (the
+        # five strict ABI files) and run it directly, mirroring the candidate's
+        # in_flight path.
+        from bot_namespace import STRICT_ARTIFACT_FILES
+
+        opp_dir = Path(in_flight_opponent_dir).expanduser()
+        opp_dir = Path(os.path.abspath(os.fspath(opp_dir)))
+        opp_missing = [
+            name
+            for name in STRICT_ARTIFACT_FILES
+            if not (opp_dir / name).is_file()
+        ]
+        if opp_missing:
+            return {
+                "candidate": candidate_label,
+                "passed": False,
+                "execution_mode": "native_tcp",
+                "hands": hands,
+                "issues": [
+                    f"native_smoke_opponent_error=missing_strict_artifacts:"
+                    f"{','.join(sorted(opp_missing))}"
+                ],
+                "outcome": "infrastructure_failure",
+                "failure_side": "opponent",
+            }
+        opponents = [(f"in_flight_crossover_smoke_opponent:{opp_dir.name}", opp_dir)]
     elif opponent_token is not None:
         try:
             opponents = [_nn.resolve_bot(opponent_token)]

@@ -122,3 +122,77 @@ def test_native_wrapper_forwards_in_flight_candidate_dir(monkeypatch, tmp_path):
     assert report["passed"] is True
     # The wrapper forwarded the kwarg (the bug was that it did not).
     assert forwarded["kwargs"].get("in_flight_candidate_dir") == workspace
+
+
+def test_in_flight_opponent_bypasses_resolve_bot(monkeypatch, tmp_path):
+    """A frozen-parent opponent snapshot (artifact-store path) must bypass
+    resolve_bot, mirroring the in-flight candidate path.
+
+    Regression: the crossover smoke passed opponent_token=frozen_parent_a_dir
+    (a RESULTS_DIR/workflow/artifacts/ path), but resolve_bot rejected it as
+    "outside the active strict namespace" -> every crossover smoke failed
+    deterministically (48 failures observed).  in_flight_opponent_dir lets the
+    opponent run structurally, just like the candidate.
+    """
+    candidate_dir = tmp_path / "crossover_workspaces" / "v50-attempt-1"
+    opponent_dir = tmp_path / "workflow" / "artifacts" / "frozen_parent_a"
+    for d in (candidate_dir, opponent_dir):
+        d.mkdir(parents=True)
+        for name in STRICT_ARTIFACT_FILES:
+            (d / name).write_text("# strict abi placeholder\n", encoding="utf-8")
+
+    resolve_calls: list[str] = []
+
+    def fake_resolve_bot(token):
+        resolve_calls.append(str(token))
+        raise AssertionError(
+            f"resolve_bot must not be called for in-flight opponent: {token}"
+        )
+
+    monkeypatch.setattr(national_native_mod, "resolve_bot", fake_resolve_bot)
+
+    async def fake_pair(candidate_dir, opponent_dir, hands, **_kwargs):
+        return {"passed": True}
+
+    monkeypatch.setattr(national_native_mod, "run_native_tcp_pair", fake_pair)
+
+    import asyncio
+
+    report = asyncio.run(national_native_acceptance.run_native_tcp_smoke(
+        candidate_dir,
+        source_v=27,
+        hands=1,
+        in_flight_candidate_dir=candidate_dir,
+        in_flight_opponent_dir=opponent_dir,
+    ))
+
+    # Neither candidate nor opponent went through resolve_bot.
+    assert resolve_calls == []
+    assert report["passed"] is True
+
+
+def test_in_flight_opponent_missing_artifacts_is_infra_failure(tmp_path):
+    """An in-flight opponent dir missing strict ABI files fails closed."""
+    candidate_dir = tmp_path / "candidate"
+    opponent_dir = tmp_path / "opponent"
+    candidate_dir.mkdir(parents=True)
+    opponent_dir.mkdir(parents=True)
+    for name in STRICT_ARTIFACT_FILES:
+        (candidate_dir / name).write_text("#\n", encoding="utf-8")
+    # opponent dir is EMPTY (missing ABI files)
+
+    import asyncio
+
+    report = asyncio.run(national_native_acceptance.run_native_tcp_smoke(
+        candidate_dir,
+        source_v=27,
+        opponent_token=opponent_dir,
+        hands=1,
+        in_flight_candidate_dir=candidate_dir,
+        in_flight_opponent_dir=opponent_dir,
+    ))
+
+    assert report["passed"] is False
+    assert report["outcome"] == "infrastructure_failure"
+    assert report["failure_side"] == "opponent"
+    assert "missing_strict_artifacts" in " ".join(report["issues"])
