@@ -842,30 +842,59 @@ class CandidateLifecycle:
     ) -> int:
         """Atomically reserve a distinct ``next_v`` for draft ``slot_id``.
 
-        Returns the reserved version: ``max(floor_next_v, highest unreleased
-        reserved_next_v) + 1``.  This is what makes multi-ahead work -- without
-        it, two drafts would both derive the same ``floor + 1`` and collide on
-        the same bot directory / workflow_run_id.  Idempotent per slot: re-
-        reserving the same slot returns its existing reservation.
+        Returns the reserved version, always ``>= floor_next_v + 1``.  This is
+        what makes multi-ahead work -- without it, two drafts would both derive
+        the same ``floor + 1`` and collide on the same bot directory /
+        workflow_run_id.
+
+        Idempotent per slot for a SINGLE in-flight draft, BUT the reservation is
+        RECONCILED UPWARD against the caller's current ``floor_next_v``: if the
+        primary has advanced since the reservation was first made (e.g. a prior
+        primary was rejected and a higher next_v is now in flight), the stale
+        reservation is bumped to ``floor_next_v + 1``.  Without this
+        reconciliation a reservation orphaned by a primary generation change
+        would persist a stale ``reserved_next_v`` equal to the NEW primary's
+        next_v -- a version collision that defeats one-ahead.
         """
         _require_safe_id(slot_id, "slot_id")
         now = time.time()
+        floor = int(floor_next_v)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # Highest reservation EXCLUDING this slot's own (so re-reserving the
+            # same slot does not inflate the floor against itself).
+            highest = connection.execute(
+                "SELECT MAX(reserved_next_v) AS m FROM draft_version_reservation "
+                "WHERE released_at IS NULL AND slot_id != ?",
+                (slot_id,),
+            ).fetchone()
+            highest_v = int(highest["m"]) if highest["m"] is not None else 0
             existing = connection.execute(
                 "SELECT reserved_next_v FROM draft_version_reservation "
                 "WHERE slot_id = ? AND released_at IS NULL",
                 (slot_id,),
             ).fetchone()
             if existing is not None:
+                cur = int(existing["reserved_next_v"])
+                # Reconcile upward: the floor reflects the live primary's
+                # next_v (passed by prepare_generation).  A stale reservation
+                # below floor+1 must be bumped to avoid colliding with the
+                # primary's own next_v.  Never regress (a concurrent higher
+                # reservation wins).  ``highest_v`` excludes this slot, so a
+                # same-floor re-reserve stays stable (no self-inflation).
+                needed = max(floor, highest_v) + 1
+                if cur < needed:
+                    connection.execute(
+                        "UPDATE draft_version_reservation "
+                        "SET reserved_next_v=?, candidate_id=?, created_at=?, "
+                        "released_at=NULL WHERE slot_id=?",
+                        (needed, candidate_id, now, slot_id),
+                    )
+                    connection.commit()
+                    return needed
                 connection.commit()
-                return int(existing["reserved_next_v"])
-            highest = connection.execute(
-                "SELECT MAX(reserved_next_v) AS m FROM draft_version_reservation "
-                "WHERE released_at IS NULL"
-            ).fetchone()
-            highest_v = int(highest["m"]) if highest["m"] is not None else 0
-            reserved = max(int(floor_next_v), highest_v) + 1
+                return cur
+            reserved = max(floor, highest_v) + 1
             connection.execute(
                 "INSERT INTO draft_version_reservation"
                 "(slot_id, reserved_next_v, candidate_id, created_at, released_at) "

@@ -1060,6 +1060,30 @@ def test_reserve_draft_version_is_idempotent_per_slot(tmp_path):
     assert v1 == v1_again
 
 
+def test_reserve_draft_version_reconciles_upward_when_floor_advances(tmp_path):
+    """A stale reservation is bumped when the primary's next_v has advanced.
+
+    Regression: ``reserve_draft_version`` used to return a persisted
+    ``reserved_next_v`` verbatim and ignore the caller's fresh ``floor_next_v``.
+    When the primary was rejected/abandoned and a higher next_v became in
+    flight, the orphaned draft reservation persisted a stale value equal to the
+    NEW primary's next_v -- a version collision that defeated one-ahead (draft
+    and primary both prepared the same version).  Re-reserving with a higher
+    floor must bump the reservation to ``floor + 1``.
+    """
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    # First reservation against a primary floor of 142 -> draft v143.
+    v1 = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=142)
+    assert v1 == 143
+    # Primary advanced to next_v=145 (e.g. prior primary rejected, new primary
+    # is v145).  Re-reserving the same slot with the higher floor must bump.
+    v2 = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=145)
+    assert v2 == 146  # floor + 1, NOT the stale 143
+    # Idempotent again at the new floor.
+    v2_again = lifecycle.reserve_draft_version(slot_id="draft1", floor_next_v=145)
+    assert v2_again == 146
+
+
 def test_release_draft_version_frees_slot_for_reuse(tmp_path):
     """After release, the slot can be reserved again at a new version."""
     lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")

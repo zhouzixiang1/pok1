@@ -1439,6 +1439,25 @@ def _reconcile_orphan_draft_at_boot(ui):
         and next_v > 0
         and next_v <= published_high_water
     )
+    # COLLISION CHECK: a draft whose next_v equals the PRIMARY's in-flight
+    # next_v is a version collision (the one-ahead draft must be strictly
+    # ahead of the primary).  This arises when a prior primary was rejected/
+    # abandoned and the orphaned draft reservation persisted a stale next_v
+    # that the new primary then claimed.  Reap it so the next launch allocates
+    # a fresh primary_next_v + 1 (reserve_draft_version now reconciles this,
+    # but a stale draft CHECKPOINT file also needs clearing at boot).
+    if not is_stale and next_v > 0:
+        try:
+            from evolution_infra import no_slot_override, read_pipeline_checkpoint
+
+            with no_slot_override():
+                _primary_ckpt = read_pipeline_checkpoint()
+            if isinstance(_primary_ckpt, dict):
+                _primary_next_v = int(_primary_ckpt.get("next_v") or 0)
+                if _primary_next_v > 0 and next_v == _primary_next_v:
+                    is_stale = True
+        except Exception:
+            pass
 
     if stage == "workers_done":
         # Complete one-ahead buffer: best-effort promote (CAS-safe).  If the
