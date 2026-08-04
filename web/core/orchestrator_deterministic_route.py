@@ -808,6 +808,18 @@ def _promote_consumer_slot_to_primary(
             )
         except Exception:
             pass
+        # TERMINAL CLEANUP: now that the consumer slot's evidence has been
+        # collapsed onto the primary, clear the consumer slot checkpoint file so
+        # it does not orphan (an orphan consumer slot file replays stale gate
+        # evidence if the version is ever reused).  Best-effort: the collapse
+        # already succeeded; a clear failure leaves a harmless history file.
+        if ok:
+            try:
+                from evolution_infra import clear_pipeline_checkpoint
+
+                clear_pipeline_checkpoint(slot_id=consumer_slot_id)
+            except Exception:
+                pass
     return ok
 
 

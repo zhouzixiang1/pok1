@@ -1177,6 +1177,55 @@ class ConsumerDispatcher:
         except Exception:
             return None
 
+    def _finalize_terminal_candidate(
+        self,
+        *,
+        candidate_id: str,
+        lease: Mapping[str, Any],
+        outcome: str,
+        now: float,
+    ) -> None:
+        """Best-effort cleanup when a candidate reaches a terminal state.
+
+        The Slice-2b lifecycle has two independent terminal signals (the FSM
+        promote/reject here, and the orchestrator abandon transaction).  Neither
+        used to close the consumer envelope effect, so it orphaned in ``running``
+        status forever (the dispatcher never called ``complete``/``cancel``).
+        An orphan ``running`` consumer effect can wedge a future ``recover()``
+        while its lease is live, or be cross-claimed by the unscoped
+        ``find_running_consumer_effect``.
+
+        This hook CLOSES THE EFFECT (cancel) immediately after the terminal
+        transition, keyed off the lease that this dispatch round holds.  It does
+        NOT clear the consumer slot checkpoint here: on promotion the consumer
+        slot must survive until the orchestrator's promotion barrier collapses
+        it onto the primary (``_promote_consumer_slot_to_primary`` reads it).
+        The consumer slot file is cleared by the barrier after a successful
+        collapse; on rejection it is left as history (the version advances, so
+        it cannot collide).
+
+        Best-effort: a cleanup failure is swallowed but never undoes the
+        terminal transition or blocks the promotion barrier.
+        """
+        effect_id = str(lease.get("effect_id") or "")
+        if effect_id:
+            try:
+                self._adapter.cancel(
+                    effect_id,
+                    expected_status=str(lease.get("status") or "running"),
+                    expected_attempt=int(lease.get("attempt") or 1),
+                    expected_lease_epoch=int(lease.get("lease_epoch") or 0),
+                    expected_owner=str(lease.get("lease_owner") or self._owner),
+                    reason=f"consumer_candidate_{outcome}",
+                    cancel_id=f"slice2b-terminal-{candidate_id}-{int(now)}",
+                    now=now,
+                )
+            except Exception:
+                # The effect may already be cancelled/completed (e.g. a prior
+                # terminal attempt), or the lease fields may not match.  Either
+                # way the candidate is already terminal; do not block on it.
+                pass
+
     async def run_once(
         self,
         *,
@@ -1327,6 +1376,12 @@ class ConsumerDispatcher:
                     reason=f"gate_failed:{gate_name}",
                     completed_at=now,
                 )
+                # TERMINAL CLEANUP (see promote path): close the consumer effect
+                # and clear the consumer slot checkpoint so they do not orphan.
+                self._finalize_terminal_candidate(
+                    candidate_id=candidate_id, lease=lease,
+                    outcome="candidate_failure", now=now,
+                )
                 return {
                     "dispatched": True,
                     "candidate_id": candidate_id,
@@ -1363,6 +1418,15 @@ class ConsumerDispatcher:
             candidate_id=candidate_id,
             promotion_receipt=promotion_receipt,
             completed_at=now,
+        )
+        # TERMINAL CLEANUP: the candidate reached a terminal state.  Close the
+        # consumer envelope effect and clear the consumer slot checkpoint so
+        # they do not orphan (orphan running effects wedge future recover();
+        # an orphan consumer slot file replays stale evidence if the version is
+        # ever reused).  Best-effort: a cleanup failure must not undo the
+        # terminal transition or block the promotion barrier.
+        self._finalize_terminal_candidate(
+            candidate_id=candidate_id, lease=lease, outcome="promoted", now=now
         )
         return {
             "dispatched": True,

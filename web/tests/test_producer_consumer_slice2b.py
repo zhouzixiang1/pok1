@@ -327,6 +327,11 @@ def test_consumer_dispatcher_rejects_on_candidate_failure(tmp_path):
     assert "run_quality_gates" in entry["gate_results"]
     assert "run_review" in entry["gate_results"]
     assert "run_critic" not in entry["gate_results"]
+    # TERMINAL CLEANUP: the consumer envelope effect must be CLOSED (cancelled)
+    # on rejection, not left "running" to orphan and wedge future dispatch.
+    effects = adapter.store.effects_for_run("draft-v143")
+    assert len(effects) == 1
+    assert effects[0]["status"] == "abandoned"
 
 
 def test_consumer_dispatcher_pauses_on_infrastructure_failure(tmp_path):
