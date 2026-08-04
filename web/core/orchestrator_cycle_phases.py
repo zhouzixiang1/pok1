@@ -48,7 +48,7 @@ async def _cycle_phase_a_setup(ui, log_file, one_gen, dry_run, max_turns,
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
     _orch.set_cycle_start_time(_orch.time.time())
     context = _orch._build_context(one_gen=one_gen, dry_run=dry_run, gen_ctx=gen_ctx)
-    from llm_query import render_llm_prompt
+    from llm_query import render_llm_prompt, _llm_thinking_options
 
     rendered_prompt = render_llm_prompt(
         "Orchestrator",
@@ -142,7 +142,16 @@ async def _cycle_phase_a_setup(ui, log_file, one_gen, dry_run, max_turns,
         disallowed_tools=_BLOCKED_MCP_TOOLS,
         hooks=_hooks,
         max_turns=max_turns,
-        thinking={"type": "adaptive"},  # let Claude decide thinking depth (was disabled to dodge an old SDK signature bug; adaptive is now the documented default)
+        # CRITICAL: use the centralized _llm_thinking_options() (POK_LLM_THINKING_MODE),
+        # NOT a hardcoded {"type": "adaptive"}.  GLM-5.2 + adaptive is a KNOWN
+        # DEATH-LOOP: it emits 16k-19k+ thinking tokens without ever producing
+        # visible output, wedging the orchestrator's own provider stream for
+        # 50+ minutes per cycle (observed 2026-08-05: PID 3943696 ran 52 min on
+        # --thinking adaptive, never converging).  The documented reliable mode
+        # is {"type": "enabled", "budget_tokens": <large>} (soft target, GLM
+        # reasons deeply then converges).  See AGENTS.md "LLM provider and
+        # extended thinking" and llm_role_observability._llm_thinking_options.
+        **_llm_thinking_options(),
     )
 
     total_cost = 0.0
@@ -1458,7 +1467,11 @@ async def _cycle_phase_b_stream_session(ctx, ui, log_file, gen_ctx,
                     disallowed_tools=_BLOCKED_MCP_TOOLS,
                     hooks={**_orch._make_precompact_hook(), **_orch._make_bot_dir_guard_hook()},
                     max_turns=max_turns,
-                    thinking={"type": "adaptive"},  # let Claude decide thinking depth
+                    # CRITICAL: same as the main loop above — do NOT hardcode
+                    # {"type": "adaptive"} (GLM death-loop).  Use the centralized
+                    # _llm_thinking_options() so POK_LLM_THINKING_MODE controls
+                    # this stream too.
+                    **_llm_thinking_options(),
                 )
                 for backoff in [30, 60, 120]:
                     if ui:
