@@ -391,15 +391,29 @@ def test_consumer_task_rejects_on_candidate_failure(tmp_path):
     assert activation.producer_may_prepare_next() is False  # 0 in flight
 
 
-def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
-    """A gate runner that raises is logged as an infrastructure failure.
+def test_consumer_task_escalates_persistent_infrastructure_failure_to_reject(
+    monkeypatch, tmp_path
+):
+    """A gate runner that persistently raises (infrastructure_failure) is
+    eventually rejected after the bounded infra-retry budget is exhausted.
 
-    The dispatcher records the infrastructure failure and leaves the ledger
-    ``running`` so a future retry can resume on the same envelope (the
-    canonical contract).  The promotion barrier therefore never observes a
-    promoted entry for this candidate and fails closed -- publication does NOT
-    proceed.  This is the fail-closed guarantee for infra errors.
+    Previously the dispatcher recorded one ``infrastructure_failure`` and
+    returned (one-shot ``run_once``), leaving the candidate wedged in
+    ``consuming`` forever — the orchestrator loop re-launched the task every
+    ~45s but each relaunch re-ran the same gate and hit the same infra signal,
+    never escalating (the documented v52 wedge, 2026-08-04).  The bounded retry
+    loop now re-drives ``run_once`` and escalates to a terminal reject once the
+    same gate pauses infra more than ``DEFAULT_CONSUMER_INFRA_RETRY_BUDGET``
+    times consecutively, so a *persistent* infra condition cannot spin until
+    the 4h lease expires.
+
+    Budget/backoff are pinned small here so the test is deterministic and fast.
     """
+
+    import producer_consumer_slice2b_activation as mod
+
+    monkeypatch.setattr(mod, "DEFAULT_CONSUMER_INFRA_RETRY_BUDGET", 1)
+    monkeypatch.setattr(mod, "DEFAULT_CONSUMER_INFRA_BACKOFF_SECONDS", 0.0)
 
     activation = Slice2bActivation(adapter=_adapter(tmp_path))
     snapshot = _snapshot()
@@ -417,19 +431,70 @@ def test_consumer_task_records_infrastructure_failure_as_running(tmp_path):
 
     entry = activation.ledger.snapshot(candidate_id)
     assert entry is not None
-    # The dispatcher paused on infrastructure failure; the ledger is NOT
-    # promoted, so the promotion barrier cannot release publication.
+    # The ledger is NOT promoted, so the promotion barrier cannot release
+    # publication -- this remains the fail-closed guarantee for infra errors.
     assert entry["validation_outcome"] != "promoted"
-    # The infrastructure failure was recorded against the first gate.
+    # The first gate recorded at least one infrastructure_failure before the
+    # budget escalation drove the ledger to a terminal REJECT.
     gates = entry["gate_results"]
     assert gates
     first_gate = next(iter(gates))
     assert gates[first_gate]["outcome"] == "infrastructure_failure"
-    # The candidate is still in flight (infra retries, not terminal), so the
-    # bounded SEAL buffer is full (max_ahead=1 -> no room to seal another), but
-    # drafting (prepare_next) is UNBOUNDED and stays True (>=1 in flight).
-    assert activation.producer_may_prepare_next() is True  # unbounded draft
-    assert activation.producer_may_advance() is False  # bounded seal (max_ahead=1)
+    # The candidate reached a TERMINAL reject (no longer wedged in
+    # ``consuming`` until lease expiry), so the one-ahead seal slot is freed.
+    assert activation.ledger.is_terminal(candidate_id)
+    assert entry["validation_outcome"] == "rejected"
+
+
+def test_consumer_task_retries_transient_infrastructure_failure(monkeypatch, tmp_path):
+    """A *transient* infrastructure_failure (succeeds on retry) does NOT reject.
+
+    The gate fails infra once then succeeds; the bounded retry loop re-drives
+    ``run_once`` (which resumes at the same gate because its recorded outcome is
+    non-success), the gate passes on the second attempt, and the candidate is
+    promoted normally.  This confirms the retry loop does not over-eagerly
+    reject genuinely-transient blips.
+    """
+
+    import producer_consumer_slice2b_activation as mod
+
+    monkeypatch.setattr(mod, "DEFAULT_CONSUMER_INFRA_RETRY_BUDGET", 5)
+    monkeypatch.setattr(mod, "DEFAULT_CONSUMER_INFRA_BACKOFF_SECONDS", 0.0)
+
+    activation = Slice2bActivation(adapter=_adapter(tmp_path))
+    snapshot = _snapshot()
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+
+    call_counts: dict[str, int] = {}
+
+    def factory():
+        def make(name):
+            async def run(snapshot):
+                call_counts[name] = call_counts.get(name, 0) + 1
+                # The first gate (run_quality_gates) blips infra once, then
+                # passes.  Every other gate passes immediately.
+                if name == "run_quality_gates" and call_counts[name] == 1:
+                    return {
+                        "outcome": "infrastructure_failure",
+                        "result_digest": DIGESTS["0"],
+                        "detail": {"gate": name},
+                    }
+                return {
+                    "outcome": "success",
+                    "result_digest": DIGESTS["3"],
+                    "detail": {"gate": name},
+                }
+            return run
+        return {name: make(name) for name in GATE_CHAIN_ORDER}
+
+    _run_consumer(activation, candidate_id, factory)
+
+    entry = activation.ledger.snapshot(candidate_id)
+    assert entry is not None
+    # The transient blip was retried and the chain completed -> promoted.
+    assert entry["validation_outcome"] == "promoted"
+    assert call_counts.get("run_quality_gates") == 2
 
 
 # ---------------------------------------------------------------------------

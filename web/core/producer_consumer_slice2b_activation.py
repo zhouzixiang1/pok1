@@ -84,6 +84,25 @@ DEFAULT_CONSUMER_LEASE_SECONDS = float(
     os.environ.get("POK_SLICE2B_CONSUMER_LEASE_SECONDS", "14400.0")
 )
 
+# Bounded infra-failure retry budget for the consumer gate chain.  When a gate
+# returns ``infrastructure_failure`` (a transient retry signal: native smoke
+# hiccup, sandbox mount race, quota blip), ``run_once`` records the failure and
+# returns WITHOUT rejecting — the consumer task then re-drives ``run_once``,
+# which resumes at the same gate (its recorded outcome is non-success).  Without
+# a budget the task would spin on a *persistent* infra condition until the 4h
+# lease expires, wedging the generation (the documented v52 wedge, 2026-08-04).
+# After this many consecutive infra failures at the SAME gate, the candidate is
+# rejected so the pipeline advances.  Override via env for stress tuning.
+DEFAULT_CONSUMER_INFRA_RETRY_BUDGET = int(
+    os.environ.get("POK_SLICE2B_CONSUMER_INFRA_RETRY_BUDGET", "5")
+)
+# Backoff between consecutive infra-failure retries at the same gate.  Kept
+# short so a genuinely transient blip clears within a couple of minutes; a
+# persistent condition hits the budget and rejects inside ~budget*backoff.
+DEFAULT_CONSUMER_INFRA_BACKOFF_SECONDS = float(
+    os.environ.get("POK_SLICE2B_CONSUMER_INFRA_BACKOFF_SECONDS", "30.0")
+)
+
 
 def slice2b_active(context: Mapping[str, Any] | None = None) -> bool:
     """Return True iff the operator has explicitly enabled Slice 2b.
@@ -355,13 +374,14 @@ class Slice2bActivation:
         async def _run_gate_chain() -> None:
             gates = gate_runner_factory()
 
-            async def _dispatch() -> None:
-                await dispatcher.run_once(
+            async def _dispatch() -> dict[str, Any]:
+                result = await dispatcher.run_once(
                     sealed_snapshots={candidate_id: snapshot},
                     gates=gates,
                     now=dispatch_now,
                     lease_seconds=lease_seconds,
                 )
+                return result if isinstance(result, dict) else {"dispatched": False}
 
             try:
                 # FROZEN-SNAPSHOT ISOLATION: run the entire gate chain under
@@ -396,11 +416,104 @@ class Slice2bActivation:
 
                 _nonce_token = activate_native_match_dispatch_nonce(_consumer_nonce)
                 try:
-                    if slot_override_ctx is not None and consumer_slot_id is not None:
-                        with slot_override_ctx(consumer_slot_id):
-                            await _dispatch()
-                    else:
-                        await _dispatch()
+                    # BOUNDED RETRY LOOP (was a one-shot ``await _dispatch()``).
+                    # ``run_once`` resumes from the last persisted gate (it skips
+                    # every gate already recorded as ``success``), so looping it
+                    # advances the chain one gate at a time.  But a gate that
+                    # returns ``infrastructure_failure`` records the failure and
+                    # RETURNS (it does not reject, and there is no internal
+                    # retry), so a one-shot call leaves the candidate wedged in
+                    # ``consuming`` forever — the orchestrator loop re-launches
+                    # this task every ~45s but each relaunch re-runs the same
+                    # gate and hits the same transient infra signal, never
+                    # escalating.  The loop below re-drives ``run_once`` with a
+                    # bounded infra-failure budget per gate so a persistent infra
+                    # condition escalates to a terminal reject instead of
+                    # spinning until the 4h lease expires.
+                    #
+                    # Budget rationale: infra failures are meant to be transient
+                    # (native smoke hiccup, sandbox mount race, quota blip).  A
+                    # handful of backoff retries absorbs the transient case; if
+                    # the SAME gate keeps failing infra, the condition is not
+                    # transient and the candidate must be rejected so the
+                    # pipeline advances.  The effect's own ``max_attempts`` (3)
+                    # is not a good budget here because it counts envelope
+                    # lease/recover cycles (cross-restart), not in-process
+                    # gate retries.
+                    max_infra_retries_per_gate = DEFAULT_CONSUMER_INFRA_RETRY_BUDGET
+                    infra_backoff_seconds = DEFAULT_CONSUMER_INFRA_BACKOFF_SECONDS
+                    infra_streak_gate: str | None = None
+                    infra_streak_count = 0
+                    while not ledger.is_terminal(candidate_id):
+                        if (
+                            slot_override_ctx is not None
+                            and consumer_slot_id is not None
+                        ):
+                            with slot_override_ctx(consumer_slot_id):
+                                result = await _dispatch()
+                        else:
+                            result = await _dispatch()
+                        # ``run_once`` returns ``dispatched=False`` when there is
+                        # no leasable envelope (e.g. another dispatcher instance
+                        # holds it).  That is not terminal and not an infra
+                        # pause; break and let the loop re-launch us later.
+                        if not result.get("dispatched"):
+                            break
+                        reason = result.get("reason")
+                        # Both ``infrastructure_failure`` (a gate returned an
+                        # infra-class outcome) and ``gate_runner_raised`` (a gate
+                        # runner threw, recorded as infrastructure_failure by the
+                        # dispatcher) are infra pauses: the dispatcher recorded a
+                        # non-success outcome and returned WITHOUT rejecting.
+                        # Either way the same gate is stuck and must be retried
+                        # under the bounded budget.
+                        is_infra_pause = reason in (
+                            "infrastructure_failure",
+                            "gate_runner_raised",
+                        )
+                        paused_gate = (
+                            result.get("paused_at_gate")
+                            or result.get("failed_at_gate")
+                        )
+                        if not is_infra_pause:
+                            # success / candidate_failure / promote already drove
+                            # the ledger terminal (or advanced past the gate); if
+                            # the ledger is still non-terminal the chain simply
+                            # continues to the next gate on the next iteration.
+                            infra_streak_gate = None
+                            infra_streak_count = 0
+                            continue
+                        # infrastructure_failure pause: the same gate recorded a
+                        # non-success outcome.  Track how many times the SAME
+                        # gate has paused infra consecutively; if it exceeds the
+                        # budget, escalate to a terminal reject so we do not
+                        # spin until lease expiry.
+                        if paused_gate == infra_streak_gate:
+                            infra_streak_count += 1
+                        else:
+                            infra_streak_gate = paused_gate
+                            infra_streak_count = 1
+                        if infra_streak_count > max_infra_retries_per_gate:
+                            # The candidate is already CONSUMING (the dispatcher
+                            # transitioned SEALED->CONSUMING at the first
+                            # run_once), so ``reject`` is a valid terminal
+                            # transition (CONSUMING -> REJECTED).  Do NOT call
+                            # ``start`` here: start() seeds a brand-new candidate
+                            # (None -> SEALED) and would raise on an already-
+                            # consuming row.
+                            ledger.reject(
+                                candidate_id=candidate_id,
+                                reason=(
+                                    f"consumer_infra_failure_budget_exhausted:"
+                                    f"{paused_gate}:{infra_streak_count}"
+                                ),
+                                completed_at=time.time(),
+                            )
+                            break
+                        # Transient infra pause: back off briefly, then let the
+                        # loop re-enter run_once (which resumes at the same gate
+                        # because its recorded outcome is non-success).
+                        await asyncio.sleep(infra_backoff_seconds)
                 finally:
                     reset_native_match_dispatch_nonce(_nonce_token)
             except Exception:
