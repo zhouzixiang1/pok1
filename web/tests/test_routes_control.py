@@ -283,8 +283,34 @@ class TestConfig:
         import server.state as state
 
         monkeypatch.setattr(state.os, "cpu_count", lambda: None)
+        monkeypatch.delenv("POK_DAEMON_WORKERS", raising=False)
 
         assert state._default_daemon_workers() == 1
+
+    def test_daemon_workers_env_override(self, monkeypatch):
+        import server.state as state
+
+        monkeypatch.setenv("POK_DAEMON_WORKERS", "2")
+        assert state._default_daemon_workers() == 2
+
+    def test_daemon_workers_env_override_clamps_invalid(self, monkeypatch):
+        import server.state as state
+
+        monkeypatch.setattr(state.os, "cpu_count", lambda: 4)
+        monkeypatch.setenv("POK_DAEMON_WORKERS", "0")
+        assert state._default_daemon_workers() == 3  # falls back to CPU default
+
+    def test_daemon_pairs_env_override(self, monkeypatch):
+        import server.state as state
+
+        monkeypatch.setenv("POK_DAEMON_PAIRS", "1")
+        assert state._default_daemon_pairs() == 1
+
+    def test_daemon_pairs_default_without_env(self, monkeypatch):
+        import server.state as state
+
+        monkeypatch.delenv("POK_DAEMON_PAIRS", raising=False)
+        assert state._default_daemon_pairs() == 5
 
     def test_daemon_pairs_cap_matches_effective_rating_protocol(self, monkeypatch):
         import daemon_management

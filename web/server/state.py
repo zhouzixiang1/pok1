@@ -23,7 +23,17 @@ MAX_DAEMON_PAIRS = 8
 
 
 def _default_daemon_workers() -> int:
-    """Default daemon workers = CPU cores * 7/8, clamped to [1, _MAX_SAFE_DAEMON_WORKERS]."""
+    """Default daemon workers.
+
+    Priority: ``POK_DAEMON_WORKERS`` env override, else CPU-based default
+    (cores * 7/8, clamped to [1, _MAX_SAFE_DAEMON_WORKERS]). A persisted
+    ``app_config.json`` value still wins over both — see ``AppState._load_config``.
+    """
+    env_workers = _env_int_in_range(
+        "POK_DAEMON_WORKERS", 1, _MAX_SAFE_DAEMON_WORKERS
+    )
+    if env_workers is not None:
+        return env_workers
     return max(
         1,
         min(
@@ -31,6 +41,32 @@ def _default_daemon_workers() -> int:
             int((os.cpu_count() or 1) * 28 / 32),
         ),
     )
+
+
+def _default_daemon_pairs() -> int:
+    """Default daemon pairs (70-hand matches per scheduled pairing).
+
+    Priority: ``POK_DAEMON_PAIRS`` env override, else the canonical 5-match
+    sample. A persisted ``app_config.json`` value still wins over both.
+    """
+    env_pairs = _env_int_in_range("POK_DAEMON_PAIRS", 1, MAX_DAEMON_PAIRS)
+    if env_pairs is not None:
+        return env_pairs
+    return 5
+
+
+def _env_int_in_range(name: str, lo: int, hi: int) -> int | None:
+    """Read a positive integer env var clamped to [lo, hi]; None if unset/invalid."""
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, bool) or not lo <= value <= hi:
+        return None
+    return value
 
 
 class AppState:
@@ -45,7 +81,7 @@ class AppState:
         self.running: bool = False  # Coarse-grained loop control: True = orchestrator loop is active, False = stopped or idle
         self.daemon_enabled: bool = True
         self.daemon_workers: int = _default_daemon_workers()
-        self.daemon_pairs: int = 5
+        self.daemon_pairs: int = _default_daemon_pairs()
         self.current_v: int = 0
         self.next_v: int = 0
         self.generation_count: int = 0
