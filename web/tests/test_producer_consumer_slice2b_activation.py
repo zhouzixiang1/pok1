@@ -1195,6 +1195,50 @@ def test_canonical_gate_runner_precommit_regression_is_candidate_failure():
     assert result["result_digest"] == "0" * 64
 
 
+def test_canonical_gate_runner_quality_infra_retry_is_infrastructure_failure():
+    """A retryable quality-gate infra hiccup must be infrastructure_failure.
+
+    Regression: the wrapper's infra predicate only matched failure_class==
+    'infrastructure' (exact) and action=='retry'.  But run_quality_gates
+    signals a transient infra hiccup (compile/smoke/sandbox) with
+    all_passed=False + action='retry_same_tool' and NO top-level failure_class.
+    The verdict check (all_passed is False) then misclassified it as a
+    permanent candidate_failure, abandoning a candidate that should pause/
+    retry.  The infra predicate must also recognize action='retry_same_tool'.
+    """
+    import json as _json
+    from producer_consumer_slice2b_activation import canonical_gate_runner_factory
+    import tool_gates
+
+    async def infra_retry_handler(args):
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": _json.dumps(
+                        {
+                            "all_passed": False,
+                            "action": "retry_same_tool",
+                            "failed_gates": [],
+                        }
+                    ),
+                }
+            ]
+        }
+
+    original = tool_gates.run_quality_gates.handler
+    tool_gates.run_quality_gates.handler = infra_retry_handler
+    try:
+        factory = canonical_gate_runner_factory(143, 142)
+        gates = factory()
+        snapshot = {"artifact_hash": DIGESTS["a"], "snapshot_digest": DIGESTS["b"]}
+        result = asyncio.run(gates["run_quality_gates"](snapshot))
+    finally:
+        tool_gates.run_quality_gates.handler = original
+    # Must be infrastructure_failure (retryable), NOT candidate_failure.
+    assert result["outcome"] == "infrastructure_failure"
+
+
 def test_recovery_reclaims_stale_running_lease_after_restart(tmp_path):
     """B2 regression: after a process restart, recover() must reclaim a stale
     "running" consumer effect (expired lease) instead of raising ValueError.

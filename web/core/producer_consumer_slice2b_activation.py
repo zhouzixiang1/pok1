@@ -937,9 +937,23 @@ def canonical_gate_runner_factory(next_v, source_v):
                 # returns an error -- including a retryable infra pause like a
                 # quota wait or a sandbox hiccup -- would be misclassified as a
                 # permanent candidate failure and the candidate abandoned.
+                # Recognize the full set of infra/retry signals the canonical
+                # handlers emit: ``failure_class`` is ``"infrastructure"`` or the
+                # first-strict ``"infrastructure_pending"`` variant; OR ``action``
+                # is a retry intent (``"retry"`` or the canonical
+                # ``"retry_same_tool"`` that the primary inline classifier also
+                # keys on).  Without the ``retry_same_tool`` /
+                # ``infrastructure_pending`` arms, a transient quality-gate infra
+                # hiccup (all_passed=False + action="retry_same_tool") or a
+                # first-strict pending pause would be misclassified as a
+                # permanent candidate failure and the candidate abandoned.
+                _fc = data.get("failure_class")
+                _action = data.get("action")
                 if (
-                    data.get("failure_class") == "infrastructure"
-                    or data.get("action") == "retry"
+                    _fc == "infrastructure"
+                    or _fc == "infrastructure_pending"
+                    or _action == "retry"
+                    or _action == "retry_same_tool"
                 ):
                     return {
                         "outcome": "infrastructure_failure",
