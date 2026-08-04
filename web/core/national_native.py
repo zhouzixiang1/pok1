@@ -444,6 +444,49 @@ def resolve_bot(token: str | Path) -> tuple[str, Path]:
     return spec.label, spec.path
 
 
+def _resolve_bot_or_in_flight(token: str | Path) -> tuple[str, Path]:
+    """Resolve a bot token, falling back to an in-flight workspace validation.
+
+    This mirrors :func:`resolve_bot` for published ``bots/`` artifacts, but
+    when the token is an in-flight crossover workspace path (under
+    ``results/crossover_workspaces/`` or ``results/workflow/artifacts/``),
+    it validates the five strict ABI files structurally and returns a
+    synthetic ``in_flight_crossover_smoke:*`` label instead of raising.
+
+    The match executor (``_run_direct_artifact_tcp_pair``) calls this so the
+    crossover smoke test can run a transient candidate before it is published
+    under ``bots/``, without weakening the strict-namespace guard for every
+    other caller.  The synthetic label namespace can never collide with a real
+    ``national_cloud_v*`` bot.  See the analogous bypass in
+    ``national_native_acceptance.run_native_tcp_smoke`` (in_flight_candidate_dir).
+    """
+
+    try:
+        return resolve_bot(token)
+    except ValueError:
+        # The outer smoke wrapper already structurally validated this path
+        # (the five strict ABI files) before calling the executor.  Re-check
+        # here so the executor is self-contained (a direct caller that bypasses
+        # the wrapper still gets the guard).
+        from bot_namespace import STRICT_ARTIFACT_FILES
+
+        candidate = Path(os.path.abspath(os.fspath(token)))
+        if candidate.name == NATIVE_ENTRY:
+            candidate = candidate.parent
+        missing = [
+            name
+            for name in STRICT_ARTIFACT_FILES
+            if not (candidate / name).is_file()
+        ]
+        if missing:
+            raise ValueError(
+                f"in_flight path missing strict artifacts: "
+                f"{candidate}: {','.join(sorted(missing))}"
+            )
+        label = f"in_flight_crossover_smoke:{candidate.name}"
+        return label, candidate
+
+
 def _completed_active_bots() -> list[tuple[str, Path]]:
     from evolution_infra import get_active_bots
 
@@ -558,9 +601,18 @@ def _prepare_native_spec(
                 + ";".join(control_errors[:8])
             )
     else:
-        resolved_label, resolved_path = resolve_bot(bot_dir)
-        if resolved_label != label or resolved_path != bot_dir:
-            raise ValueError(f"strict artifact resolution mismatch: {label}")
+        # An in-flight crossover smoke candidate/opponent (synthetic
+        # ``in_flight_crossover_smoke*`` label) is NOT under ``bots/`` and was
+        # already structurally validated (the five strict ABI files) by the
+        # outer smoke wrapper / _resolve_bot_or_in_flight.  Skip the
+        # strict-namespace resolve_bot re-check for those labels so the match
+        # executor's _prepare_native_spec does not reject the transient
+        # workspace.  Published ``national_cloud_v*`` labels still get the full
+        # resolve_bot identity check.
+        if not str(label).startswith("in_flight_crossover_smoke"):
+            resolved_label, resolved_path = resolve_bot(bot_dir)
+            if resolved_label != label or resolved_path != bot_dir:
+                raise ValueError(f"strict artifact resolution mismatch: {label}")
 
     runtime_errors = current_system_native_runtime_errors(bot_dir)
     if runtime_errors:

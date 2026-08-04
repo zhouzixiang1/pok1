@@ -86,7 +86,7 @@ async def _run_direct_artifact_tcp_pair(
             "first strict control ticket requires one captured 70-hand "
             "direct-artifact match"
         )
-    label_a, dir_a = _nn.resolve_bot(bot_a_token)
+    label_a, dir_a = _nn._resolve_bot_or_in_flight(bot_a_token)
     system_control_b = control_execution_ticket is not None
     if control_execution_ticket is not None:
         from first_strict_execution_journal import normalize_execution_scope
@@ -100,7 +100,7 @@ async def _run_direct_artifact_tcp_pair(
         label_b = ticket_scope["control_id"]
     else:
         ticket_scope = {}
-        label_b, dir_b = _nn.resolve_bot(bot_b_token)
+        label_b, dir_b = _nn._resolve_bot_or_in_flight(bot_b_token)
     hands = max(1, min(70, int(hands)))
     frozen_timing_plan = _resolve_native_match_timing_plan(
         timing_plan,
