@@ -358,14 +358,30 @@ async def _run_workflow_smoke_gate(
     timeout_sec = float(_tg.os.environ.get("POK_NATIVE_SMOKE_TIMEOUT_SEC", "90"))
     try:
         from national_native import run_native_tcp_smoke
-        report = await run_native_tcp_smoke(
-            bot_dir,
+
+        # An unpublished candidate (no completion tag / certificate yet) sits
+        # under ``bots/`` (materialized by the Worker phase) but is NOT a valid
+        # published strict artifact — resolve_bot rejects it with
+        # ``invalid_national_bot_label``.  The smoke must run against the
+        # in-flight workspace via ``in_flight_candidate_dir`` so the
+        # namespace bypass path applies.  Detect this by checking whether
+        # resolve_bot accepts the bot_dir; if not, pass it as in_flight.
+        _smoke_kwargs = dict(
             source_v=source_v,
             opponent_token=opponent_token,
             self_play=self_play,
             hands=hands,
             timeout_sec=timeout_sec,
         )
+        try:
+            from national_native import resolve_bot as _resolve_bot_check
+
+            _resolve_bot_check(str(bot_dir))
+        except Exception:
+            # Unpublished candidate: use the in_flight bypass path.
+            _smoke_kwargs["in_flight_candidate_dir"] = str(bot_dir)
+
+        report = await run_native_tcp_smoke(str(bot_dir), **_smoke_kwargs)
     except Exception as exc:
         report = {
             "passed": False,
