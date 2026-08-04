@@ -15,6 +15,7 @@ receipt without establishing a second state machine.
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import math
 import re
 import time
@@ -282,6 +283,43 @@ class ProducerConsumerWorkflowAdapter:
                 except Exception:
                     pass
         return None
+
+    def consumer_effect_exhausted(self, *, candidate_id: str) -> bool:
+        """Return True iff the consumer effect for ``candidate_id`` is in a
+        terminal-no-retry state (``exhausted`` / ``abandoned``), meaning no
+        further dispatch attempts can lease it.
+
+        Used by the consumer task's bounded retry loop to detect when a
+        candidate can no longer advance (``run_once`` returns
+        ``dispatched=False`` because the effect is exhausted) and map that to
+        a ledger reject, instead of leaving the candidate wedged in
+        ``consuming`` forever.
+        """
+
+        try:
+            with self.store._connect() as connection:
+                rows = connection.execute(
+                    "SELECT status, input_payload FROM effects "
+                    "WHERE kind LIKE ? ORDER BY updated_at DESC",
+                    (EFFECT_KIND_PREFIX + "%",),
+                ).fetchall()
+            for row in rows:
+                try:
+                    payload = (
+                        json.loads(row["input_payload"])
+                        if isinstance(row["input_payload"], str)
+                        else (row["input_payload"] or {})
+                    )
+                    envelope = payload.get("envelope") if isinstance(payload, dict) else None
+                    if isinstance(envelope, dict) and str(
+                        envelope.get("candidate_id") or ""
+                    ) == candidate_id:
+                        return str(row["status"] or "") in ("exhausted", "abandoned")
+                except Exception:
+                    continue
+        except Exception:
+            return False
+        return False
 
     def reclaim_consumer_effect(
         self,

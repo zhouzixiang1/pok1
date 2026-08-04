@@ -497,6 +497,47 @@ def test_consumer_task_retries_transient_infrastructure_failure(monkeypatch, tmp
     assert call_counts.get("run_quality_gates") == 2
 
 
+def test_consumer_task_rejects_when_effect_exhausted(monkeypatch, tmp_path):
+    """When the consumer effect is EXHAUSTED (attempt >= max_attempts),
+    ``run_once`` returns ``dispatched=False`` (no leasable envelope) and the
+    candidate can never advance.  Without an explicit reject the candidate
+    wedges in ``consuming`` forever (the documented v52 wedge: the effect
+    exhausted at attempt=3/3 but nothing mapped that to a ledger reject).
+
+    The bounded retry loop detects effect-exhaustion via the adapter and
+    rejects the candidate so the pipeline advances.
+    """
+
+    activation = Slice2bActivation(adapter=_adapter(tmp_path))
+    snapshot = _snapshot()
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+
+    # Force the adapter to report the effect as exhausted (simulates
+    # attempt >= max_attempts in the workflow store).
+    monkeypatch.setattr(
+        activation.adapter,
+        "consumer_effect_exhausted",
+        lambda *, candidate_id: True,
+    )
+    # Force run_once to report no leasable envelope (the real behavior when
+    # the effect is exhausted: recover() returns nothing and the dispatcher
+    # returns dispatched=False).
+    async def _fake_run_once(*args, **kwargs):
+        return {"dispatched": False, "reason": "no_leasable_envelope"}
+
+    monkeypatch.setattr(activation.dispatcher, "run_once", _fake_run_once)
+
+    _run_consumer(activation, candidate_id, _gate_runner_factory())
+
+    entry = activation.ledger.snapshot(candidate_id)
+    assert entry is not None
+    # The candidate was rejected (effect exhausted -> no more dispatch
+    # attempts possible), not left wedged in ``consuming``.
+    assert activation.ledger.is_terminal(candidate_id)
+    assert entry["validation_outcome"] == "rejected"
+
+
 # ---------------------------------------------------------------------------
 # Slice2bActivation: promotion barrier (synchronous fail-closed)
 # ---------------------------------------------------------------------------

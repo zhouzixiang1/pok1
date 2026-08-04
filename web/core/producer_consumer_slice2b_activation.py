@@ -278,6 +278,21 @@ class Slice2bActivation:
 
     # -- consumer task ------------------------------------------------------
 
+    def _consumer_effect_exhausted(self, candidate_id: str) -> bool:
+        """Return True iff the consumer effect for ``candidate_id`` is in a
+        terminal-no-retry state (``exhausted`` / ``abandoned``).
+
+        Delegates to the workflow-store adapter.  Used by the bounded retry
+        loop to detect when ``run_once`` returned ``dispatched=False`` because
+        the effect has no remaining attempts (the candidate can never advance)
+        and map that to a ledger reject instead of wedging in ``consuming``.
+        """
+
+        try:
+            return bool(self.adapter.consumer_effect_exhausted(candidate_id=candidate_id))
+        except Exception:
+            return False
+
     def launch_consumer_task(
         self,
         *,
@@ -454,10 +469,33 @@ class Slice2bActivation:
                         else:
                             result = await _dispatch()
                         # ``run_once`` returns ``dispatched=False`` when there is
-                        # no leasable envelope (e.g. another dispatcher instance
-                        # holds it).  That is not terminal and not an infra
-                        # pause; break and let the loop re-launch us later.
+                        # no leasable envelope.  Two sub-cases:
+                        #   (a) the effect is held by another owner / not yet
+                        #       ready — transient; break and let the loop
+                        #       re-launch this task later.
+                        #   (b) the effect is EXHAUSTED (attempt >= max_attempts):
+                        #       no more dispatch attempts remain, so the
+                        #       candidate can never advance.  Without rejecting
+                        #       here it would wedge in ``consuming`` forever
+                        #       (the documented v52 wedge: the effect exhausted
+                        #       at attempt=3/3 but the candidate stayed
+                        #       non-terminal because nothing mapped effect-
+                        #       exhaustion to a ledger reject).
                         if not result.get("dispatched"):
+                            if ledger.is_terminal(candidate_id):
+                                break
+                            _exhausted = self._consumer_effect_exhausted(
+                                candidate_id
+                            )
+                            if _exhausted:
+                                ledger.reject(
+                                    candidate_id=candidate_id,
+                                    reason=(
+                                        "consumer_effect_attempts_exhausted:"
+                                        + str(result.get("reason") or "no_envelope")
+                                    ),
+                                    completed_at=time.time(),
+                                )
                             break
                         reason = result.get("reason")
                         # Both ``infrastructure_failure`` (a gate returned an
