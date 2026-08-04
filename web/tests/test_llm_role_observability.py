@@ -1246,10 +1246,15 @@ def test_default_role_timeout_policy_is_bounded(monkeypatch):
     monkeypatch.delenv("POK_LLM_DEFAULT_TOTAL_TIMEOUT", raising=False)
     monkeypatch.delenv("POK_LLM_DEFAULT_STALL_TIMEOUT", raising=False)
 
+    # COMBINED ANALYST now has its own policy key (COMBINED_ANALYST) with a
+    # longer first_activity (300s) than the former DEFAULT fallback, because
+    # GLM effort=max can spend 15+ min thinking before emitting visible text
+    # (v56 at 2026-08-05 hit "first_activity timeout after 900.0s").  Verify
+    # the role resolves to its dedicated key and the timeouts are bounded.
     policy = llm_query._role_timeout_policy("COMBINED ANALYST")
 
-    assert policy["policy_key"] == "DEFAULT"
-    assert policy["first_activity_timeout"] > 0
+    assert policy["policy_key"] == "COMBINED_ANALYST"
+    assert policy["first_activity_timeout"] >= 300.0
     assert policy["idle_timeout"] > 0
     assert policy["total_timeout"] > 0
     # B3: stall_timeout is derived from idle (~55%, clamped) and exposed.
@@ -1396,13 +1401,17 @@ def test_process_stream_hard_times_out_default_role_first_activity(monkeypatch, 
         ),
     )
 
-    log_file = tmp_path / "v254" / "logs" / "combined_analysis.txt"
+    log_file = tmp_path / "v254" / "logs" / "analysis.txt"
     log_file.parent.mkdir(parents=True)
 
+    # Use a role that has NO dedicated policy key so it falls back to DEFAULT
+    # (COMBINED ANALYST now has its own COMBINED_ANALYST key, so a DEFAULT-env
+    # override no longer applies to it).  "MATCH ANALYST" is a real analysis
+    # role that uses the DEFAULT fallback.
     with pytest.raises(llm_query.LLMRoleTimeout) as exc:
         asyncio.run(
             llm_query._process_stream(
-                fake_stream(), str(log_file), _DummyUI(), "COMBINED ANALYST"
+                fake_stream(), str(log_file), _DummyUI(), "MATCH ANALYST"
             )
         )
 
@@ -1413,7 +1422,7 @@ def test_process_stream_hard_times_out_default_role_first_activity(monkeypatch, 
     assert timeout_events
     _category, severity, _message, fields = timeout_events[0]
     assert severity == "error"
-    assert fields["role"] == "COMBINED ANALYST"
+    assert fields["role"] == "MATCH ANALYST"
     assert fields["first_activity_timeout"] == 0.02
 
 
@@ -1440,13 +1449,16 @@ def test_process_stream_unknown_messages_do_not_satisfy_first_activity(
         ),
     )
 
-    log_file = tmp_path / "v269" / "logs" / "combined_analysis.txt"
+    log_file = tmp_path / "v269" / "logs" / "analysis.txt"
     log_file.parent.mkdir(parents=True)
 
+    # Use a role that falls back to DEFAULT (COMBINED ANALYST now has its own
+    # policy key; see test_process_stream_hard_times_out_default_role_first_
+    # activity for the rationale).
     with pytest.raises(llm_query.LLMRoleTimeout) as exc:
         asyncio.run(
             llm_query._process_stream(
-                fake_stream(), str(log_file), _DummyUI(), "COMBINED ANALYST"
+                fake_stream(), str(log_file), _DummyUI(), "MATCH ANALYST"
             )
         )
 
@@ -1461,7 +1473,7 @@ def test_process_stream_unknown_messages_do_not_satisfy_first_activity(
     assert timeout_events
     _category, severity, _message, fields = timeout_events[0]
     assert severity == "error"
-    assert fields["role"] == "COMBINED ANALYST"
+    assert fields["role"] == "MATCH ANALYST"
     assert fields["unknown_messages_seen"] > 0
     assert fields["first_activity_timeout"] == 0.02
 

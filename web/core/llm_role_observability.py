@@ -78,6 +78,14 @@ _ROLE_TIMEOUT_DEFAULTS = {
     # Master is the highest leverage failure point: it plans, reads evidence,
     # and can otherwise burn the whole orchestrator cycle before any code exists.
     "MASTER": (120.0, 240.0, 900.0),
+    # Combined Analyst analyzes the source bot and selects the parent for the
+    # next generation.  It is a single deep-analysis role (no tools, large
+    # prompt + output schema) that under GLM effort=max + 64k thinking budget
+    # can spend 15+ min in thinking before emitting visible text.  The DEFAULT
+    # first_activity (900s via env) was too short for some generations (v56 at
+    # 2026-08-05 hit "LLM first_activity timeout after 900.0s").  Give it the
+    # same 1200s first-activity window as REVIEW.
+    "COMBINED_ANALYST": (300.0, 600.0, 1800.0),
     # Review/Critic can be slow on GLM-backed Claude-compatible endpoints.
     # They still have ceilings, but defaults must be long enough to avoid
     # repeated 600s retries that keep the generation stuck at quality_passed.
@@ -165,6 +173,8 @@ def _role_timeout_policy(role_name: str) -> dict:
         key = "CRITIC"
     elif "CROSSOVER" in role:
         key = "CROSSOVER"
+    elif "COMBINED" in role:
+        key = "COMBINED_ANALYST"
     elif "WORKER" in role:
         key = "WORKER"
     # Read _ROLE_TIMEOUT_DEFAULTS through llm_query so test monkeypatches on
