@@ -462,6 +462,16 @@ def replay_worker_events(
         # pass-through during replay -- the same as the other Effect* events
         # above that have no projection side effect.
         "EffectLeaseReclaimed",
+        # EffectCancelled is appended by cancel_effect (e.g. the slice2b
+        # consumer's terminal cleanup hook _finalize_terminal_candidate, which
+        # cancels the consumer envelope effect when the candidate reaches a
+        # terminal promote/reject state so it does not orphan in "running"
+        # status).  Like the other Effect* events it has no Worker projection
+        # side effect, so it is a pass-through during replay.  Without this
+        # entry the abandon-path worker-journal fence replay rejects the
+        # cancelled candidate with "unsupported Worker history event:
+        # EffectCancelled", leaving the bot dir + primary checkpoint uncleared.
+        "EffectCancelled",
         "WorkerSemanticFailed",
         "WorkerFailureProjected",
         "WorkerOutputReady",
