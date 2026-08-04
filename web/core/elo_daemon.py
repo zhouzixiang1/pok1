@@ -1422,12 +1422,19 @@ def main():
     # Without this, a staging/uncertified bot loaded from a prior cycle's
     # glicko_ratings.json stays in `ratings` while `active_bots` is filtered,
     # causing ratings_active_pool_mismatch → FATAL rc=1 crash-loop on save_cycle.
+    #
+    # The H2H rows for these ineligible bots must be pruned HERE (not by the
+    # ``retired`` loop below): the ``retired`` loop only catches bots still IN
+    # ``ratings``, but these are popped first, so their H2H rows would survive
+    # and leak into the published cycle.  An earlier inline comprehension used
+    # ``if _b ... for _b`` ordering which is a malformed comprehension
+    # (UnboundLocalError on ``_b``) and crashed the daemon on every startup
+    # when any loaded bot was ineligible (rc=1 crash-loop, 2026-08-05).
     _ineligible_loaded = [b for b in list(ratings) if b not in active_bots]
     for _b in _ineligible_loaded:
         ratings.pop(_b, None)
         bot_stats.pop(_b, None)
-    if _ineligible_loaded:
-        h2h = {k: v for k, v in h2h.items() if _b not in k.split(" vs ") for _b in _ineligible_loaded}
+        h2h = {k: v for k, v in h2h.items() if _b not in k.split(" vs ")}
 
     # Ensure new bots have entries
     for b in active_bots:
