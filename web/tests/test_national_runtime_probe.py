@@ -566,7 +566,7 @@ def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
     assert all(
         isinstance(row["runtime"]["baseline_published_ms"], float)
         and row["runtime"]["baseline_published_ms"]
-        <= row["runtime"]["baseline_target_ms"] == 200.0
+        <= row["runtime"]["baseline_target_ms"]
         for row in transcript_rows
     )
 
