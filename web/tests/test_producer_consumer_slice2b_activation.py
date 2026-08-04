@@ -1463,6 +1463,44 @@ def test_slice2b_consumer_rejected_returns_none_when_sealed_not_rejected(
         _o._slice2b_activation_registry("clear")
 
 
+def test_slice2b_consumer_rejected_detects_effect_exhaustion(monkeypatch, tmp_path):
+    """Effect-exhaustion bridge (Defect B, 2026-08-05): when the workflow
+    effect is EXHAUSTED (attempt >= max_attempts from cross-restart lease
+    reclaims) but the lifecycle row is still ``running`` (the consumer task
+    has not yet run run_once to map exhaustion→reject), the primary lane's
+    ``_slice2b_consumer_rejected`` must detect the exhaustion via the adapter
+    and surface a reject reason so the generation is abandoned promptly
+    instead of waiting tens of minutes for a consumer task to notice.
+    """
+
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    adapter = _adapter(tmp_path)
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    # NOTE: _snapshot derives candidate_id from the checkpoint, so pass the
+    # checkpoint explicitly (not just next_v as an override) so the sealed
+    # candidate_id matches the checkpoint the route resolves.
+    checkpoint = _checkpoint(next_v=145, source_v=142)
+    snapshot = _snapshot(checkpoint)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+    assert candidate_id == "candidate-v145"
+    # The lifecycle row is still non-terminal (running), but the effect is
+    # exhausted (simulated): the bridge must still detect rejection.
+    monkeypatch.setattr(
+        activation, "_consumer_effect_exhausted", lambda cid: True
+    )
+
+    try:
+        reason = odr._slice2b_consumer_rejected(checkpoint, 145)
+        assert reason is not None
+        assert "consumer_effect_attempts_exhausted" in reason
+    finally:
+        _o._slice2b_activation_registry("clear")
+
+
 def test_slice2b_consumer_promoted_returns_true_after_promotion(monkeypatch, tmp_path):
     """Promoted fast-forward regression: after the consumer PROMOTES a
     candidate, the helper must return True so the primary lane fast-forwards

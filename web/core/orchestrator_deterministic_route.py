@@ -349,6 +349,26 @@ def _slice2b_consumer_rejected(checkpoint, next_v) -> str | None:
         return str(
             snapshot.get("terminal_reason") or "slice2b_consumer_rejected"
         )
+    # EFFECT-EXHAUSTION BRIDGE (Defect B, 2026-08-05): the lifecycle row may
+    # still be non-terminal (``consuming``) even though the workflow effect is
+    # already ``exhausted`` (attempt >= max_attempts from cross-restart lease
+    # reclaims).  The only former mapper was the consumer task's run_once→reject
+    # branch, which requires a LIVE consumer task to execute — across restarts
+    # that task may not run promptly, leaving the candidate objectively dead but
+    # lifecycle-non-terminal for tens of minutes (the v52 wedge's 24-min
+    # visibility gap).  Consult the effect status directly so the primary lane
+    # can abandon a candidate whose effect is exhausted without waiting for a
+    # consumer task to notice.  The consumer task's own reject (the canonical
+    # mapper) still runs as a belt-and-suspenders when it next dispatches.
+    if snapshot.get("validation_outcome") == "running":
+        try:
+            if activation._consumer_effect_exhausted(candidate_id):
+                return (
+                    "consumer_effect_attempts_exhausted:"
+                    "detected_by_primary_lane"
+                )
+        except Exception:
+            pass
     return None
 
 
@@ -937,7 +957,16 @@ async def _slice2b_seal_at_workers_done(checkpoint, next_v, source_v, *, ui, out
             "official_slots": 0,
         },
         retry_policy={
-            "max_attempts": 3,
+            # ``max_attempts`` counts envelope LEASE/RECLAIM cycles, not gate
+            # executions.  Each process restart's ``_force_recover_consumer_
+            # effect`` reclaims the lease and bumps ``attempt`` by 1 (workflow_
+            # kernel_effects.py lease_effect).  At the former max_attempts=3 a
+            # candidate that survived only 3 restarts (e.g. deploy + 2 crashes,
+            # or repeated infra-retry restarts) exhausted the effect WITHOUT
+            # EVER running a gate — the documented v52 wedge (2026-08-05).
+            # 20 tolerates a restart every ~12 min across the 4h envelope
+            # deadline while staying bounded.
+            "max_attempts": 20,
             "initial_backoff_sec": 1.0,
             "backoff_multiplier": 2.0,
             "max_backoff_sec": 10.0,
