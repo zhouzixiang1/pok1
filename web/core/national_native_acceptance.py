@@ -34,8 +34,11 @@ def _acceptance_opponent_runtime_mode(label: str, path: Path) -> str:
     # snapshot under RESULTS_DIR/workflow/artifacts/) bypasses resolve_bot
     # (which requires bots/).  It was already structurally validated (the five
     # strict ABI files) by run_native_tcp_smoke's in_flight_opponent_dir path,
-    # so trust the label prefix here.
-    if label.startswith("in_flight_crossover_smoke_opponent:"):
+    # so trust the label prefix here.  The ``in_flight_crossover_smoke:`` prefix
+    # (without ``_opponent``) covers the SELF-PLAY smoke path where the
+    # candidate is also the opponent — it was structurally validated by the
+    # in_flight_candidate_dir path and must bypass resolve_bot the same way.
+    if label.startswith("in_flight_crossover_smoke"):
         return "direct_content_bound_policy_artifact"
     resolved_label, resolved_path = _nn.resolve_bot(path)
     if resolved_label != label or resolved_path != Path(path).absolute():
