@@ -3003,6 +3003,15 @@ def test_finalized_bootstrap_scanner_uses_full_external_crossbinding(
         "validate_abandon_finalize_receipt",
         lambda _claim, receipt, _rows: receipt,
     )
+    # The historical scanner also resolves the matched abandon receipt via
+    # the ledger-history validator to derive its identity digest.  The unit
+    # fixture's canonical claim is intentionally minimal (no full ``ledger``
+    # sub-object), so stub the validator to a synthetic receipt.
+    monkeypatch.setattr(
+        epoch_authority,
+        "validate_abandon_ledger_history",
+        lambda _claim, _rows, **_k: {"version": TARGET_V},
+    )
 
     observed = recovery._finalized_canonical_abandon(root, external)
 

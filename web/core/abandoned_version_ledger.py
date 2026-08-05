@@ -7,6 +7,28 @@ decode/load, authority derivation, identity matching, floor/attempts queries.
 Publication-lock append (``append_abandoned_version_receipt``) stays in
 evolution_infra because of its heavy publication-lock coupling.
 
+Design (radically simplified 2026-08-05)
+----------------------------------------
+Abandon receipts are immutable structured records of one abandoned generation:
+``{schema_version, kind, evaluation_epoch, version, source_v,
+checkpoint_stage, workflow_run_id, checkpoint_revision, checkpoint_envelope,
+reason, timestamp, infra_failure}``.  git provides tamper-evidence; the ledger
+deliberately does **not** chain per-row digests (no ``receipt_digest`` /
+``previous_receipt_digest``) and does **not** re-resolve each historical row's
+``checkpoint_envelope.published_parent_identities`` against live git on load.
+A legitimate parent re-publish (re-certification, tag rewrite) must not
+invalidate historical rows -- that coupling previously wedged the entire ledger
+whenever any published parent bot changed.  The live checkpoint being abandoned
+still receives the full parent-drift check (``live_checkpoint_parent_authority_
+errors``) before it is appended; only already-appended historical rows are
+treated as frozen snapshots (``historical_receipt=True`` skips the live checks).
+
+The allocation CAS fingerprint is a holistic sha256 over all current rows
+(``_abandoned_ledger_head_digest``), computed at read time -- appending one row
+reliably changes the fingerprint the checkpoint binding compares against, with
+no fragile per-row chain.  ``abandoned_version_authority()["head_digest"]``
+exposes this holistic fingerprint.
+
 All public symbols are re-exported by evolution_infra.py (via thin delegate
 shells) for backward compatibility, covering every ``from evolution_infra
 import <name>`` site and every ``evolution_infra.<name>`` monkeypatch.
@@ -41,6 +63,11 @@ import evolution_infra as _ei
 
 
 def _abandoned_receipt_digest(payload):
+    """Canonical sha256 of one receipt payload (legacy single-row digest).
+
+    Retained for backwards-compat with historical rows that carry a per-row
+    ``receipt_digest`` field; the live authority no longer chains on it.
+    """
     try:
         encoded = json.dumps(
             payload,
@@ -54,6 +81,59 @@ def _abandoned_receipt_digest(payload):
             f"abandon receipt is not canonical JSON: {type(exc).__name__}"
         ) from exc
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _abandoned_ledger_head_digest(receipts):
+    """Content-addressable fingerprint of the *whole* ledger.
+
+    Replaces the former fragile chain-head digest.  A re-publish of a parent
+    bot no longer invalidates historical rows (they are immutable records of
+    the abandon-time state, never re-resolved against live git), so the
+    authority fingerprint only needs to change when a row is added, removed,
+    or mutated -- exactly what a holistic sha256 over the canonical rows
+    provides.  ``None`` for an empty ledger preserves the CAS semantics for
+    the bootstrap empty-ledger binding.
+    """
+
+    if not receipts:
+        return None
+    try:
+        encoded = json.dumps(
+            [
+                {k: r.get(k) for k in _ei._ABANDONED_VERSION_RECEIPT_KEYS if k in r}
+                for r in receipts
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise _ei.AbandonedVersionLedgerError(
+            f"abandon ledger is not canonical JSON: {type(exc).__name__}"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _abandoned_version_receipt_identity_digest(receipt):
+    """Stable 64-char sha256 over a receipt's canonical known-key projection.
+
+    Abandon receipts no longer carry a per-row ``receipt_digest`` field, but
+    several handoff/result payloads still want a stable content fingerprint of
+    the matched receipt (e.g. to surface ``abandon_receipt_digest`` to the
+    orchestrator).  This projects the receipt down to its known keys (ignoring
+    any legacy chain fields still present on old rows) and hashes the canonical
+    JSON, giving a deterministic identifier that is independent of the
+    whole-ledger holistic hash.
+    """
+    if not isinstance(receipt, dict):
+        return None
+    projected = {
+        k: receipt[k]
+        for k in sorted(_ei._ABANDONED_VERSION_RECEIPT_KEYS)
+        if k in receipt
+    }
+    return _abandoned_receipt_digest(projected)
 
 
 def _canonical_abandon_json_bytes(payload, *, label):
@@ -112,7 +192,19 @@ def _abandoned_checkpoint_envelope(checkpoint):
     }
 
 
-def _validate_abandoned_checkpoint(checkpoint, *, project_root):
+def _validate_abandoned_checkpoint(checkpoint, *, project_root, historical_receipt=False):
+    """Validate a checkpoint as abandon-bound.
+
+    ``historical_receipt`` distinguishes an immutable historical receipt row
+    (already-appended ledger record) from the *live* checkpoint about to be
+    abandoned.  Historical rows bind the abandon-time parent identity captured
+    in their envelope and must NOT be re-resolved against live git -- a
+    legitimate parent re-publication (e.g. re-certification) would otherwise
+    invalidate every historical row and wedge the whole ledger.  The live
+    checkpoint still receives the full drift check so a stale-binding live
+    checkpoint is caught before it is appended.
+    """
+
     from checkpoint_schema import (
         checkpoint_epoch_errors,
         live_checkpoint_parent_authority_errors,
@@ -120,14 +212,14 @@ def _validate_abandoned_checkpoint(checkpoint, *, project_root):
     )
 
     errors = list(checkpoint_epoch_errors(checkpoint))
-    if not errors:
+    if not errors and not historical_receipt:
         errors.extend(
             live_checkpoint_parent_authority_errors(
                 checkpoint,
                 repo_root=project_root,
             )
         )
-    if not errors:
+    if not errors and not historical_receipt:
         errors.extend(
             live_policy_epoch_reset_receipt_errors(
                 checkpoint,
@@ -172,7 +264,7 @@ def _build_abandoned_version_receipt(
     reason,
     infra_failure=None,
     timestamp=None,
-    previous_receipt_digest=None,
+    previous_receipt_digest=None,  # accepted for backwards-compat, ignored
     project_root=None,
 ):
     project_root = Path(project_root) if project_root is not None else _ei.PROJECT_ROOT
@@ -187,13 +279,7 @@ def _build_abandoned_version_receipt(
         or timestamp > 100_000_000_000
     ):
         raise _ei.AbandonedVersionLedgerError("abandon receipt timestamp is invalid")
-    if previous_receipt_digest is not None and not re.fullmatch(
-        r"[0-9a-f]{64}", str(previous_receipt_digest)
-    ):
-        raise _ei.AbandonedVersionLedgerError(
-            "abandon receipt previous digest is invalid"
-        )
-    payload = {
+    return {
         "schema_version": _ei.ABANDONED_VERSION_RECEIPT_SCHEMA_VERSION,
         "kind": _ei.ABANDONED_VERSION_RECEIPT_KIND,
         "evaluation_epoch": _ei.EVALUATION_EPOCH,
@@ -206,22 +292,29 @@ def _build_abandoned_version_receipt(
         "reason": reason,
         "timestamp": timestamp,
         "infra_failure": infra_failure,
-        "previous_receipt_digest": previous_receipt_digest,
     }
-    return {**payload, "receipt_digest": _abandoned_receipt_digest(payload)}
 
 
 def _abandoned_version_receipt_errors(
     receipt,
     *,
-    expected_previous_digest,
+    expected_previous_digest=None,  # accepted for backwards-compat, ignored
     project_root,
 ):
     errors = []
     if not isinstance(receipt, dict):
         return ["abandon_receipt_not_object"]
-    if set(receipt) != _ei._ABANDONED_VERSION_RECEIPT_KEYS:
+    # Required keys must all be present.  Legacy rows written before the
+    # radical simplification additionally carry ``receipt_digest`` /
+    # ``previous_receipt_digest``; tolerate those extras so the one-time
+    # migration can read an old archive before stripping them.
+    receipt_keys = set(receipt)
+    missing = _ei._ABANDONED_VERSION_RECEIPT_KEYS - receipt_keys
+    unexpected = receipt_keys - _ei._ABANDONED_VERSION_RECEIPT_KEYS - _ei._ABANDONED_VERSION_RECEIPT_LEGACY_EXTRA_KEYS
+    if missing:
         errors.append("abandon_receipt_fields_mismatch")
+    if unexpected:
+        errors.append("abandon_receipt_fields_unexpected")
     if receipt.get("schema_version") != _ei.ABANDONED_VERSION_RECEIPT_SCHEMA_VERSION:
         errors.append("abandon_receipt_schema_mismatch")
     if receipt.get("kind") != _ei.ABANDONED_VERSION_RECEIPT_KIND:
@@ -234,8 +327,6 @@ def _abandoned_version_receipt_errors(
         errors.append("abandon_receipt_version_invalid")
     if type(source_v) is not int:
         errors.append("abandon_receipt_source_version_invalid")
-    if receipt.get("previous_receipt_digest") != expected_previous_digest:
-        errors.append("abandon_receipt_chain_mismatch")
     timestamp = receipt.get("timestamp")
     if (
         type(timestamp) not in {int, float}
@@ -251,18 +342,6 @@ def _abandoned_version_receipt_errors(
         )
     except _ei.AbandonedVersionLedgerError as exc:
         errors.append(str(exc).replace(" ", "_"))
-    recorded_digest = receipt.get("receipt_digest")
-    unsigned = {key: value for key, value in receipt.items() if key != "receipt_digest"}
-    try:
-        expected_digest = _abandoned_receipt_digest(unsigned)
-    except _ei.AbandonedVersionLedgerError:
-        expected_digest = ""
-    if (
-        not isinstance(recorded_digest, str)
-        or not re.fullmatch(r"[0-9a-f]{64}", recorded_digest)
-        or recorded_digest != expected_digest
-    ):
-        errors.append("abandon_receipt_digest_mismatch")
 
     envelope = receipt.get("checkpoint_envelope")
     if not isinstance(envelope, dict):
@@ -277,9 +356,13 @@ def _abandoned_version_receipt_errors(
             "checkpoint_revision": receipt.get("checkpoint_revision"),
         }
         try:
+            # Historical receipt: validate structurally only.  The envelope's
+            # published_parent_identities are the abandon-time snapshot and
+            # are deliberately NOT re-resolved against live git.
             _validate_abandoned_checkpoint(
                 checkpoint,
                 project_root=project_root,
+                historical_receipt=True,
             )
         except _ei.AbandonedVersionLedgerError as exc:
             errors.append(str(exc))
@@ -309,7 +392,6 @@ def _decode_abandoned_version_receipts(
             "abandon receipt ledger has an incomplete final row"
         )
     receipts = []
-    previous_digest = None
     previous_version = None
     for line_number, line in enumerate(raw.splitlines(), start=1):
         if not line.strip():
@@ -325,7 +407,6 @@ def _decode_abandoned_version_receipts(
             ) from exc
         errors = _abandoned_version_receipt_errors(
             receipt,
-            expected_previous_digest=previous_digest,
             project_root=project_root,
         )
         if errors:
@@ -339,7 +420,6 @@ def _decode_abandoned_version_receipts(
                 f"abandon receipt version order regressed at line {line_number}"
             )
         receipts.append(receipt)
-        previous_digest = receipt["receipt_digest"]
         previous_version = version
     return receipts
 
@@ -388,7 +468,7 @@ def _abandon_authority_from_receipts(
     return {
         "published_high_water": int(published_high_water),
         "floor": max(versions, default=0),
-        "head_digest": receipts[-1]["receipt_digest"] if receipts else None,
+        "head_digest": _abandoned_ledger_head_digest(receipts),
         "receipt_count": len(receipts),
     }
 
@@ -473,7 +553,7 @@ def find_abandoned_version_floor():
     """Return the content-bound allocation floor for this initialized epoch.
 
     A retired/pre-reset file is ignored because it has no epoch authority.  Once
-    the epoch is initialized, however, every row must be a valid digest-chained
+    the epoch is initialized, however, every row must be a valid structured
     receipt created from a valid active checkpoint; unreadable, legacy, partial
     or tampered state raises and therefore blocks allocation.
     """

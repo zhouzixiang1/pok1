@@ -230,6 +230,13 @@ POST_PUBLICATION_HANDOFF_STALE_SEC = 15 * 60
 
 ABANDONED_VERSION_RECEIPT_SCHEMA_VERSION = 1
 ABANDONED_VERSION_RECEIPT_KIND = "national-policy-abandon-receipt"
+# Abandon receipts are immutable structured records of one abandoned
+# generation: version, source, stage, reason, timestamp, and the frozen
+# abandon-time checkpoint envelope.  git provides tamper-evidence; the
+# ledger no longer chains per-row digests or re-validates parent identity
+# against live git (a legitimate re-publish/re-certification of a parent
+# bot must not invalidate historical rows).  The whole-ledger fingerprint
+# used by the allocation CAS is computed holistically at read time.
 _ABANDONED_VERSION_RECEIPT_KEYS = frozenset({
     "schema_version",
     "kind",
@@ -243,8 +250,14 @@ _ABANDONED_VERSION_RECEIPT_KEYS = frozenset({
     "reason",
     "timestamp",
     "infra_failure",
-    "previous_receipt_digest",
+})
+# Legacy receipts written before the radical simplification carried per-row
+# ``receipt_digest`` / ``previous_receipt_digest`` chain fields.  A one-time
+# migration strips them; the loader tolerates their presence only so the
+# migration can read old archives without a separate reader.
+_ABANDONED_VERSION_RECEIPT_LEGACY_EXTRA_KEYS = frozenset({
     "receipt_digest",
+    "previous_receipt_digest",
 })
 _ABANDONED_CHECKPOINT_ENVELOPE_KEYS = frozenset({
     "checkpoint_schema_version",
@@ -1426,6 +1439,16 @@ def _abandoned_receipt_digest(payload):
     return _ledger._abandoned_receipt_digest(payload)
 
 
+def _abandoned_ledger_head_digest(receipts):
+    """Delegate to abandoned_version_ledger."""
+    return _ledger._abandoned_ledger_head_digest(receipts)
+
+
+def _abandoned_version_receipt_identity_digest(receipt):
+    """Delegate to abandoned_version_ledger."""
+    return _ledger._abandoned_version_receipt_identity_digest(receipt)
+
+
 def _canonical_abandon_json_bytes(payload, *, label):
     """Delegate to abandoned_version_ledger."""
     return _ledger._canonical_abandon_json_bytes(payload, label=label)
@@ -1618,7 +1641,7 @@ def append_abandoned_version_receipt(
             if matching:
                 if len(matching) != 1 or matching[0] is not receipts[-1]:
                     raise AbandonedVersionLedgerError(
-                        "abandon receipt identity is not the unique chain head"
+                        "abandon receipt identity is not the unique ledger tail"
                     )
                 prior = matching[0]
                 if (
@@ -1635,9 +1658,6 @@ def append_abandoned_version_receipt(
                 # candidate/checkpoint destruction on a non-durable receipt.
                 _fsync_regular_state_file_and_parent(path)
                 return dict(prior)
-            previous_digest = (
-                receipts[-1]["receipt_digest"] if receipts else None
-            )
             published = int(find_current_v())
             retryable_first_strict = published < FIRST_STRICT_POLICY_VERSION
             authority = _abandon_authority_from_receipts(
@@ -1663,7 +1683,6 @@ def append_abandoned_version_receipt(
                 reason=normalized_reason,
                 infra_failure=infra_failure,
                 timestamp=timestamp,
-                previous_receipt_digest=previous_digest,
                 project_root=project_root,
             )
             if receipts and receipt["version"] < receipts[-1]["version"]:

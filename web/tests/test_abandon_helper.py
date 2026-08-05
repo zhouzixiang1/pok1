@@ -1881,7 +1881,9 @@ def test_schema2_completed_receipt_survives_later_head_and_ledger_append(
         "master_planned",
         published_high_water=T,
         abandoned_receipt_floor=T + 1,
-        abandoned_receipt_head_digest=first["receipt_digest"],
+        abandoned_receipt_head_digest=evolution_infra._abandoned_ledger_head_digest(
+            first_rows
+        ),
     )
     evolution_infra.append_abandoned_version_receipt(
         later_checkpoint,
@@ -2536,17 +2538,20 @@ def test_historical_completed_abandon_reproof_rejects_advanced_ledger(
     import evolution_infra
 
     state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
-    original = evolution_infra.load_abandoned_version_receipts(
+    original_rows = evolution_infra.load_abandoned_version_receipts(
         path=tbm.RESULTS_DIR / "abandoned_versions.jsonl",
         project_root=tbm.PROJECT_ROOT,
-    )[-1]
+    )
+    original = original_rows[-1]
     later = _strict_checkpoint(
         T + 2,
         T,
         "master_planned",
         published_high_water=T,
         abandoned_receipt_floor=T + 1,
-        abandoned_receipt_head_digest=original["receipt_digest"],
+        abandoned_receipt_head_digest=evolution_infra._abandoned_ledger_head_digest(
+            original_rows
+        ),
     )
     evolution_infra.append_abandoned_version_receipt(
         later,

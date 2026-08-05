@@ -43,6 +43,9 @@ from bot_namespace import (  # noqa: E402
     high_water_tag,
     resolve_version_namespace_authority,
 )
+from abandoned_version_ledger import (  # noqa: E402
+    _abandoned_version_receipt_identity_digest,
+)
 from checkpoint_schema import (  # noqa: E402
     CheckpointSchemaError,
     upgrade_legacy_checkpoint_for_controlled_abandon,
@@ -1415,7 +1418,7 @@ def _validated_completed_receipt(path: Path) -> dict:
         if (
             len(matches) != 1
             or receipt.get("allocation_receipt_digest")
-            != matches[0].get("receipt_digest")
+            != _abandoned_version_receipt_identity_digest(matches[0])
         ):
             raise RuntimeError("completed reconciliation allocation receipt mismatch")
     elif receipt.get("allocation_receipt_digest") is not None:
@@ -1754,7 +1757,7 @@ def _recorded_finalize_chain_receipt(
         matches = [
             receipt
             for receipt in receipts
-            if receipt.get("receipt_digest")
+            if _abandoned_version_receipt_identity_digest(receipt)
             == claim.get("abandon_receipt_digest")
         ]
     else:
@@ -1939,7 +1942,7 @@ def _recorded_finalize_plan() -> dict:
         if (
             historical_receipt is None
             or receipt.get("abandon_receipt_digest")
-            != historical_receipt.get("receipt_digest")
+            != _abandoned_version_receipt_identity_digest(historical_receipt)
         ):
             raise RuntimeError(
                 "recorded-abandon completed receipt ledger identity mismatch"
@@ -1989,7 +1992,7 @@ def _recorded_finalize_plan() -> dict:
             "workflow_run_id": checkpoint.get("workflow_run_id"),
             "checkpoint_revision": checkpoint.get("checkpoint_revision"),
         },
-        "abandon_receipt_digest": terminal["receipt_digest"],
+        "abandon_receipt_digest": _abandoned_version_receipt_identity_digest(terminal),
         "abandon_reason": terminal["reason"],
         "candidate": {
             "path": str(candidate_path.relative_to(ROOT)),
@@ -2417,7 +2420,7 @@ def run(
             "archive_root": claim["archive_root"],
             "legacy_rows_authority_weight": 0,
             "allocation_receipt_digest": (
-                allocation_receipt.get("receipt_digest")
+                _abandoned_version_receipt_identity_digest(allocation_receipt)
                 if allocation_receipt is not None
                 else None
             ),

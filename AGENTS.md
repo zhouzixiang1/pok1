@@ -822,8 +822,16 @@ untracked and unpublished candidate into the transaction quarantine, syncs both
 parents, clears only the exact checkpoint by CAS, writes the terminal receipt,
 and finally clears the live claim. Any active claim, valid or corrupt, makes
 epoch initialization false and exposes no active bots. A completed historical
-receipt remains valid after later legitimate commits and ledger rows because it
-binds its original prefix and exact successor row; it never adopts later bytes.
+receipt is an immutable structured record (version/source/stage/reason/
+timestamp + the frozen abandon-time checkpoint envelope); it is **never**
+re-resolved against live git on load, so a legitimate parent re-publish
+(re-certification, tag rewrite) cannot invalidate historical rows. The
+allocation CAS fingerprint is a holistic sha256 over all current rows (computed
+at read time), not a fragile per-row chain head — so appending one row reliably
+changes the fingerprint the checkpoint binding compares against, without
+coupling every historical row to live git tree OIDs. A one-time migration
+(`scripts/migrate_abandon_ledger_drop_chain_digests.py`) strips the legacy
+per-row `receipt_digest`/`previous_receipt_digest` fields from existing rows.
 
 A generation stranded at a **publication-family stage** (`verified` /
 `publishing` / `official_certifying`) by a **contract-critical deploy** is the

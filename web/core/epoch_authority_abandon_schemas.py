@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import epoch_authority as _ea
+from abandoned_version_ledger import _abandoned_ledger_head_digest
 
 
 def _validate_schema3_first_strict_fence(fence: Any) -> dict[str, Any]:
@@ -141,7 +142,7 @@ def validate_schema2_abandon_ledger_history(claim: dict[str, Any], rows: list[di
     prior_head = ledger['prior_receipt_head_digest']
     if len(rows) < prior_count:
         raise RuntimeError('recorded_abandon_ledger_prefix_missing')
-    observed_prior_head = rows[prior_count - 1].get('receipt_digest') if prior_count else None
+    observed_prior_head = _abandoned_ledger_head_digest(rows[:prior_count])
     if observed_prior_head != prior_head:
         raise RuntimeError('recorded_abandon_ledger_prefix_changed')
     identity = ledger['receipt_identity']
@@ -154,7 +155,7 @@ def validate_schema2_abandon_ledger_history(claim: dict[str, Any], rows: list[di
             receipt_index = next((index for index, row in enumerate(rows) if row is receipt))
         except StopIteration as exc:
             raise RuntimeError('recorded_abandon_receipt_history_invalid') from exc
-        if receipt_index != prior_count or receipt.get('previous_receipt_digest') != prior_head:
+        if receipt_index != prior_count:
             raise RuntimeError('recorded_abandon_receipt_history_invalid')
     if require_active_head:
         expected_count = prior_count + (1 if receipt is not None else 0)
@@ -176,14 +177,17 @@ def validate_schema2_abandon_finalize_receipt(claim: dict[str, Any], receipt: di
 
     Historical completion remains valid after later code commits and later
     legitimate abandon rows.  Its immutable claim, exact ledger prefix/row and
-    finalize receipt stay bound; no live filesystem bytes are adopted.
+    finalize receipt stay bound; no live filesystem bytes are adopted.  The
+    finalize receipt binds the abandon receipt by the six-field identity
+    already proven by ``validate_abandon_ledger_history`` (which returns the
+    matched row), so no per-row digest field is carried on the receipt.
     """
     _ea.validate_schema2_abandon_claim_structure(claim)
     abandon_receipt = _ea.validate_abandon_ledger_history(claim, rows, require_active_head=False)
-    required = {'schema_version', 'kind', 'evaluation_epoch', 'mode', 'claim_digest', 'workflow_run_id', 'abandon_receipt_digest', 'checkpoint_cleared', 'candidate_state', 'candidate_manifest_digest', 'receipt_digest'}
+    required = {'schema_version', 'kind', 'evaluation_epoch', 'mode', 'claim_digest', 'workflow_run_id', 'checkpoint_cleared', 'candidate_state', 'candidate_manifest_digest', 'receipt_digest'}
     unsigned = {key: value for key, value in receipt.items() if key != 'receipt_digest'} if isinstance(receipt, dict) else {}
     expected_state = 'quarantine' if claim['candidate']['present'] else 'absent'
-    if not isinstance(receipt, dict) or set(receipt) != required or receipt.get('schema_version') != 2 or (receipt.get('kind') != 'national-policy-recorded-abandon-finalize') or (receipt.get('evaluation_epoch') != _ea.EVALUATION_EPOCH) or (receipt.get('mode') != 'execute') or (receipt.get('claim_digest') != claim.get('claim_digest')) or (receipt.get('workflow_run_id') != claim['checkpoint']['workflow_run_id']) or (abandon_receipt is None) or (receipt.get('abandon_receipt_digest') != abandon_receipt.get('receipt_digest')) or (receipt.get('checkpoint_cleared') is not True) or (receipt.get('candidate_state') != expected_state) or (receipt.get('candidate_manifest_digest') != claim['candidate']['manifest_digest']) or (not _ea._is_hex_digest(receipt.get('receipt_digest'))) or (receipt.get('receipt_digest') != _ea._canonical_object_digest(unsigned)):
+    if not isinstance(receipt, dict) or set(receipt) != required or receipt.get('schema_version') != 2 or (receipt.get('kind') != 'national-policy-recorded-abandon-finalize') or (receipt.get('evaluation_epoch') != _ea.EVALUATION_EPOCH) or (receipt.get('mode') != 'execute') or (receipt.get('claim_digest') != claim.get('claim_digest')) or (receipt.get('workflow_run_id') != claim['checkpoint']['workflow_run_id']) or (abandon_receipt is None) or (receipt.get('checkpoint_cleared') is not True) or (receipt.get('candidate_state') != expected_state) or (receipt.get('candidate_manifest_digest') != claim['candidate']['manifest_digest']) or (not _ea._is_hex_digest(receipt.get('receipt_digest'))) or (receipt.get('receipt_digest') != _ea._canonical_object_digest(unsigned)):
         raise RuntimeError('recorded_abandon_finalize_receipt_invalid')
     return receipt
 
@@ -191,10 +195,10 @@ def validate_schema2_abandon_finalize_receipt(claim: dict[str, Any], receipt: di
 def validate_schema3_abandon_finalize_receipt(claim: dict[str, Any], receipt: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
     _ea.validate_schema3_abandon_claim_structure(claim)
     abandon_receipt = _ea.validate_abandon_ledger_history(claim, rows, require_active_head=False)
-    required = {'schema_version', 'kind', 'evaluation_epoch', 'mode', 'claim_digest', 'workflow_run_id', 'abandon_receipt_digest', 'checkpoint_cleared', 'candidate_state', 'candidate_manifest_digest', 'first_strict_execution_fence_digest', 'receipt_digest'}
+    required = {'schema_version', 'kind', 'evaluation_epoch', 'mode', 'claim_digest', 'workflow_run_id', 'checkpoint_cleared', 'candidate_state', 'candidate_manifest_digest', 'first_strict_execution_fence_digest', 'receipt_digest'}
     unsigned = {key: value for key, value in receipt.items() if key != 'receipt_digest'} if isinstance(receipt, dict) else {}
     expected_state = 'quarantine' if claim['candidate']['present'] else 'absent'
-    if not isinstance(receipt, dict) or set(receipt) != required or receipt.get('schema_version') != 3 or (receipt.get('kind') != 'national-policy-recorded-abandon-finalize') or (receipt.get('evaluation_epoch') != _ea.EVALUATION_EPOCH) or (receipt.get('mode') != 'execute') or (receipt.get('claim_digest') != claim.get('claim_digest')) or (receipt.get('workflow_run_id') != claim['checkpoint']['workflow_run_id']) or (abandon_receipt is None) or (receipt.get('abandon_receipt_digest') != abandon_receipt.get('receipt_digest')) or (receipt.get('checkpoint_cleared') is not True) or (receipt.get('candidate_state') != expected_state) or (receipt.get('candidate_manifest_digest') != claim['candidate']['manifest_digest']) or (receipt.get('first_strict_execution_fence_digest') != claim['first_strict_execution_fence']['proof_digest']) or (not _ea._is_hex_digest(receipt.get('receipt_digest'))) or (receipt.get('receipt_digest') != _ea._canonical_object_digest(unsigned)):
+    if not isinstance(receipt, dict) or set(receipt) != required or receipt.get('schema_version') != 3 or (receipt.get('kind') != 'national-policy-recorded-abandon-finalize') or (receipt.get('evaluation_epoch') != _ea.EVALUATION_EPOCH) or (receipt.get('mode') != 'execute') or (receipt.get('claim_digest') != claim.get('claim_digest')) or (receipt.get('workflow_run_id') != claim['checkpoint']['workflow_run_id']) or (abandon_receipt is None) or (receipt.get('checkpoint_cleared') is not True) or (receipt.get('candidate_state') != expected_state) or (receipt.get('candidate_manifest_digest') != claim['candidate']['manifest_digest']) or (receipt.get('first_strict_execution_fence_digest') != claim['first_strict_execution_fence']['proof_digest']) or (not _ea._is_hex_digest(receipt.get('receipt_digest'))) or (receipt.get('receipt_digest') != _ea._canonical_object_digest(unsigned)):
         raise RuntimeError('recorded_abandon_finalize_receipt_invalid')
     return receipt
 

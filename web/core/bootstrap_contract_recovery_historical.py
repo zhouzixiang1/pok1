@@ -530,8 +530,14 @@ def _finalized_canonical_abandon(
 ) -> dict[str, Any] | None:
     """Validate the canonical transaction that consumed the external proof."""
 
-    from epoch_authority import validate_abandon_finalize_receipt
-    from evolution_infra import load_abandoned_version_receipts
+    from epoch_authority import (
+        validate_abandon_finalize_receipt,
+        validate_abandon_ledger_history,
+    )
+    from evolution_infra import (
+        load_abandoned_version_receipts,
+        _abandoned_version_receipt_identity_digest,
+    )
 
     results = root / "web" / "core" / "results"
     transactions = results / "policy_epoch_abandon_transactions"
@@ -542,7 +548,7 @@ def _finalized_canonical_abandon(
             path=results / "abandoned_versions.jsonl",
             project_root=root,
         )
-        matches: list[tuple[dict[str, Any], dict[str, Any], Path]] = []
+        matches: list[tuple[dict[str, Any], dict[str, Any], Path, dict[str, Any] | None]] = []
         for directory in transactions.iterdir():
             if directory.is_symlink() or not directory.is_dir():
                 continue
@@ -572,10 +578,13 @@ def _finalized_canonical_abandon(
                 ) != claim:
                     continue
                 validate_abandon_finalize_receipt(canonical_claim, receipt, rows)
-                matches.append((canonical_claim, receipt, directory))
+                matched_abandon_receipt = validate_abandon_ledger_history(
+                    canonical_claim, rows, require_active_head=False
+                )
+                matches.append((canonical_claim, receipt, directory, matched_abandon_receipt))
         if len(matches) != 1:
             return None
-        canonical_claim, _receipt, directory = matches[0]
+        canonical_claim, _receipt, directory, matched_abandon_receipt = matches[0]
         quarantine = directory / "candidate"
         candidate = canonical_claim.get("candidate") or {}
         if candidate.get("present") is not True or not quarantine.is_dir() or quarantine.is_symlink():
@@ -585,7 +594,11 @@ def _finalized_canonical_abandon(
         return {
             "transaction_id": directory.name,
             "finalize_receipt_digest": _receipt.get("receipt_digest"),
-            "abandon_receipt_digest": _receipt.get("abandon_receipt_digest"),
+            "abandon_receipt_digest": (
+                _abandoned_version_receipt_identity_digest(matched_abandon_receipt)
+                if matched_abandon_receipt is not None
+                else None
+            ),
             "candidate_state": _receipt.get("candidate_state"),
         }
     except Exception:

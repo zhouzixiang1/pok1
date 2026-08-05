@@ -368,11 +368,12 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
         abandoned_receipt_floor=0,
         abandoned_receipt_head_digest=None,
     )
+    recorded_head = evolution_infra._abandoned_ledger_head_digest(strict_rows)
     stale_errors = checkpoint_schema.live_checkpoint_allocation_authority_errors(
         stale_v18,
         published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
-        abandoned_receipt_head_digest=strict_rows[0]["receipt_digest"],
+        abandoned_receipt_head_digest=recorded_head,
     )
     assert "checkpoint_abandoned_receipt_head_changed" in stale_errors
     new_binding = checkpoint_schema.build_checkpoint_epoch_binding(
@@ -381,7 +382,7 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
         audit_context=checkpoint["audit_context"],
         published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
-        abandoned_receipt_head_digest=strict_rows[0]["receipt_digest"],
+        abandoned_receipt_head_digest=recorded_head,
         repo_root=root,
     )
     v19 = {
@@ -394,7 +395,7 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
         v19,
         published_high_water=STRICT_SOURCE_V,
         abandoned_receipt_floor=0,
-        abandoned_receipt_head_digest=strict_rows[0]["receipt_digest"],
+        abandoned_receipt_head_digest=recorded_head,
     ) == []
     archive_root = root / receipt["archive_root"]
     archived_legacy = archive_root / "legacy_abandoned_versions.jsonl"
@@ -528,7 +529,9 @@ def test_recorded_v2_abandon_finalize_recovers_after_clear_failure(
         finalize_recorded_abandon_checkpoint=True,
     )
     assert dry["mutates"] is False
-    assert dry["abandon_receipt_digest"] == terminal["receipt_digest"]
+    assert dry["abandon_receipt_digest"] == (
+        evolution_infra._abandoned_version_receipt_identity_digest(terminal)
+    )
 
     receipt = reconcile.run(
         execute=True,
@@ -537,7 +540,9 @@ def test_recorded_v2_abandon_finalize_recovers_after_clear_failure(
     )
     assert receipt["checkpoint_cleared"] is True
     assert receipt["candidate_removed"] is True
-    assert receipt["abandon_receipt_digest"] == terminal["receipt_digest"]
+    assert receipt["abandon_receipt_digest"] == (
+        evolution_infra._abandoned_version_receipt_identity_digest(terminal)
+    )
     assert not reconcile.CHECKPOINT.exists()
     assert not candidate.exists()
     assert len(evolution_infra.load_abandoned_version_receipts(
@@ -673,7 +678,9 @@ def test_recorded_finalize_recovers_old_clear_before_candidate_delete_window(
         finalize_recorded_abandon_checkpoint=True,
     )
 
-    assert receipt["abandon_receipt_digest"] == terminal["receipt_digest"]
+    assert receipt["abandon_receipt_digest"] == (
+        evolution_infra._abandoned_version_receipt_identity_digest(terminal)
+    )
     assert receipt["checkpoint_cleared"] is True
     assert receipt["candidate_removed"] is True
     assert not candidate.exists()

@@ -1216,7 +1216,9 @@ def strict_epoch_projection(
             "recorded_abandon_checkpoint_finalize"
         )
         projection["active_generation"]["abandon_receipt_digest"] = (
-            recorded_abandon_finalize.get("receipt_digest")
+            infra._abandoned_version_receipt_identity_digest(
+                recorded_abandon_finalize
+            )
         )
         projection["operator_action"] = "finalize_recorded_abandon_checkpoint"
         projection["operator_command"] = RECORDED_ABANDON_FINALIZE_COMMAND

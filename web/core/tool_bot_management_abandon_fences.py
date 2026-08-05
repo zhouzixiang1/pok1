@@ -294,11 +294,11 @@ def validate_completed_abandon_handoff(checkpoint: dict, result: dict) -> dict:
     live_claim = _tbm.Path(_tbm.RESULTS_DIR) / 'policy_epoch_reconciliation_claim.json'
     if _tbm.os.path.lexists(PIPELINE_STATE_FILE) or _tbm.os.path.lexists(live_claim):
         raise RuntimeError('completed_abandon_terminal_paths_still_live')
-    expected_result = {'abandoned': True, 'cleared_checkpoint': True, 'workflow_run_id': baseline_identity['workflow_run_id'], 'abandon_transaction_id': transaction_id, 'abandon_receipt_digest': abandon_receipt.get('receipt_digest'), 'finalize_receipt_digest': finalize_receipt.get('receipt_digest'), 'abandon_checkpoint_identity': terminal_identity, 'first_strict_execution_fence': claim.get('first_strict_execution_fence') if claim.get('schema_version') == 3 else result.get('first_strict_execution_fence')}
+    expected_result = {'abandoned': True, 'cleared_checkpoint': True, 'workflow_run_id': baseline_identity['workflow_run_id'], 'abandon_transaction_id': transaction_id, 'abandon_receipt_digest': _tbm._abandoned_version_receipt_identity_digest(abandon_receipt), 'finalize_receipt_digest': finalize_receipt.get('receipt_digest'), 'abandon_checkpoint_identity': terminal_identity, 'first_strict_execution_fence': claim.get('first_strict_execution_fence') if claim.get('schema_version') == 3 else result.get('first_strict_execution_fence')}
     for field, value in expected_result.items():
         if result.get(field) != value:
             raise RuntimeError(f'completed_abandon_result_{field}_mismatch')
-    return {'transaction_id': transaction_id, 'abandon_receipt_digest': abandon_receipt['receipt_digest'], 'finalize_receipt_digest': finalize_receipt['receipt_digest'], 'checkpoint_identity': terminal_identity, 'workflow_fences': workflow_fences, 'first_strict_execution_fence': claim.get('first_strict_execution_fence')}
+    return {'transaction_id': transaction_id, 'abandon_receipt_digest': _tbm._abandoned_version_receipt_identity_digest(abandon_receipt), 'finalize_receipt_digest': finalize_receipt.get('receipt_digest'), 'checkpoint_identity': terminal_identity, 'workflow_fences': workflow_fences, 'first_strict_execution_fence': claim.get('first_strict_execution_fence')}
 
 
 def _historical_head_is_ancestor(ancestor_head: str, descendant_head: str) -> bool:
@@ -393,4 +393,4 @@ def reprove_historical_completed_abandon(transaction_id: str) -> dict:
         raise RuntimeError('historical_completed_abandon_candidate_published')
     source = _tbm._historical_completed_abandon_source_proof(claim)
     workflow_fences = _tbm._validate_completed_abandon_workflow_fences(claim)
-    return {'kind': 'national-policy-historical-completed-abandon-reproof-v1', 'authority': 'completed_abandon_terminal_evidence_only', 'prepare_authorized': False, 'next_tool': None, 'transaction_id': transaction_id, 'checkpoint_identity': dict(claim['checkpoint']), 'abandon_receipt_digest': abandon_receipt['receipt_digest'], 'finalize_receipt_digest': finalize_receipt['receipt_digest'], 'workflow_fences': workflow_fences, 'first_strict_execution_fence': claim.get('first_strict_execution_fence'), 'source': source}
+    return {'kind': 'national-policy-historical-completed-abandon-reproof-v1', 'authority': 'completed_abandon_terminal_evidence_only', 'prepare_authorized': False, 'next_tool': None, 'transaction_id': transaction_id, 'checkpoint_identity': dict(claim['checkpoint']), 'abandon_receipt_digest': _tbm._abandoned_version_receipt_identity_digest(abandon_receipt), 'finalize_receipt_digest': finalize_receipt['receipt_digest'], 'workflow_fences': workflow_fences, 'first_strict_execution_fence': claim.get('first_strict_execution_fence'), 'source': source}

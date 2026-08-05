@@ -41,6 +41,8 @@ from evolution_infra import (
     no_slot_override,
     _fsync_regular_state_file_and_parent,
     _git as _evolution_git,
+    _abandoned_ledger_head_digest,
+    _abandoned_version_receipt_identity_digest,
 )
 from pipeline_state import generic_abandon_block
 from bot_artifact import canonical_digest
@@ -476,9 +478,7 @@ def _abandon_ledger_claim(checkpoint: dict, reason: str) -> dict:
     return {
         "path_contract": "RESULTS_DIR/abandoned_versions.jsonl",
         "prior_receipt_count": len(rows),
-        "prior_receipt_head_digest": (
-            rows[-1]["receipt_digest"] if rows else None
-        ),
+        "prior_receipt_head_digest": _abandoned_ledger_head_digest(rows),
         "receipt_identity": schema2_abandon_receipt_identity(
             _checkpoint_transaction_identity(checkpoint),
             str(reason),
@@ -820,8 +820,8 @@ def _finalize_checkpoint_abandon_transaction(
     durable_chain_receipt = _claim_abandon_receipt(claim)
     if recorded_abandon_receipt is not None and (
         durable_chain_receipt is None
-        or durable_chain_receipt.get("receipt_digest")
-        != recorded_abandon_receipt.get("receipt_digest")
+        or _abandoned_version_receipt_identity_digest(durable_chain_receipt)
+        != _abandoned_version_receipt_identity_digest(recorded_abandon_receipt)
     ):
         raise RuntimeError("recorded_abandon_receipt_changed_after_claim")
     abandon_receipt = durable_chain_receipt
@@ -895,7 +895,6 @@ def _finalize_checkpoint_abandon_transaction(
         "mode": "execute",
         "claim_digest": claim["claim_digest"],
         "workflow_run_id": claim["checkpoint"]["workflow_run_id"],
-        "abandon_receipt_digest": abandon_receipt["receipt_digest"],
         "checkpoint_cleared": True,
         "candidate_state": state,
         "candidate_manifest_digest": claim["candidate"]["manifest_digest"],
@@ -1542,8 +1541,8 @@ async def _do_abandon_generation(
                 "abandoned": False,
                 "reason": "recorded_abandon_receipt_payload_mismatch",
                 "action": "operator_reconcile",
-                "abandon_receipt_digest": recorded_abandon_receipt.get(
-                    "receipt_digest"
+                "abandon_receipt_digest": _abandoned_version_receipt_identity_digest(
+                    recorded_abandon_receipt
                 ),
             }
     elif isinstance(live_abandon_claim, dict):
@@ -1941,7 +1940,7 @@ async def _do_abandon_generation(
                 else None
             ),
             "abandon_receipt_digest": (
-                recorded_abandon_receipt.get("receipt_digest")
+                _abandoned_version_receipt_identity_digest(recorded_abandon_receipt)
                 if isinstance(recorded_abandon_receipt, dict)
                 else None
             ),
@@ -2003,7 +2002,7 @@ async def _do_abandon_generation(
         "workflow_run_id": workflow_run_id,
         "first_strict_execution_fence": first_strict_execution_fence,
         "abandon_receipt_digest": (
-            abandon_receipt.get("receipt_digest")
+            _abandoned_version_receipt_identity_digest(abandon_receipt)
             if isinstance(abandon_receipt, dict)
             else None
         ),

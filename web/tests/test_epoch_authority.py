@@ -553,7 +553,9 @@ def test_abandoned_floor_is_epoch_scoped(tmp_path, monkeypatch):
             STRICT_TARGET_V,
             published_high_water=STRICT_TARGET_V,
             abandoned_receipt_floor=STRICT_TARGET_V + 1,
-            abandoned_receipt_head_digest=first["receipt_digest"],
+            abandoned_receipt_head_digest=evolution_infra._abandoned_ledger_head_digest(
+                [first]
+            ),
         ),
         reason="test-v145",
         timestamp=2.0,
@@ -600,7 +602,7 @@ def test_failed_reserved_v143_attempt_is_audited_but_does_not_burn_label(
     assert evolution_infra.find_abandoned_version_floor() == STRICT_TARGET_V + 1
 
 
-def test_abandon_receipt_is_checkpoint_bound_chained_and_tamper_evident(
+def test_abandon_receipt_is_checkpoint_bound_and_tamper_evident(
     tmp_path,
     monkeypatch,
 ):
@@ -622,7 +624,9 @@ def test_abandon_receipt_is_checkpoint_bound_chained_and_tamper_evident(
             revision=7,
             published_high_water=STRICT_TARGET_V,
             abandoned_receipt_floor=STRICT_TARGET_V + 1,
-            abandoned_receipt_head_digest=first["receipt_digest"],
+            abandoned_receipt_head_digest=evolution_infra._abandoned_ledger_head_digest(
+                [first]
+            ),
         ),
         reason="native-precommit-exhausted",
         timestamp=2.0,
@@ -638,23 +642,31 @@ def test_abandon_receipt_is_checkpoint_bound_chained_and_tamper_evident(
         STRICT_TARGET_V + 1,
         STRICT_TARGET_V + 2,
     ]
-    assert first["previous_receipt_digest"] is None
-    assert second["previous_receipt_digest"] == first["receipt_digest"]
+    # The per-row identity digest is a stable content fingerprint that uniquely
+    # identifies each durable receipt without chaining on a per-row field.
+    assert (
+        evolution_infra._abandoned_version_receipt_identity_digest(first)
+        != evolution_infra._abandoned_version_receipt_identity_digest(second)
+    )
     assert receipts[0]["checkpoint_envelope"]["epoch_binding"][
         "binding_digest"
     ] == _strict_checkpoint(STRICT_TARGET_V + 1, STRICT_TARGET_V, revision=3)["epoch_binding"][
         "binding_digest"
     ]
 
+    # Tamper-evidence now flows from the structural validation of every row
+    # plus the whole-ledger holistic hash consumed by the allocation CAS.
+    # Mutating one row's bound version breaks the envelope/version binding the
+    # loader re-validates on every read, so the tampered ledger fails closed.
     rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
-    rows[0]["version"] = 999
+    rows[0]["version"] = STRICT_TARGET_V + 999
     ledger.write_text(
         "\n".join(json.dumps(row) for row in rows) + "\n",
         encoding="utf-8",
     )
     with pytest.raises(
         evolution_infra.AbandonedVersionLedgerError,
-        match="digest_mismatch|checkpoint_version_mismatch",
+        match="checkpoint_version_mismatch|version order regressed",
     ):
         evolution_infra.load_abandoned_version_receipts(
             path=ledger,
@@ -724,7 +736,9 @@ def test_historical_abandon_receipt_cannot_be_replayed_after_chain_advances(
             revision=4,
             published_high_water=STRICT_TARGET_V,
             abandoned_receipt_floor=STRICT_TARGET_V + 1,
-            abandoned_receipt_head_digest=first["receipt_digest"],
+            abandoned_receipt_head_digest=evolution_infra._abandoned_ledger_head_digest(
+                [first]
+            ),
         ),
         reason="later-terminal-command",
         timestamp=2.0,
@@ -734,7 +748,7 @@ def test_historical_abandon_receipt_cannot_be_replayed_after_chain_advances(
 
     with pytest.raises(
         evolution_infra.AbandonedVersionLedgerError,
-        match="not the unique chain head",
+        match="not the unique (chain head|ledger tail)",
     ):
         evolution_infra.append_abandoned_version_receipt(
             stale_checkpoint,
@@ -767,7 +781,15 @@ def test_concurrent_same_checkpoint_abandon_is_one_durable_receipt(
     with ThreadPoolExecutor(max_workers=8) as pool:
         receipts = list(pool.map(append, range(16)))
 
-    assert len({row["receipt_digest"] for row in receipts}) == 1
+    assert (
+        len(
+            {
+                evolution_infra._abandoned_version_receipt_identity_digest(row)
+                for row in receipts
+            }
+        )
+        == 1
+    )
     assert len(evolution_infra.load_abandoned_version_receipts(
         path=ledger,
         project_root=tmp_path,
@@ -830,7 +852,9 @@ def test_abandon_receipt_size_preflight_never_mutates_ledger(
                 STRICT_TARGET_V,
                 published_high_water=STRICT_TARGET_V,
                 abandoned_receipt_floor=STRICT_TARGET_V + 1,
-                abandoned_receipt_head_digest=first["receipt_digest"],
+                abandoned_receipt_head_digest=evolution_infra._abandoned_ledger_head_digest(
+                    [first]
+                ),
             ),
             reason="second",
             path=ledger,
@@ -1332,7 +1356,9 @@ def test_projection_routes_exact_recorded_abandon_to_cas_finalize(
         "abandoned_version_authority",
         lambda **_kwargs: {
             "floor": STRICT_TARGET_V + 1,
-            "head_digest": terminal["receipt_digest"],
+            "head_digest": evolution_infra._abandoned_version_receipt_identity_digest(
+                terminal
+            ),
             "receipt_count": 1,
         },
     )
