@@ -1264,6 +1264,7 @@ from orchestrator_deterministic_route import (  # noqa: E402,F401
     _slice2b_consumer_in_flight,
     _slice2b_consumer_promoted,
     _slice2b_consumer_rejected,
+    _slice2b_ensure_activation,
     _slice2b_promotion_barrier,
     _slice2b_seal_at_workers_done,
     _try_deterministic_checkpoint_route,

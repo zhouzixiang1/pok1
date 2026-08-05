@@ -1658,10 +1658,17 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
 
     # Resolve the per-process activation + one-ahead coordinator through the
     # same registry used by the seal seam in orchestrator_deterministic_route.
+    # Use the lazy ensure helper so the activation exists on a clean start
+    # before any seal has ever fired (otherwise the speculative-draft-during-
+    # eval-wait path never finds an activation and the LLM stays idle).
     try:
-        activation = _orch._slice2b_activation_registry("get")
+        activation = _orch._slice2b_ensure_activation()
     except Exception:
         activation = None
+        try:
+            activation = _orch._slice2b_activation_registry("get")
+        except Exception:
+            pass
     if activation is None:
         # No live activation yet; the seal seam would also have refused, so
         # there is no sealed candidate to fill behind.  Nothing to do.
