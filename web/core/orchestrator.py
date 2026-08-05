@@ -378,7 +378,7 @@ from orchestrator_context import _build_context, _make_precompact_hook, _make_bo
 from orchestrator_session import (  # noqa: E402
     _save_orchestrator_session, _load_orchestrator_session, _clear_orchestrator_session,
 )
-from evolution_infra import find_current_v  # noqa: E402
+from evolution_infra import find_current_v, register_eval_wait_draft_hook  # noqa: E402
 from llm_query import (  # noqa: E402
     LLMProviderCleanupError,
     _is_rate_limited,
