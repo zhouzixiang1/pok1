@@ -276,6 +276,17 @@ class Slice2bActivation:
 
         return self.coordinator.producer_may_advance()
 
+    def producer_may_draft_ahead_of_eval(self) -> bool:
+        """Producer may launch a speculative draft while the primary lane is
+        parked in eval_wait (no sealed candidate to draft behind).
+
+        Delegates to the coordinator's ahead-of-eval predicate; required so
+        ``_try_launch_draft_prepare`` can reach it through the activation
+        layer (the same way it reaches ``producer_may_draft_behind``).
+        """
+
+        return self.coordinator.producer_may_draft_ahead_of_eval()
+
     # -- consumer task ------------------------------------------------------
 
     def _consumer_effect_exhausted(self, candidate_id: str) -> bool:
