@@ -1047,7 +1047,20 @@ async def _cycle_phase_b_stream_session(ctx, ui, log_file, gen_ctx,
                 _orch.log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
 
-        CYCLE_TIMEOUT = 14400  # 240 minutes (4h) max per LLM cycle. Generous for GLM-5.2 variable output speed: during peak provider load a single Scout can take 15-20min. Full pipeline (Scout ensemble + Critics + final + workers + review + critic + precommit) can reach 2-3h under load. 14400s gives ample room without being unbounded.
+        # Per-cycle wall-clock cap for the orchestrator's own provider stream.
+        # The provider stream can open fresh sessions within one generation
+        # (deterministic routes), so this caps a SINGLE session, not the whole
+        # generation.  3600s (1h) is generous for GLM-5.2 variable output speed
+        # (a single Scout can take 15-20min under peak load) while ensuring a
+        # stuck Master-replan loop at ``direction_audited`` (where the
+        # ``audit_attempt`` counter may not increment correctly and the
+        # ``never_disposable`` guard blocks abandon) cannot burn GLM tokens for
+        # 4 hours.  The former 14400s (4h) value let v58 loop for 25+ minutes
+        # with no escape; this tighter cap ensures the B3 master-stuck abandon
+        # path fires within a bounded window.  Env-overridable for tuning.
+        CYCLE_TIMEOUT = float(
+            _orch.os.environ.get("POK_ORCH_CYCLE_TIMEOUT_SEC", "3600.0")
+        )
         # Sentinel returned by the timeout-extension path (stage=verified, first extension).
         # Must be DISTINCT from every other cost signal: -0.5 (infra), -1.0 (generic crash),
         # and the auth clamp -max(abs(total_cost), 1.0) which can reach any negative value
@@ -1260,9 +1273,23 @@ async def _cycle_phase_b_stream_session(ctx, ui, log_file, gen_ctx,
                         _b3_audit = int(ckpt.get("audit_attempt") or 0)
                         _b3_stage = ckpt.get("stage")
                         _B3_MASTER_FAIL_THRESHOLD = 2  # mirrors MAX_MASTER_TOTAL_FAILURES (tool_planning.py)
+                        # Escape a stuck Master-replan loop at ``direction_audited``
+                        # when EITHER the Master failure budget is exhausted
+                        # (audit_attempt >= 2) OR the stage is still
+                        # ``direction_audited`` at cycle timeout (the
+                        # ``audit_attempt`` counter has a known increment gap
+                        # where the 2nd corrective-replan failure does not bump
+                        # it to 2, so the former ``and`` gate never fired and
+                        # the loop spun until the full 4h timeout).  Abandoning
+                        # at ``direction_audited`` on cycle timeout is always
+                        # safe: no Workers have run, no candidate was sealed,
+                        # and the stage is disposable (NOT in ``never_disposable``).
                         if (
-                            _b3_audit >= _B3_MASTER_FAIL_THRESHOLD
-                            and _b3_stage == "direction_audited"
+                            _b3_stage == "direction_audited"
+                            and (
+                                _b3_audit >= _B3_MASTER_FAIL_THRESHOLD
+                                or True  # cycle timeout at direction_audited = abandon
+                            )
                         ):
                             _orch.log.warning(
                                 "Cycle timed out with Master fail count=%d (stage=%s) — "
