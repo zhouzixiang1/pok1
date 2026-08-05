@@ -369,7 +369,7 @@ class AbandonedVersionLedgerError(RuntimeError):
 MAX_ACTIVE_BOTS = 30
 
 # Evaluation & quality thresholds
-DAEMON_EVAL_TIMEOUT = 600
+DAEMON_EVAL_TIMEOUT = float(os.environ.get("POK_DAEMON_EVAL_TIMEOUT_SEC", "600"))
 MIN_GAMES_FOR_EVAL = 100
 EVAL_WAIT_PROGRESS_INTERVAL_SEC = int(os.environ.get("POK_EVAL_WAIT_PROGRESS_INTERVAL_SEC", "30"))
 MAX_LINES_PER_FILE = 2000       # Candidate-owned policy.py — base limit
