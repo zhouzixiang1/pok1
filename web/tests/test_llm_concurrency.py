@@ -73,3 +73,35 @@ def test_role_classification_substring_match():
     # 'master' (no marker) → producer
     assert llm_concurrency.get_llm_semaphore_for_role("master_proposal_1") is llm_concurrency.get_producer_llm_semaphore()
 
+
+def test_master_proposal_critic_is_producer_not_consumer():
+    """Regression: MASTER PROPOSAL CRITIC roles are producer-lane.
+
+    The Master proposal ensemble runs falsification/scope critics as part of
+    draft preparation (the producer lane), NOT the publication critical path.
+    The naive ``"critic" in role_name`` substring match misrouted them into
+    the (1-permit) consumer pool, serializing the two concurrent proposal
+    critics and idling the producer pool during the critic wave.  The
+    ``"MASTER PROPOSAL"`` prefix must take precedence over the critic marker.
+    """
+    producer = llm_concurrency.get_producer_llm_semaphore()
+    consumer = llm_concurrency.get_consumer_llm_semaphore()
+    # Both Master proposal critic variants must route to the producer pool.
+    assert (
+        llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL CRITIC falsification")
+        is producer
+    )
+    assert (
+        llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL CRITIC scope")
+        is producer
+    )
+    # The plain proposal Scouts are also producer (already correct; this guards
+    # against a future regression that moves the prefix check after the markers).
+    assert (
+        llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL mechanism")
+        is producer
+    )
+    # A genuine gate-chain critic (no MASTER PROPOSAL prefix) stays consumer.
+    assert llm_concurrency.get_llm_semaphore_for_role("STRATEGY CRITIC") is consumer
+    assert llm_concurrency.get_llm_semaphore_for_role("LEAD CODE REVIEWER") is consumer
+

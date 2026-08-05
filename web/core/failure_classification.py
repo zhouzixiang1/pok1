@@ -9,6 +9,21 @@ INFRA_BLOCKER_REASONS = {
     "incomplete_or_timeout",
     "scheduler_error",
     "match_exception",
+    # Native TCP runner blocker vocabulary (national_native_acceptance.py and
+    # tool_eval.py).  These are produced when a native precommit run is killed
+    # mid-match (startup-watchdog kill, transport stall, launch-latency spike)
+    # or raises an exception — all harness/infrastructure failures independent
+    # of the candidate's policy bytes (the bot runtime is system-owned and
+    # byte-identical across every candidate and baseline opponent).  Without
+    # these in the infra set, ``classify_precommit_gate`` returns ``regression``
+    # for a pure transient stall, which the Slice-2b consumer then rejects as a
+    # permanent candidate_failure with zero retries — the same class of bug as
+    # the smoke-gate single-shot abandon.
+    "native_incomplete_match",
+    "native_precommit_sample_shortfall",
+    "native_no_samples",
+    "native_precommit_exception",
+    "national_precommit_exception",
 }
 
 

@@ -27,7 +27,11 @@ from evolution_infra import write_pipeline_checkpoint, MAX_PRECOMMIT_RETRIES
 from system_log import log_system_event
 from pipeline_schema import GateResult, ScoreCard
 from workflow_profiles import get_workflow_profile
-from failure_classification import INFRA_BLOCKER_REASONS, is_infra_blocker
+from failure_classification import (
+    INFRA_BLOCKER_REASONS,
+    classify_precommit_gate,
+    is_infra_blocker,
+)
 from pipeline_intents import make_intent
 from precommit_eval_contract import (
     PrecommitEvalContractError,
@@ -1005,15 +1009,51 @@ async def _run_national_precommit_backend(
                 f"Do NOT call run_precommit_eval again on unchanged code. Rework the bot against "
                 f"{worst_opponent} ({worst_wins}W-{worst_losses}L) and the listed blockers."
             )
-            result["failure_class"] = "regression"
-            result["intent"] = make_intent(
-                "rework",
-                next_tool="execute_workers",
-                failure_class="regression",
-                authority="tool:precommit_eval",
-                safe_to_auto_execute=True,
-                reason="national_precommit_regression",
+            # Infrastructure attribution: when every blocker is infra-class
+            # (a native run killed mid-match by a startup-watchdog kill,
+            # transport stall, launch-latency spike, or a runner exception),
+            # the failure is harness-side, not a candidate regression.  The
+            # bot runtime is system-owned and byte-identical across every
+            # candidate and baseline opponent, so such a stall can never be a
+            # policy defect.  Classifying it as ``regression`` here would make
+            # the Slice-2b consumer reject the candidate permanently with zero
+            # retries (the same class of bug as the smoke-gate single-shot
+            # abandon).  Instead emit ``infrastructure`` + ``retry_same_tool``
+            # so the consumer's bounded infra retry budget absorbs the
+            # transient stall and re-runs precommit.  A genuine regression
+            # (e.g. ``aggregate_native_regression`` / ``did_not_beat_parent``)
+            # keeps the ``regression`` / rework path below.
+            _precommit_gate_class = classify_precommit_gate(
+                {"passed": False, "blockers": blockers}
             )
+            if _precommit_gate_class == "infra_timeout":
+                result["directive"] = (
+                    f"National precommit could not reach a conclusive verdict "
+                    f"(attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}): "
+                    f"every blocker is infrastructure-class "
+                    f"(startup-watchdog kill, transport stall, or runner "
+                    f"exception).  The candidate policy is unaffected by a "
+                    f"native TCP harness stall; retrying precommit."
+                )
+                result["failure_class"] = "infrastructure"
+                result["intent"] = make_intent(
+                    "retry_same_tool",
+                    next_tool="run_precommit_eval",
+                    failure_class="infrastructure",
+                    authority="tool:precommit_eval",
+                    safe_to_auto_execute=True,
+                    reason="native_precommit_infra_blocker",
+                )
+            else:
+                result["failure_class"] = "regression"
+                result["intent"] = make_intent(
+                    "rework",
+                    next_tool="execute_workers",
+                    failure_class="regression",
+                    authority="tool:precommit_eval",
+                    safe_to_auto_execute=True,
+                    reason="national_precommit_regression",
+                )
 
     checkpoint_stage = "verified" if passed else "precommit_failed"
     checkpoint_feedback = None if passed else result.get("directive")
