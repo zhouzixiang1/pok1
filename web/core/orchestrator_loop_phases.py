@@ -768,8 +768,15 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                 # eval_wait outcome diverges.  Best-effort and non-fatal.
                 try:
                     _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    try:
+                        _orch.log_system_event(
+                            "orchestrator.eval_wait_draft_launch_exception",
+                            "error",
+                            f"_try_launch_draft_prepare raised {type(_e).__name__}: {_e}",
+                        )
+                    except Exception:
+                        pass
                 gen_ctx = await _orch._prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
                 if gen_ctx is None:
                     if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -1672,6 +1679,14 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     if activation is None:
         # No live activation yet; the seal seam would also have refused, so
         # there is no sealed candidate to fill behind.  Nothing to do.
+        try:
+            _orch.log_system_event(
+                "orchestrator.eval_wait_draft_no_activation",
+                "warn",
+                "_try_launch_draft_prepare: no activation after ensure_activation",
+            )
+        except Exception:
+            pass
         return
 
     try:
@@ -1697,6 +1712,14 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
         # Multi-ahead buffer is full (number of sealed-but-unresolved
         # candidates has reached max_ahead) AND no eval-wait-ahead slot is
         # free; no room for another draft.
+        try:
+            _orch.log_system_event(
+                "orchestrator.eval_wait_draft_gate_false",
+                "info",
+                "_try_launch_draft_prepare: gate False (draft_behind or ahead_of_eval both False)",
+            )
+        except Exception:
+            pass
         return
 
     # De-duplicate: at most one in-flight draft per draft slot.  A draft slot
