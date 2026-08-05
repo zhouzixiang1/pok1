@@ -243,6 +243,26 @@ def test_prepare_degeneration_availability_is_checkpoint_and_candidate_neutral(
     )
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 144)
     monkeypatch.setattr(evolution_infra, "find_latest_active_v", lambda: 144)
+    # Production now selects the eval source via the cert-aware
+    # find_latest_rating_eligible_active_v (and re-validates it with
+    # resolve_national_bot_spec in the EvalSourceRatingIneligible precheck).
+    # The fake active bots exist only in monkeypatched get_active_bots(), not
+    # on disk, so stub both so the chosen source survives to the
+    # degeneration-diagnosis block this test exercises.
+    monkeypatch.setattr(
+        evolution_infra, "find_latest_rating_eligible_active_v", lambda: 144
+    )
+    import bot_namespace
+
+    def _eligible_spec(_label, _role=None, **_kwargs):
+        return SimpleNamespace(
+            eligible=True,
+            version=144,
+            issues=(),
+            publication_tier="full",
+        )
+
+    monkeypatch.setattr(bot_namespace, "resolve_national_bot_spec", _eligible_spec)
     monkeypatch.setattr(
         evolution_infra,
         "get_active_bots",

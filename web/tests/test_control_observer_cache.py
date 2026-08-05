@@ -557,7 +557,13 @@ def test_production_health_cache_serves_stale_same_key_during_build(
     assert result == {"overall": "healthy", "revision": 1}
     assert time.monotonic() - started < 0.1
     assert status_entered.wait(timeout=1)
-    # The background refresh is exactly one build; no follower parked.
+    # The background refresh is exactly one build; no follower parked. The
+    # background revalidate thread clears _inflight asynchronously, so poll
+    # briefly for it to settle before asserting (matches the pattern used by
+    # the other _ObserverSingleflightCache tests in this file).
+    deadline = time.monotonic() + 2.0
+    while health_cache._inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert health_cache._inflight is False
     status_release.set()
     assert status_completed.wait(timeout=2)

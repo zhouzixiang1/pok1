@@ -127,13 +127,16 @@ def test_frontend_drops_stream_and_cycle_state_instead_of_merging_stale_authorit
 def test_active_navigation_describes_read_only_contracts():
     sidebar = (FRONTEND / "layout" / "AppSidebar.tsx").read_text(encoding="utf-8")
 
-    # The 2026-07-30 sidebar cleanup collapsed the duplicate /bots entries
-    # (evolution 发布池 + management 严格发布 Bot) into the single evolution
-    # 发布池 entry that renders the merged BotManager.
+    # The 2026-08 dashboard redesign condensed navigation to five core pages.
+    # The former duplicate /bots entries (evolution 发布池 + management
+    # 严格发布 Bot) and the standalone 提示词契约 nav were collapsed: /bots is
+    # now the single "Bot 强度与回放" entry (merged BotManager) and /prompts
+    # redirects into the LLM 使用分析 page, so no prompts nav entry remains.
     assert sidebar.count('path: "/bots"') == 1
-    assert 'name: "发布池"' in sidebar
+    assert 'name: "Bot 强度与回放"' in sidebar
+    assert 'name: "发布池"' not in sidebar
     assert 'name: "严格发布 Bot"' not in sidebar
-    assert 'name: "提示词契约"' in sidebar
+    assert 'name: "提示词契约"' not in sidebar
     assert "提示词编辑器" not in sidebar
     assert 'name: "Bot 管理"' not in sidebar
 
@@ -160,7 +163,10 @@ def test_control_observation_pairs_status_health_without_overlapping_polls():
     assert "停止中（任务仍持有运行权威）" in panel
     assert "runtimeMutationLocked" in panel
     assert "routeMatchesGeneration" in panel
-    assert "页面不从 stage 猜测下一工具" in panel
+    # The standalone "页面不从 stage 猜测下一工具" doc comment was removed when
+    # route authority was consolidated into routeMatchesGeneration; the next-tool
+    # authority is still backend-owned (route.next_tool), enforced by the
+    # routeMatchesGeneration / route.parent2_v assertions below.
     assert "controlStartBlockedReason(status, health)" in panel
     assert "route.parent2_v === status.active_generation.parent2_v" in panel
     assert "pipeline.parent2_v === active.parent2_v" in api
@@ -174,11 +180,15 @@ def test_control_observation_pairs_status_health_without_overlapping_polls():
     assert "terminalization_pending" in api
     assert "clearOrchestratorSession" not in client
     assert "重置会话" not in panel
-    assert "opaque session ID 不构成恢复权威" in panel
+    # The verbose operator-facing copy ("opaque session ID 不构成恢复权威",
+    # "写入 evaluation identity 的完整 70 手样本预算（1–8）",
+    # "它本身不是 Bot 强度证明") was trimmed when the ControlPanel was
+    # simplified in the 2026-08 redesign. The underlying structural safeguards
+    # remain: the daemon-pairs input is still clamped to the 1–8 evaluation
+    # budget below, and runtimeMutationLocked / routeMatchesGeneration still
+    # gate mutations on backend-owned authority.
     assert "max={8}" in panel
     assert "Math.min(8," in panel
-    assert "写入 evaluation identity 的完整 70 手样本预算（1–8）" in panel
-    assert "它本身不是 Bot 强度证明" in panel
 
 
 def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():
@@ -417,19 +427,22 @@ def test_dashboard_redesign_adds_structured_evolution_views():
 
     for route in ("/pipeline", "/agents", "/evidence", "/failures", "/strength"):
         assert f'path="{route}"' in app, f"missing redesigned view route {route}"
-    # Legacy routes remain as Navigate redirects (IA merge).
+    # Legacy routes remain as Navigate redirects (IA merge). The 2026-08
+    # redesign collapsed /agents (and /pipeline, /evolution, /evidence,
+    # /strength) into the single 当代进度 (/generation) page.
     assert 'path="/bots-inventory"' in app
     assert 'Navigate to="/bots"' in app
     assert 'path="/evolution"' in app
-    assert 'Navigate to="/agents"' in app
+    assert 'Navigate to="/generation"' in app
     for route in ("/", "/bots", "/prompts"):
         assert f'path="{route}"' in app
     assert 'group: "进化"' in sidebar
-    assert 'name: "提示词契约"' in sidebar
-    # /bots is a single merged entry (发布池, the merged BotManager). The
-    # duplicate 严格发布 Bot nav entry was removed in the 2026-07-30 sidebar
-    # cleanup so there is exactly one /bots link.
-    assert 'name: "发布池"' in sidebar
+    # /bots is a single merged entry (Bot 强度与回放, the merged BotManager).
+    # The duplicate 严格发布 Bot nav entry and the standalone 提示词契约 nav
+    # were removed in the dashboard redesigns so there is exactly one /bots
+    # link and no prompts nav entry.
+    assert 'name: "Bot 强度与回放"' in sidebar
+    assert 'name: "发布池"' not in sidebar
     assert sidebar.count('path: "/bots"') == 1
     assert 'name: "严格发布 Bot"' not in sidebar
     # Compatibility entries removed from sidebar after merge.
@@ -472,6 +485,11 @@ def test_evolution_ui_primitives_and_handoff_eight_step_exist():
     )
     assert "def project_handoff_steps" in helpers
     assert '"completed_count"' in helpers or "completed_count" in helpers
+    # Every evolution page renders the standard header triad
+    # (EvolutionPageHeader + PhaseAProjectionStrip). Migrated pages consume
+    # them indirectly through EvolutionPageScaffold (which composes the triad
+    # internally); the remaining pages import the primitives directly.
+    scaffold_pages = {"Overview.tsx", "ControlPanel.tsx"}
     for page_name in (
         "Overview.tsx",
         "EvidenceGates.tsx",
@@ -483,8 +501,11 @@ def test_evolution_ui_primitives_and_handoff_eight_step_exist():
         "ControlPanel.tsx",
     ):
         page = (FRONTEND / "pages" / page_name).read_text(encoding="utf-8")
-        assert "EvolutionPageHeader" in page, page_name
-        assert "PhaseAProjectionStrip" in page, page_name
+        if page_name in scaffold_pages:
+            assert "EvolutionPageScaffold" in page, page_name
+        else:
+            assert "EvolutionPageHeader" in page, page_name
+            assert "PhaseAProjectionStrip" in page, page_name
     for page_name in (
         "EvidenceGates.tsx",
         "FailuresRecovery.tsx",

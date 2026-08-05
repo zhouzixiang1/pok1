@@ -4980,11 +4980,15 @@ def test_existing_unreadable_checkpoint_is_not_generation_terminal(
     monkeypatch,
 ):
     import evolution_core
+    import evolution_infra
     import orchestrator
 
     state_file = tmp_path / "pipeline_state.json"
     state_file.write_text("{not-json", encoding="utf-8")
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    # pipeline_state_path() reads evolution_infra.PIPELINE_STATE_FILE directly,
+    # so point both module references at the same tmp file.
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
     monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: None)
     monkeypatch.setattr(
         orchestrator,
@@ -5026,11 +5030,15 @@ def test_checkpoint_unlinked_during_read_is_fail_closed(
     monkeypatch,
 ):
     import evolution_core
+    import evolution_infra
     import orchestrator
 
     state_file = tmp_path / "pipeline_state.json"
     state_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    # pipeline_state_path() reads evolution_infra.PIPELINE_STATE_FILE directly,
+    # so point both module references at the same tmp file.
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
 
     def unlink_while_reading():
         state_file.unlink()
@@ -5054,11 +5062,15 @@ def test_unreadable_checkpoint_blocks_before_provider_dispatch(
     monkeypatch,
 ):
     import evolution_core
+    import evolution_infra
     import orchestrator
 
     state_file = tmp_path / "pipeline_state.json"
     state_file.write_text("{not-json", encoding="utf-8")
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    # pipeline_state_path() reads evolution_infra.PIPELINE_STATE_FILE directly,
+    # so point both module references at the same tmp file.
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
     monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: None)
     provider_calls = []
     monkeypatch.setattr(

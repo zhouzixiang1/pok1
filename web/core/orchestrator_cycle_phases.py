@@ -186,6 +186,7 @@ async def _cycle_phase_b_stream_session(ctx, ui, log_file, gen_ctx,
     cycle state for the caller's cost accounting.
     """
     from evolution_core import _BLOCKED_MCP_TOOLS
+    from llm_query import _llm_thinking_options
     prompt = ctx['prompt']
     checkpoint = ctx['checkpoint']
     baseline_checkpoint = ctx['baseline_checkpoint']

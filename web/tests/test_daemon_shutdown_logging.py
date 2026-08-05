@@ -8,6 +8,7 @@ def test_daemon_waits_through_zero_and_one_bot_without_creating_strength(
     monkeypatch,
 ):
     import elo_daemon
+    import elo_daemon_persistence
 
     pools = [[], ["national_v143"], ["national_v143", "national_v144"]]
     heartbeats = []
@@ -18,6 +19,15 @@ def test_daemon_waits_through_zero_and_one_bot_without_creating_strength(
         elo_daemon,
         "get_active_bots",
         lambda: pools.pop(0) if pools else ["national_v143", "national_v144"],
+    )
+    # The mocked bot names ("national_v143", "national_v144") do not exist as
+    # strict published artifacts on disk, so _reconcile_rating_pool_membership
+    # would drop them as rating-ineligible (bot_path() raises). Stub the
+    # eligibility resolver so the mocked bots survive into the rating pool.
+    monkeypatch.setattr(
+        elo_daemon_persistence,
+        "bot_path",
+        lambda bot_name: f"/tmp/fake_bots/{bot_name}/run.sh",
     )
     monkeypatch.setattr(
         elo_daemon,

@@ -618,6 +618,7 @@ async def test_one_gen_malformed_existing_checkpoint_fails_closed_before_provide
     tmp_path,
 ):
     import evolution_core
+    import evolution_infra
     import generation_scheduler
     import orchestrator
 
@@ -631,6 +632,10 @@ async def test_one_gen_malformed_existing_checkpoint_fails_closed_before_provide
         return SimpleNamespace(next_v=143, source_v=142)
 
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", checkpoint_path)
+    # The slot-aware resolver in evolution_infra.pipeline_state_path() reads
+    # evolution_infra.PIPELINE_STATE_FILE (not the evolution_core re-export),
+    # so patch both module references to the same tmp file.
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", checkpoint_path)
     monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: {})
     monkeypatch.setattr(generation_scheduler, "prepare_generation", prepare)
     monkeypatch.setattr(
