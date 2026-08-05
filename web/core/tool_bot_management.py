@@ -1961,6 +1961,76 @@ async def _do_abandon_generation(
     _LAST_ABANDON_TS[0] = now
     _LAST_ABANDON_TS[1] = reason
 
+    # Slice-2b orphaned-consumer cleanup.  A generation abandoned at
+    # ``workers_done`` has a matching candidate in the Slice-2b consumer
+    # lifecycle FSM (``slice2b_lifecycle.sqlite3``) in the ``consuming``
+    # state — the consumer task owned its gate chain.  The primary-abandon
+    # transaction above cleared the primary checkpoint and quarantined the
+    # candidate directory, but the Slice-2b lifecycle row was left untouched
+    # (the consumer task is already stopped by this point, so the FSM's own
+    # promote/reject paths cannot run).  An orphaned ``consuming`` row is
+    # counted by ``_non_terminal_count()`` and trips the high-water guard
+    # ``one_ahead_high_water_exceeded`` on the NEXT generation's seal
+    # (``producer_consumer_slice2b.py::note_sealed``), crashing the
+    # orchestrator.  Terminate the orphan here so the producer's in-flight
+    # budget stays accurate.  Best-effort and idempotent: a missing,
+    # already-terminal, or mismatched row is a no-op success (the FSM
+    # ``reject`` permits CONSUMING -> REJECTED; any other state raises
+    # ``candidate_lifecycle_illegal_transition`` which we swallow).
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+
+        if slice2b_active() and isinstance(abandoned_v, int) and abandoned_v > 0:
+            _candidate_id = (
+                str(checkpoint.get("candidate_id") or "")
+                if isinstance(checkpoint, dict)
+                else ""
+            ) or f"candidate-v{abandoned_v}"
+            try:
+                from orchestrator import _slice2b_activation_registry
+
+                _activation = _slice2b_activation_registry("get")
+            except Exception:
+                _activation = None
+            if _activation is not None:
+                _ledger = getattr(_activation, "ledger", None)
+                if _ledger is not None:
+                    try:
+                        if not _ledger.is_terminal(_candidate_id):
+                            _ledger.reject(
+                                candidate_id=_candidate_id,
+                                reason=(
+                                    f"primary_generation_abandoned:{str(reason)[:120]}"
+                                ),
+                                completed_at=now,
+                            )
+                            try:
+                                log_system_event(
+                                    "pipeline.slice2b_orphan_consumer_terminated",
+                                    "info",
+                                    (
+                                        f"Terminated orphaned Slice-2b consumer "
+                                        f"candidate {_candidate_id} after primary "
+                                        f"generation v{abandoned_v} was abandoned."
+                                    ),
+                                    {
+                                        "candidate_id": _candidate_id,
+                                        "abandoned_v": abandoned_v,
+                                        "reason": reason,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                    except Exception:
+                        # Already terminal, illegal transition, or transient
+                        # FSM error — the orphan is either gone or will be
+                        # caught by the zombie reaper on the next loop.  Do
+                        # not fail the abandon transaction over a cleanup
+                        # best-effort.
+                        pass
+    except Exception:
+        pass
+
     # An abandoned generation breaks the uninterrupted-delivery streak even
     # though it carries no strength or strategy authority.  Keep this
     # acceptance update downstream of the fenced, durable cleanup.
