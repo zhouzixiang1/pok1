@@ -1738,7 +1738,17 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     max_ahead = int(getattr(activation.coordinator, "max_ahead", 1))
     launched_any = False
     for n in range(1, max_ahead + 1):
-        if not activation.producer_may_draft_behind():
+        # The slot loop must honor BOTH gating modes: drafting behind a sealed
+        # candidate (producer_may_draft_behind) AND speculative drafting ahead
+        # of an eval-waiting primary (producer_may_draft_ahead_of_eval).  The
+        # former gate alone would break immediately when nothing is sealed,
+        # silently disabling the eval-wait speculative draft even though the
+        # top-of-function gate already admitted it.
+        try:
+            _may = activation.producer_may_draft_behind() or activation.producer_may_draft_ahead_of_eval()
+        except Exception:
+            _may = False
+        if not _may:
             break
         if max_ahead == 1:
             candidate_slot = "draft"  # legacy single-ahead slot
