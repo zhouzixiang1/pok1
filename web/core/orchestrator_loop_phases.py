@@ -32,6 +32,13 @@ from __future__ import annotations
 
 import orchestrator as _orch
 
+# Strong references for fire-and-forget draft-prepare tasks.  Without holding
+# a reference, asyncio.create_task tasks can be garbage-collected before they
+# complete (a documented asyncio footgun), which silently kills the speculative
+# draft mid-flight.  Tasks self-remove on completion via done_callback.
+_PENDING_DRAFT_TASKS: set = set()
+
+
 async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
                               daemon_pairs, startup_recovery):
     """Phase A: epoch/daemon/task startup + recovery + state init.
@@ -1768,9 +1775,13 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
         # N's consumer gate chain runs concurrently.  It is fenced by the
         # ahead coordinator (high-water=max_ahead) and the slot existence check.
         try:
-            _orch.asyncio.create_task(
+            _draft_task = _orch.asyncio.create_task(
                 _draft_prepare_task(ui, shutdown_mgr, gen_count, slot_id=candidate_slot)
             )
+            # Hold a strong reference for the task's lifetime so it is not
+            # garbage-collected before completion (asyncio foot-gun).
+            _PENDING_DRAFT_TASKS.add(_draft_task)
+            _draft_task.add_done_callback(_PENDING_DRAFT_TASKS.discard)
             occupied_slots.add(candidate_slot)
             launched_any = True
             _orch.log_system_event(
