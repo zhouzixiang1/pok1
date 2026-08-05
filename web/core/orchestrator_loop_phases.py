@@ -207,6 +207,24 @@ async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
     )
     _orch.os.environ["POK_RUNTIME_EXPECTED_BRANCH"] = EVOLUTION_BRANCH
     _expected_runtime_head = _orch._set_runtime_expected_head(_expected_runtime_head)
+
+    # Register the speculative-draft launcher so the LLM-idle eval-wait window
+    # is filled with Master/Workers work in a one-ahead draft slot.  The hook
+    # is fired periodically inside wait_for_daemon_eval; it is best-effort and
+    # gated by the slice2b activation (producer_may_draft_ahead_of_eval).  The
+    # gen_count captured here is the loop's current count; the launcher only
+    # uses it for logging.
+    def _eval_wait_draft_launcher():
+        try:
+            _try_launch_draft_prepare(ui, shutdown_mgr, 0)
+        except Exception:
+            pass
+
+    try:
+        _orch.register_eval_wait_draft_hook(_eval_wait_draft_launcher)
+    except Exception:
+        pass
+
     _branch_guard_task = None
     _stability_maintenance_task = None
     _runtime_hard_stop_event = _orch.asyncio.Event()

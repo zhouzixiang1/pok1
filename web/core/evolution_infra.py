@@ -1178,6 +1178,21 @@ def _log_eval_wait_event(event_type: str, severity: str, message: str, **data) -
         pass
 
 
+# Speculative-draft hook for the eval-wait window.  The orchestrator loop
+# registers a no-arg callable that (best-effort) launches a one-ahead draft to
+# fill the LLM-idle eval-wait window.  Fired once near eval-wait entry and then
+# periodically (every ~30s) so a draft launched on a later tick still has a
+# chance while the primary is parked.  Decoupled through this hook so
+# evolution_infra (infrastructure) does not import the orchestrator loop.
+_EVAL_WAIT_DRAFT_HOOK = None
+
+
+def register_eval_wait_draft_hook(callable_hook):
+    """Register (or clear with None) the speculative-draft launcher."""
+    global _EVAL_WAIT_DRAFT_HOOK
+    _EVAL_WAIT_DRAFT_HOOK = callable_hook
+
+
 async def wait_for_daemon_eval(
     bot_name,
     timeout=DAEMON_EVAL_TIMEOUT,
@@ -1210,6 +1225,24 @@ async def wait_for_daemon_eval(
     cached_rd = None
     last_log = start
     last_daemon_dead_log = 0.0
+    # Speculative-draft launcher: fire once near entry, then every ~30s so a
+    # draft launched on a later tick still fills the LLM-idle window.  The hook
+    # is best-effort and never blocks; it is registered by the orchestrator loop.
+    last_draft_tick = 0.0
+
+    def _maybe_fire_draft_tick():
+        nonlocal last_draft_tick
+        hook = _EVAL_WAIT_DRAFT_HOOK
+        if hook is None:
+            return
+        now = time.time()
+        if now - last_draft_tick < 30.0:
+            return
+        last_draft_tick = now
+        try:
+            hook()
+        except Exception:
+            pass
 
     _log_eval_wait_event(
         "pipeline.eval_wait_start",
@@ -1343,6 +1376,10 @@ async def wait_for_daemon_eval(
                 # Don't return False — daemon_monitor_thread may restart it.
                 # Continue waiting until timeout expires.
 
+        # Fire the speculative-draft launcher periodically so the LLM produces
+        # Master/Workers output in a draft slot while the primary is parked in
+        # this eval-wait loop.
+        _maybe_fire_draft_tick()
 
         await asyncio.sleep(5)
     if ui:
