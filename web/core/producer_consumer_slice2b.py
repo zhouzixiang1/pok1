@@ -1533,6 +1533,28 @@ class AheadCoordinator:
         """
         return self._non_terminal_count() < self.max_ahead
 
+    def producer_may_draft_ahead_of_eval(self) -> bool:
+        """Producer may launch a speculative draft while the primary lane is
+        parked in eval_wait (no sealed candidate to draft behind).
+
+        This fills the LLM-idle eval-wait window: the primary is blocked on
+        ``wait_for_daemon_eval`` while a speculative draft runs
+        prepare->master->workers in a draft slot, filling LLM idle time.  The
+        draft costs LLM tokens only (no matches/gates run for a draft); if the
+        eval_wait outcome diverges it is stale-reaped.
+
+        Permitted iff there is currently nothing sealed-but-unresolved (the
+        ``draft behind`` path already covers the sealed case) and the
+        high-water room check passes.  Derived from the FSM, so it is correct
+        after a restart without any in-memory replay.  Bounded by
+        ``max_ahead`` so multi-ahead configs do not launch an unbounded flock
+        of eval-wait drafts.
+        """
+        if self._non_terminal_count() >= 1:
+            # The "draft behind" path covers this; do not double-launch.
+            return False
+        return self._non_terminal_count() < self.max_ahead
+
     # Backwards-compatible alias used by the control-plane projection.
     def producer_may_prepare_next(self) -> bool:
         """Legacy name: True iff at least one candidate is in flight AND there is

@@ -595,6 +595,34 @@ def test_coordinator_derives_from_lifecycle_no_in_flight():
     assert fresh_coord.producer_may_draft_behind() is True
 
 
+def test_producer_may_draft_ahead_of_eval_when_nothing_sealed():
+    """The eval-wait-ahead path: with nothing sealed-but-unresolved (the
+    primary is parked in eval_wait), a speculative draft may launch to fill
+    the LLM-idle window.  Once something is sealed, the ``draft behind`` path
+    covers it and the ahead path defers to avoid a double-launch."""
+    ledger = ValidationLedger()
+    coord = AheadCoordinator(ledger)
+    # Empty FSM: nothing to draft behind, BUT ahead-of-eval is permitted (the
+    # high-water room check passes: 0 < max_ahead=1).
+    assert coord.producer_may_draft_behind() is False
+    assert coord.producer_may_draft_ahead_of_eval() is True
+    # Once a candidate is sealed, ``draft behind`` covers it and the
+    # ahead-of-eval path defers (no double-launch).
+    _seal_into_fsm(ledger, "c1")
+    coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
+    assert coord.producer_may_draft_behind() is True
+    assert coord.producer_may_draft_ahead_of_eval() is False
+
+
+def test_producer_may_draft_ahead_of_eval_respects_max_ahead():
+    """The ahead-of-eval path is bounded by max_ahead so a multi-ahead config
+    cannot launch an unbounded flock of eval-wait drafts."""
+    ledger = ValidationLedger()
+    coord = AheadCoordinator(ledger, max_ahead=2)
+    # Empty FSM, max_ahead=2: ahead-of-eval permitted.
+    assert coord.producer_may_draft_ahead_of_eval() is True
+
+
 def test_promotion_barrier_blocks_until_consumer_promotes():
     ledger = ValidationLedger()
     coord = AheadCoordinator(ledger)

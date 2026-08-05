@@ -761,6 +761,15 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             "warn",
                         )
 
+                # Speculative one-ahead draft: while the primary prepare is
+                # blocked on eval_wait, launch a draft (which skips eval_wait)
+                # so the LLM produces Master/Workers output in parallel.  The
+                # draft costs LLM tokens only; it is stale-reaped if the
+                # eval_wait outcome diverges.  Best-effort and non-fatal.
+                try:
+                    _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                except Exception:
+                    pass
                 gen_ctx = await _orch._prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
                 if gen_ctx is None:
                     if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -1659,7 +1668,10 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
         return
 
     try:
-        may_prepare = bool(activation.producer_may_draft_behind())
+        may_prepare = bool(
+            activation.producer_may_draft_behind()
+            or activation.producer_may_draft_ahead_of_eval()
+        )
     except Exception as exc:  # pragma: no cover - defensive
         # A bug here (e.g. a missing accessor on the activation) previously
         # raised AttributeError that was silently swallowed, disabling the
@@ -1676,7 +1688,8 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
         return
     if not may_prepare:
         # Multi-ahead buffer is full (number of sealed-but-unresolved
-        # candidates has reached max_ahead); no room for another draft.
+        # candidates has reached max_ahead) AND no eval-wait-ahead slot is
+        # free; no room for another draft.
         return
 
     # De-duplicate: at most one in-flight draft per draft slot.  A draft slot
