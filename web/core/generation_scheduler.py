@@ -1078,6 +1078,15 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                 _primary_next_v = 0
             if _primary_next_v > _draft_floor:
                 _draft_floor = _primary_next_v
+        else:
+            # No primary checkpoint exists yet (the primary is parked in
+            # eval_wait, before prepare creates its checkpoint). The primary
+            # will claim allocation_floor+1, so a speculative draft launched
+            # during this window must target allocation_floor+2 to avoid a
+            # version collision with the primary's imminent next_v. Without
+            # this, the draft reserves the SAME version the primary will claim
+            # and stalls at ``selected checkpoint refused``.
+            _draft_floor = max(_draft_floor, allocation_floor + 1)
         # Multi-ahead: reserve a DISTINCT next_v for this draft slot through the
         # persisted version-reservation registry, so N>1 in-flight drafts never
         # collide on the same version (the floor+1 projection alone would give
