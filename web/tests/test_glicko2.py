@@ -374,9 +374,12 @@ class TestCrossoverParents:
     def test_falls_back_to_second(self, monkeypatch, tmp_path):
         from glicko2 import Glicko2Player
 
-        # Only 2 bots, adjacent versions — no gap candidate, fallback to second
-        active = [bot_name(145), bot_name(146)]
-        strength = {bot_name(145): 0.55, bot_name(146): 0.50}
+        # Three bots, adjacent versions — no version-gap candidate (>=3 apart),
+        # so crossover falls back to the strongest adjacent second bot.  The
+        # pool must have >= _MIN_CROSSOVER_POOL_SIZE bots or crossover is
+        # disabled entirely (the bootstrap dead-loop guard).
+        active = [bot_name(144), bot_name(145), bot_name(146)]
+        strength = {bot_name(144): 0.40, bot_name(145): 0.55, bot_name(146): 0.50}
         ratings = {b: Glicko2Player() for b in active}
 
         import generation_scheduler as gs

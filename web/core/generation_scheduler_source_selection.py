@@ -15,6 +15,13 @@ _COMBINED_RECOMMENDATIONS = {
     "continue", "crossover", "branch", "branch_from", "force_exploration",
 }
 
+# Minimum number of bots in the active rating pool for crossover to be
+# considered.  Below this the pool is dominated by a single evolved line plus
+# the first-strict bootstrap, so no genuinely different second lineage exists
+# and crossover deterministically dead-loops (the bootstrap child always
+# regresses).  See _pick_crossover_parents.
+_MIN_CROSSOVER_POOL_SIZE = 3
+
 
 def _normalize_combined_control(combined):
     """Fail closed on weak-model values even when a test/caller bypasses Pydantic."""
@@ -676,7 +683,41 @@ def _pick_crossover_parents(
     active = list(selection_view.active_bots)
     strength = selection_view.selection_scores
     strength_order = selection_view.order_keys
-    if len(active) < 2:
+    # Crossover recombines two distinct evolved lineages to escape a local
+    # optimum.  It is only meaningful when the active rating pool is rich
+    # enough to offer a genuinely DIFFERENT second lineage: with fewer than
+    # ``_MIN_CROSSOVER_POOL_SIZE`` active bots the pool is dominated by the
+    # single strongest line plus the first-strict bootstrap, so the only
+    # available parent B is structurally incapable of contributing new
+    # capabilities (the bootstrap is a minimal seed).  Every such crossover
+    # child regresses a parent-A capability, the architecture-policy gate
+    # correctly rejects it, and the generation is abandoned after exhausting
+    # retries — a deterministic dead-loop that wastes the full Master+Worker
+    # LLM budget each time (observed: v30-v75, ~30 abandoned generations).
+    # Disable crossover until the pool grows; the system falls back to
+    # single-parent Master evolution from the strongest bot, which still
+    # advances the lineage.  Crossover re-enables automatically once
+    # certification admits more bots into the pool.
+    if len(active) < _MIN_CROSSOVER_POOL_SIZE:
+        try:
+            _gs.log_system_event(
+                "pipeline.crossover_pool_too_small",
+                "info",
+                (
+                    f"Crossover disabled: active rating pool has only "
+                    f"{len(active)} bot(s) (< {_MIN_CROSSOVER_POOL_SIZE} "
+                    "required). Falling back to single-parent Master "
+                    "evolution. Crossover re-enables once more bots are "
+                    "certified into the pool."
+                ),
+                {
+                    "active_bot_count": len(active),
+                    "min_pool_size": _MIN_CROSSOVER_POOL_SIZE,
+                    "active_bots": list(active),
+                },
+            )
+        except Exception:
+            pass
         return None
 
     ranked = sorted(

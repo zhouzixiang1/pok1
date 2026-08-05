@@ -231,11 +231,17 @@ def _frozen_evidence(gs):
 
     weak_v = 143
     strong_v = 146
+    mid_v = 144
     weak_name = bot_name(weak_v)
     strong_name = bot_name(strong_v)
-    active = (weak_name, strong_name)
+    mid_name = bot_name(mid_v)
+    # Three active bots so crossover parent selection is not disabled by the
+    # minimum-pool-size guard (_MIN_CROSSOVER_POOL_SIZE=3).  With only two
+    # bots (the bootstrap dead-loop case) crossover is intentionally disabled.
+    active = (weak_name, mid_name, strong_name)
     ratings = {
         weak_name: Glicko2Player(r=1510, rd=80, sigma=0.06),
+        mid_name: Glicko2Player(r=1525, rd=75, sigma=0.06),
         strong_name: Glicko2Player(r=1550, rd=70, sigma=0.06),
     }
     rows = (
@@ -245,6 +251,18 @@ def _frozen_evidence(gs):
             "leaderboard_score": 0.56,
             "secondary_net_chips_mean": 100.0,
             "h2h_avg_wr": 0.45,
+            "h2h_games": 20,
+            "h2h_opponents": 1,
+            "h2h_opponents_total": 1,
+            "h2h_coverage": 1.0,
+            "strength_confidence": "medium",
+        },
+        {
+            "name": mid_name,
+            "selection_score": 0.60,
+            "leaderboard_score": 0.61,
+            "secondary_net_chips_mean": 150.0,
+            "h2h_avg_wr": 0.50,
             "h2h_games": 20,
             "h2h_opponents": 1,
             "h2h_opponents_total": 1,
