@@ -1240,9 +1240,24 @@ async def wait_for_daemon_eval(
             return
         last_draft_tick = now
         try:
+            _log_eval_wait_event(
+                "pipeline.eval_wait_draft_tick",
+                "info",
+                "eval_wait firing speculative-draft hook",
+                bot=bot_name,
+                elapsed_sec=round(now - start, 2),
+            )
             hook()
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                _log_eval_wait_event(
+                    "pipeline.eval_wait_draft_tick_failed",
+                    "error",
+                    f"eval_wait draft hook raised {type(exc).__name__}: {exc}",
+                    bot=bot_name,
+                )
+            except Exception:
+                pass
 
     _log_eval_wait_event(
         "pipeline.eval_wait_start",
