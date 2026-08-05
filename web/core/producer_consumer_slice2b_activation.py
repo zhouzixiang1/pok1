@@ -520,6 +520,18 @@ class Slice2bActivation:
                             # continues to the next gate on the next iteration.
                             infra_streak_gate = None
                             infra_streak_count = 0
+                            # Guard: if dispatched=True but the reason is NEITHER
+                            # a known infra-pause NOR None (success/promote/
+                            # candidate_failure), the ledger should already be
+                            # terminal.  If it is NOT, an unknown future gate
+                            # outcome could spin here forever with no budget —
+                            # break so the orchestrator relaunches (or the
+                            # reaper catches a genuinely-stuck candidate) rather
+                            # than busy-looping on an unrecognized reason.
+                            if reason is not None and not ledger.is_terminal(
+                                candidate_id
+                            ):
+                                break
                             continue
                         # infrastructure_failure pause: the same gate recorded a
                         # non-success outcome.  Track how many times the SAME

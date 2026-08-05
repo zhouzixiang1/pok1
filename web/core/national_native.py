@@ -463,16 +463,24 @@ def _resolve_bot_or_in_flight(token: str | Path) -> tuple[str, Path]:
 
     try:
         return resolve_bot(token)
-    except ValueError:
-        # The outer smoke wrapper already structurally validated this path
-        # (the five strict ABI files) before calling the executor.  Re-check
-        # here so the executor is self-contained (a direct caller that bypasses
-        # the wrapper still gets the guard).
+    except ValueError as exc:
+        # Only bypass the strict-namespace guard for paths NOT under bots/.
+        # A ValueError from a bots/ path means the artifact is genuinely broken
+        # (hash mismatch, missing certificate, invalid label) — that must NOT
+        # be masked into an in_flight bypass, or a corrupt published artifact
+        # would run as a synthetic candidate.  Re-raise those verbatim.
+        active_root = (ROOT / "bots").absolute()
+        candidate_path = Path(os.path.abspath(os.fspath(token)))
+        if candidate_path.name == NATIVE_ENTRY:
+            candidate_path = candidate_path.parent
+        if active_root in candidate_path.parents or candidate_path.parent == active_root:
+            raise  # bots/ artifact with a real defect — do not mask
+        # The path is outside bots/ (crossover workspace / draft candidate).
+        # The outer smoke wrapper already structurally validated it (the five
+        # strict ABI files).  Re-check here so the executor is self-contained.
         from bot_namespace import STRICT_ARTIFACT_FILES
 
-        candidate = Path(os.path.abspath(os.fspath(token)))
-        if candidate.name == NATIVE_ENTRY:
-            candidate = candidate.parent
+        candidate = candidate_path
         missing = [
             name
             for name in STRICT_ARTIFACT_FILES
