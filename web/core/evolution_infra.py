@@ -1464,9 +1464,11 @@ def _abandoned_checkpoint_envelope(checkpoint):
     return _ledger._abandoned_checkpoint_envelope(checkpoint)
 
 
-def _validate_abandoned_checkpoint(checkpoint, *, project_root):
+def _validate_abandoned_checkpoint(checkpoint, *, project_root, historical_receipt=False):
     """Delegate to abandoned_version_ledger."""
-    return _ledger._validate_abandoned_checkpoint(checkpoint, project_root=project_root)
+    return _ledger._validate_abandoned_checkpoint(
+        checkpoint, project_root=project_root, historical_receipt=historical_receipt
+    )
 
 
 def _build_abandoned_version_receipt(

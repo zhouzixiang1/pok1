@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 LEGACY_FIELDS = ("receipt_digest", "previous_receipt_digest")
@@ -98,8 +99,6 @@ def migrate(ledger_path: Path, *, execute: bool) -> int:
 
 
 if __name__ == "__main__":
-    import tempfile  # noqa: E402  (local import keeps --help fast)
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--ledger",
