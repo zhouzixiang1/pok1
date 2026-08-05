@@ -836,6 +836,21 @@ async def _abandon_master_generation(next_v, source_v, *, error, fail_count, rea
         abandon_identity = expected_abandon_identity(read_pipeline_checkpoint())
         abandon_result = await _do_abandon_generation(
             reason=reason,
+            # This is a system-owned fail-closed path: the caller has already
+            # proved the Master exhausted its bounded retry budget
+            # (MAX_MASTER_TOTAL_FAILURES) and the immutable candidate cannot be
+            # retried.  Without the bypass, the 60-second abandon rate-limit
+            # gate (tool_bot_management.py) refuses the abandon whenever one
+            # was attempted in the last minute, returning
+            # ``{"abandoned": False, "rate_limited": True}``.  The orchestrator
+            # then re-invokes run_master and the Master burns another full
+            # analysis+audit cycle (6+ LLM role calls) on a doomed direction —
+            # the gen-64 proposal_mechanism_foreign_targets loop.  The bypass
+            # does NOT skip checkpoint identity, workflow fencing, or stage
+            # guards (per _do_abandon_generation's docstring); it only defeats
+            # the cooldown that exists to protect against LLM-driven abandon
+            # spam, which cannot happen from this deterministic tool path.
+            _bypass_rate_limit=True,
             **abandon_identity,
         )
     except Exception as exc:
