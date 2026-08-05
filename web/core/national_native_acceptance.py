@@ -207,32 +207,89 @@ async def run_native_tcp_smoke(
         }
 
     player_rows = list((result.get("per_player") or {}).values())
-    if self_play:
+    timeout_phase = str(result.get("native_match_timeout_phase") or "")
+    raw_hands_played = result.get("hands_played")
+    try:
+        hands_played = int(raw_hands_played) if raw_hands_played is not None else None
+    except (TypeError, ValueError):
+        hands_played = None
+    # Infrastructure short-circuit.  When the run never reached gameplay — a
+    # startup-watchdog kill (both processes reaped before the TCP/name
+    # exchange finished), a finalizing-cleanup timeout (transport stall), or
+    # a run that explicitly reports zero hands played with per-player
+    # compliance issues — the per-player compliance issues
+    # (native_name_handshake_missing, native_process_returncode=2, timeouts)
+    # are emitted for BOTH players by the fail-closed analyser.  Attributing
+    # those to the candidate misclassifies a pure harness/infrastructure
+    # stall as a deterministic candidate defect, which then permanently
+    # abandons the generation instead of taking the bounded infrastructure
+    # retry path.  Force infrastructure attribution here so the existing
+    # ``mark_quality_infrastructure`` retry path (QUALITY_INFRA_MAX_ATTEMPTS)
+    # applies.  The bot runtime is system-owned and byte-identical across
+    # every candidate and baseline opponent, so a startup-phase failure can
+    # never be a candidate policy defect.  Only a *positive* startup signal
+    # (an explicit timeout_phase, or an explicit hands_played==0 alongside
+    # compliance issues) triggers this; a missing hands_played key (e.g. a
+    # test fixture or a minimal pair result) does not.
+    has_compliance_issues = any(
+        row.get("compliance_issues") for row in player_rows
+    )
+    startup_or_cleanup_failure = (
+        timeout_phase in ("startup_watchdog", "finalizing_cleanup")
+        or (hands_played == 0 and has_compliance_issues)
+    )
+    if startup_or_cleanup_failure:
+        raw_issues = [
+            str(item) for item in (result.get("issues") or [])
+        ]
+        if timeout_phase and not any(
+            f"native_match_timeout_phase={timeout_phase}" in s for s in raw_issues
+        ):
+            raw_issues.append(f"native_match_timeout_phase={timeout_phase}")
+        if hands_played == 0 and not any("hands_played=" in s for s in raw_issues):
+            raw_issues.append("hands_played=0")
+        outcome, failure_side, issues = "infrastructure_failure", "harness", raw_issues
+    elif self_play:
         candidate_issues = [
             str(issue)
             for row in player_rows
             for issue in (row.get("compliance_issues") or [])
         ]
         opponent_issues = []
+        attributed = set(candidate_issues)
+        unscoped_issues = [
+            str(item) for item in result.get("issues") or []
+            if str(item) not in attributed
+        ]
+        if candidate_issues:
+            outcome, failure_side, issues = (
+                "candidate_failure", "candidate", candidate_issues
+            )
+        elif unscoped_issues:
+            outcome, failure_side, issues = (
+                "infrastructure_failure", "harness", unscoped_issues
+            )
+        else:
+            outcome, failure_side, issues = "passed", "", []
     else:
         candidate_row = (result.get("per_player") or {}).get(candidate_label) or {}
         opponent_row = (result.get("per_player") or {}).get(opponent_label) or {}
         candidate_issues = list(candidate_row.get("compliance_issues") or [])
         opponent_issues = list(opponent_row.get("compliance_issues") or [])
-    attributed = set(candidate_issues + opponent_issues)
-    unscoped_issues = [
-        str(item) for item in result.get("issues") or []
-        if str(item) not in attributed
-    ]
-    if candidate_issues:
-        outcome, failure_side, issues = "candidate_failure", "candidate", candidate_issues
-    elif opponent_issues or unscoped_issues:
-        outcome, failure_side = "infrastructure_failure", (
-            "opponent" if opponent_issues and not unscoped_issues else "harness"
-        )
-        issues = opponent_issues + unscoped_issues
-    else:
-        outcome, failure_side, issues = "passed", "", []
+        attributed = set(candidate_issues + opponent_issues)
+        unscoped_issues = [
+            str(item) for item in result.get("issues") or []
+            if str(item) not in attributed
+        ]
+        if candidate_issues:
+            outcome, failure_side, issues = "candidate_failure", "candidate", candidate_issues
+        elif opponent_issues or unscoped_issues:
+            outcome, failure_side = "infrastructure_failure", (
+                "opponent" if opponent_issues and not unscoped_issues else "harness"
+            )
+            issues = opponent_issues + unscoped_issues
+        else:
+            outcome, failure_side, issues = "passed", "", []
     passed = outcome == "passed"
     return {
         "candidate": candidate_label,

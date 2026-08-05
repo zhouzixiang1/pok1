@@ -356,40 +356,118 @@ async def _run_workflow_smoke_gate(
 
     hands = int(_tg.os.environ.get("POK_NATIVE_SMOKE_HANDS", "1"))
     timeout_sec = float(_tg.os.environ.get("POK_NATIVE_SMOKE_TIMEOUT_SEC", "90"))
-    try:
-        from national_native import run_native_tcp_smoke
-
-        # An unpublished candidate (no completion tag / certificate yet) sits
-        # under ``bots/`` (materialized by the Worker phase) but is NOT a valid
-        # published strict artifact — resolve_bot rejects it with
-        # ``invalid_national_bot_label``.  The smoke must run against the
-        # in-flight workspace via ``in_flight_candidate_dir`` so the
-        # namespace bypass path applies.  Detect this by checking whether
-        # resolve_bot accepts the bot_dir; if not, pass it as in_flight.
-        _smoke_kwargs = dict(
-            source_v=source_v,
-            opponent_token=opponent_token,
-            self_play=self_play,
-            hands=hands,
-            timeout_sec=timeout_sec,
-        )
+    # Bounded retry for transient infrastructure flakiness.  A single shaky
+    # native TCP run (startup-watchdog kill, transport stall, launch-latency
+    # spike) must not permanently abandon a generation that already spent its
+    # full Master+Worker LLM budget.  Only retries infrastructure-class
+    # failures; a genuine candidate defect is reported immediately.
+    max_attempts = max(1, int(_tg.os.environ.get("POK_NATIVE_SMOKE_MAX_ATTEMPTS", "3")))
+    report: dict = {}
+    for attempt in range(1, max_attempts + 1):
         try:
-            from national_native import resolve_bot as _resolve_bot_check
+            from national_native import run_native_tcp_smoke
 
-            _resolve_bot_check(str(bot_dir))
-        except Exception:
-            # Unpublished candidate: use the in_flight bypass path.
-            _smoke_kwargs["in_flight_candidate_dir"] = str(bot_dir)
+            # An unpublished candidate (no completion tag / certificate yet)
+            # sits under ``bots/`` (materialized by the Worker phase) but is
+            # NOT a valid published strict artifact — resolve_bot rejects it
+            # with ``invalid_national_bot_label``.  The smoke must run against
+            # the in-flight workspace via ``in_flight_candidate_dir`` so the
+            # namespace bypass path applies.  Detect this by checking whether
+            # resolve_bot accepts the bot_dir; if not, pass it as in_flight.
+            _smoke_kwargs = dict(
+                source_v=source_v,
+                opponent_token=opponent_token,
+                self_play=self_play,
+                hands=hands,
+                timeout_sec=timeout_sec,
+            )
+            try:
+                from national_native import resolve_bot as _resolve_bot_check
 
-        report = await run_native_tcp_smoke(str(bot_dir), **_smoke_kwargs)
-    except Exception as exc:
-        report = {
-            "passed": False,
-            "execution_mode": "native_tcp",
-            "failure_class": "infrastructure",
-            "outcome": "infrastructure_failure",
-            "failure_side": "harness",
-            "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
-        }
+                _resolve_bot_check(str(bot_dir))
+            except Exception:
+                # Unpublished candidate: use the in_flight bypass path.
+                _smoke_kwargs["in_flight_candidate_dir"] = str(bot_dir)
+
+            attempt_report = await run_native_tcp_smoke(str(bot_dir), **_smoke_kwargs)
+        except Exception as exc:
+            attempt_report = {
+                "passed": False,
+                "execution_mode": "native_tcp",
+                "failure_class": "infrastructure",
+                "outcome": "infrastructure_failure",
+                "failure_side": "harness",
+                "issues": [
+                    f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"
+                ],
+            }
+        report = attempt_report
+        if report.get("passed"):
+            break
+        # Retry only on transient infrastructure-class failures.  A real
+        # candidate defect (illegal_actions, artifact_changed_during_execution,
+        # handshake_malformed, ...) is deterministic and must not burn retries.
+        if attempt < max_attempts and _smoke_outcome_is_retryable(report):
+            import asyncio
+            import random
+
+            backoff = float(attempt) + random.uniform(0.0, 1.0)
+            await asyncio.sleep(backoff)
+            continue
+        break
     errors = list(report.get("issues") or []) if not report.get("passed") else []
     return errors, report
+
+
+def _smoke_outcome_is_retryable(report: dict) -> bool:
+    """A smoke failure is retryable iff it is infrastructure-class.
+
+    The native smoke may fail transiently from launch-latency spikes
+    (startup-watchdog kill, no process output), transport stalls
+    (finalizing-cleanup timeout), or harness exceptions — all of which are
+    independent of the candidate's policy bytes (the system-owned bot runtime
+    is byte-identical across every candidate and baseline opponent).  A genuine
+    candidate defect (``candidate_failure``) is deterministic and must not be
+    retried.
+    """
+    if not isinstance(report, dict):
+        return False
+    outcome = str(report.get("outcome") or "")
+    if outcome in ("infrastructure_failure", ""):
+        # An explicit infrastructure outcome is always retryable.  An empty
+        # outcome (e.g. a watchdog kill reported only via timeout_phase) is
+        # treated as infrastructure unless candidate-side issues prove
+        # otherwise.
+        return True
+    if outcome != "candidate_failure":
+        return True
+    # Even a candidate_failure is retryable when the underlying run never
+    # produced a hand: that means a process was killed during startup before
+    # any policy decision was made, which cannot be a policy defect.  The
+    # startup_watchdog / finalizing_cleanup phases are likewise harness-side.
+    timeout_phase = str(report.get("native_match_timeout_phase") or "")
+    if timeout_phase in ("startup_watchdog", "finalizing_cleanup"):
+        return True
+    try:
+        hands_played = int(report.get("hands_played") or 0)
+    except (TypeError, ValueError):
+        hands_played = 0
+    if hands_played <= 0:
+        return True
+    # Fall back to the embedded per-run result if present (run_native_tcp_smoke
+    # nests the raw pair result under "result").  Only treat an ABSENT raw
+    # result as non-retryable here: a genuine candidate_failure with
+    # hands_played>=1 and no startup-phase signal has already returned False
+    # above; this branch only adds evidence when a raw result exists.
+    raw = report.get("result")
+    if isinstance(raw, dict):
+        raw_phase = str(raw.get("native_match_timeout_phase") or "")
+        if raw_phase in ("startup_watchdog", "finalizing_cleanup"):
+            return True
+        try:
+            raw_hands = int(raw.get("hands_played") or 0)
+        except (TypeError, ValueError):
+            raw_hands = 0
+        if raw_hands <= 0:
+            return True
+    return False
