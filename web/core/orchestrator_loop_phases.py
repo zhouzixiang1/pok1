@@ -1880,6 +1880,15 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count, *, slot_id="draft"):
         if draft_ctx is None:
             # Prepare refused (handoff, epoch, workflow guard, shutdown, ...).
             # Nothing to drive; leave the draft slot clean.
+            try:
+                _orch.log_system_event(
+                    "orchestrator.eval_wait_draft_prepare_refused",
+                    "warn",
+                    f"draft prepare_generation returned None for slot {slot_id}; draft will not advance",
+                    {"slot_id": slot_id},
+                )
+            except Exception:
+                pass
             clear_pipeline_checkpoint(slot_id=slot_id)
             return
 
