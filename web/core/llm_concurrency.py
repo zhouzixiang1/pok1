@@ -88,7 +88,22 @@ def get_llm_semaphore_for_role(role_name: str | None) -> asyncio.Semaphore:
     Consumer-lane roles (review/critic) get the consumer sub-pool so the
     publication critical path is never starved by producer Scout bursts.  All
     other roles (Master/Worker/direction/final) get the producer sub-pool.
+
+    Note: the Master proposal ensemble runs *producer*-lane roles even when a
+    member is named "MASTER PROPOSAL CRITIC <x>" — the "critic" here is a
+    falsification/scope reviewer *within* the producer's draft-preparation
+    wave, not the publication-critical-path gate Critic.  The naive
+    ``"critic" in role_name`` substring match misrouted those producer critics
+    into the (1-permit) consumer pool, serializing the two concurrent critics
+    and idling the producer pool during the critic wave.  Match the Master
+    proposal prefix explicitly first so producer-lane critics stay in the
+    producer pool where they overlap correctly.
     """
-    if role_name and any(marker in str(role_name).lower() for marker in _CONSUMER_ROLE_MARKERS):
+    _rn = str(role_name or "")
+    if _rn.startswith("MASTER PROPOSAL"):
+        # Producer lane: the Master ensemble (Scouts/Critics/final) is part of
+        # draft preparation, never the publication critical path.
+        return get_producer_llm_semaphore()
+    if _rn and any(marker in _rn.lower() for marker in _CONSUMER_ROLE_MARKERS):
         return get_consumer_llm_semaphore()
     return get_producer_llm_semaphore()
