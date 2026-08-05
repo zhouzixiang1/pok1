@@ -674,6 +674,28 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
             # If recovering, skip Phase 1 (context already known from checkpoint)
             if recovery and recovery.get("action") == "resume":
                 route_log_kwargs = _orch._recovery_route_log_kwargs(recovery)
+                # Ensure the Slice 2b consumer gate-chain task is (re)driven
+                # whenever we resume a ``workers_done`` checkpoint that owns a
+                # sealed-but-non-terminal candidate.  This MUST run before (and
+                # independently of) ``_advance_deterministic_recovery`` because a
+                # transient consumer-gate infra failure (e.g. a Claude-subprocess
+                # init timeout during run_review) lets the consumer asyncio task
+                # exit, and the only thing that relaunches it is this ensure
+                # call.  When ``route_policy`` returns ``next_tool=None`` (e.g.
+                # an epoch-binding identity drift the loop cannot self-heal),
+                # ``_advance_deterministic_recovery`` reports ``routed=False``
+                # and the gated ensure call below (inside ``if routed``) never
+                # fires, so the primary parks forever waiting for a consumer
+                # that is not running.  Running it unconditionally here keeps
+                # the consumer alive across transient gate failures and route
+                # hiccups alike; it is idempotent (a no-op when the consumer is
+                # already live or no candidate is sealed).
+                _resume_ckpt = (recovery or {}).get("checkpoint") or {}
+                if _resume_ckpt.get("stage") == "workers_done":
+                    try:
+                        await _ensure_slice2b_consumer_running(_resume_ckpt)
+                    except Exception:
+                        pass
                 advanced = await _orch._advance_deterministic_recovery(
                     recovery,
                     ui,
