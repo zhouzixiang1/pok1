@@ -686,8 +686,24 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                candidate_manifest_digest=None,
                                charter_digest=None,
                                publication_tier=None,
-                               slot_id=None):
+                               slot_id=None,
+                               bind_repo_baseline_head=None):
     """Write pipeline stage checkpoint so a killed process can resume.
+
+    ``bind_repo_baseline_head`` is an explicit override that pins the frozen
+    ``repo_baseline.head`` to a caller-supplied commit OID, bypassing the
+    ``_stage_refreshes_repo_baseline`` stage predicate. It exists for the one
+    case where the pipeline itself advances HEAD *inside* a stage transition
+    that the predicate does not recognize as a refresh point: the publication
+    transaction commits ``stage=publishing`` *before* the git commit, then
+    re-writes the same stage *after* the commit. Because ``publishing ->
+    publishing`` is not a refresh transition (``publishing`` is absent from
+    ``_REPO_BASELINE_VALIDATION_GATES``), the predicate returns False and the
+    baseline stays pinned to the pre-commit HEAD — which then hard-blocks the
+    post-publication handoff's crash recovery with
+    ``repo_baseline_head_mismatch``. The post-commit refresh passes the publish
+    commit OID here so the baseline follows HEAD to the commit the pipeline
+    itself just produced.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
     read-merge-write races (POSIX guarantees os.replace is atomic). Runtime
@@ -1599,7 +1615,28 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "gate_results": existing_gate_results,
             "stage": stage,
         }
-        if refresh_repo_baseline:
+        if bind_repo_baseline_head:
+            # The publication transaction is the one pipeline-internal HEAD
+            # advance that the stage predicate cannot model: it commits
+            # ``stage=publishing`` before the git commit, then re-writes the
+            # same stage after. The predicate (``publishing -> publishing``)
+            # returns False, so without this explicit override the baseline
+            # would stay pinned to the pre-commit HEAD and the post-publication
+            # handoff's crash recovery would hard-block with
+            # ``repo_baseline_head_mismatch``. Capture a fresh snapshot (so
+            # branch/entries/contract reflect the post-commit tree) then pin
+            # ``head`` to the authoritative publish commit OID.
+            _captured = _capture_repo_baseline(
+                stage,
+                next_v=next_v,
+                source_v=source_v,
+                checkpoint=_contract_checkpoint,
+            )
+            if not isinstance(_captured, dict):
+                _captured = {}
+            _captured["head"] = str(bind_repo_baseline_head)
+            existing_repo_baseline = _captured
+        elif refresh_repo_baseline:
             existing_repo_baseline = _capture_repo_baseline(
                 stage,
                 next_v=next_v,

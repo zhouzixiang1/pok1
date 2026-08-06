@@ -18,6 +18,10 @@ from pathlib import Path
 
 import tool_commit as _tc
 
+from logging_config import get_logger
+
+log = get_logger("tool_commit_publication")
+
 
 def _existing_local_bot_tag_matches_certificate(version, certificate):
     """Validate a local commit/tag left behind by an interrupted required push."""
@@ -479,18 +483,20 @@ def _resume_publication_transaction(v, source_v, ckpt):
         "completed_sentinel_written": True,
         "checkpoint_cleared": False,
     }
-    # Refresh the checkpoint's repo_baseline.head to the post-commit HEAD.
+    # Pin the checkpoint's repo_baseline.head to the publish commit OID.
     # commit_bot writes stage=publishing BEFORE the git commit (tool_commit.py),
-    # so the frozen baseline head is the pre-commit HEAD.  If the post-
-    # publication handoff crashes after the commit (which moved HEAD forward)
-    # but before clearing the checkpoint, recovery sees baseline_head !=
-    # current_head and refuses to resume with repo_baseline_head_mismatch.
-    # Publishing's requires_contract_unchanged=True + branch_alias_allowed=False
-    # makes this a hard block.  Re-write the publishing checkpoint AFTER the
-    # commit succeeded (HEAD has moved) so publishing is now in
-    # _REPO_BASELINE_VALIDATION_STAGES and the CAS writer captures the
-    # post-commit HEAD.  A crash-recovery of the handoff then sees the
-    # correct post-commit baseline.
+    # so the frozen baseline head is the pre-commit HEAD.  The git publish
+    # commit then advances HEAD, and because that commit touches
+    # bots/national_cloud_v<N>/ (a contract-critical path) the publishing
+    # stage's requires_contract_unchanged=True makes any later checkpoint
+    # revalidation hard-block with repo_baseline_head_mismatch.  The
+    # publishing -> publishing re-write below is NOT a refresh transition
+    # (_stage_refreshes_repo_baseline returns False for same-stage), so the
+    # CAS writer's default path would leave the stale pre-commit head in
+    # place.  Passing bind_repo_baseline_head=commit_oid makes the CAS writer
+    # pin repo_baseline.head to the authoritative publish commit the pipeline
+    # itself just produced, so the post-publication handoff's crash recovery
+    # sees baseline_head == current_head and can resume cleanly.
     commit_oid = local_state.get("commit_oid")
     if isinstance(commit_oid, str) and len(commit_oid) >= 40:
         try:
@@ -506,13 +512,24 @@ def _resume_publication_transaction(v, source_v, ckpt):
                         expected_checkpoint_revision=post_commit_ckpt.get("checkpoint_revision"),
                         expected_checkpoint_stage="publishing",
                         expected_workflow_run_id=post_commit_ckpt.get("workflow_run_id"),
+                        bind_repo_baseline_head=commit_oid,
                     )
-        except Exception:
-            # Best-effort: if the CAS fails (e.g. concurrent writer), the
-            # handoff still proceeds; the baseline refresh is an optimization
-            # for crash recovery, not a correctness requirement for the
-            # current transaction.
-            pass
+        except Exception as exc:
+            # The post-commit baseline pin is load-bearing for crash recovery
+            # of the handoff: without it a crash between here and checkpoint
+            # clear strands the published bot at `publishing` with
+            # repo_baseline_head_mismatch (the v79/v83 deadlock).  Log it so a
+            # failure is visible instead of silently degrading; the current
+            # publication transaction itself is already durable at this point.
+            try:
+                log.warning(
+                    "post-commit repo_baseline bind failed for v%s: %s: %s",
+                    post_commit_ckpt.get("next_v") if isinstance(post_commit_ckpt, dict) else "?",
+                    type(exc).__name__,
+                    str(exc)[:200],
+                )
+            except Exception:
+                pass
     try:
         from post_publication_handoff import ensure_post_publication_handoff
 
