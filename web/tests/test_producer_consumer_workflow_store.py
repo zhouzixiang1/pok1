@@ -817,6 +817,16 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
         # imports the dormant producer_consumer_slice2b module.  Added by the
         # P0-2 quota-fallback + slice2b staging-publication commit (61b97a40).
         root / "web" / "server" / "routes" / "control.py",
+        # tool_bot_management.py owns the canonical abandon transaction
+        # (_do_abandon_generation).  When a generation at workers_done is
+        # abandoned, its matching Slice-2b consumer candidate (in ``consuming``
+        # state) must be terminated too, or it orphans and trips the
+        # ``one_ahead_high_water_exceeded`` guard on the next seal.  Like the
+        # other sanctioned seams, its only slice2b reference is a lazy
+        # try/except import of the activation bridge gated behind
+        # slice2b_active; it never imports the dormant producer_consumer_slice2b
+        # module.
+        root / "web" / "core" / "tool_bot_management.py",
     }
     # ``orchestrator.py`` itself must remain free of any slice2b reference --
     # it reaches the activation bridge only through the deterministic-route
