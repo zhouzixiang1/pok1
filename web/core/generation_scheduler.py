@@ -21,6 +21,7 @@ from types import MappingProxyType
 from bot_namespace import ACTIVE_BOT_PREFIX, FIRST_STRICT_POLICY_VERSION, bot_name, bot_tag, parse_bot_version
 from strength_order import match_score
 from system_log import log_system_event
+from blocking_runtime import run_blocking_isolated
 import generation_scheduler_source_selection as _gs
 
 log = logging.getLogger("pok.scheduler")
@@ -1188,8 +1189,20 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     # falling back past any not-yet-certified higher versions. 1A's
     # EvalSourceRatingIneligible precheck below stays as a fail-closed backstop
     # for the case where NO active bot is rating-eligible.
-    active_v = find_latest_rating_eligible_active_v()
-    active_bots = get_active_bots()
+    # Pool resolution (get_active_bots / find_latest_rating_eligible_active_v)
+    # walks every active bot through certificate_validation -> git/ssh-keygen
+    # subprocesses with 30s timeouts. Running it inline blocks the ASGI event
+    # loop for minutes (8 published bots + redundant calls) and starves every
+    # HTTP request, so it MUST run in an owned worker thread via the same
+    # single-wakeup boundary the HTTP handlers use (AGENTS.md blocking boundary).
+    active_v = await run_blocking_isolated(
+        find_latest_rating_eligible_active_v,
+        thread_name_prefix="prepare-pool-resolve",
+    )
+    active_bots = await run_blocking_isolated(
+        get_active_bots,
+        thread_name_prefix="prepare-pool-resolve",
+    )
     # Re-open the namespace after active-pool discovery.  A paired tag/reset/
     # abandon transaction racing the first projection invalidates every source,
     # target, and bootstrap decision from that projection.
@@ -1264,7 +1277,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     if len(active_bots) > MAX_ACTIVE_BOTS:
         from tool_bot_management import _do_reap_weakest
         reap_count = 0
-        while len(get_active_bots()) > MAX_ACTIVE_BOTS and reap_count < 10:
+        while (await run_blocking_isolated(
+            lambda: len(get_active_bots()) > MAX_ACTIVE_BOTS,
+            thread_name_prefix="prepare-pool-resolve",
+        )) and reap_count < 10:
             try:
                 result = await _do_reap_weakest(quiet=True)
                 if not result.get("reaped"):
@@ -1281,8 +1297,14 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     # Reaping is allowed to change both the pool and its latest active version.
     # Bind the wait target only after that mutation has finished; the post-wait
     # evidence loader checks the same identity again before planning.
-    refreshed_active_bots = get_active_bots()
-    refreshed_active_v = find_latest_rating_eligible_active_v()
+    refreshed_active_bots = await run_blocking_isolated(
+        get_active_bots,
+        thread_name_prefix="prepare-pool-resolve",
+    )
+    refreshed_active_v = await run_blocking_isolated(
+        find_latest_rating_eligible_active_v,
+        thread_name_prefix="prepare-pool-resolve",
+    )
     if refreshed_active_v <= 0 or not refreshed_active_bots:
         log_system_event(
             "pipeline.prepare_no_active_source",
@@ -1341,7 +1363,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         # typed signal instead of silently degrading the floor. Drafts skip
         # this (they intentionally use stale ratings and run no matches).
         from bot_namespace import resolve_national_bot_spec, ROLE_RATING_POOL
-        eval_spec = resolve_national_bot_spec(active_bot_name, ROLE_RATING_POOL)
+        eval_spec = await run_blocking_isolated(
+            resolve_national_bot_spec,
+            active_bot_name,
+            ROLE_RATING_POOL,
+            thread_name_prefix="prepare-pool-resolve",
+        )
         if not eval_spec.eligible:
             from orchestrator_cost_policy import EvalSourceRatingIneligible
             raise EvalSourceRatingIneligible(
@@ -1408,17 +1435,29 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         )
         return None
 
-    evidence = _load_post_wait_evaluation_evidence(
-        active_v=active_v,
-        active_bot_name=active_bot_name,
-        min_games=int(eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL)),
-        rd_threshold=float(eval_kwargs.get("rd_threshold", 90.0)),
-        rd_min_games=int(eval_kwargs.get("rd_min_games", 30)),
-        expected_active_bots=[
-            b for b in active_bots
-            if _is_rating_pool_eligible_bot(b)
-        ],
-        snapshot_bundle=frozen_bundle,
+    # _load_post_wait_evaluation_evidence is synchronous and internally
+    # re-resolves the active pool and per-bot rating eligibility (git/ssh-keygen
+    # subprocesses) 3+ times. Compute the expected_active_bots filter AND the
+    # evidence load together in the worker thread so none of it touches the loop.
+    _expected_min_games = int(eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL))
+    _expected_rd_threshold = float(eval_kwargs.get("rd_threshold", 90.0))
+    _expected_rd_min_games = int(eval_kwargs.get("rd_min_games", 30))
+
+    def _freeze_eval_evidence_sync():
+        expected = [b for b in active_bots if _is_rating_pool_eligible_bot(b)]
+        return _load_post_wait_evaluation_evidence(
+            active_v=active_v,
+            active_bot_name=active_bot_name,
+            min_games=_expected_min_games,
+            rd_threshold=_expected_rd_threshold,
+            rd_min_games=_expected_rd_min_games,
+            expected_active_bots=expected,
+            snapshot_bundle=frozen_bundle,
+        )
+
+    evidence = await run_blocking_isolated(
+        _freeze_eval_evidence_sync,
+        thread_name_prefix="prepare-eval-evidence",
     )
     if evidence is None:
         return None

@@ -1,6 +1,7 @@
 """Tests for generation_scheduler — strategy decision and branch parsing logic."""
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -383,3 +384,136 @@ def test_frozen_selection_view_never_selects_inactive_rating(monkeypatch):
 
     assert result[1] in {143, 146}
     assert result[1] != 199
+
+
+def test_prepare_generation_offloads_blocking_pool_resolution_off_event_loop(monkeypatch):
+    """Regression guard for the ASGI event-loop starvation defect.
+
+    ``prepare_generation`` is async and runs on the orchestrator's ASGI event
+    loop. The pool-resolution calls it makes (``get_active_bots``,
+    ``find_latest_rating_eligible_active_v``, ``resolve_national_bot_spec``)
+    are SYNCHRONOUS and each drives git/ssh-keygen subprocesses with 30s
+    timeouts. Running them inline blocks the loop for minutes and starves every
+    HTTP request (8+ minute hang observed in production). They MUST be offloaded
+    to a worker thread via ``run_blocking_isolated`` so the loop stays
+    responsive. This test proves the blocking resolvers execute in a worker
+    thread, never on the event-loop thread.
+    """
+    import epoch_authority
+    import evolution_infra
+    import generation_scheduler
+    import post_publication_handoff
+    import tool_runtime_guard
+    import workflow_profiles
+
+    loop_thread = threading.current_thread()
+    resolver_threads = {}
+
+    def _record_thread(name):
+        def _impl(*args, **kwargs):
+            resolver_threads[name] = threading.current_thread()
+            if name == "get_active_bots":
+                # Two bots avoids the single-bot protocol-bootstrap branch so
+                # prepare reaches the canonical pool-resolution / reap block.
+                return ["national_cloud_v1", "national_cloud_v2"]
+            if name == "find_latest_rating_eligible_active_v":
+                return 2
+            # resolve_national_bot_spec: return an eligible spec so prepare
+            # proceeds past the rating-pool precheck.
+            return SimpleNamespace(eligible=True, issues=())
+
+        return _impl
+
+    monkeypatch.setattr(evolution_infra, "get_active_bots", _record_thread("get_active_bots"))
+    monkeypatch.setattr(
+        evolution_infra,
+        "find_latest_rating_eligible_active_v",
+        _record_thread("find_latest_rating_eligible_active_v"),
+    )
+    # The resolver is imported lazily from bot_namespace inside prepare_generation.
+    import bot_namespace
+
+    monkeypatch.setattr(
+        bot_namespace,
+        "resolve_national_bot_spec",
+        _record_thread("resolve_national_bot_spec"),
+    )
+
+    # Drive prepare_generation past every guard up to the pool-resolution block.
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kw: {
+            "initialized": True,
+            "ignored_checkpoint": None,
+            "active_generation": None,
+            "published_high_water": 2,
+            "allocation_floor": 2,
+            "next_v": 3,
+            "abandoned_receipt_floor": 0,
+            "active_bots": ["national_cloud_v1", "national_cloud_v2"],
+        },
+    )
+    monkeypatch.setattr(
+        workflow_profiles,
+        "get_workflow_profile",
+        lambda: SimpleNamespace(
+            profile_id="national_native",
+            national_execution_mode="native_tcp",
+            eval_wait_rd_threshold=90.0,
+            eval_wait_rd_min_games=30,
+            eval_wait_min_games=10,
+        ),
+    )
+    monkeypatch.setattr(tool_runtime_guard, "ensure_runtime_git_guard", lambda *_a, **_kw: (True, {}))
+    monkeypatch.setattr(
+        evolution_infra,
+        "ensure_publish_ready_for_new_generation",
+        lambda: (True, {}),
+    )
+    monkeypatch.setattr(evolution_infra, "abandoned_version_attempt_count", lambda _v: 0)
+    monkeypatch.setattr(evolution_infra, "MIN_GAMES_FOR_EVAL", 10)
+    monkeypatch.setattr(evolution_infra, "MAX_ACTIVE_BOTS", 8)
+
+    # Skip the real blocking daemon-eval wait. Returning False makes prepare
+    # return None at the "insufficient games" guard, AFTER all three blocking
+    # resolvers (get_active_bots, find_latest_rating_eligible_active_v,
+    # resolve_national_bot_spec) have already been exercised through the
+    # run_blocking_isolated offload boundary.
+    async def _fake_wait_for_daemon_eval(*_a, **_kw):
+        return False
+
+    monkeypatch.setattr(evolution_infra, "wait_for_daemon_eval", _fake_wait_for_daemon_eval)
+    # Avoid real cost-policy / logging side effects in the prepare prologue.
+    monkeypatch.setattr(
+        generation_scheduler,
+        "_bind_prepare_generation_cost_scope",
+        lambda *_a, **_kw: "test-workflow-run-id",
+    )
+    monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_a, **_kw: None)
+
+    async def scenario():
+        # Run on a real event loop so run_blocking_isolated uses a worker thread.
+        await generation_scheduler.prepare_generation(None)
+
+    asyncio.run(scenario())
+
+    # The two pool-resolution callables reached by prepare MUST have executed.
+    assert "get_active_bots" in resolver_threads, "get_active_bots was not reached"
+    assert (
+        "find_latest_rating_eligible_active_v" in resolver_threads
+    ), "find_latest_rating_eligible_active_v was not reached"
+
+    # CRITICAL: every blocking resolver ran off the event-loop thread. If any
+    # ran on the loop thread the event loop would be blocked for the duration
+    # of the git/ssh-keygen subprocesses (the production hang).
+    for name, thread in resolver_threads.items():
+        assert thread is not loop_thread, (
+            f"blocking resolver {name!r} ran on the event-loop thread "
+            f"(ident={thread.ident}); it must be offloaded to a worker thread"
+        )

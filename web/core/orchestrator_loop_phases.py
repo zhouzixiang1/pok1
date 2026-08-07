@@ -2137,12 +2137,19 @@ async def _run_async_official_certification(version, ui):
         if not _Path(bot_dir).is_dir():
             return {"passed": False, "reason": "candidate_dir_missing"}
 
-        opponent_selection = select_official_opponent(
-            bot_dir,
-            get_active_bots(),
-            preferred=None,
-            allow_bootstrap_grandfather=False,
-        )
+        # Pool resolution (get_active_bots + select_official_opponent) walks the
+        # active bots through certificate_validation -> git/ssh-keygen
+        # subprocesses. Run it off the event-loop thread, matching the per-poll
+        # offload below, so certification setup does not starve HTTP traffic.
+        def _resolve_opponent():
+            return select_official_opponent(
+                bot_dir,
+                get_active_bots(),
+                preferred=None,
+                allow_bootstrap_grandfather=False,
+            )
+
+        opponent_selection = await _orch.asyncio.to_thread(_resolve_opponent)
         if not opponent_selection.get("selected"):
             return {
                 "passed": False,
