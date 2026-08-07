@@ -165,6 +165,71 @@ def test_no_bind_keeps_existing_head_on_same_stage(tmp_path, monkeypatch):
     assert written["repo_baseline"]["head"] == PRE_COMMIT_HEAD
 
 
+def test_bind_bypasses_allocation_successor_assertion_after_high_water_advance(tmp_path, monkeypatch):
+    """Regression: the post-publish bind writes AFTER the publish commit has
+    advanced the high-water tag, so next_v is no longer allocation_floor+1.
+
+    Before the fix, ``checkpoint_allocation_authority(expected_next_v=next_v)``
+    raised ``AbandonedVersionLedgerError`` in the CAS writer, which returned
+    ``False`` (not raising) — so the bind silently no-op'd and every published
+    generation (v27/v29/v79/v83/v88/v105) deadlocked at
+    ``repo_baseline_head_mismatch``. The bind must bypass the live successor
+    assertion the same way draft slots do, because the publish itself
+    legitimately just advanced the high-water by exactly one.
+    """
+    state_path = _seed_publishing_checkpoint(tmp_path, monkeypatch)
+
+    # Simulate the post-publish state: the high-water tag for next_v already
+    # exists, so checkpoint_allocation_authority RAISES when asked to assert
+    # next_v is the live successor (allocation_floor == next_v, not next_v-1).
+    call_log = []
+
+    def _authority(**kwargs):
+        call_log.append(kwargs)
+        expected = kwargs.get("expected_next_v")
+        if expected is not None:
+            # Mirror the real failure: AbandonedVersionLedgerError when the
+            # target is not the live successor (high-water already advanced).
+            raise RuntimeError("checkpoint target is not the live allocation successor")
+        # expected_next_v=None -> the bind/draft path -> succeed.
+        return {
+            "published_high_water": 1,
+            "abandoned_receipt_floor": 0,
+            "abandoned_receipt_head_digest": None,
+            "allocation_floor": 1,
+        }
+
+    monkeypatch.setattr(evolution_infra, "checkpoint_allocation_authority", _authority)
+    monkeypatch.setattr(
+        evolution_infra,
+        "_capture_repo_baseline",
+        lambda stage, **_kwargs: {
+            "branch": "tencent-cloud-runtime",
+            "head": "c" * 40,
+            "evaluation_contract": {"stage": stage, "hash": "e" * 64},
+        },
+    )
+
+    ok = evolution_infra.write_pipeline_checkpoint(
+        2,
+        1,
+        "publishing",
+        publication_intent={"publication_id": "d" * 64},
+        expected_checkpoint_revision=7,
+        expected_checkpoint_stage="publishing",
+        expected_workflow_run_id="generation:2:workflow-v1",
+        bind_repo_baseline_head=PUBLISH_COMMIT_OID,
+    )
+    # The bind must succeed (not silently return False).
+    assert ok is True, "post-publish bind was rejected by the allocation-successor CAS"
+    # The CAS writer must NOT have asserted next_v as the live successor.
+    assert all(c.get("expected_next_v") is None for c in call_log), (
+        "bind path must bypass the successor assertion (expected_next_v=None)"
+    )
+    written = json.loads(state_path.read_text(encoding="utf-8"))
+    assert written["repo_baseline"]["head"] == PUBLISH_COMMIT_OID
+
+
 def test_post_commit_refresh_call_passes_commit_oid(monkeypatch):
     """The post-commit refresh in tool_commit_publication passes commit_oid.
 

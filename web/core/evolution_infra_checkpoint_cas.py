@@ -763,9 +763,14 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 return False
         try:
             # Draft shadow checkpoints skip the live floor+1 successor CAS;
-            # promotion remaps them onto the formal next_v later.
+            # promotion remaps them onto the formal next_v later. The
+            # post-publish repo_baseline bind (bind_repo_baseline_head) likewise
+            # writes AFTER the publish commit has already advanced the high-water
+            # tag, so next_v is no longer allocation_floor+1 at that point; the
+            # existing-checkpoint publication_reconciliation path below validates
+            # the real invariant instead.
             allocation_authority = _ei.checkpoint_allocation_authority(
-                expected_next_v=None if is_draft_slot else next_v,
+                expected_next_v=None if (is_draft_slot or bind_repo_baseline_head) else next_v,
             )
         except Exception as exc:
             log.error(

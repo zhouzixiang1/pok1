@@ -504,7 +504,7 @@ def _resume_publication_transaction(v, source_v, ckpt):
             if isinstance(post_commit_ckpt, dict):
                 frozen_rb = post_commit_ckpt.get("repo_baseline") or {}
                 if frozen_rb.get("head") != commit_oid:
-                    _tc.write_pipeline_checkpoint(
+                    _bind_ok = _tc.write_pipeline_checkpoint(
                         int(post_commit_ckpt["next_v"]),
                         int(post_commit_ckpt["source_v"]),
                         "publishing",
@@ -514,13 +514,27 @@ def _resume_publication_transaction(v, source_v, ckpt):
                         expected_workflow_run_id=post_commit_ckpt.get("workflow_run_id"),
                         bind_repo_baseline_head=commit_oid,
                     )
+                    if not _bind_ok:
+                        # write_pipeline_checkpoint returns False (does not
+                        # raise) when the CAS writer rejects the write — e.g. an
+                        # allocation-authority guard. The post-commit baseline
+                        # pin is load-bearing for crash recovery of the handoff:
+                        # without it a crash between here and checkpoint clear
+                        # strands the published bot at `publishing` with
+                        # repo_baseline_head_mismatch (the recurring v27/v29/
+                        # v79/v83/v88/v105 deadlock). Surface a False return as
+                        # an explicit error so a failed pin is never invisible.
+                        log.error(
+                            "post-commit repo_baseline bind CAS returned False for v%s "
+                            "(baseline still %s, expected publish commit %s) — recovery will block",
+                            post_commit_ckpt.get("next_v"),
+                            (frozen_rb.get("head") or "?")[:12],
+                            commit_oid[:12],
+                        )
         except Exception as exc:
-            # The post-commit baseline pin is load-bearing for crash recovery
-            # of the handoff: without it a crash between here and checkpoint
-            # clear strands the published bot at `publishing` with
-            # repo_baseline_head_mismatch (the v79/v83 deadlock).  Log it so a
-            # failure is visible instead of silently degrading; the current
-            # publication transaction itself is already durable at this point.
+            # Same rationale as above: log so a failure is visible instead of
+            # silently degrading; the publication transaction itself is already
+            # durable at this point.
             try:
                 log.warning(
                     "post-commit repo_baseline bind failed for v%s: %s: %s",
