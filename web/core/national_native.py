@@ -429,6 +429,16 @@ def resolve_bot(token: str | Path) -> tuple[str, Path]:
         raise ValueError(
             f"bot path is outside the active strict namespace: {candidate}"
         )
+    # PURGE execution-cache artifacts (``__pycache__``, ``.pytest_cache``,
+    # ``*.pyc``, ``*.pyo``) left in the candidate bot dir by Worker
+    # ``py_compile`` (worker_prompt.md) or import-time compilation.
+    # ``strict_artifact_layout_errors`` (bot_namespace.py) FORBIDS these, so
+    # without this purge a py_compiled candidate reaches precommit contaminated
+    # and this resolve raises ``artifact_execution_cache_directory_forbidden``
+    # before the purge-bearing ``_prepare_native_spec`` path ever runs (observed:
+    # v103 wedge at precommit_failed).  This is best-effort and only touches
+    # well-known cache names/suffixes; it never modifies source files.
+    _purge_execution_cache(candidate)
     spec = resolve_national_bot_spec(
         candidate,
         ROLE_CANDIDATE,
