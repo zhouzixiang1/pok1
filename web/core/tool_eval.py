@@ -116,10 +116,11 @@ def _is_infra_blocker(reason):
 # ──────────────────────────────────────────────
 # Precommit eval tuning constants
 # ──────────────────────────────────────────────
-# Default and max n_games per opponent for precommit eval. 8 gives enough paired
-# net-chip observations for the bootstrap gate; 16 is the hard ceiling so
-# precommit eval still fits within the cycle budget.
-PRECOMMIT_DEFAULT_N_GAMES = 8
+# Default and max n_games per opponent for precommit eval. 12 gives enough paired
+# net-chip observations for the bootstrap gate (the CI shrinks as 1/sqrt(n), so
+# 12 has ~18% lower variance than 8); 16 is the hard ceiling so precommit eval
+# still fits within the cycle budget.
+PRECOMMIT_DEFAULT_N_GAMES = 12
 PRECOMMIT_MIN_N_GAMES = 4
 PRECOMMIT_MAX_N_GAMES = 16
 
@@ -1168,9 +1169,10 @@ async def run_precommit_eval(args):
     v = int(v)
     source_v = int(source_v)
     # Cap n_games: precommit eval is a quick regression check, NOT a full evaluation.
-    # Default is PRECOMMIT_DEFAULT_N_GAMES (8), clamped to
-    # [PRECOMMIT_MIN_N_GAMES, PRECOMMIT_MAX_N_GAMES]. The regression gate now uses paired net-chip
-    # bootstrap CIs, which are much less noisy than binary W/L at the same n_games.
+    # Default is PRECOMMIT_DEFAULT_N_GAMES (12), clamped to
+    # [PRECOMMIT_MIN_N_GAMES, PRECOMMIT_MAX_N_GAMES]. The regression gate uses paired net-chip
+    # bootstrap CIs (the parent-gate tie-break and the aggregate gate), which are far less
+    # noisy than binary W/L at the same n_games.
     requested = int(args.get("n_games", PRECOMMIT_DEFAULT_N_GAMES) or PRECOMMIT_DEFAULT_N_GAMES)
     n_games = min(max(PRECOMMIT_MIN_N_GAMES, requested), PRECOMMIT_MAX_N_GAMES)
 

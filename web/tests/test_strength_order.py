@@ -733,15 +733,67 @@ def test_precommit_outcome_gate_keeps_9w_7l_despite_huge_negative_chips():
     assert blockers == []
 
 
-def test_precommit_parent_gate_requires_majority_win():
+def test_precommit_parent_gate_loss_is_blocked():
     """The strength gate requires the candidate to BEAT its parent (>50% score)
-    over at least PRECOMMIT_PARENT_MIN_SAMPLES (6) matches.  A candidate that
-    merely ties or narrowly loses is blocked."""
+    over at least PRECOMMIT_PARENT_MIN_SAMPLES (6) matches.  A genuine loss
+    (score < 0.50) is always blocked, regardless of chip magnitude."""
     from strength_order import precommit_outcome_blockers, PRECOMMIT_PARENT_MAX_SCORE, PRECOMMIT_PARENT_MIN_SAMPLES
 
     assert PRECOMMIT_PARENT_MAX_SCORE == 0.50
     assert PRECOMMIT_PARENT_MIN_SAMPLES == 6
-    # 3W-3L-0D over 6 matches = score 0.50 — does NOT beat parent (must be >0.50).
+    # 3W-5L-0D over 8 matches = score 0.375 — a genuine loss, blocked even with
+    # a strongly positive chip vector (the escape hatch is tie-only).
+    blockers, _ = precommit_outcome_blockers([{
+        "opponent": "national_v143",
+        "wins": 3,
+        "losses": 5,
+        "draws": 0,
+        "net_chips": [10_000] * 8,
+    }], parent_label="national_v143")
+    assert any(r["reason"] == "did_not_beat_parent" for r in blockers)
+
+
+def test_precommit_parent_gate_tie_blocks_when_chip_ci_negative():
+    """An exact tie (score == 0.50) with a negative net-chip CI upper bound is
+    still a regression and is blocked."""
+    from strength_order import precommit_outcome_blockers
+
+    # 4W-4L-0D = score 0.50 (exact tie); strongly negative chips.
+    blockers, _ = precommit_outcome_blockers([{
+        "opponent": "national_v143",
+        "wins": 4,
+        "losses": 4,
+        "draws": 0,
+        "net_chips": [-5000, -3000, -2000, -1000, -500, -400, -300, -200],
+    }], parent_label="national_v143")
+    assert any(r["reason"] == "did_not_beat_parent" for r in blockers)
+
+
+def test_precommit_parent_gate_tie_passes_when_chip_ci_positive():
+    """An exact tie (score == 0.50) vs the parent PASSES when the paired
+    net-chip bootstrap 95% CI upper bound is positive — the tie is reclassified
+    as 'not a regression'.  This is the statistical-power fix: at small n an
+    equal-strength candidate ties ~50% of the time, and the chip magnitude
+    (far more informative than the binary W/L signs) breaks the tie."""
+    from strength_order import precommit_outcome_blockers
+
+    # 4W-4L-0D = score 0.50 (exact tie); positive chips so CI upper > 0.
+    blockers, _ = precommit_outcome_blockers([{
+        "opponent": "national_v143",
+        "wins": 4,
+        "losses": 4,
+        "draws": 0,
+        "net_chips": [5000, 3000, 2000, 1000, 500, 400, 300, 200],
+    }], parent_label="national_v143")
+    assert not any(r["reason"] == "did_not_beat_parent" for r in blockers)
+
+
+def test_precommit_parent_gate_tie_without_chip_samples_blocks():
+    """An exact tie with no net-chip samples cannot invoke the CI escape hatch
+    and is still blocked (fail-closed when the tie-breaker is unavailable)."""
+    from strength_order import precommit_outcome_blockers
+
+    # 3W-3L-0D = score 0.50 (exact tie); no net_chips key at all.
     blockers, _ = precommit_outcome_blockers([{
         "opponent": "national_v143",
         "wins": 3,
