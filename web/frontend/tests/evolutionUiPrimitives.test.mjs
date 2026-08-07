@@ -54,5 +54,8 @@ test("notStuckReasons covers park and eval_wait", () => {
   const src = readFileSync(join(root, "lib/notStuckReasons.ts"), "utf8");
   assert.match(src, /consumer_parked/);
   assert.match(src, /eval_wait/);
-  assert.match(src, /post_publication_handoff_running/);
+  // Removed codes must NOT be present (no backend source-of-truth).
+  assert.doesNotMatch(src, /post_publication_handoff_running/);
+  assert.doesNotMatch(src, /eval_wait_degraded/);
+  assert.doesNotMatch(src, /staging_async_cert/);
 });

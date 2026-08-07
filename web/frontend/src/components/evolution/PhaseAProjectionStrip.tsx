@@ -34,7 +34,7 @@ export function PhaseAProjectionStrip({
     if (tip) tips.push(tip);
   }
   if (evalWait?.waiting) {
-    const tip = notStuckLabel(evalWait.degraded ? "eval_wait_degraded" : "eval_wait");
+    const tip = notStuckLabel("eval_wait");
     if (tip) tips.push(tip);
   }
 

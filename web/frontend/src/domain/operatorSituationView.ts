@@ -216,7 +216,7 @@ function buildContextNotes(status: ControlStatus | null): string[] {
       ? ` · RD ${evalWait.rd.toFixed(1)}/${evalWait.rd_threshold}`
       : "";
     notes.push(
-      `强度样本等待中${bot}：完整 70 手样本 ${games}${rd}${evalWait.degraded ? " · 已降级继续" : ""}。`,
+      `强度样本等待中${bot}：完整 70 手样本 ${games}${rd}。`,
     );
   }
 
