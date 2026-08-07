@@ -21,6 +21,7 @@
     "src/lib/controlRuntimeState.ts",
     "src/lib/controlFirstLoadState.ts",
     "src/lib/pipelinePresentation.ts",
+    "src/lib/notStuckReasons.ts",
     "src/lib/canonicalGenerationIdentity.ts",
     "src/lib/stabilityView.ts",
     "src/constants/pipeline.ts",

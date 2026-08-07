@@ -206,7 +206,7 @@ function buildContextNotes(status: ControlStatus | null): string[] {
   // facts; only keep the notes unique to the operator situation below.
   const mode = status.pipeline_mode;
   if (mode?.enabled && mode.producer_may_prepare_next) {
-    notes.push("Slice 2b：已密封候选允许生产者准备下一代草稿。");
+    notes.push("并行验收已开启：已密封候选允许后台提前准备下一代草稿。");
   }
 
   const flags = status.feature_flags;
@@ -216,10 +216,10 @@ function buildContextNotes(status: ControlStatus | null): string[] {
     const certified = status.version_authority?.certified_versions ?? [];
     if (!certified.includes(sourceV)) {
       notes.push(
-        `允许 staging 父本：当前主父本 v${sourceV} 尚未进入 certified 集合；发布权威仍以证书/tag 为准。`,
+        `允许暂存父本：当前主父本 v${sourceV} 尚未取得正式证书；发布权威仍以证书/标签为准。`,
       );
     } else {
-      notes.push(`staging 父本策略已开启；当前主父本 v${sourceV} 已有 certified 身份。`);
+      notes.push(`允许暂存父本：当前主父本 v${sourceV} 已有正式认证身份。`);
     }
   }
 
@@ -353,13 +353,13 @@ export function operatorSituationView(
             ? "首个 Bot 正在做官方平台认证"
             : "首个 Bot 等待操作员启动官方认证",
       what: failed
-        ? "绑定当前候选的 system-control 认证任务已终态失败；候选尚未发布。"
+        ? "绑定当前候选的系统控制台认证任务已终态失败；候选尚未发布。"
         : ready
-          ? "8 个认证回合已闭合并形成当前候选的有效证书；仍未完成 commit、.completed 与 tag。"
+          ? "8 个认证回合已闭合并形成当前候选的有效证书；仍未完成提交、.completed 与标签。"
           : running
-            ? "首代一次性任务正在执行 5 轮自对弈 + 3 轮 system-control 对手认证。"
+            ? "首代一次性任务正在执行 5 轮自对弈 + 3 轮系统控制台对手认证。"
             : "本地质量和原生预发布门已完成，首代候选停在一次性官方认证边界。",
-    why: "首个严格 Bot 没有合格已发布对手，第三方对手的 3 轮由一次性 system-control 提供；它只证明官方兼容，强度与策略证据权重均为 0。",
+    why: "首个严格 Bot 没有合格已发布对手，第三方对手的 3 轮由一次性系统控制台提供；它只证明官方兼容，强度与策略证据权重均为 0。",
       next: failed
         ? "按 transition 给出的受控命令处理失败；不要自动降级或复用旧任务。"
         : ready
@@ -385,7 +385,7 @@ export function operatorSituationView(
       headline: firstStrictCertification ? "首个 Bot 等待操作员启动官方认证" : "系统正在等待操作员动作",
       what: active ? `第 ${active.generation_ordinal} 代已推进到“${stageLabel(active.stage)}”，自动流程暂时停在安全边界。` : "自动流程停在受控边界。",
       why: firstStrictCertification
-        ? "首代没有合格已发布对手，因此执行 5 轮自对弈 + 3 轮一次性 system-control 对手认证；它证明官方兼容，但强度与策略证据权重均为 0。"
+        ? "首代没有合格已发布对手，因此执行 5 轮自对弈 + 3 轮一次性系统控制台对手认证；它证明官方兼容，但强度与策略证据权重均为 0。"
         : `后端明确要求：${actionLabel}。`,
       next: s.operator_command ? "核对并执行后端给出的操作员命令。" : actionLabel,
       manualRequired: true,
@@ -408,7 +408,7 @@ export function operatorSituationView(
       next: "先解决权威或身份诊断，再使用后端允许的恢复动作。",
       manualRequired: true,
       manualLabel: "需要操作员",
-      manualDetail: "不要绕过 route、复制候选或手工推进 stage。",
+      manualDetail: "不要绕过权威路径、复制候选或手工推进阶段。",
       continuityNote,
       technical,
     }, s);
@@ -422,10 +422,10 @@ export function operatorSituationView(
       headline: lease.label,
       what: `第 ${active.generation_ordinal} 代进入超时恢复状态；这不是成功进度，也不是未知阶段。`,
       why: lease.description,
-      next: automatic ? `${toolLabel(lease.nextTool)}；当前编排器会按 route 自动执行。` : `${toolLabel(lease.nextTool)}。`,
+      next: automatic ? `${toolLabel(lease.nextTool)}；当前编排器会按既定路径自动执行。` : `${toolLabel(lease.nextTool)}。`,
       manualRequired: !automatic,
       manualLabel: automatic ? "无需人工" : "需要操作员",
-      manualDetail: automatic ? "观察恢复结果即可，不要重放原阶段。" : "先恢复编排器，再只走权威 route。",
+      manualDetail: automatic ? "观察恢复结果即可，不要重放原阶段。" : "先恢复编排器，再只走权威路径。",
       continuityNote,
       technical,
     }, s);
@@ -446,8 +446,8 @@ export function operatorSituationView(
       manualRequired: !automatic,
       manualLabel: automatic ? "无需人工" : "需要操作员",
       manualDetail: automatic
-        ? "编排器会在同一阶段重试；达到上限后才会受控放弃并创建 successor。"
-        : "编排器当前未运行；恢复运行后只执行 route 指定工具。",
+        ? "编排器会在同一阶段重试；达到上限后才会受控放弃并创建继任尝试。"
+        : "编排器当前未运行；恢复运行后只执行权威路径指定的工具。",
       continuityNote,
       technical,
     }, s);
@@ -458,11 +458,11 @@ export function operatorSituationView(
       tone: "warning",
       headline: "首个 Bot 已到官方认证边界",
       what: "本地合规、代码门和原生 TCP 预发布评测已完成；候选尚未发布。",
-      why: "首代必须由操作员启动一次性 system-control 5+3；它只证明官方兼容性，强度权重为 0。",
-      next: "等待后端发布 operator transition，并由操作员启动认证。",
+      why: "首代必须由操作员启动一次性系统控制台 5+3；它只证明官方兼容性，强度权重为 0。",
+      next: "等待后端发布操作员交接指令，并由操作员启动认证。",
       manualRequired: true,
       manualLabel: "需要操作员",
-      manualDetail: "不要把 Official 结果当作 native 强度，也不要自动降级为 bootstrap。",
+      manualDetail: "不要把官方结果当作原生强度，也不要自动降级为首代引导。",
       continuityNote,
       technical,
     }, s);
@@ -473,13 +473,13 @@ export function operatorSituationView(
     return withPhaseDContext({
       tone: "info",
       headline: `第 ${active.generation_ordinal} 代主槽旁路等待（非卡住）`,
-      what: `${active.canonical_bot_name} 已密封；后台 consumer 正在跑 quality→precommit，主槽故意停在“${stageLabel(active.stage)}”。`,
-      why: "Slice 2b one-ahead：consumer_parked 是设计态，不是恢复阻断或失败。",
-      next: draftHint ?? "等待 consumer 完成，并在 commit 晋升屏障后继续发布。",
+      what: `${active.canonical_bot_name} 已密封；后台质量门链正在并行验收候选（质量→评审→批判→预提交），主槽故意停在“${stageLabel(active.stage)}”。`,
+      why: "这是并行验证的设计态（后台验收候选、主槽提前准备下一代），不是恢复阻断或失败。",
+      next: draftHint ?? "等待后台验收完成，在发布晋升屏障通过后继续发布。",
       manualRequired: !s.running,
       manualLabel: s.running ? "无需人工" : "需要操作员",
       manualDetail: s.running
-        ? "观察 consumer 与草稿槽即可；不要把旁路等待当成卡死。"
+        ? "观察后台验收与草稿槽即可；不要把旁路等待当成卡死。"
         : (controlStartBlockedReason(s, h) ?? "可在控制面板恢复编排器。"),
       continuityNote,
       technical,
@@ -503,11 +503,11 @@ export function operatorSituationView(
       what: completedBoundary
         ? `${active.canonical_bot_name} 已把该边界写入 checkpoint；下一工具尚未完成，Bot 仍未发布。`
         : `${active.canonical_bot_name} 尚在生产与验收流程中，未计为已发布 Bot。`,
-      why: route?.directive || "当前 stage 与 health route 已配对。",
+      why: route?.directive || "当前阶段与健康路由已配对。",
       next: draftHint ? `${nextAction}；${draftHint}` : nextAction,
       manualRequired: !s.running,
       manualLabel: s.running ? "无需人工" : "需要操作员",
-      manualDetail: s.running ? "系统会自动推进；只在出现明确 operator_action 时介入。" : (controlStartBlockedReason(s, h) ?? "可在控制面板恢复编排器。"),
+      manualDetail: s.running ? "系统会自动推进；只在出现明确需要操作员动作的提示时介入。" : (controlStartBlockedReason(s, h) ?? "可在控制面板恢复编排器。"),
       continuityNote,
       technical,
     }, s);

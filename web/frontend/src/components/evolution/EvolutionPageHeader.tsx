@@ -81,7 +81,7 @@ export function EvolutionPageHeader({
             ) : (
               drafts.map((d) => (
                 <EvolutionStatusBadge key={`${d.next_v}-${d.workflow_run_id}`} tone="info">
-                  draft v{d.next_v}
+                  草稿 v{d.next_v}
                 </EvolutionStatusBadge>
               ))
             )}
@@ -119,7 +119,7 @@ export function EvolutionPageHeader({
         ) : (
           drafts.map((d) => (
             <EvolutionStatusBadge key={`${d.next_v}-${d.stage}`} tone="park" pulse>
-              draft · v{d.next_v} · {d.stage}
+              草稿 · v{d.next_v} · {d.stage}
             </EvolutionStatusBadge>
           ))
         )}

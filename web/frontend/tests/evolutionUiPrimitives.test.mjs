@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { notStuckLabel, NOT_STUCK_REASON_CODES } from "../node_modules/.tmp/sse-tests/lib/notStuckReasons.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
@@ -51,11 +52,23 @@ test("HandoffEightStep lists Chinese step names", () => {
 });
 
 test("notStuckReasons covers park and eval_wait", () => {
-  const src = readFileSync(join(root, "lib/notStuckReasons.ts"), "utf8");
-  assert.match(src, /consumer_parked/);
-  assert.match(src, /eval_wait/);
-  // Removed codes must NOT be present (no backend source-of-truth).
-  assert.doesNotMatch(src, /post_publication_handoff_running/);
-  assert.doesNotMatch(src, /eval_wait_degraded/);
-  assert.doesNotMatch(src, /staging_async_cert/);
+  // The two live codes must resolve.
+  assert.ok(notStuckLabel("consumer_parked"));
+  assert.ok(notStuckLabel("eval_wait"));
+  assert.ok(NOT_STUCK_REASON_CODES.consumer_parked);
+  assert.ok(NOT_STUCK_REASON_CODES.eval_wait);
+  // Removed codes must NOT resolve (no backend source-of-truth). Asserting
+  // against the exported map, not the raw source text, so an explanatory
+  // comment naming a removed code does not false-trigger.
+  for (const removed of [
+    "post_publication_handoff_running",
+    "eval_wait_degraded",
+    "staging_async_cert",
+    "quota_wait",
+    "draft_preparing",
+    "official_certifying",
+  ]) {
+    assert.equal(notStuckLabel(removed), null, `removed code ${removed} must not resolve`);
+    assert.ok(!(removed in NOT_STUCK_REASON_CODES), `removed key ${removed} must not be a map entry`);
+  }
 });

@@ -99,7 +99,10 @@ export function HandoffEightStep({ handoff, className }: HandoffEightStepProps) 
           }
           pulse={handoff.status === "running"}
         >
-          {handoff.status}
+          {handoff.status === "pending" ? "等待中"
+            : handoff.status === "running" ? "进行中"
+            : handoff.status === "blocked" ? "被阻断"
+            : handoff.status}
           {handoff.current_step
             ? ` · ${HANDOFF_STEP_LABELS[handoff.current_step] ?? handoff.current_step}`
             : ""}

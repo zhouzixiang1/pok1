@@ -174,20 +174,20 @@ export function PipelineStatus({
     <div className="mb-2 space-y-1">
       {consumerParked && (
         <p className="rounded border border-brand-200 bg-brand-50 px-2 py-1.5 text-[10px] text-brand-800 dark:border-brand-800 dark:bg-brand-950/25 dark:text-brand-200">
-          主槽旁路等待（Slice 2b consumer park）：后台正在跑 quality→precommit，这不是卡住或恢复阻断。
+          主槽旁路等待：后台质量门链正在并行验收候选（质量→预提交），这不是卡住或恢复阻断。
         </p>
       )}
       {drafts.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           <span className="rounded border border-brand-200 bg-brand-50 px-1.5 py-0.5 text-[10px] text-brand-700 dark:border-brand-800 dark:bg-brand-950/20 dark:text-brand-300">
-            primary · {activeGeneration ? `v${activeGeneration.next_v}` : "—"} · {activeGeneration?.stage ?? "—"}
+            主槽 · {activeGeneration ? `v${activeGeneration.next_v}` : "—"} · {activeGeneration?.stage ?? "—"}
           </span>
           {drafts.map((draft) => (
             <span
               key={`draft-${draft.next_v}-${draft.workflow_run_id ?? draft.stage}`}
               className="rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700 dark:border-violet-800 dark:bg-violet-950/20 dark:text-violet-300"
             >
-              draft · v{draft.next_v} · {draft.stage}
+              草稿 · v{draft.next_v} · {draft.stage}
               {draft.checkpoint_revision != null ? ` · rev ${draft.checkpoint_revision}` : ""}
             </span>
           ))}

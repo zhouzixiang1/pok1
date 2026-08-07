@@ -640,11 +640,11 @@ test("operatorSituationView surfaces dual-slot badges, consumer park, eval_wait,
   assert.match(view.headline, /旁路等待|非卡住/);
   // consumer_park / eval_wait "not stuck" copy now lives in PhaseAProjectionStrip
   // (single source of truth); OperatorSituation.contextNotes keeps only unique
-  // notes (producer_may_prepare_next "Slice 2b" + staging_as_parent).
-  assert.ok(view.contextNotes.some((note) => /Slice 2b/.test(note)));
+  // notes (producer_may_prepare_next parallel-verification + staging_as_parent).
+  assert.ok(view.contextNotes.some((note) => /并行验收已开启/.test(note)));
   assert.ok(!view.contextNotes.some((note) => /强度样本等待/.test(note)));
   assert.ok(!view.contextNotes.some((note) => /主槽在 consumer 门链旁路/.test(note)));
-  assert.ok(view.contextNotes.some((note) => /staging 父本/.test(note)));
+  assert.ok(view.contextNotes.some((note) => /允许暂存父本/.test(note)));
   assert.equal(controlAbandonAvailable(status), true);
   assert.equal(controlAbandonAvailable({
     ...status,

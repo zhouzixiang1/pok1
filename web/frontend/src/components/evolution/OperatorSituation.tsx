@@ -55,7 +55,6 @@ export function OperatorSituation({
                 }`}
                 title={badge.detail}
               >
-                <span className="uppercase tracking-wide opacity-70">{badge.slot === "primary" ? "primary" : "draft"}</span>
                 <span className="font-mono">{badge.label}</span>
                 <span className="text-[9px] font-normal opacity-80">{badge.detail}</span>
               </span>

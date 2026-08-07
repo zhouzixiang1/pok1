@@ -13,7 +13,6 @@ import {
 } from "../api/control";
 import { api } from "../api/client";
 import type { PipelineCheckpoint } from "../api/types";
-import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { AsyncCertificationQueue } from "../components/evolution/AsyncCertificationQueue";
 import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaffold";
@@ -38,7 +37,7 @@ interface ControlConfigProjection {
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export default function ControlPanel() {
-  const { status, health, loading: statusLoading, error: statusError, refresh: refreshStatus, lastUpdated } = useControlStatusValue();
+  const { status, health, error: statusError, refresh: refreshStatus } = useControlStatusValue();
   const [loading, setLoading] = useState<string | null>(null);
   const [editWorkers, setEditWorkers] = useState(12);
   const [editPairs, setEditPairs] = useState(5);
@@ -244,8 +243,6 @@ export default function ControlPanel() {
           <RefreshIcon /> 刷新
         </button>
       </div>
-
-      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} compact className="mb-4" />
 
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-sm font-semibold text-gray-800 dark:text-white">操作员授权</h2>

@@ -17,8 +17,14 @@
  *    handoff/async_certification projection fields directly, not from here.
  */
 export const NOT_STUCK_REASON_CODES: Record<string, string> = {
-  consumer_parked: "并行评测停在质量门，主车道仍在推进 — 不是卡住",
-  eval_wait: "后台 70 手评测在等样本凑齐 — 不是卡住",
+  // Slice-2b one-ahead: the consumer lane runs the full gate chain
+  // (quality→review→critic→precommit) while the PRIMARY lane is parked
+  // waiting. Primary is parked (NOT advancing); the background lane is busy.
+  consumer_parked: "后台质量门链正在并行验收候选，主槽故意旁路等待 — 不是卡住",
+  // eval_wait counts COMPLETED matches toward `min_games` (default 24). The
+  // badge above already renders games/min_games, so the threshold is shown
+  // there directly — this prose must not restate a different number.
+  eval_wait: "后台评测正在累积对局样本（达到配置的最少对局数即可继续）— 不是卡住",
 };
 
 export function notStuckLabel(code: string | null | undefined): string | null {

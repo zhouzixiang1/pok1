@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import type { AsyncCertificationProjection } from "../../api/control";
+import type { AsyncCertificationItem, AsyncCertificationProjection } from "../../api/control";
 import { EvolutionSection, EvolutionStatusBadge, EvolutionSurface } from "./ui";
 import { cn } from "../../lib/utils";
 
@@ -13,6 +13,19 @@ function itemTone(state: string): "ok" | "warn" | "info" | "neutral" {
   if (state === "running") return "info";
   if (state === "pending") return "warn";
   return "neutral";
+}
+
+/** Operator-facing Chinese label for the async-cert job state.
+ *
+ * `passed` means the staging bot has obtained its signed full certificate and
+ * reached the certified tier. `pending`/`running` mean the staging bot is
+ * still awaiting its async official EXE cert — that is the EXPECTED state of a
+ * staging publication, not a failure. */
+function itemStateLabel(item: AsyncCertificationItem): string {
+  if (item.state === "passed") return "已认证";
+  if (item.state === "running") return "认证中";
+  if (item.state === "pending") return "待认证";
+  return item.state;
 }
 
 /**
@@ -35,14 +48,17 @@ export function AsyncCertificationQueue({
     );
   }
 
+  const passedCount = items.filter((it) => it.state === "passed").length;
+  const pendingCount = items.length - passedCount;
+
   return (
     <EvolutionSurface className={cn("space-y-3", className)} padding="sm">
       <EvolutionSection
         title="异步正式认证队列"
-        subtitle={projection?.any_pending ? "仍有进行中任务" : "队列已空闲"}
+        subtitle={`staging→certified：已认证 ${passedCount} · 待认证 ${pendingCount}${projection?.any_pending ? "（进行中）" : "（队列空闲）"}`}
         actions={
           <Link to="/control" className="text-xs text-brand-600 hover:underline">
-            在 Control 查看
+            在控制面板查看
           </Link>
         }
       />
@@ -53,7 +69,7 @@ export function AsyncCertificationQueue({
             className="flex flex-wrap items-center gap-2 text-xs"
           >
             <EvolutionStatusBadge tone={itemTone(item.state)} pulse={item.state === "running"}>
-              {item.state}
+              {itemStateLabel(item)}
             </EvolutionStatusBadge>
             <span className="font-mono text-gray-800 dark:text-gray-200">
               v{item.version} · {item.bot_name}
@@ -62,10 +78,12 @@ export function AsyncCertificationQueue({
             {item.certified_tag && (
               <span className="text-success-600 dark:text-success-400">{item.certified_tag}</span>
             )}
-            <span className="text-gray-400">{item.formal_authority}</span>
           </li>
         ))}
       </ul>
+      <p className="text-[11px] text-gray-500 dark:text-gray-400">
+        待认证 / 认证中：staging 已发布，正在补跑官方 EXE 证书（属预期状态，非失败）；已认证：取得正式证书，可进入评分池。
+      </p>
     </EvolutionSurface>
   );
 }
