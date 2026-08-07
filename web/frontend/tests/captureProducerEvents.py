@@ -9,16 +9,33 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+# Opt into the active namespace the same way the runtime and conftest do:
+# bot_namespace reads POK_CLOUD_RUNTIME at import time. An explicit operator
+# override still wins.
+os.environ.setdefault("POK_CLOUD_RUNTIME", "1")
 
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "web"))
 sys.path.insert(0, str(ROOT / "web" / "core"))
+
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, bot_tag, parse_bot_version  # noqa: E402
+
+# Branch-portable strict-generation identity (national_cloud_v1 on this
+# branch), used everywhere instead of hardcoded main-branch literals.
+STRICT_V = FIRST_STRICT_POLICY_VERSION
+NEXT_V = FIRST_STRICT_POLICY_VERSION + 1
+STRICT_BOT = bot_name(STRICT_V)
+NEXT_BOT = bot_name(NEXT_V)
+STRICT_RUN_ID = f"{STRICT_V}#1"
+STRICT_WORKFLOW = f"generation:{STRICT_V}:producer"
 
 
 def _drain(queue) -> dict[str, object]:
@@ -56,8 +73,8 @@ def _evolution_payloads(temp_root: Path) -> dict[str, object]:
         "state": "fresh_bootstrap_ready",
         "initialized": True,
         "active_generation": {
-            "run_id": "143#1",
-            "workflow_run_id": "generation:143:producer",
+            "run_id": STRICT_RUN_ID,
+            "workflow_run_id": STRICT_WORKFLOW,
             "checkpoint_revision": 7,
             "stage": "master_planning",
         },
@@ -80,14 +97,14 @@ def _evolution_payloads(temp_root: Path) -> dict[str, object]:
     ui.set_header("producer header")
     ui.update_cost("Master", 0.01, {"input_tokens": 3, "output_tokens": 2})
     policy = GenerationCostPolicy()
-    scope = GenerationCostScope("generation:143:producer", policy, 1.0)
+    scope = GenerationCostScope(STRICT_WORKFLOW, policy, 1.0)
     ui.begin_generation_cost(
         scope.generation_id,
         0.01,
         scope.receipt(spent_before_usd=0.01),
     )
-    ui.update_metrics({"current_v": 142, "next_v": 143, "success_rate": 1.0})
-    ui.emit_tool_call("run_master", {"next_v": 143}, "Orchestrator")
+    ui.update_metrics({"current_v": STRICT_V, "next_v": NEXT_V, "success_rate": 1.0})
+    ui.emit_tool_call("run_master", {"next_v": NEXT_V}, "Orchestrator")
 
     normal_log = SSEHandler(broadcaster)
     normal_log.emit(logging.LogRecord(
@@ -115,7 +132,7 @@ def _evolution_payloads(temp_root: Path) -> dict[str, object]:
         "pipeline.producer_contract",
         "critical",
         "producer system event",
-        next_v=143,
+        next_v=NEXT_V,
     )
     from server.routes._helpers import post_publication_handoff_projection
 
@@ -148,10 +165,10 @@ def _data_payloads(temp_root: Path) -> dict[str, object]:
         _get_recent_matches,
     )
 
-    active = ["national_v143", "national_v144"]
+    active = [STRICT_BOT, NEXT_BOT]
     ratings = {
-        "national_v143": {"r": 1510.0, "rd": 90.0, "sigma": 0.06, "last_period": "2026-07-15T00:00:00"},
-        "national_v144": {"r": 1490.0, "rd": 95.0, "sigma": 0.06, "last_period": "2026-07-15T00:00:00"},
+        STRICT_BOT: {"r": 1510.0, "rd": 90.0, "sigma": 0.06, "last_period": "2026-07-15T00:00:00"},
+        NEXT_BOT: {"r": 1490.0, "rd": 95.0, "sigma": 0.06, "last_period": "2026-07-15T00:00:00"},
     }
     h2h: dict[str, dict] = {}
     update_h2h(h2h, active[0], active[1], 1, 0, 0)
@@ -177,9 +194,9 @@ def _data_payloads(temp_root: Path) -> dict[str, object]:
     generation_identities = {
         name: {
             "generation_ordinal": ordinal,
-            "canonical_version": int(name.removeprefix("national_v")),
+            "canonical_version": parse_bot_version(name),
             "canonical_bot_name": name,
-            "canonical_tag": f"national-bot-v{name.removeprefix('national_v')}",
+            "canonical_tag": bot_tag(parse_bot_version(name)),
         }
         for ordinal, name in enumerate(active, start=1)
     }
@@ -231,7 +248,7 @@ def _data_payloads(temp_root: Path) -> dict[str, object]:
         "h2h": h2h,
         "bot_stats": bot_stats,
     }
-    generation = temp_root / "results" / "v143" / "logs"
+    generation = temp_root / "results" / f"v{STRICT_V}" / "logs"
     generation.mkdir(parents=True)
     (generation / "worker.log").write_text("producer\n", encoding="utf-8")
     limiter = RateLimiter(temp_root / "rate-limit.json")
@@ -240,9 +257,9 @@ def _data_payloads(temp_root: Path) -> dict[str, object]:
         "daemon": _get_daemon_status({}),
         "rate_limit": {"blocked": limiter.is_blocked()},
         "bots": bot_listing,
-        "stats": build_match_stats({"pairs": {"national_v143 vs national_v144": 1}, "total_games": 1, "total_periods": 1}),
+        "stats": build_match_stats({"pairs": {f"{STRICT_BOT} vs {NEXT_BOT}": 1}, "total_games": 1, "total_periods": 1}),
         "matches": _get_recent_matches(100, snapshot),
-        "generations": list_generation_dirs(temp_root / "results", allowed_versions={143}),
+        "generations": list_generation_dirs(temp_root / "results", allowed_versions={STRICT_V}),
         "matrix": build_match_matrix(h2h, ratings, {"pairs": {}}),
         "history": _get_history(snapshot),
         "h2h": _get_h2h(snapshot),

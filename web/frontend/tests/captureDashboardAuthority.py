@@ -8,18 +8,35 @@ exact fields produced by the production Python normalization functions.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
+
+# Opt into the active namespace the same way the runtime and conftest do:
+# bot_namespace reads POK_CLOUD_RUNTIME at import time. Without this the cloud
+# branch still resolves the main-namespace prefix and the fixture emits a
+# non-canonical bot name. An explicit operator override still wins.
+os.environ.setdefault("POK_CLOUD_RUNTIME", "1")
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "web"))
 sys.path.insert(0, str(ROOT / "web" / "core"))
 
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name  # noqa: E402
 from server.routes import pipeline  # noqa: E402
 
 
 IDENTITY = "a" * 64
+
+# Branch-portable strict-generation identity. Derive the canonical active-
+# namespace bot name (national_cloud_v1 on this branch) instead of hardcoding a
+# main-branch literal (national_v143). The TS test asserts against this same
+# derivation via the strict_identity echo below.
+STRICT_TARGET_V = FIRST_STRICT_POLICY_VERSION
+STRICT_SOURCE_V = FIRST_STRICT_POLICY_VERSION
+STRICT_NEXT_V = FIRST_STRICT_POLICY_VERSION + 2
+STRICT_TARGET_BOT = bot_name(STRICT_TARGET_V)
 
 
 def main() -> None:
@@ -49,12 +66,12 @@ def main() -> None:
         "checkpoint_schema_version": 2,
         "evaluation_epoch": "national_tcp_policy_v1",
         "checkpoint_revision": 5,
-        "next_v": 147,
-        "source_v": 143,
+        "next_v": STRICT_NEXT_V,
+        "source_v": STRICT_SOURCE_V,
         "parent2_v": None,
         "stage": "official_certifying",
-        "workflow_run_id": "generation:147:fixture-v1",
-        "run_id": "147#0",
+        "workflow_run_id": f"generation:{STRICT_NEXT_V}:fixture-v1",
+        "run_id": f"{STRICT_NEXT_V}#0",
         "generation_attempt": 0,
         "audit_attempt": 1,
         "precommit_attempt": 0,
@@ -94,14 +111,14 @@ def main() -> None:
     snapshot = {
         "available": False,
         "reason": "active_pool_singleton",
-        "active_bots": ["national_v143"],
+        "active_bots": [STRICT_TARGET_BOT],
         "epoch_reset_receipt_digest": IDENTITY,
         "evaluation_identity_digest": IDENTITY,
         "evaluation_manifest_digest": IDENTITY,
     }
     bundle = {
         "available": True,
-        "active_bots": ["national_v143"],
+        "active_bots": [STRICT_TARGET_BOT],
         "epoch_reset_receipt": {"receipt_digest": IDENTITY},
         "manifest": {"evaluation_identity_digest": IDENTITY},
         "manifest_digest": IDENTITY,
@@ -122,7 +139,17 @@ def main() -> None:
         "pid": 12345,
     }
 
-    print(json.dumps({"agents": agents, "strength": strength}, sort_keys=True))
+    print(json.dumps({
+        "agents": agents,
+        "strength": strength,
+        # Branch-portable strict-generation identity echo so the cross-language
+        # TS test can assert exact equality without hardcoding a namespace
+        # prefix or version literal.
+        "strict_identity": {
+            "first_strict_policy_version": FIRST_STRICT_POLICY_VERSION,
+            "strict_bot_name": STRICT_TARGET_BOT,
+        },
+    }, sort_keys=True))
 
 
 if __name__ == "__main__":

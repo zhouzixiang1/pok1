@@ -24,6 +24,7 @@ import {
 } from "../node_modules/.tmp/sse-tests/domain/failureRecoveryView.js";
 import { operatorSituationView } from "../node_modules/.tmp/sse-tests/domain/operatorSituationView.js";
 import {
+  FIRST_STRICT_POLICY_VERSION,
   canonicalGenerationIdentityIssues,
   sameCanonicalGenerationIdentity,
 } from "../node_modules/.tmp/sse-tests/lib/canonicalGenerationIdentity.js";
@@ -44,6 +45,18 @@ const STRENGTH_CAPABILITIES = {
   queued_running_leases: false,
   producer_consumer_dispatch: false,
 };
+
+// Branch-portable inline-fixture bot/tag names. These are validator-structure
+// test data (the TS validators accept either the national_v or national_cloud_v
+// namespace per canonicalGenerationIdentity), but per AGENTS.md we still derive
+// them from FIRST_STRICT_POLICY_VERSION instead of hardcoding a main-branch
+// version literal. The namespace prefix is the cloud line's active prefix.
+const STRICT_V = FIRST_STRICT_POLICY_VERSION;
+const NEXT_V = FIRST_STRICT_POLICY_VERSION + 1;
+const STRICT_BOT = `national_cloud_v${STRICT_V}`;
+const NEXT_BOT = `national_cloud_v${NEXT_V}`;
+const STRICT_TAG = `national-cloud-bot-v${STRICT_V}`;
+const NEXT_TAG = `national-cloud-bot-v${NEXT_V}`;
 const strengthAuthority = (activeBots = ["national_v143", "national_v144"]) => ({
   evaluation_epoch: "national_tcp_policy_v1",
   active_bots: activeBots,
@@ -126,7 +139,15 @@ test("fixture: real Python dashboard builders satisfy frontend validators", () =
   }
   assert.equal(strength.available, false);
   assert.equal(strength.authority_binding.complete, true);
-  assert.deepEqual(strength.active_bots, ["national_v143"]);
+  // The fixture echoes a branch-portable strict-generation identity; assert the
+  // emitted active_bots match the canonical active-namespace bot name (derived
+  // via bot_name(FIRST_STRICT_POLICY_VERSION)) rather than a hardcoded literal.
+  assert.deepEqual(strength.active_bots, [captured.strict_identity.strict_bot_name]);
+  assert.equal(
+    captured.strict_identity.first_strict_policy_version,
+    FIRST_STRICT_POLICY_VERSION,
+    "fixture first-strict floor must match the TS FIRST_STRICT_POLICY_VERSION",
+  );
   assert.equal(strength.capabilities.producer_consumer_dispatch, false);
 });
 
