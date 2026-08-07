@@ -199,25 +199,14 @@ function buildSlotBadges(status: ControlStatus | null): OperatorSlotBadge[] {
 function buildContextNotes(status: ControlStatus | null): string[] {
   if (!status) return [];
   const notes: string[] = [];
+  // NOTE: Slice 2b consumer_park and eval_wait "not stuck" copy are owned by
+  // PhaseAProjectionStrip (it renders the compact badges + the notStuckReasons
+  // tips on every page, including BotManager which has no OperatorSituation).
+  // Duplicating them here stacked two different Chinese wordings of the same
+  // facts; only keep the notes unique to the operator situation below.
   const mode = status.pipeline_mode;
-  if (mode?.enabled && mode.consumer_parked) {
-    notes.push(
-      "Slice 2b：主槽在 consumer 门链旁路等待（quality→precommit 由后台消费）；这不是卡住或失败。",
-    );
-  } else if (mode?.enabled && mode.producer_may_prepare_next) {
+  if (mode?.enabled && mode.producer_may_prepare_next) {
     notes.push("Slice 2b：已密封候选允许生产者准备下一代草稿。");
-  }
-
-  const evalWait = status.eval_wait;
-  if (evalWait?.waiting) {
-    const bot = evalWait.bot ? `（${evalWait.bot}）` : "";
-    const games = evalWait.games != null ? `${evalWait.games}/${evalWait.min_games}` : `需 ≥${evalWait.min_games}`;
-    const rd = typeof evalWait.rd === "number"
-      ? ` · RD ${evalWait.rd.toFixed(1)}/${evalWait.rd_threshold}`
-      : "";
-    notes.push(
-      `强度样本等待中${bot}：完整 70 手样本 ${games}${rd}。`,
-    );
   }
 
   const flags = status.feature_flags;

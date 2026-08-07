@@ -245,7 +245,7 @@ export default function ControlPanel() {
         </button>
       </div>
 
-      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} />
+      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} lastUpdated={lastUpdated} compact className="mb-4" />
 
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-sm font-semibold text-gray-800 dark:text-white">操作员授权</h2>
