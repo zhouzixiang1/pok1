@@ -175,3 +175,84 @@ def test_reconcile_noop_when_no_draft():
     # Must not raise.
     orchestrator_loop_phases._reconcile_orphan_draft_at_boot(None)
     assert read_pipeline_checkpoint(slot_id="draft") is None
+
+
+# ---------------------------------------------------------------------------
+# P0-3c: _try_launch_draft_prepare offloads read_all_pipeline_checkpoints
+#        off the ASGI event loop (create_task stays on the loop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_try_launch_draft_prepare_offloads_slot_scan_off_event_loop(monkeypatch):
+    """The blocking slot-scan read in _try_launch_draft_prepare MUST run in a
+    worker thread (AGENTS.md blocking boundary), while the inner
+    create_task(_draft_prepare_task) still runs on the event loop.
+
+    Regression guard for the second py-spy-confirmed blocking path: during
+    eval-wait the orchestrator fires _try_launch_draft_prepare every ~30s via
+    the _eval_wait_draft_launcher hook. read_all_pipeline_checkpoints globs +
+    parses every pipeline_state slot JSON; running it inline starves HTTP.
+    """
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    import evolution_infra
+    import orchestrator as _orch
+    import producer_consumer_slice2b_activation as _slice2b_act
+
+    loop_thread = threading.current_thread()
+    read_threads = []
+
+    # Drive _try_launch_draft_prepare past every guard up to the slot scan.
+    monkeypatch.setattr(_slice2b_act, "slice2b_active", lambda: True)
+
+    _fake_activation = SimpleNamespace(
+        producer_may_draft_behind=lambda: True,
+        producer_may_draft_ahead_of_eval=lambda: True,
+        coordinator=SimpleNamespace(max_ahead=1),
+    )
+    monkeypatch.setattr(_orch, "_slice2b_ensure_activation", lambda: _fake_activation)
+
+    # Record the executing thread of the blocking read; return no occupied
+    # slots so the slot-pick loop launches exactly one draft.
+    def _record_read_thread():
+        read_threads.append(threading.current_thread())
+        return {}
+
+    monkeypatch.setattr(evolution_infra, "read_all_pipeline_checkpoints", _record_read_thread)
+
+    # Capture whether _draft_prepare_task was scheduled via create_task ON the
+    # event loop (it must NOT move to a worker thread). Replace it with a
+    # no-op coroutine that records the scheduling thread.
+    scheduled_threads = []
+
+    async def _noop_draft_task(ui, shutdown_mgr, gen_count, slot_id="draft"):
+        scheduled_threads.append(threading.current_thread())
+
+    monkeypatch.setattr(orchestrator_loop_phases, "_draft_prepare_task", _noop_draft_task)
+
+    # _try_launch_draft_prepare is async (the hook schedules it via create_task).
+    await orchestrator_loop_phases._try_launch_draft_prepare(None, None, 0)
+    # Yield to the loop so the create_task'd _draft_prepare_task actually runs
+    # and records its scheduling thread.
+    await asyncio.sleep(0)
+
+    # The blocking slot scan MUST have executed ...
+    assert read_threads, "read_all_pipeline_checkpoints was not reached"
+    # ... and EVERY invocation ran off the event-loop thread.
+    for thread in read_threads:
+        assert thread is not loop_thread, (
+            "read_all_pipeline_checkpoints ran on the event-loop thread "
+            f"(ident={thread.ident}); it must be offloaded to a worker thread"
+        )
+    # The inner draft task MUST have been scheduled on the event-loop thread
+    # (create_task must not move to a worker thread).
+    assert scheduled_threads, "_draft_prepare_task was never scheduled"
+    for thread in scheduled_threads:
+        assert thread is loop_thread, (
+            "_draft_prepare_task ran off the event-loop thread "
+            f"(ident={thread.ident}); create_task must stay on the loop"
+        )
+

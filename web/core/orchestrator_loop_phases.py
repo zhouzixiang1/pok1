@@ -38,6 +38,13 @@ import orchestrator as _orch
 # draft mid-flight.  Tasks self-remove on completion via done_callback.
 _PENDING_DRAFT_TASKS: set = set()
 
+# Strong references for the eval-wait draft-tick launcher tasks.  The hook
+# registered in wait_for_daemon_eval schedules the async _try_launch_draft_prepare
+# via create_task (it can no longer run inline because the slot-scan read is
+# awaited off the event loop).  Hold a reference so the GC foot-gun cannot kill
+# the speculative-draft tick before it reaches its own _draft_prepare_task.
+_PENDING_EVAL_WAIT_DRAFT_TICK_TASKS: set = set()
+
 
 async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
                               daemon_pairs, startup_recovery):
@@ -138,8 +145,16 @@ async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
     # deadlocks _try_launch_draft_prepare (it sees a non-None draft and returns
     # early forever).  Reap genuinely orphaned drafts and best-effort promote a
     # complete workers_done buffer.  Wrapped so boot never crashes on it.
+    # The reconcile is pure synchronous file/git work (read_all_pipeline_
+    # checkpoints, strict_epoch_projection, clear_pipeline_checkpoint, promote);
+    # run it in an owned worker thread so a slow boot-time draft scan does not
+    # stall the ASGI event loop (AGENTS.md blocking boundary).
     try:
-        _reconcile_orphan_draft_at_boot(ui)
+        await _orch.run_blocking_isolated(
+            _reconcile_orphan_draft_at_boot,
+            ui,
+            thread_name_prefix="boot-draft-reconcile",
+        )
     except Exception as _draft_reconcile_exc:
         _orch.log.debug(
             "orphan draft reconcile failed (non-fatal): %s", _draft_reconcile_exc
@@ -221,9 +236,27 @@ async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
     # gated by the slice2b activation (producer_may_draft_ahead_of_eval).  The
     # gen_count captured here is the loop's current count; the launcher only
     # uses it for logging.
+    #
+    # _try_launch_draft_prepare is async because its slot-scan read
+    # (read_all_pipeline_checkpoints) is awaited off the event loop via
+    # run_blocking_isolated (AGENTS.md blocking boundary) so the ~30s eval-wait
+    # poll never starves HTTP.  The hook itself stays synchronous (it is called
+    # from the sync _maybe_fire_draft_tick), so it schedules the coroutine as a
+    # fire-and-forget task on the loop and returns immediately.  create_task
+    # needs a running loop in the current thread, which holds here because the
+    # hook fires from inside wait_for_daemon_eval (an async coroutine on the
+    # loop).  A strong reference is kept so the asyncio GC foot-gun cannot kill
+    # the tick before it reaches its own _draft_prepare_task.
     def _eval_wait_draft_launcher():
         try:
-            _try_launch_draft_prepare(ui, shutdown_mgr, 0)
+            _tick_task = _orch.asyncio.create_task(
+                _try_launch_draft_prepare(ui, shutdown_mgr, 0)
+            )
+            _PENDING_EVAL_WAIT_DRAFT_TICK_TASKS.add(_tick_task)
+            _tick_task.add_done_callback(_PENDING_EVAL_WAIT_DRAFT_TICK_TASKS.discard)
+        except RuntimeError:
+            # No running loop (e.g. tests / non-async caller) — nothing to do.
+            pass
         except Exception:
             pass
 
@@ -756,7 +789,7 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                         # non-fatal: any failure simply continues the canonical
                         # spin-wait on the primary slot.
                         try:
-                            _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                            await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
                         except Exception:
                             pass
                         # Primary is parked for the background consumer gate
@@ -814,7 +847,7 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                 # draft costs LLM tokens only; it is stale-reaped if the
                 # eval_wait outcome diverges.  Best-effort and non-fatal.
                 try:
-                    _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                    await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
                 except Exception:
                     pass
                 gen_ctx = await _orch._prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
@@ -896,7 +929,7 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             # recovery route can also reach a sealed/consumer-
                             # running state where the producer may advance.
                             try:
-                                _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                                await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
                             except Exception:
                                 pass
                             # Bounded park sleep to avoid the busy-spin (see
@@ -1681,7 +1714,7 @@ async def _ensure_slice2b_consumer_running(checkpoint: dict) -> None:
         pass
 
 
-def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
+async def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     """Best-effort one-ahead draft prepare for gen N+1 after a seal.
 
     Called from the continuous loop after a sealed candidate (gen N) has its
@@ -1690,6 +1723,13 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     Checks the Slice 2b activation path and the one-ahead coordinator's draft
     prepare gate, then launches a fire-and-forget asyncio task that drives the
     draft through its LLM stages.  Never raises and never blocks the loop.
+
+    This coroutine runs ON the event loop on purpose: it ends by calling
+    ``_orch.asyncio.create_task(_draft_prepare_task(...))`` (create_task needs a
+    running loop in the current thread). The blocking slot-checkpoint read
+    (``read_all_pipeline_checkpoints``) is awaited via
+    ``run_blocking_isolated`` so it never stalls the loop (AGENTS.md blocking
+    boundary); the subsequent ``create_task`` still runs on the loop.
     """
 
     # Lazy import through the sanctioned activation seam (inertness fence:
@@ -1754,7 +1794,14 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
         return
     occupied_slots = set()
     try:
-        all_slots = read_all_pipeline_checkpoints()
+        # read_all_pipeline_checkpoints globs + parses every pipeline_state
+        # slot JSON from disk (AGENTS.md blocking boundary).  Run it in an
+        # owned worker thread so the ASGI event loop is not blocked while the
+        # primary sits in wait_for_daemon_eval (this fires every ~30s).
+        all_slots = await _orch.run_blocking_isolated(
+            read_all_pipeline_checkpoints,
+            thread_name_prefix="draft-slot-scan",
+        )
     except Exception:
         all_slots = {}
     for sid in all_slots:
@@ -1814,9 +1861,14 @@ def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
             )
         except Exception:
             # If the task cannot be scheduled (e.g. no running loop), clear any
-            # partial draft marker so the next tick can retry.
+            # partial draft marker so the next tick can retry.  Offload the
+            # file write off the event loop (AGENTS.md blocking boundary).
             try:
-                clear_pipeline_checkpoint(slot_id=candidate_slot)
+                await _orch.run_blocking_isolated(
+                    clear_pipeline_checkpoint,
+                    slot_id=candidate_slot,
+                    thread_name_prefix="draft-slot-clear",
+                )
             except Exception:
                 pass
     return
@@ -2056,8 +2108,15 @@ async def _try_schedule_async_certification(ui, shutdown_mgr):
         return
 
     try:
+        # strict_epoch_projection resolves find_current_v / published tag
+        # history via git/ssh-keygen subprocesses (AGENTS.md blocking
+        # boundary); run it off the event loop.
         with _orch.contextlib.ExitStack():
-            projection = strict_epoch_projection(include_checkpoint=False)
+            projection = await _orch.run_blocking_isolated(
+                strict_epoch_projection,
+                include_checkpoint=False,
+                thread_name_prefix="cert-epoch-projection",
+            )
         published_versions = projection.get("strict_published_versions") or []
         if not published_versions:
             return
@@ -2068,7 +2127,15 @@ async def _try_schedule_async_certification(ui, shutdown_mgr):
     # Check if this version has a staging tag but no certified tag.
     try:
         _ct = certified_tag(latest_v)
-        result = _orch._git("tag", "-l", _ct, check=False)
+        # _git runs a git subprocess (AGENTS.md blocking boundary).
+        result = await _orch.run_blocking_isolated(
+            _orch._git,
+            "tag",
+            "-l",
+            _ct,
+            check=False,
+            thread_name_prefix="cert-tag-check",
+        )
         if result.strip():
             return  # Already certified; nothing to do.
     except Exception:

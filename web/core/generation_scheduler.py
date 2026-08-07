@@ -853,9 +853,15 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     # non-fatal: any refusal or mismatch falls through to the canonical
     # prepare.  This is the reliable promotion point because gen N's tag now
     # exists (published_high_water == N) and the primary checkpoint is clear.
+    # Offload: _maybe_promote_draft_to_primary reads the draft checkpoint and
+    # re-runs strict_epoch_projection (git/ssh-keygen subprocesses) on the
+    # event loop otherwise (AGENTS.md blocking boundary).
     if slot_id is None:
         try:
-            _maybe_promote_draft_to_primary()
+            await run_blocking_isolated(
+                _maybe_promote_draft_to_primary,
+                thread_name_prefix="prepare-draft-promote",
+            )
         except Exception:
             pass
 
@@ -865,7 +871,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     try:
         from post_publication_handoff import pending_handoff_route
 
-        handoff_route = pending_handoff_route()
+        # pending_handoff_route scans durable handoff journal JSON records from
+        # disk (same AGENTS.md blocking boundary as the epoch projection below).
+        handoff_route = await run_blocking_isolated(
+            pending_handoff_route,
+            thread_name_prefix="prepare-handoff-discovery",
+        )
     except Exception as exc:
         handoff_route = {
             "status": "blocked",
@@ -889,10 +900,21 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     # Resolve an existing generation only through the canonical epoch
     # projection. A raw checkpoint filename/JSON object cannot reserve a target
     # or become resumable without its digest-bound strict-epoch envelope.
+    # strict_epoch_projection() resolves find_current_v / policy_epoch
+    # initialization / abandoned-version authority / read_pipeline_checkpoint,
+    # each of which walks git + ssh-keygen subprocesses (30s timeouts) to
+    # signature-verify the published namespace. Running it inline blocks the
+    # ASGI event loop for minutes (same defect as the pool-resolution calls
+    # below), so it MUST run in an owned worker thread (AGENTS.md blocking
+    # boundary). Import locally so the blocking resolution runs entirely off
+    # the loop.
     try:
         from epoch_authority import strict_epoch_projection
 
-        _epoch_projection = strict_epoch_projection()
+        _epoch_projection = await run_blocking_isolated(
+            strict_epoch_projection,
+            thread_name_prefix="prepare-epoch-projection",
+        )
     except Exception as exc:
         log_system_event(
             "pipeline.prepare_blocked_version_authority",
@@ -1008,7 +1030,14 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
 
     try:
         from tool_runtime_guard import ensure_runtime_git_guard
-        guard_ok, guard_payload = ensure_runtime_git_guard("prepare_generation", {})
+        # ensure_runtime_git_guard runs a git worktree/status subprocess to
+        # verify branch cleanliness (AGENTS.md blocking boundary).
+        guard_ok, guard_payload = await run_blocking_isolated(
+            ensure_runtime_git_guard,
+            "prepare_generation",
+            {},
+            thread_name_prefix="prepare-runtime-git-guard",
+        )
         if not guard_ok:
             log_system_event(
                 "pipeline.prepare_blocked_runtime_guard",
@@ -1032,7 +1061,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         return None
 
     try:
-        publish_ok, publish_payload = ensure_publish_ready_for_new_generation()
+        # ensure_publish_ready_for_new_generation checks origin/main sync via
+        # git subprocess (AGENTS.md blocking boundary).
+        publish_ok, publish_payload = await run_blocking_isolated(
+            ensure_publish_ready_for_new_generation,
+            thread_name_prefix="prepare-publish-sync",
+        )
         if not publish_ok:
             log_system_event(
                 "pipeline.prepare_blocked_publish_sync",
@@ -1069,8 +1103,16 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     if slot_id is not None:
         from evolution_infra import no_slot_override, read_pipeline_checkpoint
 
-        with no_slot_override():
-            _primary_ckpt = read_pipeline_checkpoint()
+        def _read_primary_ckpt_sync():
+            with no_slot_override():
+                return read_pipeline_checkpoint()
+
+        # read_pipeline_checkpoint reads + parses the primary checkpoint JSON
+        # from disk (AGENTS.md blocking boundary).
+        _primary_ckpt = await run_blocking_isolated(
+            _read_primary_ckpt_sync,
+            thread_name_prefix="prepare-draft-ckpt-read",
+        )
         _draft_floor = max(allocation_floor, current_v)
         if isinstance(_primary_ckpt, dict):
             try:
@@ -1160,7 +1202,15 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     #     does_not_burn_label in test_epoch_authority.py).
     from evolution_infra import abandoned_version_attempt_count
 
-    _workflow_attempt = abandoned_version_attempt_count(_planned_next_v) + 1
+    # abandoned_version_attempt_count scans the durable abandoned-version
+    # receipt ledger from disk (AGENTS.md blocking boundary).
+    _workflow_attempt = (
+        await run_blocking_isolated(
+            abandoned_version_attempt_count,
+            _planned_next_v,
+            thread_name_prefix="prepare-abandon-ledger",
+        )
+    ) + 1
     _prepare_workflow_run_id = _bind_prepare_generation_cost_scope(
         _planned_next_v,
         ui,
@@ -1169,7 +1219,11 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     _bind_prepare_log_context(current_v, _planned_next_v - 1)
     try:
         from repo_state import log_git_worktree_snapshot
-        log_git_worktree_snapshot(
+
+        # log_git_worktree_snapshot runs a git worktree/status subprocess
+        # (AGENTS.md blocking boundary).
+        await run_blocking_isolated(
+            log_git_worktree_snapshot,
             "repo.worktree_snapshot",
             f"Worktree snapshot before preparing v{_planned_next_v}",
             next_v=_planned_next_v,
@@ -1178,6 +1232,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
             allocation_floor=allocation_floor,
             abandoned_receipt_floor=_abandoned_floor,
             emit_delta=True,
+            thread_name_prefix="prepare-worktree-snapshot",
         )
     except Exception:
         pass
@@ -1205,9 +1260,14 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     )
     # Re-open the namespace after active-pool discovery.  A paired tag/reset/
     # abandon transaction racing the first projection invalidates every source,
-    # target, and bootstrap decision from that projection.
+    # target, and bootstrap decision from that projection.  Offloaded to a
+    # worker thread: same blocking git/ssh-keygen resolution as the first
+    # projection above.
     try:
-        _epoch_projection_second = strict_epoch_projection()
+        _epoch_projection_second = await run_blocking_isolated(
+            strict_epoch_projection,
+            thread_name_prefix="prepare-epoch-projection",
+        )
     except Exception as exc:
         log_system_event(
             "pipeline.prepare_namespace_second_read_failed",
@@ -1251,7 +1311,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         _cleanup_incomplete()
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
             return None
-        return _prepare_protocol_bootstrap_generation(
+        # _prepare_protocol_bootstrap_generation resolves the sole/zero active
+        # bot via resolve_national_bot_spec (git/ssh-keygen subprocesses) and
+        # writes the bootstrap checkpoint, so run it off the event loop
+        # (AGENTS.md blocking boundary).
+        return await run_blocking_isolated(
+            _prepare_protocol_bootstrap_generation,
             active_bots=list(active_bots),
             current_v=current_v,
             next_v=_planned_next_v,
@@ -1260,6 +1325,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
             workflow_run_id=_prepare_workflow_run_id,
             ui=ui,
             slot_id=slot_id,
+            thread_name_prefix="prepare-protocol-bootstrap",
         )
     if active_v <= 0 or not active_bots:
         log_system_event(
@@ -1392,17 +1458,31 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
 
     # Freeze one daemon-published evaluation cycle before any planning role
     # runs. H2H, bot stats, ratings, and derived selection rows share the same
-    # save_num and digest manifest.
+    # save_num and digest manifest.  Both snapshot calls read/parse/write JSON
+    # from the results dir (and may rmtree + re-freeze on force=True), so they
+    # run together in an owned worker thread (AGENTS.md blocking boundary).
     try:
         from evidence_snapshot import (
             ensure_generation_h2h_snapshot,
             load_generation_evaluation_snapshot,
         )
 
-        h2h_snapshot = ensure_generation_h2h_snapshot(
-            _planned_next_v,
-            force=True,
-            spotlight_bot=active_bot_name,
+        def _freeze_h2h_sync():
+            snapshot = ensure_generation_h2h_snapshot(
+                _planned_next_v,
+                force=True,
+                spotlight_bot=active_bot_name,
+            )
+            bundle = (
+                load_generation_evaluation_snapshot(_planned_next_v)
+                if snapshot.get("available")
+                else None
+            )
+            return snapshot, bundle
+
+        h2h_snapshot, frozen_bundle = await run_blocking_isolated(
+            _freeze_h2h_sync,
+            thread_name_prefix="prepare-h2h-snapshot",
         )
         if not h2h_snapshot.get("available"):
             log_system_event(
@@ -1421,10 +1501,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                     "error",
                 )
             return None
-        frozen_bundle = load_generation_evaluation_snapshot(_planned_next_v)
-        if not frozen_bundle.get("available"):
+        if not frozen_bundle or not frozen_bundle.get("available"):
             raise RuntimeError(
-                f"generation evaluation snapshot unavailable: {frozen_bundle.get('reason')}"
+                f"generation evaluation snapshot unavailable: "
+                f"{(frozen_bundle or {}).get('reason')}"
             )
     except Exception as exc:
         log_system_event(

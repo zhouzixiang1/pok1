@@ -407,11 +407,16 @@ def test_prepare_generation_offloads_blocking_pool_resolution_off_event_loop(mon
     import workflow_profiles
 
     loop_thread = threading.current_thread()
+    # name -> list of threads that invoked the resolver (a resolver may be
+    # called more than once, e.g. strict_epoch_projection; EVERY invocation
+    # must run off the event-loop thread).
     resolver_threads = {}
 
-    def _record_thread(name):
+    def _record_thread(name, default=...):
         def _impl(*args, **kwargs):
-            resolver_threads[name] = threading.current_thread()
+            resolver_threads.setdefault(name, []).append(threading.current_thread())
+            if default is not ...:
+                return default
             if name == "get_active_bots":
                 # Two bots avoids the single-bot protocol-bootstrap branch so
                 # prepare reaches the canonical pool-resolution / reap block.
@@ -443,21 +448,23 @@ def test_prepare_generation_offloads_blocking_pool_resolution_off_event_loop(mon
     monkeypatch.setattr(
         post_publication_handoff,
         "pending_handoff_route",
-        lambda: {"status": "none"},
+        _record_thread("pending_handoff_route", default={"status": "none"}),
     )
+
+    _epoch_projection_value = {
+        "initialized": True,
+        "ignored_checkpoint": None,
+        "active_generation": None,
+        "published_high_water": 2,
+        "allocation_floor": 2,
+        "next_v": 3,
+        "abandoned_receipt_floor": 0,
+        "active_bots": ["national_cloud_v1", "national_cloud_v2"],
+    }
     monkeypatch.setattr(
         epoch_authority,
         "strict_epoch_projection",
-        lambda **_kw: {
-            "initialized": True,
-            "ignored_checkpoint": None,
-            "active_generation": None,
-            "published_high_water": 2,
-            "allocation_floor": 2,
-            "next_v": 3,
-            "abandoned_receipt_floor": 0,
-            "active_bots": ["national_cloud_v1", "national_cloud_v2"],
-        },
+        _record_thread("strict_epoch_projection", default=_epoch_projection_value),
     )
     monkeypatch.setattr(
         workflow_profiles,
@@ -470,13 +477,21 @@ def test_prepare_generation_offloads_blocking_pool_resolution_off_event_loop(mon
             eval_wait_min_games=10,
         ),
     )
-    monkeypatch.setattr(tool_runtime_guard, "ensure_runtime_git_guard", lambda *_a, **_kw: (True, {}))
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "ensure_runtime_git_guard",
+        _record_thread("ensure_runtime_git_guard", default=(True, {})),
+    )
     monkeypatch.setattr(
         evolution_infra,
         "ensure_publish_ready_for_new_generation",
-        lambda: (True, {}),
+        _record_thread("ensure_publish_ready_for_new_generation", default=(True, {})),
     )
-    monkeypatch.setattr(evolution_infra, "abandoned_version_attempt_count", lambda _v: 0)
+    monkeypatch.setattr(
+        evolution_infra,
+        "abandoned_version_attempt_count",
+        _record_thread("abandoned_version_attempt_count", default=0),
+    )
     monkeypatch.setattr(evolution_infra, "MIN_GAMES_FOR_EVAL", 10)
     monkeypatch.setattr(evolution_infra, "MAX_ACTIVE_BOTS", 8)
 
@@ -496,6 +511,18 @@ def test_prepare_generation_offloads_blocking_pool_resolution_off_event_loop(mon
         lambda *_a, **_kw: "test-workflow-run-id",
     )
     monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        generation_scheduler, "_bind_prepare_log_context", lambda *_a, **_kw: None
+    )
+    # log_git_worktree_snapshot is imported lazily from repo_state inside
+    # prepare_generation and runs a git subprocess; record its thread too.
+    import repo_state
+
+    monkeypatch.setattr(
+        repo_state,
+        "log_git_worktree_snapshot",
+        _record_thread("log_git_worktree_snapshot", default={}),
+    )
 
     async def scenario():
         # Run on a real event loop so run_blocking_isolated uses a worker thread.
@@ -503,17 +530,30 @@ def test_prepare_generation_offloads_blocking_pool_resolution_off_event_loop(mon
 
     asyncio.run(scenario())
 
-    # The two pool-resolution callables reached by prepare MUST have executed.
-    assert "get_active_bots" in resolver_threads, "get_active_bots was not reached"
-    assert (
-        "find_latest_rating_eligible_active_v" in resolver_threads
-    ), "find_latest_rating_eligible_active_v was not reached"
+    # Every blocking resolver reached by prepare MUST have executed off the
+    # event-loop thread. These cover BOTH the original pool-resolution defect
+    # AND the follow-up offloads (epoch projection, handoff discovery, runtime
+    # git guard, publish sync, abandon-ledger scan, worktree snapshot).
+    _expected_offloaded = (
+        "get_active_bots",
+        "find_latest_rating_eligible_active_v",
+        "pending_handoff_route",
+        "strict_epoch_projection",
+        "ensure_runtime_git_guard",
+        "ensure_publish_ready_for_new_generation",
+        "abandoned_version_attempt_count",
+        "log_git_worktree_snapshot",
+    )
+    for name in _expected_offloaded:
+        assert name in resolver_threads, f"{name} was not reached"
 
     # CRITICAL: every blocking resolver ran off the event-loop thread. If any
-    # ran on the loop thread the event loop would be blocked for the duration
-    # of the git/ssh-keygen subprocesses (the production hang).
-    for name, thread in resolver_threads.items():
-        assert thread is not loop_thread, (
-            f"blocking resolver {name!r} ran on the event-loop thread "
-            f"(ident={thread.ident}); it must be offloaded to a worker thread"
-        )
+    # invocation ran on the loop thread the event loop would be blocked for the
+    # duration of the git/ssh-keygen subprocesses (the production hang). Check
+    # EVERY recorded invocation (some resolvers are called more than once).
+    for name, threads in resolver_threads.items():
+        for thread in threads:
+            assert thread is not loop_thread, (
+                f"blocking resolver {name!r} ran on the event-loop thread "
+                f"(ident={thread.ident}); it must be offloaded to a worker thread"
+            )
