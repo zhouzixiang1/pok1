@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 
 import orchestrator as _o
+from blocking_runtime import run_async_off_event_loop
 from llm_availability import LLMAvailabilityBlocked
 from llm_availability_store import LLMAvailabilityPauseError
 from orchestrator_cost_policy import GenerationCostPolicy
@@ -1498,13 +1499,59 @@ async def _try_deterministic_checkpoint_route(
         pass
 
     try:
+        # OFF-LOAD THE CANONICAL HANDLER OFF THE ASGI EVENT LOOP. This is the
+        # ROOT dispatch site for every deterministic checkpoint route (recovery
+        # crash-restart AND normal streaming, on BOTH the primary lane and the
+        # draft lane via _draft_prepare_task -> _advance_deterministic_recovery).
+        # The handlers (prepare_next_gen / run_direction_audit / run_master /
+        # run_quality_gates / run_review / run_critic / run_precommit_eval /
+        # commit_bot / run_crossover / run_archivist / abandon_generation) are
+        # async but perform heavy SYNCHRONOUS blocking I/O on the event loop:
+        #   - the @tool wrapper's ensure_runtime_git_guard runs a ``git``
+        #     subprocess (worktree status) at the top of every call;
+        #   - prepare_next_gen calls get_active_bots/resolve_national_bot_spec
+        #     (ssh-keygen signature verification subprocess);
+        #   - run_precommit_eval drives the native TCP precommit match sequence
+        #     (12 x 70-hand matches) whose _prepare_native_spec does inline file
+        #     enumeration + hashing and whose subprocess lifecycle waits inline;
+        #   - commit_bot does certificate validation.
+        # Awaiting ``handler(args)`` directly on the orchestrator's ASGI loop
+        # blocks every HTTP request for the full handler duration (10+ minutes
+        # per precommit). This is the SAME defect class as the three prior
+        # fixes (86b7aa77 + 30626e87 + 72653707) but the ROOT dispatch site;
+        # offloading HERE covers all stage handlers uniformly on both lanes.
+        #
+        # run_async_off_event_loop drives the coroutine on a fresh PRIVATE event
+        # loop inside an owned worker thread (same single-wakeup / context-
+        # propagating boundary as run_blocking_isolated), so the orchestrator's
+        # ASGI loop stays free to serve HTTP while the handler's own async
+        # primitives (run_precommit_eval's native TCP match engine uses
+        # asyncio.start_server/create_task/loop.time) still function on the
+        # worker's private loop. ContextVars propagate via copy_context: the
+        # post_publication_handoff authority token (set by
+        # system_deterministic_route_authority below) and the native-match
+        # dispatch nonce are visible inside the worker, so the @tool runtime
+        # guard and slot-scoped checkpoint I/O behave identically. CAS/
+        # checkpoint identities and recovery logic are unchanged -- only the
+        # loop the handler coroutine runs on changes.
         if recovery.get("post_publication_handoff") is True:
             from tool_runtime_guard import system_deterministic_route_authority
 
+            # Enter the authority context BEFORE offloading so the
+            # _SYSTEM_DETERMINISTIC_ROUTE ContextVar is bound in the calling
+            # context and propagates into the worker thread via copy_context.
             with system_deterministic_route_authority(next_tool, checkpoint):
-                result = await handler(args)
+                result = await run_async_off_event_loop(
+                    handler,
+                    args,
+                    thread_name_prefix=f"det-route-{next_tool}",
+                )
         else:
-            result = await handler(args)
+            result = await run_async_off_event_loop(
+                handler,
+                args,
+                thread_name_prefix=f"det-route-{next_tool}",
+            )
         data = _o._extract_tool_result_json(result)
         if outcome is not None:
             outcome.clear()

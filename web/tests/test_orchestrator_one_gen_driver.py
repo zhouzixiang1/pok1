@@ -985,3 +985,187 @@ async def test_executed_false_deterministic_route_still_reproves_terminal_result
     assert advanced["routed"] is True
     assert advanced["terminal_action"] == "generation_abandoned"
     assert advanced["recovery"] is None
+
+
+# ---------------------------------------------------------------------------
+# Deterministic checkpoint route offloads the blocking canonical handler off
+# the ASGI event loop (ROOT dispatch site; same defect class as
+# prepare_generation 86b7aa77 + 30626e87 and the consumer gate chain 72653707).
+# ---------------------------------------------------------------------------
+
+
+def _patch_route_gates(monkeypatch, orchestrator, next_tool):
+    """Neutralize the deterministic-route entry gates so a synthetic recovery
+    reaches the single ``await handler(args)`` dispatch site inside
+    ``_try_deterministic_checkpoint_route`` without touching real checkpoint
+    / cost-policy / session machinery."""
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_bind_generation_cost_runtime",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_check_generation_cost_policy",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_resolve_recovery_route",
+        lambda checkpoint: {
+            "next_tool": next_tool,
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "parent2_v": checkpoint.get("parent2_v"),
+            "stage": checkpoint.get("stage"),
+            "route": {},
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_deterministic_route_requires_llm",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_clear_orchestrator_session",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda *_args, **_kwargs: None,
+    )
+
+
+def test_deterministic_route_offloads_handler_off_event_loop(monkeypatch):
+    """The blocking canonical handler dispatched by the deterministic route
+    MUST run in a worker thread, NOT on the orchestrator's ASGI event loop.
+
+    Regression for the ROOT event-loop blocker (the prior three fixes
+    86b7aa77 + 30626e87 + 72653707 covered prepare/audit/pool/cert and the
+    Slice-2b consumer closure, but NOT the deterministic route dispatch
+    itself). ``_try_deterministic_checkpoint_route``'s single
+    ``await handler(args)`` site dispatches every canonical stage handler
+    (prepare_next_gen / run_direction_audit / run_master / run_quality_gates
+    / run_review / run_critic / run_precommit_eval / commit_bot / run_crossover
+    / run_archivist / abandon_generation) INLINE on the ASGI loop, on BOTH the
+    primary lane and the draft lane (via _draft_prepare_task ->
+    _advance_deterministic_recovery). py-spy confirmed this blocking HTTP
+    (000) while ``prepare_next_gen`` ran ``get_active_bots()`` inline.
+
+    The fix offloads ``handler(args)`` to an owned worker thread via
+    ``run_async_off_event_loop``. This test records the executing thread of the
+    handler and asserts it is NEVER the event-loop thread. It fails with an
+    inline ``await handler(args)``.
+    """
+    import threading
+
+    import orchestrator
+
+    loop_thread = threading.current_thread()
+    handler_threads = []
+
+    async def recording_handler(args):
+        # Record the thread the canonical handler actually ran on. The @tool
+        # wrapper's git-guard + the handler body both execute on THIS thread.
+        handler_threads.append(threading.current_thread())
+        import json as _json
+
+        return {
+            "content": [
+                {"type": "text", "text": _json.dumps({"ok": True})}
+            ]
+        }
+
+    _patch_route_gates(monkeypatch, orchestrator, next_tool="prepare_next_gen")
+    monkeypatch.setattr(
+        orchestrator,
+        "_deterministic_route_handler_and_args",
+        lambda *_args, **_kwargs: (recording_handler, {"source_v": 142, "next_v": 143}),
+    )
+
+    recovery = _recovery("selected")
+
+    async def driver():
+        return await orchestrator._try_deterministic_checkpoint_route(recovery)
+
+    import asyncio
+
+    asyncio.run(driver())
+
+    assert handler_threads, "canonical handler was never invoked"
+    for thread in handler_threads:
+        assert thread is not loop_thread, (
+            "deterministic-route handler ran on the event-loop thread "
+            f"(ident={thread.ident}); it must be offloaded to a worker thread "
+            "so the ASGI loop can keep serving HTTP during prepare/match/commit"
+        )
+
+
+def test_deterministic_route_offload_runs_on_a_private_event_loop(monkeypatch):
+    """The offloaded deterministic-route handler runs on a PRIVATE event loop
+    inside the worker thread (``run_async_off_event_loop``), so genuinely-async
+    handlers (e.g. run_precommit_eval's native TCP match engine using
+    asyncio.start_server / asyncio.wait / loop.time) still function while the
+    orchestrator's ASGI loop stays free.
+
+    This guards the specific offload mechanism: a plain ``run_blocking_isolated``
+    cannot be used (no running loop in the worker), so the helper must drive the
+    coroutine with ``asyncio.run`` inside the worker. The handler records its
+    running loop identity and asserts it differs from the caller's loop.
+    """
+    import asyncio as _asyncio
+    import threading
+
+    import orchestrator
+
+    caller_loop = _asyncio.new_event_loop()
+    seen = {}
+
+    async def introspecting_handler(args):
+        seen["thread"] = threading.current_thread()
+        seen["running_loop"] = _asyncio.get_running_loop()
+        import json as _json
+
+        return {
+            "content": [
+                {"type": "text", "text": _json.dumps({"ok": True})}
+            ]
+        }
+
+    _patch_route_gates(monkeypatch, orchestrator, next_tool="run_precommit_eval")
+    monkeypatch.setattr(
+        orchestrator,
+        "_deterministic_route_handler_and_args",
+        lambda *_args, **_kwargs: (introspecting_handler, {"version": 143, "source_v": 142}),
+    )
+
+    recovery = _recovery("critic_checked")
+
+    async def driver():
+        seen["caller_loop"] = _asyncio.get_running_loop()
+        routed = await orchestrator._try_deterministic_checkpoint_route(recovery)
+        return routed
+
+    try:
+        result = caller_loop.run_until_complete(driver())
+    finally:
+        caller_loop.close()
+
+    # The route executed (reached the dispatch site) ...
+    assert result is not False
+    # ... the handler ran off the caller's (event-loop) thread ...
+    assert seen.get("thread") is not threading.current_thread(), (
+        "deterministic-route handler ran on the caller (event-loop) thread"
+    )
+    # ... and on a DISTINCT event loop (the worker's private loop), proving the
+    # async native-match engine can still use its asyncio primitives.
+    assert seen.get("running_loop") is not None, "handler had no running loop"
+    assert seen.get("running_loop") is not seen.get("caller_loop"), (
+        "deterministic-route handler ran on the caller's event loop; "
+        "run_async_off_event_loop must drive it on a fresh private loop inside "
+        "the worker thread"
+    )
