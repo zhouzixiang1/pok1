@@ -440,7 +440,7 @@ export default function Bots() {
       {/* H2H 胜率矩阵 */}
       <EvolutionSurface className="mt-4" padding="sm">
         <EvolutionSection
-          title="Head-to-Head 胜率矩阵"
+          title="H2H 胜率矩阵"
           actions={
             <span className="flex items-center gap-2 text-xs text-gray-400">
               <span className="flex items-center gap-1">
@@ -616,11 +616,11 @@ export default function Bots() {
         </div>
       </EvolutionSurface>
 
-      {/* 发布 Bot 证书清单（来自原 BotManager，可展开） */}
+      {/* 已发布 Bot 清单（来自原 BotManager，可展开） */}
       {publishedBots.length > 0 && (
         <EvolutionSurface className="mt-4" padding="sm">
           <EvolutionSection
-            title="已发布 Bot 证书"
+            title="已发布 Bot 清单"
             actions={
               expandVersion != null ? (
                 <EvolutionStatusBadge tone="info">展开 v{expandVersion}</EvolutionStatusBadge>

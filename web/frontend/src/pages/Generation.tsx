@@ -611,7 +611,7 @@ export default function Generation() {
                 <EmptyState message="未初始化" />
               )}
               {epochReady && messages.length === 0 && (
-                <EmptyState message={taskActive ? "无活跃任务" : "无活跃任务"} />
+                <EmptyState message={taskActive ? "等待下一次输出" : "无活跃任务"} />
               )}
               {messages.map((msg) => (
                 <div key={msg.id}>
@@ -660,7 +660,7 @@ function TimeoutLeaseCard({ stage }: { stage: "timed_out" | "infra_timed_out" })
       </div>
       <p className="mb-2 text-xs text-error-700 dark:text-error-300">{lease.description}</p>
       <div className="mt-1 font-mono text-xs text-gray-500">
-        stage: {stage} · next_tool: {lease.nextTool}
+        阶段: {stage} · 下一工具: {lease.nextTool}
       </div>
     </div>
   );

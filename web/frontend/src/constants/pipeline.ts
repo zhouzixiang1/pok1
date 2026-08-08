@@ -146,6 +146,6 @@ export const STAGE_LABELS: Record<PipelineStage | PipelineMilestone, string> = {
   repair_planned: "修复计划",
   rework_running: "修复执行中",
   verified: "本地预提交通过",
-  publishing: "签名发布",
+  publishing: "提交发布",
   archived: "已发布，等待 Archivist 收尾",
 };

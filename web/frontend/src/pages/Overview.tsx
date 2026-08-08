@@ -483,8 +483,8 @@ export default function Overview() {
                     {controlStatus.active_generation
                       ? `${activeIdentityLabel ?? "代次与真实标签无法配对"} · 主父本 ${controlStatus.active_generation.source_v == null ? "无" : `v${controlStatus.active_generation.source_v}`}`
                       : controlStatus.post_publication_handoff.status !== "none"
-                        ? `post-publication v${controlStatus.post_publication_handoff.version ?? "?"}`
-                        : `scheduler target ${nextAuthorityVersion == null ? "待恢复" : `v${nextAuthorityVersion}`}`}
+                        ? `发布后交接 v${controlStatus.post_publication_handoff.version ?? "?"}`
+                        : `调度器目标 ${nextAuthorityVersion == null ? "待恢复" : `v${nextAuthorityVersion}`}`}
                   </span>
                 </div>
                 <Link

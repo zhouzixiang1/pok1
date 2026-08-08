@@ -292,7 +292,7 @@ export default function ControlPanel() {
           </div>
           {status && (
             <div className="text-sm text-gray-500">
-              严格代次 {status.strict_generation_count} | 数字权威 v{status.version_authority_high_water} → 目标 {authorityTarget != null ? `v${authorityTarget}` : "待恢复"}
+              严格代次 {status.strict_generation_count} | 版本权威 v{status.version_authority_high_water} → 目标 {authorityTarget != null ? `v${authorityTarget}` : "待恢复"}
             </div>
           )}
           <div className="flex gap-2 ml-auto">
@@ -338,8 +338,8 @@ export default function ControlPanel() {
                 <div className="space-y-1 text-xs text-gray-600 dark:text-gray-300">
                   <p>
                     <span className="font-mono">{route.stage}</span> → 工具 <b className="font-mono">{route.next_tool || "无自动工具"}</b>
-                    {route.parent2_v != null ? ` · crossover parent2_v=v${route.parent2_v}` : ""}
-                    {route.failure_class ? ` · failure=${route.failure_class}` : ""}
+                    {route.parent2_v != null ? ` · 交叉第二父本 v${route.parent2_v}` : ""}
+                    {route.failure_class ? ` · 失败类型 ${route.failure_class}` : ""}
                   </p>
                   <p>意图：{route.intent}</p>
                   <p>指令：{route.directive}</p>
@@ -369,7 +369,7 @@ export default function ControlPanel() {
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">LLM 恢复边界</h2>
         <div className="flex flex-wrap items-center gap-4">
           <div>
-            <span className="text-xs text-gray-500 block mb-1">Provider history</span>
+            <span className="text-xs text-gray-500 block mb-1">提供方历史</span>
             <span className="text-sm text-gray-800 dark:text-gray-200">禁止持久化与恢复</span>
           </div>
           {status?.active_generation && (
@@ -393,7 +393,7 @@ export default function ControlPanel() {
           {" · "}实际进程：{health?.daemon.alive == null ? "不可用" : health.daemon.alive ? "运行" : "停止"}
           {health?.daemon.process_identity ? ` · 进程身份：${health.daemon.process_identity}` : ""}
           {" · "}心跳：{health?.daemon.heartbeat_status ?? "不可用"}
-          {health?.daemon.health_error ? ` · health_error=${health.daemon.health_error}` : ""}
+          {health?.daemon.health_error ? ` · 健康错误：${health.daemon.health_error}` : ""}
         </p>
         {(daemonEffective?.effective_pairs != null
           || daemonEffective?.configured_pairs != null

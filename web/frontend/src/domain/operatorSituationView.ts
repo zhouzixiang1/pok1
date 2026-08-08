@@ -434,7 +434,7 @@ export function operatorSituationView(
     return withPhaseDContext({
       tone: blocked ? "error" : "info",
       headline: blocked ? "发布收尾被阻断" : "Bot 已发布，正在完成收尾",
-      what: "提交、证书与 tag 已形成，系统正在归档并交接下一代。",
+      what: "提交与 tag 已形成，系统正在归档并交接下一代。",
       why: blocked ? (s.post_publication_handoff.issues.join("；") || "handoff 权威未通过") : "发布后的清理必须完成，下一代才能取得准备权。",
       next: blocked ? "检查 handoff 身份和 owner，再执行允许的恢复动作。" : "等待归档完成，调度器随后准备下一代。",
       manualRequired: blocked,

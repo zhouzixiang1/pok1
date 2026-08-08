@@ -494,7 +494,7 @@ export default function LlmMetrics() {
                 <th className="px-3 py-2 font-medium">
                   <SortHeader label="时间" active={sortKey === "ts"} desc={sortDesc} onClick={() => toggleSort("ts")} />
                 </th>
-                <th className="px-3 py-2 font-medium">Role</th>
+                <th className="px-3 py-2 font-medium">角色</th>
                 <th className="px-3 py-2 font-medium">模型</th>
                 <th className="px-3 py-2 text-right font-medium">
                   <SortHeader label="耗时(s)" active={sortKey === "total_elapsed_sec"} desc={sortDesc} onClick={() => toggleSort("total_elapsed_sec")} />
@@ -578,7 +578,7 @@ function RoleFilterControl({
 }) {
   return (
     <label className="flex items-center gap-2 text-xs text-gray-500">
-      <span>筛选 Role</span>
+      <span>按角色筛选</span>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -637,7 +637,7 @@ function RoleSummaryTable({
       <table className="w-full min-w-[760px] text-left text-xs">
         <thead className="border-b border-gray-100 bg-gray-50 text-[10px] uppercase tracking-wide text-gray-500 dark:border-gray-800 dark:bg-white/[0.02] dark:text-gray-400">
           <tr>
-            <th className="px-3 py-2 font-medium">Role</th>
+            <th className="px-3 py-2 font-medium">角色</th>
             <th className="px-3 py-2 text-right font-medium">调用数</th>
             <th className="px-3 py-2 text-right font-medium">成功率</th>
             <th className="px-3 py-2 text-right font-medium">平均耗时</th>

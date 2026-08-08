@@ -26,7 +26,7 @@ export function stabilityPresentation(value: StabilityObservation | null | undef
     return { label: "验证投影不可用", detail: "缺少后台连续性验证快照。", variant: "error" };
   }
   if (verification.state === "pending") {
-    return { label: "连续性验证中", detail: "远端、证书和强度身份尚未完成本轮验证。", variant: "warning" };
+    return { label: "连续性验证中", detail: "远端和强度身份尚未完成本轮验证。", variant: "warning" };
   }
   if (verification.state === "stale") {
     return { label: "连续性验证已过期", detail: "上次验证已超出有效期；旧结果不延续绿色状态。", variant: "error" };
