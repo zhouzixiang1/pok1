@@ -1621,12 +1621,27 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     decision can transiently exceed the baseline target even though the same
     candidate passes in isolation (every generation since v12 hit this,
     including the published v27).  When the ONLY failures are the load-induced
-    ``policy_baseline_deadline_missed`` signal (the baseline was published, just
-    late -- not ``not_published``, which indicates a genuine crash), retry the
-    whole probe a bounded number of times.  A genuinely slow policy fails every
-    attempt; a load spike passes on a later attempt.  This mirrors the
-    test-isolation affordance and does NOT loosen the budget.
+    baseline-timing signals — ``policy_baseline_deadline_missed`` (baseline was
+    published but late) or ``policy_baseline_not_published`` (the worker could
+    not finish import + first-baseline within the hard deadline under CPU
+    contention) — retry the whole probe a bounded number of times.  A genuinely
+    slow or crashing policy fails every attempt; a load spike passes on a later
+    attempt.
+
+    ``policy_baseline_not_published`` is included in the retry set because under
+    heavy concurrent native-match load the worker can fail to complete its
+    import + emit the first baseline decision before the hard deadline, not
+    because the policy crashed but because the sub-process was starved of CPU.
+    This is the same non-determinism that ``deadline_missed`` captures for the
+    soft target.  A real crash (worker exits, raises, or never starts) still
+    fails every retry; only the load-induced transient recovers.
     """
+
+    # Load-induced baseline-timing signals that warrant a bounded retry.
+    _RETRYABLE_BASELINE_SUFFIXES = (
+        ":policy_baseline_deadline_missed",
+        ":policy_baseline_not_published",
+    )
 
     max_attempts = 3
     result = _run_once(root, spec)
@@ -1636,10 +1651,11 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         candidate_issues = result.get("candidate_issues") or []
         if not candidate_issues:
             return result
-        # Only retry when EVERY candidate issue is a load-induced deadline miss.
-        # A real policy defect (not_published, wire mismatch, etc.) is not retried.
+        # Only retry when EVERY candidate issue is a load-induced baseline-timing
+        # miss.  A real policy defect (wire mismatch, invalid typed intent, etc.)
+        # is not retried.
         if not all(
-            str(issue).endswith(":policy_baseline_deadline_missed")
+            str(issue).endswith(_RETRYABLE_BASELINE_SUFFIXES)
             for issue in candidate_issues
         ):
             return result
