@@ -968,7 +968,7 @@ def _direct_baseline(
     policy: Any,
     context: dict[str, Any],
     *,
-    timeout_sec: float = 0.5,
+    timeout_sec: float = 2.0,
 ) -> tuple[Any, dict[str, Any]]:
     """Run baseline with a system-owned evaluator-work phase counter.
 
@@ -982,6 +982,15 @@ def _direct_baseline(
     evaluator aliases/value capture and nested deck-pair sweeps. Refinement is
     intentionally not instrumented here because it has its own deadline and
     may complete the finite river set.
+
+    The wall-clock timeout (2.0s) is deliberately generous relative to the
+    0.30s baseline quality target: under concurrent native-match CPU load the
+    candidate's first decision can take longer in wall-clock without being a
+    policy defect. The quality bar (``baseline_target_met``) is still measured
+    independently at 0.30s; only the process-kill timeout is load-tolerant so
+    the probe completes and records the real measurement instead of dying mid-
+    computation under contention (which produced un-retryable timeout issues on
+    v116/v119).
     """
 
     def alarm(_signum, _frame):
@@ -1114,7 +1123,7 @@ def _direct_refinements(
     context: dict[str, Any],
     baseline: dict[str, Any],
     *,
-    timeout_sec: float = 0.5,
+    timeout_sec: float = 2.0,
     max_items: int = 64,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     def alarm(_signum, _frame):
