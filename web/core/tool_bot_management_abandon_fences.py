@@ -142,7 +142,23 @@ def _validate_abandon_workflow_fences(*, workflow_run_id: str, abandon_reason: s
             if int(instance['definition_version']) != int(expected_definition_version) or instance['status'] != 'abandoned' or int(instance['fence_epoch']) < 1 or (int(event['seq']) != stream_version):
                 raise RuntimeError(f'completed_abandon_{event_type}_terminal_invalid')
             terminal_reason = bounded_terminal_reason(payload, event_type=event_type)
-            if require_outer_reason and terminal_reason != outer_reason:
+            # For an already-fenced StrictAuthorityAbandoned instance, the
+            # persisted terminal reason is the single source of truth (f3c66468
+            # fixed the write-time fence to adopt it; this mirrors that fix for
+            # the read-time/recovery fence). The persisted event is
+            # self-verifying (digest + causation bound, checked above), so
+            # adopting its reason does not weaken the proof — it only stops
+            # penalizing reason drift between the original owner and a later
+            # recovery reprover, which the write path already tolerates.
+            effective_outer_reason = outer_reason
+            if (
+                event_type == 'StrictAuthorityAbandoned'
+                and require_outer_reason
+                and terminal_reason
+                and terminal_reason != outer_reason
+            ):
+                effective_outer_reason = terminal_reason
+            if require_outer_reason and terminal_reason != effective_outer_reason:
                 raise RuntimeError(f'completed_abandon_{event_type}_outer_reason_mismatch')
             if event_type == 'WorkerAbandoned':
                 worker_events = [WorkflowEvent(run_id=run_id, seq=int(row['seq']), event_type=str(row['event_type']), schema_version=int(row['schema_version']), payload=row_payload, payload_digest=str(row['payload_digest']), causation_id=str(row['causation_id'])) for row, row_payload in decoded_history]

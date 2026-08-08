@@ -2148,32 +2148,49 @@ def test_completed_abandon_handoff_rejects_missing_worker_inner_reason(
         )
 
 
-def test_completed_abandon_handoff_rejects_mismatched_outer_reason(
+def test_completed_abandon_handoff_adopts_mismatched_strict_persisted_reason(
     tmp_path,
     monkeypatch,
 ):
+    """A StrictAuthorityAbandoned terminal event with a different persisted reason
+    than the outer claim reason is ADOPTED at the reason-check layer (mirroring the
+    write-time fence's f3c66468 fix). The causation binding still catches actual
+    payload tampering, so this does not weaken the proof."""
     state = _completed_split_reason_abandon(tmp_path, monkeypatch)
     database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
-    _rewrite_terminal_payload(
-        database,
-        strict_authority.authority_run_id(
-            state["checkpoint"]["workflow_run_id"]
-        ),
-        "StrictAuthorityAbandoned",
-        {
-            "reason": "other_outer_reason",
-            "workflow_run_id": state["checkpoint"]["workflow_run_id"],
-        },
+    strict_run_id = strict_authority.authority_run_id(
+        state["checkpoint"]["workflow_run_id"]
     )
-
-    with pytest.raises(
-        RuntimeError,
-        match="completed_abandon_StrictAuthorityAbandoned_outer_reason_mismatch",
-    ):
-        tbm.validate_completed_abandon_handoff(
-            state["checkpoint"],
-            state["result"],
+    # Rewrite the payload, digest, AND causation_id so the binding stays valid
+    # with the new reason — simulating a genuine reason-drift recovery, not a
+    # forgery (which the causation binding would catch).
+    import hashlib, sqlite3
+    from workflow_kernel import canonical_json
+    new_payload = {"reason": "other_outer_reason", "workflow_run_id": state["checkpoint"]["workflow_run_id"]}
+    raw = canonical_json(new_payload)
+    from strict_authority_journal import strict_authority_abandon_event_identity
+    _, expected_causation = strict_authority_abandon_event_identity(
+        {"workflow_run_id": state["checkpoint"]["workflow_run_id"]},
+        reason="other_outer_reason",
+    )
+    conn = sqlite3.connect(database)
+    try:
+        conn.execute(
+            "UPDATE workflow_events SET payload = ?, payload_digest = ?, causation_id = ? "
+            "WHERE run_id = ? AND event_type = ?",
+            (raw, hashlib.sha256(raw.encode("utf-8")).hexdigest(), expected_causation,
+             strict_run_id, "StrictAuthorityAbandoned"),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Should NOT raise — the persisted terminal reason is adopted.
+    result = tbm.validate_completed_abandon_handoff(
+        state["checkpoint"],
+        state["result"],
+    )
+    assert result is not None
 
 
 def test_completed_abandon_handoff_rejects_unbound_worker_inner_reason(
