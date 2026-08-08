@@ -1224,43 +1224,37 @@ def _version_authority_projection(epoch: dict[str, Any]) -> dict[str, Any]:
 def _async_certification_projection(
     version_authority: dict[str, Any],
 ) -> dict[str, Any]:
-    """Derive staging-vs-certified items from tag authority (no heavy job poll)."""
+    """Project the single native publication tier for paired bots.
+
+    The EXE certification subsystem was removed — there is no longer a
+    staging-vs-certified distinction. Every paired (published) bot passed the
+    native precommit gate and is fully rating-eligible, so its state is
+    ``passed`` and ``any_pending`` is always False. The legacy ``staging``/
+    ``certified`` fields are retained in the response shape for frontend
+    compatibility but carry the single native semantics.
+    """
 
     try:
-        from bot_namespace import bot_name, bot_tag, certified_tag
+        from bot_namespace import bot_name, bot_tag
     except Exception:
         return {"items": [], "any_pending": False}
     paired = list(version_authority.get("paired_versions") or [])
-    certified = set(version_authority.get("certified_versions") or [])
     items: list[dict[str, Any]] = []
     for version in paired:
         try:
             version_i = int(version)
         except (TypeError, ValueError):
             continue
-        name = bot_name(version_i)
-        if version_i in certified:
-            items.append({
-                "version": version_i,
-                "bot_name": name,
-                "state": "passed",
-                "staging_tag": bot_tag(version_i),
-                "certified_tag": certified_tag(version_i),
-                "job_id": None,
-                "formal_authority": "signed_full_v5",
-            })
-        else:
-            items.append({
-                "version": version_i,
-                "bot_name": name,
-                "state": "pending",
-                "staging_tag": bot_tag(version_i),
-                "certified_tag": None,
-                "job_id": None,
-                "formal_authority": "staging_uncertified",
-            })
-    any_pending = any(item.get("state") in {"pending", "running"} for item in items)
-    return {"items": items, "any_pending": any_pending}
+        items.append({
+            "version": version_i,
+            "bot_name": bot_name(version_i),
+            "state": "passed",
+            "staging_tag": bot_tag(version_i),
+            "certified_tag": None,
+            "job_id": None,
+            "formal_authority": "native",
+        })
+    return {"items": items, "any_pending": False}
 
 
 def _eval_wait_projection(

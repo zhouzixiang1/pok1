@@ -339,14 +339,14 @@ def _staging_publication_commit_message(
     parts = [
         f"National bot v{version}: {strategy_tag}",
         "",
-        f"staging-candidate-hash: {candidate_hash}",
+        f"candidate-hash: {candidate_hash}",
         f"source: v{source_v}",
     ]
     if parent2_v is not None:
         parts.append(f"parent2: v{parent2_v}")
     if rating_info:
         parts.append(rating_info)
-    parts.append("publication-tier: staging")
+    parts.append("publication-tier: native")
     return "\n".join(parts)
 
 
@@ -355,12 +355,12 @@ def _staging_publication_tag_message(
     strategy_tag: str,
     candidate_hash: str,
 ) -> str:
-    """Staging-tier tag annotation — omits official-certificate lines."""
+    """Native-tier tag annotation (single publication tier)."""
 
     return (
-        f"National bot v{version} (staging): {strategy_tag}\n\n"
-        f"staging-candidate-hash: {candidate_hash}\n"
-        f"publication-tier: staging"
+        f"National bot v{version}: {strategy_tag}\n\n"
+        f"candidate-hash: {candidate_hash}\n"
+        f"publication-tier: native"
     )
 
 

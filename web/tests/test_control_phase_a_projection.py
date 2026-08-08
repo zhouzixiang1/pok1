@@ -188,8 +188,9 @@ def test_sync_copies_active_generations_and_phase_a_blocks(monkeypatch):
     assert snapshot["pipeline_mode"]["sealed_candidates"] == ["cand-1"]
     assert snapshot["feature_flags"]["slice2b_enabled"] is True
     assert snapshot["version_authority"]["certified_versions"] == []
-    assert snapshot["async_certification"]["any_pending"] is True
-    assert snapshot["async_certification"]["items"][0]["state"] == "pending"
+    assert snapshot["async_certification"]["any_pending"] is False
+    assert snapshot["async_certification"]["items"][0]["state"] == "passed"
+    assert snapshot["async_certification"]["items"][0]["formal_authority"] == "native"
     assert snapshot["eval_wait"]["waiting"] is False
 
 

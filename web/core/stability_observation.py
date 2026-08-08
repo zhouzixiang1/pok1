@@ -658,7 +658,15 @@ def _owner_process_errors(state: dict[str, Any]) -> list[str]:
 
 
 def _live_publication_errors(state: dict[str, Any]) -> list[str]:
-    """Re-open current tag/tree/certificate proof for the bounded 10-row window."""
+    """Re-open current tag/tree proof for the bounded 10-row window.
+
+    The EXE certification subsystem was removed (single ``native`` publication
+    tier; local native matches = valid). Certificate-file re-validation was
+    removed with it — there is no ``official_certificates/`` tree and no
+    ``certificate_digest`` field anymore. The remaining proof is the published
+    commit/tag identity (via ``validate_completion_tag``) and the frozen
+    generation-evidence binding.
+    """
 
     from bot_artifact import validate_completion_tag
     from bot_namespace import bot_name
@@ -666,15 +674,11 @@ def _live_publication_errors(state: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for row in state.get("observations") or []:
         version = int(row["version"])
-        certificate_path = f"official_certificates/{bot_name(version)}.json"
         validation = validate_completion_tag(
             PROJECT_ROOT / "bots" / bot_name(version),
             expected_metadata={
-                "official-certificate": str(row["certificate_digest"]),
                 "official-candidate-hash": str(row["candidate_artifact_hash"]),
-                "official-policy": str(row["official_policy_id"]),
             },
-            certificate_path=certificate_path,
         )
         if not validation.get("valid"):
             errors.extend(
@@ -684,16 +688,6 @@ def _live_publication_errors(state: dict[str, Any]) -> list[str]:
         identity = validation.get("identity") or {}
         if str(identity.get("commit_oid") or "") != str(row["commit_oid"]):
             errors.append(f"v{version}:publication_commit_oid_mismatch")
-        certificate = PROJECT_ROOT / certificate_path
-        try:
-            payload = json.loads(certificate.read_text(encoding="utf-8"))
-        except Exception as exc:
-            errors.append(
-                f"v{version}:certificate_unavailable:{type(exc).__name__}"
-            )
-        else:
-            if payload.get("certificate_digest") != row["certificate_digest"]:
-                errors.append(f"v{version}:certificate_digest_mismatch")
         try:
             current_evidence = _generation_evidence_binding(
                 version,
