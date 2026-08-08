@@ -14,10 +14,10 @@ import ControlPanel from "./pages/ControlPanel";
  * bookmarks and deep links keep working.
  *
  *   /              Overview — 系统健康 + 最新代次进度 + LLM 用量 + 强度卡片
- *   /generation    当代进度 — 完整 stepper + 国赛认证 + LLM 实时流 + handoff 八步
+ *   /generation    当代进度 — 完整 stepper + 发布后交接八步 + LLM 实时流
  *   /bots          Bot 强度与回放 — Glicko-2 排行 + H2H 矩阵 + 比赛回放
  *   /llm           LLM 使用分析 — 调用日志 + 输入输出详情 + 按角色聚合
- *   /control       控制面板 — 启停/放弃/daemon 配置/epoch 权威/异步认证队列
+ *   /control       控制面板 — 启停/放弃/daemon 配置/版本身份
  *
  * Legacy → new redirects (compatibility only; sidebar exposes just the 5 above):
  *   /pipeline, /agents, /evidence, /strength   → /generation

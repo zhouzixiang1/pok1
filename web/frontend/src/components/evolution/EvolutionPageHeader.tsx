@@ -3,7 +3,7 @@ import type { ControlHealth, ControlStatus } from "../../api/control";
 import { draftGenerations, primaryGenerationSlot } from "../../api/control";
 import { EvolutionSurface, EvolutionStatusBadge, RefreshStatusBadge } from "./ui";
 import { cn } from "../../lib/utils";
-import { epochStateLabels } from "./EpochAuthorityStatus";
+import { epochStateLabels } from "../../lib/epochStateLabels";
 
 interface EvolutionPageHeaderProps {
   title: string;
