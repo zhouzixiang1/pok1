@@ -178,7 +178,7 @@ def _parse_valid_proposal_packet_impl(
             "source_symbols": (1, 8),
             "reachable_chain": (2, 8),
             "evidence_refs": (1, 10),
-            "snapshot_evidence": (0, 2),
+            "snapshot_evidence": (0, 3),
         }
         for field, (minimum, maximum) in collection_contracts.items():
             value = item.get(field)

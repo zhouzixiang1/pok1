@@ -183,17 +183,29 @@ def _proposal_schema_repair_guidance(
             "Use only exact file.py:symbol entries from the verified index and "
             "one matching bare source:file.py:symbol evidence_ref per symbol."
         )
-    if any("proposal_snapshot" in item for item in hints):
+    if any("proposal_snapshot_evidence_too_many" in item for item in hints):
         add(
-            "Copy one exact validated snapshot JSON pointer."
+            "You used more than 3 snapshot references; the maximum is 3. "
+            "Keep only the strongest 1–3 exact validated snapshot JSON pointers."
+        )
+    elif any("proposal_snapshot" in item for item in hints):
+        add(
+            "Copy one exact validated snapshot JSON pointer (maximum 3)."
             if require_snapshot_evidence
             else "This mode has no strength snapshot; emit no snapshot reference."
         )
     if any("proposal_measurement" in item for item in hints):
         add(
-            "Copy the mode-specific six-field measurement contract exactly; "
-            f"use uncertainty={_PROPOSAL_UNCERTAINTY_PROMPT_VALUE} literally "
-            "and never replace it with natural-language W/L/D prose."
+            "Copy the mode-specific six-field measurement contract exactly as a "
+            "single semicolon-separated string. For frozen_strength_snapshot/"
+            "singleton_parent_no_strength use this template (substitute target "
+            "and expected_delta): "
+            "\"target=<bot_name>; primary=complete_70_hand_wld; "
+            "expected_delta=<0.0<d<=1.0>; samples="
+            + _PROPOSAL_STRENGTH_SAMPLE_FLOOR
+            + "; uncertainty=" + _PROPOSAL_UNCERTAINTY_PROMPT_VALUE
+            + "; secondary=net_chip_ci\". Never replace literals with "
+            "natural-language W/L/D prose."
         )
     if any("proposal_falsifier" in item for item in hints):
         add(
@@ -1064,7 +1076,7 @@ def _validated_master_proposal(
         evidence_refs.append(normalized_ref)
     if source_ref_symbols != set(source_symbols):
         return None
-    if snapshot_ref_count > 2:
+    if snapshot_ref_count > 3:
         return None
     if require_snapshot_evidence and snapshot_ref_count < 1:
         return None

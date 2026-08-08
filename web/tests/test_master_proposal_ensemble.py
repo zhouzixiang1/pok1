@@ -796,9 +796,13 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "uncertainty=" + agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE
     )
     assert expected_uncertainty in singleton_prompt
-    assert "use " + expected_uncertainty + " literally" in singleton_prompt
+    # The repair feedback now echoes the full canonical six-field measurement
+    # template inline (including uncertainty=<value> and net_chip_ci) rather
+    # than just naming one literal, so GLM does not have to reconstruct it.
+    assert "complete_70_hand_wld" in singleton_prompt
+    assert "net_chip_ci" in singleton_prompt
     assert "<W/L/D interval method>" not in singleton_prompt
-    assert "never replace it with natural-language W/L/D prose" in singleton_prompt
+    assert "natural-language W/L/D prose" in singleton_prompt
 
     round_trip_measurement = (
         f"target={bot_name(STRICT_TARGET_V)}; primary=complete_70_hand_wld; "

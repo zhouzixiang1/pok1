@@ -140,7 +140,7 @@ def _render_master_proposal_provider_prompt(inputs):
         "expected_observation}, evidence_refs (source:file.py:symbol "
         "for EVERY source_symbols item; "
         + (
-            "at least one snapshot:relative/file.json#/verified/json/pointer"
+            "1–3 snapshot:relative/file.json#/verified/json/pointer entries"
             if require_snapshot_evidence
             else "snapshot references are forbidden because no strength snapshot exists"
         )
