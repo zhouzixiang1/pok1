@@ -53,6 +53,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, MutableMapping
 
+from blocking_runtime import run_async_off_event_loop
 from producer_consumer_slice2b import (
     ConsumerDispatcher,
     OneAheadCoordinator,
@@ -1031,7 +1032,47 @@ def canonical_gate_runner_factory(next_v, source_v):
                     }
                 args = dict(runner_args[name])
                 try:
-                    result = await canonical(args)
+                    # OFF-LOAD THE BLOCKING GATE OFF THE ASGI EVENT LOOP.
+                    # The canonical gate handlers (run_quality_gates /
+                    # run_review / run_critic / run_precommit_eval) are async
+                    # coroutines, but they perform substantial SYNCHRONOUS
+                    # blocking I/O on the orchestrator's event loop:
+                    #   - the @tool wrapper's ensure_runtime_git_guard runs a
+                    #     ``git`` subprocess (worktree status) at the top of
+                    #     every call;
+                    #   - run_precommit_eval drives the native TCP precommit
+                    #     match sequence (12 x 70-hand matches) whose
+                    #     ``_prepare_native_spec`` does inline file enumeration
+                    #     + hashing (``bot_artifact.hash_path`` /
+                    #     ``artifact_manifest``) and whose subprocess lifecycle
+                    #     waits inline;
+                    #   - run_quality_gates / run_review / run_critic resolve
+                    #     the active pool + read checkpoints synchronously.
+                    # Awaiting ``canonical(args)`` directly on the consumer
+                    # task's event loop (the same ASGI loop that serves HTTP)
+                    # blocks every request for the full match duration (10+
+                    # minutes per precommit). This is the same defect class as
+                    # the prepare_generation fix (86b7aa77 + 30626e87) but on a
+                    # different code path that was not offloaded.
+                    #
+                    # run_async_off_event_loop drives the coroutine on a fresh
+                    # PRIVATE event loop inside an owned worker thread (same
+                    # single-wakeup / context-propagating boundary as
+                    # run_blocking_isolated), so the orchestrator's ASGI loop
+                    # stays free to serve HTTP. The native-match dispatch nonce
+                    # (process-global set + ContextVar) and the frozen-snapshot
+                    # / consumer-in-chain gate ContextVars propagate into the
+                    # worker via copy_context, so the heartbeat sidecar (which
+                    # runs on the main loop and reads the process-wide set) and
+                    # the slot-scoped checkpoint I/O behave identically.
+                    # Match/gate logic, CAS/checkpoint identities and the
+                    # consumer FSM are unchanged -- only the loop the gate
+                    # coroutine runs on changes.
+                    result = await run_async_off_event_loop(
+                        canonical,
+                        args,
+                        thread_name_prefix=f"slice2b-gate-{name}",
+                    )
                 except Exception as exc:
                     return {
                         "outcome": "infrastructure_failure",

@@ -10,7 +10,7 @@ short-lived worker and deterministically releases it when the call completes.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Coroutine
 import concurrent.futures
 import contextvars
 from functools import partial
@@ -74,3 +74,49 @@ async def run_blocking_isolated(
         else:
             work_future.cancel()
             executor.shutdown(wait=False, cancel_futures=True)
+
+
+async def run_async_off_event_loop(
+    coro_fn: Callable[..., Awaitable[ResultT]],
+    /,
+    *args: Any,
+    thread_name_prefix: str = "pok-async-offloop",
+    **kwargs: Any,
+) -> ResultT:
+    """Run an async coroutine off the calling event loop in an owned worker.
+
+    This is the companion of :func:`run_blocking_isolated` for the case where
+    the blocking work is itself an ``async`` coroutine (e.g. the canonical MCP
+    gate handlers ``run_quality_gates``/``run_review``/``run_critic``/
+    ``run_precommit_eval``). Those coroutines drive the native TCP match engine
+    (``asyncio.start_server``/``asyncio.wait``/``loop.time``) and inline
+    synchronous file-hashing/subprocess I/O (``bot_artifact.hash_path`` /
+    ``artifact_manifest``). Running the coroutine inline on the orchestrator's
+    ASGI event loop blocks HTTP for the full match duration (10+ minutes per
+    precommit).
+
+    A plain :func:`run_blocking_isolated` cannot be used directly because the
+    value is a coroutine (it needs a running loop, and the worker thread starts
+    with none). Instead this drives the coroutine with a *fresh, private* event
+    loop created and torn down inside the worker thread via :func:`asyncio.run`,
+    while reusing the same owned-worker / single-wakeup / context-propagating
+    transport as :func:`run_blocking_isolated`. The native match's heartbeat
+    sidecar (which reads the process-wide
+    ``_NATIVE_MATCH_DISPATCH_NONCES`` set from the main loop) keeps working
+    because the dispatch nonce is process-global and the bound ContextVar is
+    propagated into the worker by :func:`contextvars.copy_context`.
+
+    The orchestrator's ASGI event loop stays free to serve HTTP while the gate
+    chain runs. Semantics, checkpoint writes, CAS identities, ContextVar scope
+    (slot override / consumer-in-chain authority / native-match dispatch nonce)
+    and the consumer lifecycle FSM transitions are unchanged -- only the loop
+    the coroutine runs on changes.
+    """
+
+    def _run_in_private_loop() -> ResultT:
+        return asyncio.run(coro_fn(*args, **kwargs))
+
+    return await run_blocking_isolated(
+        _run_in_private_loop,
+        thread_name_prefix=thread_name_prefix,
+    )

@@ -1532,3 +1532,136 @@ def test_slice2b_consumer_promoted_returns_true_after_promotion(monkeypatch, tmp
         assert odr._slice2b_consumer_promoted(ck2, 146) is False
     finally:
         _o._slice2b_activation_registry("clear")
+
+
+# ---------------------------------------------------------------------------
+# Consumer gate chain offloads the blocking canonical handlers off the ASGI
+# event loop (same defect class as prepare_generation 86b7aa77 + 30626e87).
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_gate_runner_offloads_handler_off_event_loop(monkeypatch):
+    """The blocking canonical gate handler MUST run in a worker thread, NOT on
+    the orchestrator's ASGI event loop.
+
+    Regression for the second py-spy-confirmed event-loop blocker: the Slice-2b
+    consumer gate chain (``_run_gate_chain`` -> ``run_once`` -> gate runner ->
+    ``canonical(args)``) awaited the canonical MCP handlers (run_quality_gates /
+    run_review / run_critic / run_precommit_eval) directly on the consumer
+    task's event loop -- the SAME loop that serves HTTP. run_precommit_eval
+    drives the native TCP precommit match sequence (12 x 70-hand matches) whose
+    ``_prepare_native_spec`` does inline file enumeration + hashing
+    (``bot_artifact.hash_path`` / ``artifact_manifest``) and whose subprocess
+    lifecycle waits inline, blocking HTTP for 10+ minutes while precommit runs.
+
+    The fix (mirroring 86b7aa77 / 30626e87) offloads ``canonical(args)`` to an
+    owned worker thread via ``run_async_off_event_loop`` so the orchestrator's
+    ASGI loop stays free to serve HTTP. This test records the executing thread
+    of the canonical handler and asserts it is NEVER the event-loop thread.
+    It fails with an inline ``await canonical(args)`` shim.
+    """
+    import threading
+
+    from producer_consumer_slice2b_activation import canonical_gate_runner_factory
+    import tool_gates
+
+    loop_thread = threading.current_thread()
+    handler_threads = []
+
+    async def recording_handler(args):
+        # Record the thread the canonical handler actually ran on. The @tool
+        # wrapper's git-guard + the gate body both execute on THIS thread.
+        handler_threads.append(threading.current_thread())
+        import json as _json
+
+        return {
+            "content": [
+                {"type": "text", "text": _json.dumps({"ok": True, "receipt_digest": DIGESTS["3"]})}
+            ]
+        }
+
+    original = tool_gates.run_quality_gates.handler
+    tool_gates.run_quality_gates.handler = recording_handler
+    try:
+        factory = canonical_gate_runner_factory(143, 142)
+        gates = factory()
+        snapshot = {"artifact_hash": DIGESTS["a"], "snapshot_digest": DIGESTS["b"]}
+        # Drive the runner inside a running event loop (the consumer task is an
+        # asyncio task on the orchestrator loop). The handler must be offloaded
+        # to a worker thread, NOT awaited inline on this loop.
+        result = asyncio.run(gates["run_quality_gates"](snapshot))
+    finally:
+        tool_gates.run_quality_gates.handler = original
+
+    assert handler_threads, "canonical handler was never invoked"
+    for thread in handler_threads:
+        assert thread is not loop_thread, (
+            "canonical gate handler ran on the event-loop thread "
+            f"(ident={thread.ident}); it must be offloaded to a worker thread "
+            "so the ASGI loop can keep serving HTTP during precommit matches"
+        )
+    assert result["outcome"] == "success"
+    assert result["result_digest"] == DIGESTS["3"]
+
+
+def test_canonical_gate_runner_offload_runs_on_a_private_event_loop(monkeypatch):
+    """The offloaded handler runs on a PRIVATE event loop inside the worker
+    thread (run_async_off_event_loop), so native-match async primitives
+    (asyncio.start_server / asyncio.wait / loop.time) still function while the
+    orchestrator's ASGI loop stays free.
+
+    This guards the specific offload mechanism: a plain run_blocking_isolated
+    cannot be used (no running loop in the worker), so the helper must drive
+    the coroutine with asyncio.run inside the worker. The handler records its
+    running loop identity and asserts it differs from the caller's loop.
+    """
+    import asyncio as _asyncio
+    import threading
+
+    from producer_consumer_slice2b_activation import canonical_gate_runner_factory
+    import tool_gates
+
+    caller_loop = _asyncio.new_event_loop()
+    seen = {}
+
+    async def introspecting_handler(args):
+        seen["thread"] = threading.current_thread()
+        seen["running_loop"] = _asyncio.get_running_loop()
+        import json as _json
+
+        return {
+            "content": [
+                {"type": "text", "text": _json.dumps({"ok": True, "receipt_digest": DIGESTS["4"]})}
+            ]
+        }
+
+    original = tool_gates.run_quality_gates.handler
+    tool_gates.run_quality_gates.handler = introspecting_handler
+
+    async def driver():
+        factory = canonical_gate_runner_factory(144, 142)
+        gates = factory()
+        snapshot = {"artifact_hash": DIGESTS["a"], "snapshot_digest": DIGESTS["b"]}
+        seen["caller_loop"] = _asyncio.get_running_loop()
+        return await gates["run_quality_gates"](snapshot)
+
+    try:
+        result = caller_loop.run_until_complete(driver())
+    finally:
+        tool_gates.run_quality_gates.handler = original
+        caller_loop.close()
+
+    # The handler ran off the caller's event loop thread...
+    assert seen.get("thread") is not threading.current_thread(), (
+        "canonical handler ran on the caller (event-loop) thread"
+    )
+    # ...and on a DISTINCT event loop (the worker's private loop), proving the
+    # async native-match engine can still use its asyncio primitives.
+    assert seen.get("running_loop") is not None, "handler had no running loop"
+    assert seen.get("running_loop") is not seen.get("caller_loop"), (
+        "canonical handler ran on the caller's event loop; run_async_off_event_loop "
+        "must drive it on a fresh private loop inside the worker thread"
+    )
+    assert result["outcome"] == "success"
+    assert result["result_digest"] == DIGESTS["4"]
+
