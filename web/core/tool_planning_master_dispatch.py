@@ -458,26 +458,61 @@ async def run_master_impl(args):
                 "binding_errors": _literature_binding_errors,
             },
         )
+        if _probe_present:
+            # An invalid literature-probe receipt is a TERMINAL, non-repairable
+            # Master rejection: the receipt binds to immutable
+            # master_context/direction_audit digests, so replanning can never
+            # make a stale receipt valid. Per AGENTS.md ("A terminal strict
+            # Master slot... must... complete canonical abandon instead of
+            # re-entering run_master"), complete the canonical abandon here
+            # rather than emitting a "call abandon_generation" directive. The
+            # directive path loops forever: the MCP abandon_generation tool is
+            # blocked by the direction_audited route guard (allowed_tools is
+            # run_literature_probe/run_master only), so the abandon never
+            # executes, no retry counter bumps, and no breaker fires. The
+            # ``master_`` reason prefix is in the direction_audited disposable
+            # allowlist, so _do_abandon_generation (called with
+            # _bypass_rate_limit=True inside _abandon_master_generation)
+            # succeeds.
+            ui = _tp._get_ui()
+            return await _tp._abandon_master_generation(
+                next_v,
+                source_v,
+                error="LITERATURE_PROBE_RECEIPT_INVALID",
+                fail_count=0,
+                reason=(
+                    "master_literature_probe_receipt_invalid v"
+                    + str(next_v)
+                    + ": "
+                    + ";".join(_literature_binding_errors or [])[:700]
+                ),
+                event_type="pipeline.master_blocked_invalid_literature_probe",
+                event_message=(
+                    f"Master v{next_v} blocked: mandatory literature probe "
+                    f"receipt is invalid and cannot be repaired by replanning; "
+                    f"canonically abandoning"
+                ),
+                ui=ui,
+                payload={
+                    "validation_errors": _literature_binding_errors,
+                    "literature_probe_invalid": True,
+                },
+                directive=(
+                    "The mandatory literature probe receipt is invalid and "
+                    "cannot be repaired by replanning. This generation was "
+                    "canonically abandoned; start a fresh generation."
+                ),
+            )
         return _json_tool_result({
-            "error": (
-                "LITERATURE_PROBE_RECEIPT_INVALID"
-                if _probe_present
-                else "LITERATURE_PROBE_REQUIRED"
-            ),
+            "error": "LITERATURE_PROBE_REQUIRED",
             "next_v": next_v,
             "source_v": source_v,
-            "next_tool": (
-                "abandon_generation" if _probe_present else "run_literature_probe"
-            ),
+            "next_tool": "run_literature_probe",
             "validation_errors": _literature_binding_errors,
             "directive": (
                 "The mandatory literature stage requires an exact schema-v2 "
                 "checkpoint/dispatch/output/translation-gate producer receipt. "
-                + (
-                    "Use governed abandon/reprepare; never rewrite an existing receipt."
-                    if _probe_present
-                    else "Call run_literature_probe before run_master."
-                )
+                "Call run_literature_probe before run_master."
             ),
         })
 
