@@ -193,7 +193,15 @@ async def _runtime_branch_guard_coroutine(
             await asyncio.sleep(check_interval)
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 return
-            current = _o._runtime_git_identity()
+            # _runtime_git_identity runs 3 git subprocesses (git status,
+            # rev-parse x2) with 10s timeouts each — offload it off the ASGI
+            # event loop so the 5s branch-guard poll does not stall HTTP.
+            from blocking_runtime import run_blocking_isolated
+
+            current = await run_blocking_isolated(
+                _o._runtime_git_identity,
+                thread_name_prefix="branch-guard-git-identity",
+            )
             current_branch = current.get("branch") or ""
             current_head = current.get("head") or ""
             reason = ""

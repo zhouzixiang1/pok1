@@ -77,7 +77,15 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
             if not _o._orchestrator_provider_stream_active:
                 continue
 
-            checkpoint = read_pipeline_checkpoint()
+            # read_pipeline_checkpoint does file I/O + JSON parse — offload it
+            # off the ASGI event loop so the 60s watchdog poll does not stall
+            # HTTP (the file is small but JSON parse + fsync read can spike).
+            from blocking_runtime import run_blocking_isolated
+
+            checkpoint = await run_blocking_isolated(
+                read_pipeline_checkpoint,
+                thread_name_prefix="watchdog-checkpoint-read",
+            )
             if not checkpoint:
                 continue
 
