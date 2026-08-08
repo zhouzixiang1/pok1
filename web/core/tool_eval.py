@@ -82,11 +82,12 @@ _PRECOMMIT_SHUTDOWN = threading.Event()
 # ──────────────────────────────────────────────
 # Precommit eval tuning constants
 # ──────────────────────────────────────────────
-# Default and max n_games per opponent for precommit eval. 12 gives enough paired
-# net-chip observations for the bootstrap gate (the CI shrinks as 1/sqrt(n), so
-# 12 has ~18% lower variance than 8); 16 is the hard ceiling so precommit eval
-# still fits within the cycle budget.
-PRECOMMIT_DEFAULT_N_GAMES = 12
+# Default n_games per opponent for precommit eval. 8 gives sufficient paired
+# net-chip observations for the bootstrap gate (the CI shrinks as 1/sqrt(n));
+# the exact-tie CI escape hatch (paired_bootstrap_ci upper>0) handles the
+# 4W-4L case. 8 (down from 12) reduces precommit wall-clock ~33% to free CPU
+# for LLM work. 16 is the hard ceiling.
+PRECOMMIT_DEFAULT_N_GAMES = 8
 PRECOMMIT_MIN_N_GAMES = 4
 PRECOMMIT_MAX_N_GAMES = 16
 
