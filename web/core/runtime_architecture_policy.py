@@ -1311,6 +1311,30 @@ def evaluate_architecture_transition(
     )
     source_state = dict(policy.get("effective_baseline_checks") or {})
     candidate_state = _check_state(candidate_cap)
+    is_preplan = evaluation_phase == ARCHITECTURE_TRANSITION_PHASE_PREPLAN
+    # Check ids whose ``candidate_state`` was overwritten by the non-deterministic
+    # typed runtime probe (see ``_dynamic_probe_states``). Their value is a
+    # subprocess observation, not a content-addressable capability, so — mirroring
+    # the static-only source identity anchor above — a probe-driven regression at
+    # the preplan phase is advisory, not blocking. At preplan the candidate is a
+    # copy/light edit of the parent baseline; a probe timing miss inherited from
+    # the parent (which itself fails the same probe under load) is not crossover
+    # work. Real runtime correctness is enforced later by the native precommit
+    # gate and the final-phase architecture check, both independent post-stages.
+    probe_driven_checks = (
+        {
+            check_id
+            for check_id in _dynamic_probe_states(runtime_probe)
+            # ``_PROBE_FAIL_CLOSED_CHECKS`` (e.g. precompute_runtime_influence)
+            # have a conservative hardcoded dynamic value, NOT a real probe
+            # observation (see _dynamic_probe_states). Their regression is a
+            # genuine static capability drop at every phase, so they stay
+            # blocking; only the real non-deterministic probe states defer.
+            if check_id not in _PROBE_FAIL_CLOSED_CHECKS
+        }
+        if isinstance(runtime_probe, dict)
+        else set()
+    )
     regressions = [
         {
             "check_id": check_id,
@@ -1318,7 +1342,25 @@ def evaluate_architecture_transition(
         }
         for check_id in policy.get("baseline_passed_checks") or []
         if not candidate_state.get(check_id, False)
+        and not (is_preplan and check_id in probe_driven_checks)
     ]
+    # Probe-driven regressions deferred to advisory at preplan (recorded for
+    # observability, never blocking). At final phase these remain in
+    # ``regressions`` and block as before.
+    preplan_probe_advisory = (
+        [
+            {
+                "check_id": check_id,
+                "reason": "probe_driven_baseline_mismatch_inherited_at_preplan",
+                "guidance": (candidate_cap.get("checks_by_id") or {}).get(check_id, {}).get("guidance", "restore baseline capability"),
+            }
+            for check_id in policy.get("baseline_passed_checks") or []
+            if not candidate_state.get(check_id, False)
+            and check_id in probe_driven_checks
+        ]
+        if is_preplan
+        else []
+    )
     runtime_floor_failures = [
         {
             "check_id": check_id,
@@ -1364,6 +1406,25 @@ def evaluate_architecture_transition(
             .get("issues", [])
         )
     ] if candidate_state.get("typed_runtime_probe") is False else []
+    # At preplan, the typed runtime probe is a non-deterministic subprocess
+    # observation. Its raw failures and the probe-derived selected-dynamic
+    # failures are advisory (mirroring the probe-driven regression deferral
+    # above); the final-phase transition enforces them as a hard gate.
+    if is_preplan:
+        if typed_runtime_failures:
+            preplan_probe_advisory.append({
+                "check_id": "typed_runtime_probe",
+                "reason": "probe_infra_or_contract_mismatch_at_preplan",
+                "guidance": "typed runtime probe did not pass; re-verified at final phase and native precommit",
+            })
+        for check_id in selected_dynamic_failures:
+            preplan_probe_advisory.append({
+                "check_id": check_id,
+                "reason": "selected_dynamic_probe_mismatch_at_preplan",
+                "guidance": "ledger-selected dynamic probe did not pass; re-verified at final phase",
+            })
+        typed_runtime_failures = []
+        selected_dynamic_failures = []
     policy_identity_errors.extend(
         f"runtime_contract_ledger:{item}" for item in ledger_errors
     )
@@ -1412,6 +1473,7 @@ def evaluate_architecture_transition(
         "typed_runtime_failures": typed_runtime_failures,
         "selected_dynamic_checks": sorted(selected_dynamic_checks),
         "selected_dynamic_failures": selected_dynamic_failures,
+        "preplan_probe_advisory": preplan_probe_advisory,
     }
 
 

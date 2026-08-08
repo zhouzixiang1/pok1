@@ -220,6 +220,27 @@ def _crossover_checkpoint_digest(checkpoint):
     return checkpoint_digest(checkpoint)
 
 
+def _crossover_runtime_probe_summary(transition):
+    """Compact view of the typed runtime probe that drove a crossover rejection.
+
+    The probe is a non-deterministic subprocess observation; when it blocks a
+    preplan transition this summary surfaces its failure class, repeatability,
+    and the concrete failing scenarios so the operator (and the crossover LLM
+    feedback) can distinguish an inherited probe-timing miss from a genuine
+    candidate regression. Without it the rejection event logged every blocking
+    field as an empty list, hiding the real cause.
+    """
+    probe = transition.get("runtime_probe") or {}
+    if not isinstance(probe, dict) or not probe:
+        return {}
+    return {
+        "ok": probe.get("ok"),
+        "failure_class": probe.get("failure_class"),
+        "repeatability_ok": probe.get("repeatability_ok"),
+        "issues": [str(item) for item in (probe.get("issues") or [])[:10]],
+    }
+
+
 def _crossover_projection_failure(component, issue, **extra):
     from crossover_projection import projection_failure
 
@@ -1604,6 +1625,10 @@ async def _run_crossover(
                             "runtime_floor_failures": transition.get("runtime_floor_failures") or [],
                             "unresolved_focus_checks": transition.get("unresolved_focus_checks") or [],
                             "blocking_check_details": blocking_check_details,
+                            "typed_runtime_failures": transition.get("typed_runtime_failures") or [],
+                            "selected_dynamic_failures": transition.get("selected_dynamic_failures") or [],
+                            "preplan_probe_advisory": transition.get("preplan_probe_advisory") or [],
+                            "runtime_probe_summary": _crossover_runtime_probe_summary(transition),
                             "deferred_to_master": (
                                 transition.get("deferred_unresolved_focus_checks") or []
                             ),
@@ -1629,6 +1654,10 @@ async def _run_crossover(
                             "runtime_floor_failures": transition.get("runtime_floor_failures") or [],
                             "unresolved_focus_checks": transition.get("unresolved_focus_checks") or [],
                             "blocking_check_details": blocking_check_details,
+                            "typed_runtime_failures": transition.get("typed_runtime_failures") or [],
+                            "selected_dynamic_failures": transition.get("selected_dynamic_failures") or [],
+                            "preplan_probe_advisory": transition.get("preplan_probe_advisory") or [],
+                            "runtime_probe_summary": _crossover_runtime_probe_summary(transition),
                             "deferred_to_master": (
                                 transition.get("deferred_unresolved_focus_checks") or []
                             ),

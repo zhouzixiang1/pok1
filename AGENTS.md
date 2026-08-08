@@ -588,6 +588,24 @@ Active implementation is under `web/core/`. Major responsibilities include:
   quality-rework loop. A genuine capability drop (static `passed` False) is still
   caught by the same regression gate. Regression:
   `tests/test_architecture_transition_regressions.py`.
+  **Preplan probe-driven regression is advisory, not blocking.** At the
+  `preplan` phase (crossover preparation, commit resume), a probe-driven
+  regression (a check whose state comes from the non-deterministic typed
+  runtime probe, e.g. `delayed_probe_line_reachability`, `donk_line_reachability`,
+  the causal counterfactuals — but NOT `_PROBE_FAIL_CLOSED_CHECKS`) is recorded
+  in `preplan_probe_advisory` and does NOT flip `ok`. This mirrors the static-
+  only source identity anchor: a verbatim/lightly-edited copy of the parent
+  inherits the parent's own probe timing miss, which is not crossover work. The
+  raw `typed_runtime_failures` and `selected_dynamic_failures` are likewise
+  deferred to advisory at preplan. Real runtime correctness is enforced later by
+  the native precommit gate (the sole runtime authority) and the `final`-phase
+  architecture check (`tool_planning_quality_contracts.py`, `tool_gates.py`),
+  which still treat probe failures as a hard gate. The `final` phase is
+  unchanged. The crossover rejection event (`pipeline.crossover_architecture_
+  rejected`) and LLM retry feedback publish all blocking terms
+  (`typed_runtime_failures`, `selected_dynamic_failures`,
+  `preplan_probe_advisory`, `runtime_probe_summary`) so a blocking cause is
+  never hidden behind empty arrays.
   repeated recovery attempts, so a frozen-vs-recomputed mismatch cannot loop
   forever burning LLM budget;
 - `national_native.py`, `national_game_runtime.py`, and
