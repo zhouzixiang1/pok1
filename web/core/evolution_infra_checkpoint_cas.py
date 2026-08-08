@@ -1268,7 +1268,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         # leave None (caller/selected write sites supply the default).
         if publication_tier is not None:
             tier = str(publication_tier).strip().lower()
-            if tier not in {"staging", "certified"}:
+            if tier not in {"native", "staging", "certified"}:
                 log.error("Invalid publication_tier: %r", publication_tier)
                 return False
             existing_publication_tier = tier
@@ -1709,7 +1709,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write
         }
-        if existing_publication_tier in {"staging", "certified"}:
+        if existing_publication_tier in {"native", "staging", "certified"}:
             state["publication_tier"] = existing_publication_tier
         if existing_is_draft:
             state["is_draft"] = True
