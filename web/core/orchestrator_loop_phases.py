@@ -1789,7 +1789,12 @@ async def _try_launch_draft_prepare(ui, shutdown_mgr, gen_count):
     # De-duplicate: at most one in-flight draft per draft slot.  A draft slot
     # checkpoint is the durable marker that the slot is occupied.
     try:
-        from evolution_infra import read_pipeline_checkpoint, read_all_pipeline_checkpoints, is_draft_slot
+        from evolution_infra import (
+            clear_pipeline_checkpoint,
+            read_pipeline_checkpoint,
+            read_all_pipeline_checkpoints,
+            is_draft_slot,
+        )
     except Exception:
         return
     occupied_slots = set()
@@ -2103,7 +2108,7 @@ async def _try_schedule_async_certification(ui, shutdown_mgr):
             parse_bot_version,
         )
         from epoch_authority import strict_epoch_projection
-        from evolution_infra import active_slot_override
+        from evolution_infra import _git, active_slot_override
     except Exception:
         return
 
@@ -2111,12 +2116,11 @@ async def _try_schedule_async_certification(ui, shutdown_mgr):
         # strict_epoch_projection resolves find_current_v / published tag
         # history via git/ssh-keygen subprocesses (AGENTS.md blocking
         # boundary); run it off the event loop.
-        with _orch.contextlib.ExitStack():
-            projection = await _orch.run_blocking_isolated(
-                strict_epoch_projection,
-                include_checkpoint=False,
-                thread_name_prefix="cert-epoch-projection",
-            )
+        projection = await _orch.run_blocking_isolated(
+            strict_epoch_projection,
+            include_checkpoint=False,
+            thread_name_prefix="cert-epoch-projection",
+        )
         published_versions = projection.get("strict_published_versions") or []
         if not published_versions:
             return
@@ -2129,7 +2133,7 @@ async def _try_schedule_async_certification(ui, shutdown_mgr):
         _ct = certified_tag(latest_v)
         # _git runs a git subprocess (AGENTS.md blocking boundary).
         result = await _orch.run_blocking_isolated(
-            _orch._git,
+            _git,
             "tag",
             "-l",
             _ct,
