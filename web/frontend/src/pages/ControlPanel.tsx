@@ -14,7 +14,6 @@ import {
 import { api } from "../api/client";
 import type { PipelineCheckpoint } from "../api/types";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
-import { AsyncCertificationQueue } from "../components/evolution/AsyncCertificationQueue";
 import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaffold";
 import { authorityNextVersion } from "../hooks/useControlStatus";
 import { useBoundPolling } from "../hooks/useBoundPolling";
@@ -232,7 +231,6 @@ export default function ControlPanel() {
     && route.directive.trim().length > 0,
   );
   const abandonAvailable = controlAbandonAvailable(status);
-  const asyncCert = status?.async_certification;
   const daemonEffective = health?.daemon;
 
   return (
@@ -365,8 +363,6 @@ export default function ControlPanel() {
           </div>
         </div>
       )}
-
-      <AsyncCertificationQueue projection={asyncCert} />
 
       {/* Provider-history recovery boundary */}
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">

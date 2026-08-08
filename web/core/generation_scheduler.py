@@ -33,20 +33,11 @@ OSCILLATION_BREAKOUT_MIN_MARGIN = 0.01
 def _default_publication_tier(*, next_v: int) -> str:
     """Resolve the checkpoint publication_tier for a newly selected generation.
 
-    First-strict always stays on the certified (inline official) path.
-    Otherwise ``POK_DEFAULT_PUBLICATION_TIER`` wins when set to staging/certified;
-    when unset, Slice 2b (``POK_SLICE2B_ENABLED``) defaults to staging so async
-    official certification can run after publish, else certified.
+    The certification/staging split has been removed: every generation now
+    publishes through a single native tier.  The function is retained because
+    many call sites still invoke it.
     """
-    if int(next_v) == FIRST_STRICT_POLICY_VERSION:
-        return "certified"
-    env = str(os.environ.get("POK_DEFAULT_PUBLICATION_TIER") or "").strip().lower()
-    if env in {"staging", "certified"}:
-        return env
-    slice2b = str(os.environ.get("POK_SLICE2B_ENABLED") or "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-    return "staging" if slice2b else "certified"
+    return "native"
 
 
 def _relocate_draft_candidate_to_live(provisional_v: int, formal_v: int) -> None:
@@ -2199,21 +2190,9 @@ def _bare_commit_gate_ledger_ok(v, ckpt):
             for item in (ledger.get("failed_gates") or [])
         )
         return False, f"gate_ledger_failed:missing={missing};failed={failed}"
-    if str(ckpt.get("national_execution_mode") or "") == "native_tcp":
-        official_gate = (ckpt.get("gate_results") or {}).get("official_full") or {}
-        official_status = official_gate.get("status") or {}
-        if official_gate.get("passed") is not True:
-            return False, "official_full_gate_missing_or_failed"
-        try:
-            from official_certification import official_full_certified
-
-            if not official_full_certified(
-                official_status,
-                get_bot_dir(v),
-            ):
-                return False, "official_full_certificate_invalid_or_stale"
-        except Exception as exc:
-            return False, f"official_full_certificate_check_error:{type(exc).__name__}:{str(exc)[:120]}"
+    # Certification system removed: the official-full gate / certificate-stale
+    # precheck no longer runs.  Bare-commit recovery relies solely on the gate
+    # ledger validated above plus the durable publication intent.
     return True, ""
 
 

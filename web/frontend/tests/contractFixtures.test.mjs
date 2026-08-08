@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+// Resolve the project Web Python interpreter for the cross-language fixture
+// tests. An explicit ``PYTHON`` env var always wins; otherwise fall back to the
+// repo venv (``<repo>/.venv/bin/python``) so the contract fixtures run from a
+// normal checkout without forcing the operator to export ``PYTHON``.
+function resolveProjectPython() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, "..", "..", "..", ".venv", "bin", "python"),
+    resolve(here, "..", "..", ".venv", "bin", "python"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
 
 // Contract fixtures for the dashboard redesign (task §8).  Each fixture is a
 // typed snapshot of one authority state; the assertions verify that the
@@ -10,12 +25,10 @@ import { spawnSync } from "node:child_process";
 
 import { expectAgentActivity, agentActivityBindingIssues, agentWorkflowIdentityKey } from "../node_modules/.tmp/sse-tests/api/agentActivity.js";
 import { expectStrengthJobs, strengthJobsBindingIssues } from "../node_modules/.tmp/sse-tests/api/strengthJobs.js";
-import { expectOfficialCertificationJobs, officialJobsBindingIssues } from "../node_modules/.tmp/sse-tests/api/officialJobs.js";
 import { agentActivityView } from "../node_modules/.tmp/sse-tests/domain/agentActivityView.js";
 import { strengthJobView, daemonLivenessView } from "../node_modules/.tmp/sse-tests/domain/strengthJobView.js";
 import {
   evidenceTierForGate,
-  evidenceTierForOfficialCertification,
   criticAdvisoryVerdictLabel,
 } from "../node_modules/.tmp/sse-tests/domain/evidenceAuthority.js";
 import {
@@ -70,7 +83,6 @@ const EXPECTED_AGENT_GATE_FIELDS = {
   review: ["approved", "llm_failed", "llm_invoked", "parse_failed", "quality_score", "receipt_digest", "reviewer_llm_executed", "schema_valid"],
   critic: ["advisory_approved", "advisory_score", "approved", "critic_llm_executed", "llm_failed", "llm_invoked", "parse_failed", "receipt_digest", "schema_valid"],
   precommit_eval: ["attempt", "candidate_artifact_hash", "hands_per_match", "native_matches", "passed", "receipt_digest"],
-  official_full: ["certificate_digest", "certification_profile", "opponent_authority", "passed", "reused_existing_certificate", "strategy_evidence_weight", "strength_evidence_weight"],
 };
 const page = (admitted = 0, staged = 0, inadmissible = 0) => ({
   offset: 0, limit: 50,
@@ -91,10 +103,10 @@ function agentFixture(overrides = {}) {
     stage: "workers_done",
     attempts: { generation: 1, audit: 0, precommit: 0 },
     rework_counts: { worker_failure: 0, precommit: 0, official: 0 },
-    orchestrator: { stage: "workers_done", reviewer_feedback: null, infra_failure: null, official_jobs_polling_supported: false },
+    orchestrator: { stage: "workers_done", reviewer_feedback: null, infra_failure: null },
     master: { started: true, completed: true, plan_present: true, analysis: null, tasks: [], task_total: 0, tasks_truncated: false },
     direction_audit: null,
-    gates: { quality: null, review: null, critic: null, precommit_eval: null, official_full: null },
+    gates: { quality: null, review: null, critic: null, precommit_eval: null },
     gate_keys_present: [],
     worker_failures: [],
     worker_failures_truncated: false,
@@ -114,8 +126,11 @@ test("fixture: uninitialized epoch — agent projection fails closed", () => {
 });
 
 test("fixture: real Python dashboard builders satisfy frontend validators", () => {
-  const python = process.env.PYTHON;
-  assert.ok(python, "set PYTHON to the project Web interpreter before npm test");
+  const python = process.env.PYTHON || resolveProjectPython();
+  assert.ok(
+    python,
+    "set PYTHON to the project Web interpreter before npm test, or run from a checkout with /.venv/bin/python",
+  );
   const result = spawnSync(
     python,
     ["tests/captureDashboardAuthority.py"],
@@ -128,7 +143,6 @@ test("fixture: real Python dashboard builders satisfy frontend validators", () =
   assert.equal(agents.available, true);
   assert.equal(agents.worker_failures[0].record_state, "historical");
   assert.equal(agents.worker_failures[0].current_blocker, false);
-  assert.equal(agents.orchestrator.official_jobs_polling_supported, true);
   assert.deepEqual(Object.keys(agents.orchestrator.infra_failure).sort(), [
     "action", "attempt", "code", "component", "exhausted", "failure_class",
     "identity_digest", "max_attempts", "operation", "owner_tool", "reason",
@@ -156,7 +170,7 @@ test("fixture: fresh bootstrap v143 — no parent2 allowed", () => {
   // parent2 on v143 would fail the backend binding; the frontend projection
   // surfaces parent2 verbatim so an operator sees the mismatch.
   const view = agentActivityView(agentFixture({
-    next_v: 143, source_v: 142, parent2_v: null, stage: "official_bootstrap_required",
+    next_v: 143, source_v: 142, parent2_v: null, stage: "verified",
   }));
   assert.equal(view.available, true);
   assert.equal(view.parent2V, null);
@@ -194,7 +208,7 @@ test("fixture: critic advisory only — approved is not a strength gate", () => 
         name: "critic", present: true, complete: true, authority_state: "current",
         fields: { approved: true, schema_valid: true, llm_invoked: true, critic_llm_executed: true, advisory_approved: false, advisory_score: 2 },
       },
-      precommit_eval: null, official_full: null,
+      precommit_eval: null,
     },
   }));
   const critic = view.roles.find((r) => r.role === "critic");
@@ -203,23 +217,6 @@ test("fixture: critic advisory only — approved is not a strength gate", () => 
   // advisory_approved=false but complete=true → "建议保留意见"
   assert.equal(verdict.complete, true);
   assert.equal(verdict.verdict, "建议保留意见");
-});
-
-test("fixture: first-strict bootstrap operator transition — zero strength weight", () => {
-  // Operator bootstrap jobs carry strength_evidence_weight=0; the evidence
-  // tier must be "zero" so the dashboard never treats it as normal strength.
-  const tier = evidenceTierForOfficialCertification({
-    formal_certified: false,
-    formal_authority: "operator_bootstrap_full_v5_job",
-  });
-  assert.equal(tier.tier, "zero");
-});
-
-test("fixture: signed_full_v5 is the only compliance certification", () => {
-  const tier = evidenceTierForOfficialCertification({
-    formal_certified: true, formal_authority: "signed_full_v5",
-  });
-  assert.equal(tier.tier, "compliance");
 });
 
 test("fixture: Reviewer infra timeout retry — not strategy rejection", () => {
@@ -395,7 +392,7 @@ test("fixture: malformed strength response — fail closed", () => {
   assert.throws(() => expectStrengthJobs({ available: true, evaluation_epoch: "national_tcp_policy_v1", evaluation_identity_digest: ID64 }), /daemon health/);
 });
 
-test("fixture: nested staged evidence and official job history fail closed on identity drift", () => {
+test("fixture: nested staged evidence fails closed on identity drift", () => {
   const badStaged = {
     available: true, evaluation_epoch: "national_tcp_policy_v1",
     evaluation_identity_digest: ID64, evaluation_manifest_digest: ID64,
@@ -412,39 +409,16 @@ test("fixture: nested staged evidence and official job history fail closed on id
     }],
   };
   assert.throws(() => expectStrengthJobs(badStaged), /nested evidence/);
-
-  const active = {
-    generation_ordinal: 1, canonical_version: 143,
-    canonical_bot_name: "national_v143", canonical_tag: "national-bot-v143",
-    next_v: 143, source_v: 142, parent2_v: null, stage: "official_bootstrap_required",
-    run_id: "143#0", workflow_run_id: "generation:143:workflow-v68", checkpoint_revision: 23,
-    attempt: { generation: 0, audit: 0, precommit: 0 },
-  };
-  const projection = expectOfficialCertificationJobs({
-    schema_version: 1, evaluation_epoch: "national_tcp_policy_v1",
-    epoch_state: "fresh_bootstrap_ready", epoch_initialized: true,
-    workflow_run_id: active.workflow_run_id, candidate_version: 143,
-    next_v: 143, source_v: 142, parent2_v: null,
-    checkpoint_stage: active.stage, checkpoint_revision: 23, run_id: active.run_id,
-    formal_policy_id: "official-full-v5", formal_mode: "full",
-    pending: 0, running: 0, jobs: [], operator_transition: null,
-  });
-  assert.deepEqual(officialJobsBindingIssues(projection, active), []);
-  assert.ok(officialJobsBindingIssues({ ...projection, workflow_run_id: "generation:143:workflow-v67" }, active).includes("workflow_run_id"));
-  // Same stage/workflow/version but an older revision is still stale.
-  assert.ok(officialJobsBindingIssues({ ...projection, checkpoint_revision: 22 }, active).includes("checkpoint_revision"));
-  assert.ok(officialJobsBindingIssues({ ...projection, source_v: null }, active).includes("source_v"));
-  assert.ok(officialJobsBindingIssues({ ...projection, parent2_v: 141 }, active).includes("parent2_v"));
 });
 
 test("fixture: repair stages expose old gates as historical-invalidated, never current green", () => {
   const projection = agentFixture({
     stage: "rework_running",
-    orchestrator: { stage: "rework_running", reviewer_feedback: null, infra_failure: null, official_jobs_polling_supported: false },
+    orchestrator: { stage: "rework_running", reviewer_feedback: null, infra_failure: null },
     gates: {
       quality: { name: "quality", present: true, complete: false, authority_state: "historical_invalidated", fields: { all_passed: true } },
       review: { name: "review", present: true, complete: false, authority_state: "historical_invalidated", fields: { approved: true } },
-      critic: null, precommit_eval: null, official_full: null,
+      critic: null, precommit_eval: null,
     },
   });
   assert.equal(expectAgentActivity(projection).available, true);

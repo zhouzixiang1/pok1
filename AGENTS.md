@@ -11,7 +11,7 @@ the national competition raw TCP protocol.
 > `origin/tencent-cloud-runtime` — its products never enter `origin/main`.
 > The text below describes this cloud line; the `main` branch keeps the
 > canonical `national_v` / 142→143 history unchanged and is intentionally not
-> disturbed. Namespace, version-floor, path, LLM, and signer details that
+> disturbed. Namespace, version-floor, path, and LLM details that
 > differ from main are called out inline.
 
 ## Trust boundary
@@ -21,7 +21,7 @@ Active code consists of:
 1. `sever/` — national rules, validator, TCP server, THP output, and diagnostic
    web surface.
 2. `web/` — evolution control plane, native TCP evaluation, immutable evidence,
-   prompts, gates, certification, and dashboard.
+   prompts, gates, and dashboard.
 3. `bots/national_cloud_v<N>/` — strict policy artifacts created by the active
    epoch (on this branch the namespace is `national_cloud_v`; `bots/` only holds
    the active strict candidate products, never retired/legacy bots). The
@@ -29,13 +29,13 @@ Active code consists of:
    `git tag --list 'national-cloud-bot-v*'` (or
    `git ls-tree -d --name-only HEAD bots/`); on a fresh checkout it starts
    empty and fills as the epoch publishes.
-4. `scripts/` — national diagnostics, evaluation identity, and official EXE
-   certification.
+4. `scripts/` — national diagnostics, evaluation identity, and official
+   platform acceptance/oracle tooling.
 
 `archive/` contains retired protocol engines, adapters, bots, experiments,
 tests, prompts, runtime output, and documentation. Archived files are
 `legacy-untrusted`. Active code must never import, execute, dynamically load,
-scan, copy, branch from, cross over, certify, rate, or summarize them. Never add
+scan, copy, branch from, cross over, rate, or summarize them. Never add
 an archive directory to `sys.path` or `PYTHONPATH`.
 
 The version-authority floor on this branch is defined by two code constants in
@@ -50,8 +50,8 @@ initialization from the active namespace tags
 (`git tag --list 'national-cloud-bot-v*'`), not assumed as constants — see the
 query commands in `deploy/tencent-cloud/README.md`. No main-namespace version
 history (142/143/156) is carried into this epoch — that is identity continuity
-only and it carries no source bytes, ratings, H2H, experience, capabilities, or
-certification. Legacy main-namespace bots (`national_v143`, `national_v156`)
+only and it carries no source bytes, ratings, H2H, experience, or
+capabilities. Legacy main-namespace bots (`national_v143`, `national_v156`)
 inherited from `main` are archived under `archive/legacy_main_namespace_bots/`
 and ignored by the cloud epoch authority.
 
@@ -83,7 +83,7 @@ resumable.
 │   ├── server/                   # raw TCP codec and asyncio server
 │   └── web/                      # diagnostic SSE dashboard
 ├── web/
-│   ├── core/                     # evolution/evaluation/certification
+│   ├── core/                     # evolution/evaluation control plane
 │   ├── server/                   # FastAPI backend
 │   ├── frontend/                 # React dashboard
 │   └── tests/
@@ -173,19 +173,22 @@ It keeps the complete board as authoritative internal/THP state while omitting
 those future street messages, and also omits the natural hand-70 wire settlement
 below.
 
-At natural hand 70 the 2021 EXE omits the last `earnChips` pair. Formal v5
-certification cross-binds wire settlements for hands 1..69 to THP states 0..68,
+At natural hand 70 the 2021 EXE omits the last `earnChips` pair. The THP replay
+contract cross-binds wire settlements for hands 1..69 to THP states 0..68,
 then uses strict THP state 69 and the footer as independent final proof.
 
-These exact oracle files are always-critical evaluation inputs and their hashes
-are pinned by `runtime_architecture_policy.py`:
+These exact oracle files are protocol-reference inputs (they document how the
+EXE wire behaves) and their hashes are pinned by
+`runtime_architecture_policy.py`:
 
 - `docs/official-raise-boundary-oracle-2026-07-11.md`
 - `docs/official-terminal-settlement-oracle-2026-07-11.md`
 - `docs/official-allin-runout-wire-oracle-2026-07-19.md`
 
-Do not edit or reinterpret them casually. Control-plane changes verify their
-hashes; they do not rerun the official EXE.
+Do not edit or reinterpret them casually. They are protocol documentation, not
+certification gates: the official EXE certification system has been removed,
+and native TCP quality + precommit gates are the sole correctness authority.
+Control-plane changes verify their hashes; they do not rerun the official EXE.
 
 ## Strict candidate ABI
 
@@ -334,89 +337,24 @@ semaphore **per attempt**; `llm_query._run_stream_with_signature_retry` must
 forward the `semaphore=` kwarg into `llm_query_retry` or every role fails
 before the stream starts (`unexpected keyword argument 'semaphore'`).
 
-When `POK_ALLOW_STAGING_AS_PARENT=1`, `ROLE_PARENT_SOURCE` may omit a
-certificate, but `resolve_national_bot_spec` still **best-effort loads** any
-live signed digest and marks the parent `publication_tier=certified`. Pure
-staging parents (no digest) are allowed through checkpoint epoch binding:
-`_published_parent_identity` stores an empty-string `certificate_digest`
-sentinel while still binding staging completion/high-water tag authority.
-Certified parents still require a digest-bound certificate. Rating pool /
-official opponent remain certificate-mandatory.
-
-Selected checkpoints persist `publication_tier` (`staging` or `certified`) via
-`write_pipeline_checkpoint`; `commit_bot` consumes that field and does not
-recompute it. Default comes from `POK_DEFAULT_PUBLICATION_TIER`, else
-`staging` when `POK_SLICE2B_ENABLED` else `certified`; first-strict always
-stays on the certified (inline official) path. Staging publications schedule
-async official certification through `official_certification_job.start_or_poll_job`
-(non-blocking poll), keyed off `strict_published_versions`.
-
-Staging and certified tiers both publish from the **same** precommit-pass
-checkpoint stage `verified` (`tool_eval.py` sets `verified` on precommit pass;
-the router maps `verified -> commit_bot` for both tiers; staging simply skips
-the official EXE gate). The staging `publication_intent`'s
-`origin_checkpoint_stage` is therefore `verified`, and
-`publication_transaction.py::publication_intent_structure_errors` allows
-`verified` for staging intents. It must NOT demand `precommit_passed` /
-`staging_publishing` — those are gate-snapshot booleans / phantom names,
-never real checkpoint stages (absent from `STAGE_ORDER`, written nowhere),
-so requiring them blocked every staging-tier `commit_bot` from birth
-(`publication_intent_origin_stage_invalid` infinite loop; fixed after
-bc668676). Regression:
+There is a single publication tier, **`native`**. The official EXE
+certification system (two-tier `staging`/`certified` split, signed full
+certificates, `national-cloud-certified-v<N>` tags, the async certification
+queue, and the `first_strict_control_v1` system-control bootstrap) has been
+removed entirely. Every published bot is admitted to the rating pool and the
+official-opponent pool on the strength of its native precommit-pass
+publication alone; `certificate_digest` is carried for backward-compat only
+and is never required. Native TCP quality + precommit gates are the sole
+correctness authority, and publication flows straight from the precommit-pass
+checkpoint stage `verified` to `commit_bot` (the router maps
+`verified -> commit_bot`; `tool_eval.py` sets `verified` on precommit pass).
+The `publication_intent`'s `origin_checkpoint_stage` is therefore `verified`;
+it must NOT demand `precommit_passed` / `staging_publishing` — those are
+gate-snapshot booleans / phantom names, never real checkpoint stages (absent
+from `STAGE_ORDER`, written nowhere), so requiring them blocked every
+`commit_bot` from birth (`publication_intent_origin_stage_invalid` infinite
+loop; fixed after bc668676). Regression:
 `tests/test_publication_transaction.py::test_staging_intent_from_verified_stage_passes_structure_validation`.
-
-### Staging eval-source deadlock — full certification is mandatory before the next generation
-
-A staging-tier publish is **not** self-sufficient. A staging-published master
-has no signed full certificate and no `national-cloud-certified-v<N>` tag, so
-`resolve_national_bot_spec(..., ROLE_RATING_POOL)` returns `eligible=False`
-with `signed_full_official_certificate_required`
-(`bot_namespace.py`, `ACTIVE_PUBLISHED_ROLES` → `certificate_required=True`).
-The rating daemon's `_reconcile_rating_pool_membership`
-(`elo_daemon_persistence.py`) filters every such bot out of the match queue via
-the `bot_path()` raise, and `_safe_bot_path` returns `None` at each of the 7
-scheduling sites. The bot therefore accrues a **structurally permanent 0
-games** — it is never even attempted, never crashed-after-launch. This is
-distinct from "scheduling is slow"; the bot cannot enter the queue at all.
-
-This turns into a **hard, silent deadlock** the moment that staging master is
-selected as the next generation's eval source: `wait_for_daemon_eval`
-(`evolution_infra.py`) waits for `games >= min_games`, but the source bot can
-never accrue games. The orchestrator's degraded-floor logic
-(`orchestrator_loop_phases.py`, the `评估等待连续超时，降低评估要求` path)
-lowers `min_games` (e.g. 24 → 12) after consecutive prep timeouts — but that is
-a **boolean threshold, not a scaling factor**, so it settles at 12 and never
-goes lower; and even a floor of 1 is unreachable when the game count is
-structurally 0. There is **no** force-prepare, abandon, or operator-action
-escape: the loop is infinite, and it emits only generic `评估超时` warnings
-with no signal that the root cause is a *certification/eligibility* defect.
-
-**Rules:**
-1. **A bot selected as an eval source must be rating-pool-eligible.** Before
-   entering the eval-wait loop, resolve the source bot under
-   `ROLE_RATING_POOL`; if `eligible=False`, emit a distinct operator-actionable
-   signal carrying the `issues` tuple (e.g. `eval_source_rating_ineligible`),
-   and either fail-closed or auto-route to certification — **never** degrade
-   the games floor for a bot that is structurally excluded from the pool.
-   Degraded-floor logic is for "matches are slow but happening", not for
-   "the source bot is ineligible".
-2. **Closing the two-tier gap is part of publication for a staging master that
-   may become an eval source.** The recovery is the documented two-command
-   sequence against the already-published bytes:
-   `python scripts/official_certify.py full bots/national_cloud_v<N> --published --wait-if-busy`
-   then
-   `python scripts/official_certify.py publish-certified bots/national_cloud_v<N> --execute --acknowledge-reannotate-completion-tag`,
-   then refresh/restart the daemon (reconcile also re-runs at idle cadence
-   without a restart). `--published` is mandatory here because a published
-   bot's pipeline checkpoint is already cleared. The smoke cert
-   (`official-inconclusive`) is **not** a substitute and never admits to the
-   pool.
-3. **A certificate existing is necessary but not sufficient.** A bot can still
-   read `eligible=False` after certification with `certificate_identity_stale`
-   / `status_identity_stale` (e.g. legacy staging candidates whose
-   completion-tag / ledger identity drifted). Recovery must produce a
-   *currently-valid* cert and tag, and the eligibility call above is the source
-   of truth — not the presence of a status file.
 
 ### GLM 429 quota exhaustion and recovery-window waiting
 
@@ -700,27 +638,23 @@ Generation order:
 7. review;
 8. advisory schema-valid critic;
 9. native TCP precommit regression;
-10. signed official EXE full certification;
-11. commit and annotated `national-cloud-bot-v<N>` tag (branch-configurable
+10. commit and annotated `national-cloud-bot-v<N>` tag (branch-configurable
     via `ACTIVE_TAG_PREFIX`; main uses `national-bot-v`);
-12. archivist/cleanup.
+11. archivist/cleanup.
 
 Crossover is preparation only and never skips planning or gates. Every prepared
 artifact has a complete manifest/hash. Worker writes are lease-isolated,
 snapshotted, and atomic. Publication cross-checks working bytes, staged Git
 blobs, and immutable tag tree.
 
-`official_certifying` normally means one attached official job and, including
-ordinary HEAD-drift recovery, permits only `commit_bot` polling. The sole
-dynamic exception is a checkpoint whose `gate_results.official_full` contains
-the complete exact marker
-`outcome=quality_admission_blocked`, `failure_class=quality`, and
-`quality_admission_refresh=true`. Only that marker may route to
-`run_quality_gates`; it keeps the evaluation contract unchanged and persists
-the transition through the exact checkpoint revision, stage, and workflow CAS.
-Missing, partial, conflicting, or infrastructure-class markers remain the
-normal `commit_bot` path. The exception never authorizes Workers, an EXE retry,
-or reuse of the previous official job.
+The legacy `official_certifying` / `official_bootstrap_required` stage names
+are retained in the checkpoint stage machine as backward-compat aliases, but
+the official EXE certification system behind them has been removed: there is
+no attached official job, no EXE gate, no signed full certificate, and no
+`first_strict_control_v1` bootstrap. These stages now flow straight through to
+`commit_bot`. A `gate_results.official_full` marker that survives on a legacy
+checkpoint is no longer produced; the only `commit_bot` path is the native
+precommit-pass publication from the `verified` stage.
 
 The first-strict authority journal freezes one checkpoint revision for all six
 Master slots at the first durable provider effect. Later checkpoint metadata or
@@ -825,7 +759,7 @@ epoch initialization false and exposes no active bots. A completed historical
 receipt is an immutable structured record (version/source/stage/reason/
 timestamp + the frozen abandon-time checkpoint envelope); it is **never**
 re-resolved against live git on load, so a legitimate parent re-publish
-(re-certification, tag rewrite) cannot invalidate historical rows. The
+(tag rewrite, re-publication) cannot invalidate historical rows. The
 allocation CAS fingerprint is a holistic sha256 over all current rows (computed
 at read time), not a fragile per-row chain head — so appending one row reliably
 changes the fingerprint the checkpoint binding compares against, without
@@ -903,7 +837,7 @@ identity, one effective runtime-configuration digest, and one evaluation-contrac
 hash, with no repair, abandonment, version gap, configuration change, restart,
 incomplete publication, or authority drift. Its HTTP projection is served only
 from a coalesced background verification snapshot; pending, expired, or failed
-verification suppresses N/10. Every row binds workflow/gate/certificate/tag/tree/remote
+verification suppresses N/10. Every row binds workflow/gate/tag/tree/remote
 main, the selected source and frozen cycle/cutoffs; final completion also
 requires the latest bot in the current strict cycle with an admitted complete
 70-hand native sample. The projection is never prompt, selection, rating, or
@@ -945,23 +879,24 @@ only a genuine non-retryable error fails closed. Full analysis:
 Control status/health Phase A projection blocks (poll authority; Evolution SSE
 still primary-slot only) include: `active_generations` (primary + draft slots
 from `epoch_authority`), `pipeline_mode` (Slice 2b activation / one-ahead
-coordinator), `async_certification` (paired vs certified tags), `eval_wait`
-(prepare-time strength sample wait when no active lease), `feature_flags`
-(`POK_SLICE2B_ENABLED`, `POK_ALLOW_STAGING_AS_PARENT`, tag prefixes),
-`version_authority` (high-water / paired / certified / unpaired), and daemon
+coordinator), `eval_wait` (prepare-time strength sample wait when no active
+lease), `feature_flags` (`POK_SLICE2B_ENABLED`, tag prefixes),
+`version_authority` (high-water / paired / unpaired), and daemon
 `configured_*` / `env_*` / `effective_*` / `pairs_drift`. Multi-slot UI must
 poll `/api/control/status` rather than infer draft state from SSE. Frontend
-Phase C mirrors those optional ControlStatus/ControlHealth fields,
-accepts `staging_uncertified` / `official-staging` in the bots data-stream
-validator, uses `active_generation.stage` for a read-only Pipeline stepper when
-the independent checkpoint poll is null, and exposes
+Phase C mirrors those optional ControlStatus/ControlHealth fields, uses
+`active_generation.stage` for a read-only Pipeline stepper when the
+independent checkpoint poll is null, and exposes
 `POST /api/control/abandon` via `controlApi.abandon`. Phase D aligns key panels
 to the same truth without redesign: OperatorSituation dual-slot badges plus
-slice2b park / eval_wait / staging-parent tips; PipelineStatus primary+draft
-parallel state (consumer park is not “stuck”); ControlPanel abandon, async
-cert queue, and daemon effective pairs; Inventory/BotManager
-`publication_tier`/`certified_tag` via `certificationView`; EvolutionMonitor
-optional IO `slot` labels when present.
+slice2b park / eval_wait tips; PipelineStatus primary+draft parallel state
+(consumer park is not “stuck”); ControlPanel abandon and daemon effective
+pairs; Inventory/BotManager `publication_tier`; EvolutionMonitor optional IO
+`slot` labels when present. (The cert-related projection fields
+`async_certification`, `certified_tag`, and the `staging_uncertified` /
+`official-staging` data-stream tokens are vestigial and now always empty /
+never emitted after the certification system removal; the single
+`publication_tier` is always `native`.)
 
 Dashboard IA merge (2026-07-30): `/pipeline` is the sole full generation
 stepper plus handoff eight-step UI; `/agents` is the sole research SSE
@@ -1083,8 +1018,8 @@ is passed into the real 70-hand loop, checked before every opponent/repeat and
 after each complete match/journal, and permanently set on timeout/cancellation.
 Reset rotates only an already-cancelled token. A new attempt cannot revive old
 detached work, admit its late match, or let it launch the next sample. The
-first-strict system-control execution scope is frozen in the checkpoint so an
-infra retry recovers the same journal identity rather than repeating a match.
+generation execution scope is frozen in the checkpoint so an infra retry
+recovers the same journal identity rather than repeating a match.
 
 ## Codex-only Worker MCP
 
@@ -1118,7 +1053,7 @@ recovery or audit.
 Never place a model credential, HTTP access token, secret, `.evolution_pok`, or
 archive path in a task envelope. Treat Worker output as untrusted proposed work:
 the Worker may not commit, push, deploy, modify the primary checkout, widen its
-path scope, or become certification/evidence authority. `cancel` applies only
+path scope, or become publication/evidence authority. `cancel` applies only
 to the exact owned task. Worktree cleanup requires the durable task row, exact
 owner marker, configured root, terminal state, and a clean snapshot.
 
@@ -1141,10 +1076,13 @@ and deterministic replay-spotlight text/citations are frozen in that same
 snapshot with source replay hashes; Master and citation gates never reopen live
 replay files or a process-global spotlight manifest.
 
-Official EXE results and Arena results have zero strength weight. Archived
-ratings, H2H, replays, action stats, experience, exhausted directions,
-spotlights, failure summaries, neural reports, and local-engine output have zero
-authority and must not be injected. There is no active free-standing lesson or
+Official EXE results and Arena results have zero strength weight; in any case
+the official EXE certification system has been removed, so there are no longer
+EXE result/certificate artifacts to weight. Native TCP quality + precommit
+gates are the sole correctness authority. Archived ratings, H2H, replays,
+action stats, experience, exhausted directions, spotlights, failure summaries,
+neural reports, and local-engine output have zero authority and must not be
+injected. There is no active free-standing lesson or
 experience store. Any future lesson facility must first bind the exact active
 bot artifact, complete replay, parser/runtime identity, evaluation cycle, and
 derivation digest through a frozen producer-to-consumer contract.
@@ -1191,60 +1129,26 @@ cd sever && python main.py
 # Diagnostic Arena only
 python scripts/national_arena.py serve --view-only
 
-# Official acceptance and required certification
+# Official-platform acceptance run (diagnostic/oracle tool — NOT certification).
+# This drives a candidate vs. opponent run against the official platform for
+# manual inspection; it carries no strength weight and is not a publication
+# gate.
 python scripts/official_platform_acceptance.py \
   --candidate bots/national_cloud_v<N> --opponent bots/national_cloud_v<M> \
   --self-play-rounds 1 --opponent-rounds 1 --target-hands 70
-python scripts/official_certify.py full bots/national_cloud_v<N> --wait-if-busy
-
-# Full certification of an ALREADY-PUBLISHED staging bot (its pipeline checkpoint
-# has been cleared). `--published` proves the candidate bytes equal the published
-# tag bytes instead of the checkpoint-owned quality/capability/probe admission.
-# Required to admit a staging-published bot into the rating pool / official
-# opponent pool (ROLE_RATING_POOL / ROLE_OFFICIAL_OPPONENT always require a full
-# certificate regardless of POK_ALLOW_STAGING_AS_PARENT).
-python scripts/official_certify.py full bots/national_cloud_v<N> --published \
-  --opponent bots/national_cloud_v<M> --wait-if-busy
-
-# One-time empty-pool bootstrap for the first strict bot only
-python scripts/official_certify.py bootstrap-first-strict bots/national_cloud_v1 \
-  --control-id first_strict_control_v1 \
-  --acknowledge-one-time-first-strict-control --wait-if-busy
-
-# Only after the jobs API projects ready_to_finalize for that exact certificate
-python scripts/official_certify.py finalize-first-strict \
-  --acknowledge-publish-first-strict
 ```
 
-Normal certification is five 70-hand self-play rounds plus three 70-hand rounds
-against an eligible strict-policy opponent. The first-strict-only
-(`national_cloud_v1`) system-control bootstrap and finalize steps are
-operator-only, zero-strength, and never an automatic fallback. The LLM/HTTP
-control plane can perform neither step. The checked-in
-`first_strict_control_v1` artifact hash is
-`b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`.
-Its valid, unused `0/1` consumption state and a green official doctor prove the
-5+3 dependency exists; they do not unlock the command. Bootstrap becomes
-available only after the exact `national_cloud_v1` checkpoint parks at
-`official_bootstrap_required`.
-The archived v141 signed-ledger chain is validation history and is not executable.
-
-### Official certifier signer (cloud runtime)
-
-Official EXE certificates are signed with the **server-owned Ed25519 signer at
-epoch 3** (fingerprint
-`SHA256:5C70Tt/aIzq60HlCQBXLZ0MdTWN3vIWk6HjkEU+nsTk`). The trust policy
-(`web/core/official_certifier_trust_policy.json`) records `current_epoch: 3`
-as active, with epoch 1 retained as historical-validation-only (tied to the
-retired `national_v141` signed-ledger chain). The allowed-signers file
-(`web/core/official_certifier_allowed_signers`) lists all three epoch keys
-under namespace `pok-official-cert-v4`. The companion
-`docs/official-signer-rotation.md` documents this epoch-3 server-owned key
-and retains the older operator-host epoch-2 narrative as historical context.
-The currently active signer epoch is authoritative as
-`current_epoch` in `web/core/official_certifier_trust_policy.json`
-(rotation procedure: `docs/official-signer-rotation.md`); the epoch-3 /
-fingerprint values above describe that trust policy as committed.
+**The official EXE certification system has been removed.** There is no
+`scripts/official_certify.py`, no signed full certificate, no
+`national-cloud-certified-v<N>` tag namespace, no async certification queue,
+no two-tier staging/certified split, and no first-strict system-control
+bootstrap. The `first_strict_control_v1` artifact and the
+`official_bootstrap_required` stage gate are gone. Every published bot is
+admitted to the rating pool and the official-opponent pool on the strength of
+its native precommit-pass publication alone. Native TCP quality + precommit
+gates are the sole correctness authority; `official_platform_acceptance.py`
+above is an optional diagnostic run only, never a required gate. The archived
+v141 signed-ledger chain is validation history and is not executable.
 
 ## Working rules
 
@@ -1341,12 +1245,11 @@ fingerprint values above describe that trust policy as committed.
   removed, or modified must update the relevant docs in the same change:
   `AGENTS.md` and `CLAUDE.md` for cross-cutting contracts, `docs/` for
   architecture/policy/oracle detail, `deploy/` for operational deployment.
-  Version numbers, namespace identifiers, paths, LLM/signer configuration,
+  Version numbers, namespace identifiers, paths, LLM configuration,
   command examples, file lists, and ABI/protocol/gate/lifecycle descriptions
   must stay consistent with the code they describe. Do not leave a working
   feature or a deployed change with stale documentation.
 - `web/main.py` is a web launcher, not a TUI or mode-switching CLI.
 - Generated frontend output is ignored; do not treat it as source.
 - The highest numbered bot directory is not completion proof. Require current
-  epoch artifact metadata, `.completed`, annotated completion tag, and the
-  role-specific certificate.
+  epoch artifact metadata, `.completed`, and an annotated completion tag.

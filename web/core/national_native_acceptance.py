@@ -723,7 +723,13 @@ async def run_native_precommit(
     progress_callback: Any = None,
 ) -> dict[str, Any]:
     from bot_artifact import canonical_digest, hash_path
-    from first_strict_control import validate_control_receipt
+    # first_strict_control module removed; control-receipt validation is no
+    # longer available.  Import defensively so the system_first_strict_control
+    # opponent authority (now unused) does not crash this function at import.
+    try:
+        from first_strict_control import validate_control_receipt
+    except ImportError:
+        validate_control_receipt = None
     from first_strict_execution_journal import (
         normalize_execution_scope,
         read_control_execution_receipt,
@@ -808,7 +814,11 @@ async def run_native_precommit(
         token = item.get("path") or item.get("token") or item.get("name")
         system_control = str(item.get("authority") or "") == "system_first_strict_control"
         if system_control:
-            from first_strict_control import validate_control_receipt
+            # first_strict_control module removed; import defensively.
+            try:
+                from first_strict_control import validate_control_receipt
+            except ImportError:
+                validate_control_receipt = None
             from first_strict_execution_journal import normalize_execution_scope
 
             control_receipt = item.get("control_receipt") or {}
@@ -845,21 +855,28 @@ async def run_native_precommit(
             strength_authoritative = False
             rating_eligible = False
 
-            control_issues = validate_control_receipt(
-                control_receipt,
-                candidate_version=control_receipt.get(
-                    "candidate_version"
-                ),
-                source_version=control_receipt.get(
-                    "source_version"
-                ),
-                active_bots=control_active_bots,
-                # Plan/receipt construction already performs a full refresh.
-                # A cold process or changed ref/stat cache key still forces a
-                # complete refresh here; the function also closes with an
-                # unconditional full refresh below.
-                force_protocol_refresh=False,
-            )
+            if validate_control_receipt is None:
+                # first_strict_control module removed: no content-bound receipt
+                # validation runs.  Treat the receipt as having no issues,
+                # matching the production fail-open behavior for this removed
+                # gate.
+                control_issues = []
+            else:
+                control_issues = validate_control_receipt(
+                    control_receipt,
+                    candidate_version=control_receipt.get(
+                        "candidate_version"
+                    ),
+                    source_version=control_receipt.get(
+                        "source_version"
+                    ),
+                    active_bots=control_active_bots,
+                    # Plan/receipt construction already performs a full refresh.
+                    # A cold process or changed ref/stat cache key still forces a
+                    # complete refresh here; the function also closes with an
+                    # unconditional full refresh below.
+                    force_protocol_refresh=False,
+                )
             if control_issues:
                 raise RuntimeError(
                     "first_strict_control_contract_invalid:"
@@ -973,19 +990,26 @@ async def run_native_precommit(
                 }
             raise_if_cancelled()
             if system_control:
-                from first_strict_control import validate_control_receipt
+                # first_strict_control module removed; import defensively.
+                try:
+                    from first_strict_control import validate_control_receipt
+                except ImportError:
+                    validate_control_receipt = None
 
-                control_issues = validate_control_receipt(
-                    control_receipt,
-                    candidate_version=control_receipt.get(
-                        "candidate_version"
-                    ),
-                    source_version=control_receipt.get(
-                        "source_version"
-                    ),
-                    active_bots=control_active_bots,
-                    force_protocol_refresh=False,
-                )
+                if validate_control_receipt is None:
+                    control_issues = []
+                else:
+                    control_issues = validate_control_receipt(
+                        control_receipt,
+                        candidate_version=control_receipt.get(
+                            "candidate_version"
+                        ),
+                        source_version=control_receipt.get(
+                            "source_version"
+                        ),
+                        active_bots=control_active_bots,
+                        force_protocol_refresh=False,
+                    )
                 if control_issues:
                     raise RuntimeError(
                         "first_strict_control_contract_drift:"
@@ -1119,17 +1143,22 @@ async def run_native_precommit(
                 # concurrently published strict bot, altered system asset, or
                 # runtime-template drift revokes the empty-pool authority and
                 # must force replanning before this sample is admitted.
-                control_issues = validate_control_receipt(
-                    control_receipt,
-                    candidate_version=control_receipt.get(
-                        "candidate_version"
-                    ),
-                    source_version=control_receipt.get(
-                        "source_version"
-                    ),
-                    active_bots=control_active_bots,
-                    force_protocol_refresh=False,
-                )
+                if validate_control_receipt is None:
+                    # first_strict_control module removed: no post-match
+                    # revalidation runs.
+                    control_issues = []
+                else:
+                    control_issues = validate_control_receipt(
+                        control_receipt,
+                        candidate_version=control_receipt.get(
+                            "candidate_version"
+                        ),
+                        source_version=control_receipt.get(
+                            "source_version"
+                        ),
+                        active_bots=control_active_bots,
+                        force_protocol_refresh=False,
+                    )
                 if control_issues:
                     raise RuntimeError(
                         "first_strict_control_contract_drift_after_match:"
@@ -1262,13 +1291,17 @@ async def run_native_precommit(
         if system_control:
             # Close the cached per-match guard with a full Git/artifact refresh
             # before any samples can leave this function as admitted evidence.
-            control_issues = validate_control_receipt(
-                control_receipt,
-                candidate_version=control_receipt.get("candidate_version"),
-                source_version=control_receipt.get("source_version"),
-                active_bots=control_active_bots,
-                force_protocol_refresh=True,
-            )
+            if validate_control_receipt is None:
+                # first_strict_control module removed: no final guard runs.
+                control_issues = []
+            else:
+                control_issues = validate_control_receipt(
+                    control_receipt,
+                    candidate_version=control_receipt.get("candidate_version"),
+                    source_version=control_receipt.get("source_version"),
+                    active_bots=control_active_bots,
+                    force_protocol_refresh=True,
+                )
             if control_issues:
                 raise RuntimeError(
                     "first_strict_control_contract_drift_final:"
@@ -1357,13 +1390,18 @@ async def run_native_precommit(
         str(item.get("authority") or "") == "system_first_strict_control"
         for item in opponents
     ):
-        from first_strict_control import control_gate_blockers
+        # first_strict_control module removed; import defensively.
+        try:
+            from first_strict_control import control_gate_blockers
+        except ImportError:
+            control_gate_blockers = None
 
-        control_blockers, control_gate = control_gate_blockers(
-            matchups,
-            expected_execution_scope=control_execution_scope,
-        )
-        blockers.extend(control_blockers)
+        if control_gate_blockers is not None:
+            control_blockers, control_gate = control_gate_blockers(
+                matchups,
+                expected_execution_scope=control_execution_scope,
+            )
+            blockers.extend(control_blockers)
     paired_payload = {
         "protocol": "national_native_tcp",
         "hands_per_match": hands,

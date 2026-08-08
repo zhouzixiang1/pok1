@@ -18,12 +18,9 @@ import {
 } from "../node_modules/.tmp/sse-tests/domain/strengthJobView.js";
 import {
   evidenceTierForGate,
-  evidenceTierForOfficialCertification,
-  evidenceTierForBootstrapJob,
   criticAdvisoryVerdictLabel,
   EVIDENCE_TIER_LABELS,
 } from "../node_modules/.tmp/sse-tests/domain/evidenceAuthority.js";
-import { certificationView } from "../node_modules/.tmp/sse-tests/domain/certificationView.js";
 import {
   workerFailureRows,
   pipelineRecoveryRows,
@@ -36,10 +33,6 @@ import {
   draftGenerations,
   primaryGenerationSlot,
 } from "../node_modules/.tmp/sse-tests/api/control.js";
-import {
-  isOfficialCertificationStage,
-  isNormalOfficialCertificationStage,
-} from "../node_modules/.tmp/sse-tests/api/officialJobs.js";
 
 const ID64 = "a".repeat(64);
 const OBSERVER = {
@@ -83,8 +76,8 @@ function baseProjection(overrides = {}) {
     checkpoint_revision: 7,
     stage: "workers_done",
     attempts: { generation: 1, audit: 0, precommit: 0 },
-    rework_counts: { worker_failure: 0, precommit: 0, official: 0 },
-    orchestrator: { stage: "workers_done", reviewer_feedback: null, infra_failure: null, official_jobs_polling_supported: false },
+    rework_counts: { worker_failure: 0, precommit: 0 },
+    orchestrator: { stage: "workers_done", reviewer_feedback: null, infra_failure: null },
     master: { started: true, completed: true, plan_present: true, analysis: null, tasks: [], task_total: 0, tasks_truncated: false },
     direction_audit: null,
     gates: {
@@ -92,7 +85,6 @@ function baseProjection(overrides = {}) {
       review: null,
       critic: null,
       precommit_eval: null,
-      official_full: null,
     },
     gate_keys_present: [],
     worker_failures: [],
@@ -137,30 +129,17 @@ test("expectAgentActivity rejects an available projection missing structural pie
   assert.throws(
     () => expectAgentActivity(baseProjection({
       orchestrator: {
-        stage: "workers_done",
+        stage: "master_planned",
         reviewer_feedback: null,
         infra_failure: null,
-        official_jobs_polling_supported: true,
       },
     })),
     /nested contract/,
   );
-  const official = baseProjection({
-    stage: "official_certifying",
-    orchestrator: {
-      stage: "official_certifying",
-      reviewer_feedback: null,
-      infra_failure: null,
-      official_jobs_polling_supported: true,
-    },
-  });
-  assert.equal(expectAgentActivity(official).available, true);
-  assert.equal(agentActivityView(official).officialJobsPollingSupported, true);
   const infra = baseProjection({
     orchestrator: {
       stage: "workers_done",
       reviewer_feedback: null,
-      official_jobs_polling_supported: false,
       infra_failure: {
         schema_version: 1,
         failure_class: "infrastructure",
@@ -203,7 +182,6 @@ test("agentRoleSummaries reports critic as advisory and not a strength gate", ()
         fields: { advisory_approved: false, advisory_score: 3 },
       },
       precommit_eval: null,
-      official_full: null,
     },
   });
   const roles = agentRoleSummaries(projection);
@@ -234,7 +212,6 @@ test("agent role high-water survives timeout and review_rejected is terminal", (
       review: currentGate("review", true),
       critic: null,
       precommit_eval: null,
-      official_full: null,
     },
   }));
   assert.equal(timedOut.find((row) => row.role === "workers").state, "terminal");
@@ -248,7 +225,6 @@ test("agent role high-water survives timeout and review_rejected is terminal", (
       review: currentGate("review", false),
       critic: null,
       precommit_eval: null,
-      official_full: null,
     },
   }));
   const reviewer = rejected.find((row) => row.role === "reviewer");
@@ -266,7 +242,6 @@ test("agent role high-water survives timeout and review_rejected is terminal", (
       review: historical("review"),
       critic: historical("critic"),
       precommit_eval: null,
-      official_full: null,
     },
   }));
   assert.equal(repairing.find((row) => row.role === "workers").state, "running");
@@ -285,10 +260,15 @@ test("checkpoint stage progress separates completed boundary from next work", ()
     completedThrough: "quality_passed",
     activeMilestone: "reviewed",
   });
-  assert.deepEqual(pipelineStageProgress("official_certifying"), {
+  assert.deepEqual(pipelineStageProgress("verified"), {
+    kind: "completed_boundary",
+    completedThrough: "verified",
+    activeMilestone: "publishing",
+  });
+  assert.deepEqual(pipelineStageProgress("publishing"), {
     kind: "in_progress",
     completedThrough: "verified",
-    activeMilestone: "official_certifying",
+    activeMilestone: "publishing",
   });
   assert.deepEqual(pipelineStageProgress("archived"), {
     kind: "completed_boundary",
@@ -449,69 +429,18 @@ test("strength authority binding rejects stale reset/pool and capability copy is
   assert.match(enabled.detail, /均可用/);
 });
 
-test("evidenceTierForGate classifies critic and official_full correctly", () => {
+test("evidenceTierForGate classifies compliance and advisory gates correctly", () => {
   assert.equal(evidenceTierForGate(null).tier, "zero");
   const critic = evidenceTierForGate({ name: "critic", present: true, complete: true, authority_state: "current", fields: {} });
   assert.equal(critic.tier, "advisory");
-  const officialPassed = evidenceTierForGate({ name: "official_full", present: true, complete: true, authority_state: "current", fields: {} });
-  assert.equal(officialPassed.tier, "compliance");
-  const officialFailed = evidenceTierForGate({ name: "official_full", present: true, complete: false, authority_state: "current", fields: {} });
-  assert.equal(officialFailed.tier, "zero");
   const reviewer = evidenceTierForGate({ name: "review", present: true, complete: true, authority_state: "current", fields: {} });
   assert.equal(reviewer.tier, "compliance");
-});
-
-test("evidenceTierForOfficialCertification only treats signed_full_v5 as compliance", () => {
-  const signed = evidenceTierForOfficialCertification({ formal_certified: true, formal_authority: "signed_full_v5" });
-  assert.equal(signed.tier, "compliance");
-  const none = evidenceTierForOfficialCertification({ formal_certified: false, formal_authority: "none" });
-  assert.equal(none.tier, "zero");
-});
-
-test("evidenceTierForOfficialCertification classifies staging tier correctly", () => {
-  // Two-tier: a staging bot (published, awaiting async cert) is staging tier, not compliance or zero.
-  const staging = evidenceTierForOfficialCertification({ publication_tier: "staging", formal_authority: "staging_uncertified" });
-  assert.equal(staging.tier, "staging");
-  // A certified bot is still compliance even if publication_tier is also set.
-  const certified = evidenceTierForOfficialCertification({ publication_tier: "certified", formal_certified: true, formal_authority: "signed_full_v5" });
-  assert.equal(certified.tier, "compliance");
-});
-
-test("certificationView aligns Inventory/BotManager on staging_uncertified", () => {
-  const staging = certificationView({
-    bot: "national_cloud_v2",
-    status: "official-staging",
-    publication_tier: "staging",
-    formal_authority: "staging_uncertified",
-    formal_certified: false,
-  });
-  assert.equal(staging.formal, false);
-  assert.equal(staging.evidence.tier, "staging");
-  assert.equal(staging.publicationTier, "staging");
-  assert.equal(staging.certifiedTag, null);
-  assert.match(staging.label, /待认证|已发布/);
-
-  const withCertifiedTag = certificationView(
-    {
-      bot: "national_cloud_v2",
-      status: "official-staging",
-      publication_tier: "staging",
-      formal_authority: "staging_uncertified",
-      formal_certified: false,
-    },
-    { certified_tag: "national-cloud-bot-v2-certified" },
-  );
-  assert.equal(withCertifiedTag.publicationTier, "staging");
-  assert.equal(withCertifiedTag.certifiedTag, "national-cloud-bot-v2-certified");
-
-  const none = certificationView({
-    bot: "national_cloud_v2",
-    status: "official-uncertified",
-    formal_authority: "none",
-  });
-  assert.equal(none.evidence.tier, "zero");
-  assert.equal(none.label, "未认证");
-  assert.equal(none.publicationTier, null);
+  const quality = evidenceTierForGate({ name: "quality", present: true, complete: true, authority_state: "current", fields: {} });
+  assert.equal(quality.tier, "compliance");
+  const precommit = evidenceTierForGate({ name: "precommit_eval", present: true, complete: true, authority_state: "current", fields: {} });
+  assert.equal(precommit.tier, "compliance");
+  const incompleteReview = evidenceTierForGate({ name: "review", present: true, complete: false, authority_state: "current", fields: {} });
+  assert.equal(incompleteReview.tier, "zero");
 });
 
 test("pipelineStepperStage falls back to active_generation when checkpoint is null", () => {
@@ -653,14 +582,6 @@ test("operatorSituationView surfaces dual-slot badges, consumer park, eval_wait,
   }), false);
 });
 
-test("official job rows remain zero-weight progress until a signed certificate is validated", () => {
-  const normalJob = evidenceTierForBootstrapJob({ formal_authority: "pipeline_attached_full_v5_job" });
-  const firstJob = evidenceTierForBootstrapJob({ formal_authority: "operator_bootstrap_full_v5_job" });
-  assert.equal(normalJob.tier, "zero");
-  assert.equal(firstJob.tier, "zero");
-  assert.match(normalJob.label, /非证书.*零强度/);
-});
-
 test("criticAdvisoryVerdictLabel mirrors criticAdvisoryComplete field chain", () => {
   const complete = criticAdvisoryVerdictLabel({
     name: "critic",
@@ -735,17 +656,6 @@ test("pipelineRecoveryRows makes timeout leases first-class and route-bound", ()
   );
   assert.equal(ordinaryInfra.failureClass, "infrastructure");
   assert.equal(ordinaryInfra.disposition, "operator_action");
-});
-
-test("official job polling eligibility is restricted to certification boundaries", () => {
-  for (const stage of ["selected", "direction_audited", "workers_done", "verified", "publishing", "archived"]) {
-    assert.equal(isOfficialCertificationStage(stage), false, stage);
-  }
-  for (const stage of ["official_bootstrap_required", "official_certifying", "official_failed", "official_inconclusive"]) {
-    assert.equal(isOfficialCertificationStage(stage), true, stage);
-  }
-  assert.equal(isNormalOfficialCertificationStage("official_bootstrap_required"), false);
-  assert.equal(isNormalOfficialCertificationStage("official_certifying"), true);
 });
 
 test("pipelineRecoveryRows surfaces identity conflicts and terminal gate outcomes", () => {
@@ -897,70 +807,6 @@ test("operatorSituationView does not call a different canonical generation a sam
     },
   }));
   assert.equal(view.continuityNote, null);
-});
-
-test("operatorSituationView makes first-strict operator certification explicit and zero-strength", () => {
-  const active = {
-    generation_ordinal: 1,
-    canonical_version: 143,
-    canonical_bot_name: "national_v143",
-    canonical_tag: "national-bot-v143",
-    next_v: 143,
-    source_v: 142,
-    parent2_v: null,
-    stage: "official_bootstrap_required",
-    run_id: "143#0",
-    workflow_run_id: "generation:143:workflow-v70",
-    checkpoint_revision: 40,
-    attempt: { generation: 0, audit: 0, precommit: 0 },
-  };
-  const required = controlStatusFixture({
-    active_generation: active,
-    operator_action: "run_first_strict_official_certification",
-  });
-  const requiredView = operatorSituationView(required, controlHealthFixture(required, {
-    stage: active.stage,
-    route: null,
-  }));
-  assert.equal(requiredView.manualRequired, true);
-  assert.match(requiredView.next, /认证/);
-  assert.match(requiredView.why, /强度.*权重.*0/);
-
-  const running = controlStatusFixture({
-    active_generation: active,
-    operator_transition: {
-      kind: "first-strict-official-operator-transition",
-      state: "bootstrap_running",
-      certification_profile: "first_strict_control_v1",
-      opponent_authority: "system_control",
-      strength_evidence_weight: 0,
-      strategy_evidence_weight: 0,
-      workflow_run_id: active.workflow_run_id,
-      candidate_version: 143,
-      source_v: 142,
-      checkpoint_stage: active.stage,
-      checkpoint_revision: active.checkpoint_revision,
-      transition_digest: "a".repeat(64),
-    },
-  });
-  const runningView = operatorSituationView(running, controlHealthFixture(running, {
-    stage: active.stage,
-    route: null,
-  }));
-  assert.equal(runningView.manualRequired, false);
-  assert.match(runningView.why, /强度.*权重.*0/);
-
-  const ready = {
-    ...running,
-    operator_transition: { ...running.operator_transition, state: "ready_to_finalize" },
-  };
-  const readyView = operatorSituationView(ready, controlHealthFixture(ready, {
-    stage: active.stage,
-    route: null,
-  }));
-  assert.equal(readyView.manualRequired, true);
-  assert.match(readyView.headline, /证书已验证/);
-  assert.match(readyView.next, /发布/);
 });
 
 test("operatorSituationView treats timeout stages as recovery leases", () => {

@@ -6,22 +6,19 @@
     "parent_source": {
       "required": [
         "strict_national_bot_spec",
-        "annotated_completion_publication",
-        "signed_official-full-v5"
+        "annotated_completion_publication"
       ]
     },
     "rating_pool": {
       "required": [
         "strict_national_bot_spec",
-        "annotated_completion_publication",
-        "signed_official-full-v5"
+        "annotated_completion_publication"
       ]
     },
     "official_opponent": {
       "required": [
         "strict_national_bot_spec",
-        "annotated_completion_publication",
-        "signed_official-full-v5"
+        "annotated_completion_publication"
       ],
       "strength_weight": 0
     }

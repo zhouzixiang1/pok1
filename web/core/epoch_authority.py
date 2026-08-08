@@ -33,8 +33,14 @@ from bot_namespace import (
     parse_bot_version,
     strict_generation_identity,
 )
-from first_strict_control import CONTROL_ID as FIRST_STRICT_CONTROL_ID
 import epoch_authority_abandon_schemas as _ea
+
+# The official EXE certification / first-strict-control system has been removed
+# (Phases 3-4).  The control id is retained as a local constant for the legacy
+# operator-transition record builder below; the bootstrap commands it once
+# emitted are no longer reachable because the orchestrator never enters the
+# ``official_bootstrap_required`` stage any more.
+FIRST_STRICT_CONTROL_ID = "first_strict_control_v1"
 
 
 RESET_COMMAND = (
@@ -1225,17 +1231,6 @@ def strict_epoch_projection(
     if publication_reconciliation:
         projection["active_generation"]["recovery_kind"] = (
             "publication_reconciliation"
-        )
-    if (
-        recorded_abandon_finalize is None
-        and
-        stage == "official_bootstrap_required"
-        and int(checkpoint["next_v"]) == FIRST_STRICT_POLICY_VERSION
-    ):
-        projection["operator_action"] = "run_first_strict_official_certification"
-        projection["operator_command"] = FIRST_STRICT_BOOTSTRAP_COMMAND
-        projection["operator_transition"] = first_strict_operator_transition(
-            checkpoint
         )
     # Phase 4b: multi-slot projection.  Build ``active_generations`` as a list
     # of all active slots (primary first, then any draft slot) so the frontend

@@ -284,10 +284,6 @@ STAGE_ORDER = [
     "repair_planned",
     "rework_running",
     "verified",
-    "official_bootstrap_required",
-    "official_certifying",
-    "official_failed",
-    "official_inconclusive",
     "publishing",
     "archived",
 ]
@@ -299,7 +295,7 @@ STAGE_ORDER = [
 SESSION_RECOVERABLE_STAGES = frozenset(
     stage
     for stage in STAGE_ORDER
-    if stage not in {"official_bootstrap_required", "official_inconclusive", "archived"}
+    if stage not in {"official_inconclusive", "archived"}
 ) | frozenset({"timed_out", "infra_timed_out"})
 
 # A plain cycle timeout may terminalize only stages whose ordinary generic

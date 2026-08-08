@@ -200,7 +200,6 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
     monkeypatch,
 ):
     """A journaled control match is reused, not relaunched, after cancellation."""
-    import first_strict_control
     import first_strict_execution_journal
     import national_native
     import precommit_eval_contract
@@ -319,16 +318,6 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
         national_native,
         "precommit_outcome_blockers",
         lambda *_args, **_kwargs: ([], {"primary_match_score": 1.0}),
-    )
-    monkeypatch.setattr(
-        first_strict_control,
-        "validate_control_receipt",
-        lambda *_args, **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        first_strict_control,
-        "control_gate_blockers",
-        lambda *_args, **_kwargs: ([], {"passed": True}),
     )
 
     def begin_control_execution(*, scope, repeat, **kwargs):

@@ -2,14 +2,13 @@ import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog, LogContent,
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
   WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
-  H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse, OfficialCertification,
+  H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse,
   ArenaCreatePayload, ArenaEventHistoryResponse, ArenaSession, ArenaSessionUnavailable,
   ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
   LlmCallMetric, LlmMetricsSummary,
 } from "./types";
 import { expectPipelineCheckpoint } from "./pipeline";
 import { expectAgentActivity } from "./agentActivity";
-import { expectOfficialCertificationJobs } from "./officialJobs";
 import { expectStrengthJobs } from "./strengthJobs";
 const BASE = "/api";
 const FETCH_TIMEOUT = 30_000;
@@ -182,10 +181,6 @@ export const api = {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   },
-  certificationStatus: (version: number) => fetchJSON<OfficialCertification>(`${BASE}/certification/${version}`),
-  certificationJobs: async () => expectOfficialCertificationJobs(
-    await fetchJSON<unknown>(`${BASE}/certification/jobs`),
-  ),
 
   // National Web Arena. These matches are local diagnostics and never certify a bot.
   arenaBots: () => fetchJSON<ArenaBotsResponse>(`${BASE}/national-arena/bots`),

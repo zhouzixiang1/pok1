@@ -78,7 +78,6 @@ def test_raw_wire_formal_and_strength_authorities_are_explicit():
     agents = _read("AGENTS.md")
     readme = _read("README.md")
     arena = _read("docs/national-web-arena.md")
-    certification = _read("docs/official-certification-policy.md")
     stages = _read("docs/llm-stages.md")
     telemetry = _read("docs/national-runtime-telemetry.md")
     wire_probe = _read("docs/official-wire-probe.md")
@@ -90,8 +89,6 @@ def test_raw_wire_formal_and_strength_authorities_are_explicit():
     assert "Never append `\\n` or `\\r\\n`" in agents
     assert "no `\\n`/`\\r\\n`" in readme
     assert "diagnostic_only" in arena
-    assert "five" in certification and "three" in certification
-    assert "official-full-v5" in certification
     assert "one complete 70-hand" in stages
     assert "policy.py only" in stages
     assert "helpers/assets only" not in stages
@@ -169,7 +166,6 @@ def test_launcher_help_text_cannot_relabel_current_authorities():
     server_launcher = _read("sever/main.py")
     rating_launcher = _read("web/core/elo_daemon.py")
     official_diagnostic = _read("scripts/official_platform_acceptance.py")
-    official_formal = _read("scripts/official_certify.py")
     registry_migration = _read("scripts/migrate_national_epoch_registry.py")
     registry = _read("web/core/national_epoch_registry.py")
 
@@ -183,25 +179,10 @@ def test_launcher_help_text_cannot_relabel_current_authorities():
     assert "per-game Elo" not in rating_launcher
     assert "Mirror pairs per match" not in rating_launcher
     assert "never issues a formal certificate" in official_diagnostic
-    assert "official-full-v5" in official_formal
-    assert "five 70-hand self-play rounds plus three 70-hand" in official_formal
-    assert '"jobs-status"' in official_formal
-    assert '"reconcile-jobs"' in official_formal
-    assert '"queue-status"' not in official_formal
-    assert '"process-queue"' not in official_formal
     assert "Identity-only migration of retired reaped state" in registry_migration
     assert "no bot/evidence migration" in registry_migration
     assert "lifecycle identity for national_tcp_policy_v1" in registry
     assert "preserves identity/tombstone/version continuity only" in registry
-
-    certification_policy = _read("docs/official-certification-policy.md")
-    assert "GET /api/certification/jobs" in certification_policy
-    assert "GET /api/certification/jobs/{job_id}" in certification_policy
-    assert "formal_authority=operator_bootstrap_full_v5_job" in certification_policy
-    assert "HTTP enqueue remains retired with status" in certification_policy
-    assert "retired `/api/certification/queue` route is absent" in certification_policy
-    assert "returns 404 for the" in certification_policy
-    assert "v155 debris" in certification_policy
 
 
 def test_rating_daemon_help_is_read_only_before_epoch_reset():

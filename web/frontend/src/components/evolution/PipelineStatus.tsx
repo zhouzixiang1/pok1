@@ -77,7 +77,7 @@ export function PipelineStepper({
     <div>
       <div className={cn(
         "mb-1 text-[10px] font-medium",
-        isFailure ? "text-red-600 dark:text-red-400" : stage === "official_bootstrap_required" ? "text-amber-600 dark:text-amber-400" : "text-gray-500",
+        isFailure ? "text-red-600 dark:text-red-400" : "text-gray-500",
       )}>
         {progress.kind === "completed_boundary"
           ? `已落盘完成边界：${STAGE_LABELS[stage]}`

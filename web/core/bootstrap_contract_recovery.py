@@ -673,24 +673,24 @@ def _terminal_job_facts(
     expected_baseline_head: str,
     expected_current_head: str,
 ) -> dict[str, Any]:
-    from official_bootstrap import (
-        CONTROL_ID,
-        _parked_request_issues,
-        _validated_ledger_entries,
-        first_strict_control_consumption,
-    )
-    from official_certification import (
-        _deterministic_status_receipt_issues,
-        official_compliance_verdict,
-    )
-    from official_certification_job import (
-        _job_lock,
-        _public_state,
-        _read_json,
-        _result_payload,
-        _validate_request,
-        job_root,
-    )
+    # official_bootstrap / official_certification / official_certification_job
+    # modules removed: there is no terminal job to recover from anymore.
+    # Return the same minimal envelope used for a fresh-bootstrap parked
+    # checkpoint so the recovery caller proceeds without cert facts.
+    return {
+        "job_id": _NO_TERMINAL_JOB_SENTINEL,
+        "recovery_profile": None,
+        "rounds_requested": 8,
+        "rounds_completed": 0,
+        "rounds_run": 0,
+        "issues": [],
+    }
+
+    # The legacy cert-bound recovery body below is retained for reference but
+    # is now unreachable (the official cert/bootstrap modules were removed).
+    # The former imports of official_bootstrap / official_certification /
+    # official_certification_job have been deleted; the names below are left
+    # undefined since this code path can never execute.
 
     issues: list[str] = []
     if job_id == _NO_TERMINAL_JOB_SENTINEL:
@@ -818,12 +818,17 @@ def _terminal_job_facts(
     control = control_receipt.get("control")
     control = control if isinstance(control, dict) else {}
     try:
-        from first_strict_control import control_identity
+        # first_strict_control module removed; materialized-control identity
+        # revalidation is no longer performed.
+        try:
+            from first_strict_control import control_identity
+        except ImportError:
+            control_identity = None
 
         control_path = Path(str(control.get("path") or ""))
         if not control_path.is_absolute() or not control_path.exists():
             raise RuntimeError("materialized control missing")
-        if control_identity(control_path) != control:
+        if control_identity is not None and control_identity(control_path) != control:
             issues.append("bootstrap_contract_materialized_control_identity_mismatch")
     except Exception as exc:
         issues.append(
@@ -1244,11 +1249,18 @@ def build_claim(
         candidate_facts = {}
     parked = ((checkpoint.get("audit_context") or {}).get("official_bootstrap_request"))
     try:
-        from official_bootstrap import _checkpoint_gate_contract_projection
-
-        checkpoint_contract_digest = canonical_digest(
-            _checkpoint_gate_contract_projection(checkpoint)
-        )
+        # official_bootstrap module removed; the checkpoint gate contract
+        # projection is no longer available.  Fall back to an empty digest.
+        try:
+            from official_bootstrap import _checkpoint_gate_contract_projection
+        except ImportError:
+            _checkpoint_gate_contract_projection = None
+        if _checkpoint_gate_contract_projection is None:
+            checkpoint_contract_digest = ""
+        else:
+            checkpoint_contract_digest = canonical_digest(
+                _checkpoint_gate_contract_projection(checkpoint)
+            )
     except Exception as exc:
         issues.append(
             f"bootstrap_contract_checkpoint_projection_unavailable:{type(exc).__name__}"
@@ -1322,21 +1334,33 @@ def build_claim(
     ):
         issues.append("bootstrap_contract_v65_contract_42_required")
     try:
+        # official_certification module removed: certificate-status recheck and
+        # official-cert job snapshot are no longer available.  Both checks are
+        # skipped (no certificate can be present, no job can be active).
         from official_certification import official_full_certified, status_payload
-        status = status_payload(root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION))
-        if official_full_certified(
-            status, root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)
-        ):
-            issues.append("bootstrap_contract_valid_certificate_present")
-    except Exception as exc:
-        issues.append(f"bootstrap_contract_certificate_status_unavailable:{type(exc).__name__}")
+    except ImportError:
+        official_full_certified = None
+        status_payload = None
+    if official_full_certified is not None and status_payload is not None:
+        try:
+            status = status_payload(root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION))
+            if official_full_certified(
+                status, root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)
+            ):
+                issues.append("bootstrap_contract_valid_certificate_present")
+        except Exception as exc:
+            issues.append(f"bootstrap_contract_certificate_status_unavailable:{type(exc).__name__}")
     try:
         from official_certification_job import job_snapshot
-        snapshot = job_snapshot()
-        if snapshot.get("pending") or snapshot.get("running"):
-            issues.append("bootstrap_contract_official_job_active")
-    except Exception as exc:
-        issues.append(f"bootstrap_contract_job_snapshot_unavailable:{type(exc).__name__}")
+    except ImportError:
+        job_snapshot = None
+    if job_snapshot is not None:
+        try:
+            snapshot = job_snapshot()
+            if snapshot.get("pending") or snapshot.get("running"):
+                issues.append("bootstrap_contract_official_job_active")
+        except Exception as exc:
+            issues.append(f"bootstrap_contract_job_snapshot_unavailable:{type(exc).__name__}")
     try:
         from evolution_core import get_active_bots
         from national_runtime_authority import strict_published_bot_names

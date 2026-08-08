@@ -44,12 +44,3 @@ def test_new_policy_helper_must_reach_typed_dispatch(tmp_path):
         child,
         ["policy.py"],
     ) == []
-
-
-def test_materialized_system_control_passes_strict_compile_and_import():
-    from code_verification import run_import_contract_test, verify_code
-    from first_strict_control import materialize_control
-
-    path = Path(materialize_control())
-    assert verify_code(path) == []
-    assert run_import_contract_test(path) == []

@@ -251,75 +251,22 @@ def _official_gate_enabled(name: str, *, include_required: bool = True) -> bool:
 
 
 async def _request_official_smoke_status(bot_dir: Path) -> dict:
-    """Request smoke evidence using only a policy-eligible official opponent."""
-    from official_certification import (
-        STATUS_FAILED,
-        STATUS_INCONCLUSIVE,
-        STATUS_PENDING,
-        build_spec,
-        official_compliance_verdict,
-        select_official_opponent,
-    )
-    from official_certification_job import start_or_poll_job
+    """Request smoke evidence using only a policy-eligible official opponent.
 
-    preferred = _tg.os.environ.get("POK_OFFICIAL_OPPONENT", "").strip() or None
-    selection = select_official_opponent(
-        bot_dir,
-        preferred=preferred,
-        allow_bootstrap_grandfather=False,
-    )
-    if not selection.get("selected"):
-        return {
-            "status": STATUS_INCONCLUSIVE,
-            "mode": "smoke",
-            "issues": ["official_smoke_no_eligible_opponent"],
-            "blocking": False,
-            "inconclusive": True,
-            "classification": "inconclusive",
-            "opponent_selection": selection,
-        }
-
-    opponent = selection["opponent"]["path"]
-    spec = build_spec("smoke", bot_dir, opponent=opponent)
-    job = await _tg.run_blocking_isolated(
-        start_or_poll_job,
-        spec,
-        thread_name_prefix="official-smoke",
-        opponent_selection=selection,
-    )
-    status = (
-        job.get("status")
-        if job.get("state") == "completed" and isinstance(job.get("status"), dict)
-        else {
-            "status": STATUS_PENDING,
-            "mode": "smoke",
-            "queued": job.get("state") == "queued",
-            "pending": bool(job.get("pending")),
-            "issues": list(job.get("issues") or []),
-            "official_job": job,
-            "summary": {
-                "self_play_rounds": (
-                    spec.get("self_play_rounds") if isinstance(spec, dict) else spec.self_play_rounds
-                ),
-                "opponent_rounds": (
-                    spec.get("opponent_rounds") if isinstance(spec, dict) else spec.opponent_rounds
-                ),
-                "target_hands": (
-                    spec.get("target_hands") if isinstance(spec, dict) else spec.target_hands
-                ),
-            },
-        }
-    )
-
-    verdict = official_compliance_verdict(status)
+    Certification system removed: the official certification job/opponent
+    selection no longer exists.  Return a non-blocking inconclusive status so
+    the native smoke match remains the source of truth.
+    """
     return {
-        **status,
-        "blocking": bool(verdict.get("blocking")),
-        "inconclusive": bool(verdict.get("inconclusive")),
-        "classification": str(verdict.get("classification") or "passed_or_pending"),
-        "opponent_selection": status.get("opponent_selection") or selection,
-        "request_opponent_selection": selection,
-        "official_job": job,
+        "status": "inconclusive",
+        "mode": "smoke",
+        "issues": ["official_smoke_removed"],
+        "blocking": False,
+        "inconclusive": True,
+        "classification": "inconclusive",
+        "opponent_selection": {"selected": False, "reason": "official_smoke_removed"},
+        "request_opponent_selection": {"selected": False, "reason": "official_smoke_removed"},
+        "official_job": None,
     }
 
 

@@ -62,7 +62,7 @@ export function PhaseAProjectionStrip({
         )}
         {va && (
           <EvolutionStatusBadge tone="info">
-            版本高水位 v{va.high_water} · 已配对 {va.paired_versions?.length ?? 0}（正式认证 {va.certified_versions?.length ?? 0}）
+            版本高水位 v{va.high_water} · 已配对 {va.paired_versions?.length ?? 0}
           </EvolutionStatusBadge>
         )}
         {flags?.staging_as_parent && (

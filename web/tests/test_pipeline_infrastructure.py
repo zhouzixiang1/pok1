@@ -102,47 +102,6 @@ def test_checkpoint_rejects_tampered_infrastructure_overlay(tmp_path, monkeypatc
     ) is False
 
 
-def test_official_job_attachment_uses_cas_and_clears_on_rework(tmp_path, monkeypatch):
-    state_file = tmp_path / "pipeline_state.json"
-    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
-    assert evolution_infra.write_pipeline_checkpoint(2, 1, "verified")
-    job = {
-        "schema_version": 1,
-        "job_id": "job-a",
-        "identity_digest": "identity-a",
-        "candidate_hash": "candidate-a",
-        "policy_id": "official-full-v5",
-        "state": "running",
-        "revision": 1,
-    }
-    assert evolution_infra.write_pipeline_checkpoint(
-        2,
-        1,
-        "official_certifying",
-        official_job=job,
-        expected_official_job_id="",
-    )
-    updated = {**job, "revision": 2, "state": "finalizing"}
-    assert evolution_infra.write_pipeline_checkpoint(
-        2,
-        1,
-        "official_certifying",
-        official_job=updated,
-        expected_official_job_id="stale",
-    ) is False
-    assert evolution_infra.write_pipeline_checkpoint(
-        2,
-        1,
-        "official_certifying",
-        official_job=updated,
-        expected_official_job_id="job-a",
-    )
-    assert json.loads(state_file.read_text())["official_job"]["revision"] == 2
-
-    assert evolution_infra.write_pipeline_checkpoint(2, 1, "workers_done")
-    assert json.loads(state_file.read_text())["official_job"] is None
-
-
 def test_retired_workflow_profile_fails_closed_without_checkpoint_upgrade(
     tmp_path, monkeypatch
 ):

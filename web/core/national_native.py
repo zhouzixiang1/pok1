@@ -610,14 +610,20 @@ def _prepare_native_spec(
 
     bot_dir = Path(bot_dir).absolute()
     if system_control:
-        from first_strict_control import validate_materialized_control
+        # first_strict_control module removed; materialized-control validation
+        # is no longer performed (skip the check).
+        try:
+            from first_strict_control import validate_materialized_control
+        except ImportError:
+            validate_materialized_control = None
 
-        control_errors = validate_materialized_control(bot_dir)
-        if control_errors:
-            raise ValueError(
-                f"invalid first-strict control {label}: "
-                + ";".join(control_errors[:8])
-            )
+        if validate_materialized_control is not None:
+            control_errors = validate_materialized_control(bot_dir)
+            if control_errors:
+                raise ValueError(
+                    f"invalid first-strict control {label}: "
+                    + ";".join(control_errors[:8])
+                )
     else:
         # An in-flight crossover smoke candidate/opponent (synthetic
         # ``in_flight_crossover_smoke*`` label) is NOT under ``bots/`` and was

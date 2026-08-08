@@ -59,7 +59,6 @@ Primary references:
 
 - `docs/national-tcp-policy-epoch.md`
 - `docs/national-runtime-architecture-policy.md`
-- `docs/official-certification-policy.md`
 - `docs/official-raise-boundary-oracle-2026-07-11.md`
 - `docs/official-terminal-settlement-oracle-2026-07-11.md`
 
@@ -68,24 +67,16 @@ Typical verification:
 ```bash
 python -m pytest sever/tests -q
 cd web && python -m pytest tests -q
-python scripts/official_certify.py doctor
 ```
 
 Do not treat the Arena or official EXE chip result as strength evidence. Local
-Glicko/H2H strength uses complete 70-hand raw native TCP matches only.
-For the first strict candidate (`national_cloud_v1` on this branch), a green
-doctor and valid unused `first_strict_control_v1` at artifact hash
-`b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2` prove the
-official 5+3 dependency is present. Only the checkpoint stage
-`official_bootstrap_required` unlocks the operator action.
-
-A staging-tier published master is **not** rating-pool-eligible until it
-receives a signed full certificate (`official_certify.py full --published` →
-`publish-certified --execute`). If a staging master is selected as the next
-generation's eval source before that, `wait_for_daemon_eval` loops forever on
-an unreachable games floor (the bot is structurally excluded from the match
-queue, not slow), and the degraded-floor logic cannot recover it. See the
-"Staging eval-source deadlock" section of `AGENTS.md` for the full contract.
+Glicko/H2H strength uses complete 70-hand raw native TCP matches only. The
+official EXE certification system has been removed: there is no
+`official_certify.py`, no signed full certificate, no two-tier staging/certified
+split, no async certification queue, and no `first_strict_control_v1`
+system-control bootstrap. Every published bot is admitted to the rating pool on
+the strength of its native precommit-pass publication alone; native TCP quality
++ precommit gates are the sole correctness authority.
 
 ## Documentation synchronization rule
 
@@ -93,7 +84,7 @@ Any functional change — a feature added, removed, or modified — must update 
 relevant documentation **in the same change**: `AGENTS.md` and `CLAUDE.md` for
 cross-cutting contracts, `docs/` for architecture/policy/oracle detail, and
 `deploy/` for operational deployment. Version numbers, namespace identifiers,
-paths, LLM/signer configuration, command examples, file lists, and
+paths, LLM configuration, command examples, file lists, and
 ABI/protocol/gate/lifecycle descriptions must all stay consistent with the code
 they describe. Do not leave a green result, a working feature, or a deployed
 change with stale documentation. When in doubt, update.

@@ -273,49 +273,14 @@ def _system_control_identity(
     candidate_version: int,
     source_version: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    from first_strict_control import (
-        CONTROL_AUTHORITY,
-        CONTROL_ID,
-        CONTROL_REASON,
-        validate_control_receipt,
+    # first_strict_control module removed; the system_first_strict_control
+    # opponent authority is no longer supported.  Any caller that reaches this
+    # path is rejected (callers wrap the call in try/except and report it as an
+    # identity error).
+    raise PrecommitEvalContractError(
+        "first_strict_control_removed: system_first_strict_control authority "
+        "is no longer supported"
     )
-
-    if str(item.get("name") or "") != CONTROL_ID:
-        raise PrecommitEvalContractError("first-strict control name mismatch")
-    if str(item.get("reason") or "") != CONTROL_REASON:
-        raise PrecommitEvalContractError("first-strict control reason mismatch")
-    if item.get("authority") != CONTROL_AUTHORITY:
-        raise PrecommitEvalContractError("first-strict control authority mismatch")
-    expected_flags = {
-        "precommit_gate_admitted": True,
-        "formal_bootstrap_opponent_admitted": True,
-        "strength_admitted": False,
-        "rating_eligible": False,
-        "official_opponent_eligible": False,
-    }
-    for field, value in expected_flags.items():
-        if item.get(field) is not value:
-            raise PrecommitEvalContractError(
-                f"first-strict control {field} mismatch"
-            )
-    if item.get("formal_bootstrap_scope") != "first_policy_bot_empty_pool_only":
-        raise PrecommitEvalContractError(
-            "first-strict control formal bootstrap scope mismatch"
-        )
-    receipt = item.get("control_receipt")
-    issues = validate_control_receipt(
-        receipt,
-        candidate_version=int(candidate_version),
-        source_version=int(source_version),
-    )
-    if issues:
-        raise PrecommitEvalContractError(
-            "first-strict control receipt invalid: " + ";".join(issues[:8])
-        )
-    identity = (receipt or {}).get("control") or {}
-    if str(path.absolute()) != str(identity.get("path") or ""):
-        raise PrecommitEvalContractError("first-strict control path mismatch")
-    return dict(identity), dict(receipt)
 
 
 def create_precommit_plan(
@@ -414,9 +379,8 @@ def create_precommit_plan(
         PRECOMMIT_PARENT_MIN_SAMPLES,
     )
     if system_control_count:
-        from first_strict_control import (
-            CONTROL_GATE_PROFILE_ID,
-        )
+        # first_strict_control module removed; use a placeholder profile id.
+        CONTROL_GATE_PROFILE_ID = "first_strict_control_removed"
         # ``_system_control_identity`` has already validated the receipt back
         # to the checked-in package.  The manifest-owned gate contract, not the
         # caller/LLM's n_games suggestion, therefore fixes the execution shape.
@@ -682,9 +646,8 @@ def validate_precommit_plan(
             PRECOMMIT_PARENT_MIN_SAMPLES,
         )
         if system_control_count:
-            from first_strict_control import (
-                CONTROL_GATE_PROFILE_ID,
-            )
+            # first_strict_control module removed; placeholder profile id.
+            CONTROL_GATE_PROFILE_ID = "first_strict_control_removed"
             control_contract = dict(
                 ((opponents[0].get("control_receipt") or {}).get(
                     "gate_contract"

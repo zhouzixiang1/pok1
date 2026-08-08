@@ -41,28 +41,18 @@ if os.environ.get("POK_CLOUD_RUNTIME", "").lower() in {"1", "true", "yes", "on"}
     os.environ.setdefault("POK_BOT_PREFIX", "national_cloud_v")
     os.environ.setdefault("POK_TAG_PREFIX", "national-cloud-bot-v")
     os.environ.setdefault("POK_HIGH_WATER_TAG_PREFIX", "national-cloud-high-water-v")
-    os.environ.setdefault("POK_CERTIFIED_TAG_PREFIX", "national-cloud-certified-v")
 ACTIVE_BOT_PREFIX = os.environ.get("POK_BOT_PREFIX", "national_v")
 ACTIVE_TAG_PREFIX = os.environ.get("POK_TAG_PREFIX", "national-bot-v")
 HIGH_WATER_TAG_PREFIX = os.environ.get(
     "POK_HIGH_WATER_TAG_PREFIX", "national-high-water-v"
 )
-# Two-tier publication: a staging bot is published with a paired
-# completion + high-water tag (existing semantics unchanged).  A certified
-# bot is a staging bot whose async official EXE certification subsequently
-# completed, gaining a THIRD annotated tag at the same commit.  The
-# certified prefix is a separate namespace so ``resolve_version_namespace_authority``
-# can distinguish "published (staging)" from "published + certified" without
-# altering the paired completion/high-water authority model.
-CERTIFIED_TAG_PREFIX = os.environ.get("POK_CERTIFIED_TAG_PREFIX", "national-certified-v")
-# When enabled (default), a staging bot (published but not yet officially
-# certified) may serve as a PARENT_SOURCE for the next generation.  This
-# allows the pipeline to prepare N+1 while gen N's async certification runs.
-# ROLE_RATING_POOL and ROLE_OFFICIAL_OPPONENT ALWAYS require certification
-# regardless of this flag — rating and formal opponents must be certified.
-ALLOW_STAGING_AS_PARENT = os.environ.get(
-    "POK_ALLOW_STAGING_AS_PARENT", "1"
-).lower() in {"1", "true", "yes", "on"}
+# Certification / two-tier publication were removed: every eligible bot now
+# publishes through a single native tier with no signed-certificate gate.
+# These names are retained as inert stubs because web/server/routes/control.py,
+# _helpers.py, official_certification_authority.py and scripts/official_certify.py
+# still import them at module load; they always return empty/never-match values.
+CERTIFIED_TAG_PREFIX = ""
+ALLOW_STAGING_AS_PARENT = True
 VERSION_WIDTH = 0
 
 # The canonical evolution publication branch. Configurable so a deployment can
@@ -142,7 +132,10 @@ def _high_water_tag_re() -> re.Pattern:
 
 
 def _certified_tag_re() -> re.Pattern:
-    return re.compile(rf"^{re.escape(CERTIFIED_TAG_PREFIX)}([1-9][0-9]*)$")
+    # Certification tier removed: no tag ever matches the certified namespace.
+    # Using ``(?!x)x`` rather than an empty prefix keeps this a compiled
+    # "never match" pattern even if CERTIFIED_TAG_PREFIX is later reused.
+    return re.compile(r"^(?!x)x$")
 _GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_MANIFEST_KEYS = frozenset(
@@ -339,24 +332,24 @@ def high_water_tag_glob() -> str:
 def certified_tag(version: int | str) -> str:
     """Return the certified-tier tag label for a version.
 
-    A certified tag is created only after async official EXE certification of a
-    staging bot completes.  It shares the same commit as the paired
-    completion/high-water tags (created at staging publication time), so a
-    version is "certified" iff all three tags peel to the same commit.
+    The certification tier has been removed; this stub now always returns the
+    empty string.  It is retained because web/server/routes/control.py,
+    web/server/routes/_helpers.py, web/core/official_certification_authority.py
+    and scripts/official_certify.py still import it.
     """
 
-    return f"{CERTIFIED_TAG_PREFIX}{format_version(version)}"
+    return ""
 
 
 def certified_tag_glob() -> str:
-    return f"{CERTIFIED_TAG_PREFIX}*"
+    # Inert: the certified tag namespace no longer exists, so its glob never
+    # matches.  Returned for callers that still import the helper.
+    return ""
 
 
 def parse_certified_tag_version(tag: str | None) -> int | None:
-    if not isinstance(tag, str):
-        return None
-    match = _certified_tag_re().fullmatch(tag)
-    return int(match.group(1)) if match else None
+    # Certification tier removed; no tag is ever a certified tag.
+    return None
 
 
 def parse_bot_version(name: str | None) -> int | None:
@@ -385,18 +378,13 @@ class VersionNamespaceAuthority:
 
     A completion tag or a high-water tag by itself is an interrupted effect,
     not version authority.  A version advances the namespace only when both
-    exact annotated tags peel to the same commit.  Strict-v143+ artifact and
-    certificate eligibility remain a separate publication-authority check;
-    callers must not treat this numeric namespace proof as executable bytes.
+    exact annotated tags peel to the same commit.  Strict-v143+ artifact
+    eligibility remains a separate publication-authority check; callers must
+    not treat this numeric namespace proof as executable bytes.
 
-    Two-tier publication adds ``certified_versions``: a strict subset of
-    ``paired_versions`` whose async official EXE certification subsequently
-    completed and gained a third annotated tag at the same commit.  A paired
-    but uncertified version is "staging" (published, awaiting/without cert);
-    a certified version has passed formal certification.  This distinction is
-    consumed by ``resolve_national_bot_spec`` and the active-pool discoverer
-    to enforce that rating/opponent roles require certification while parent
-    selection may accept staging.
+    ``certified_versions`` is retained as an always-empty tuple for callers
+    that still read it; the certification tier has been removed and every
+    paired publication is now a single native tier.
     """
 
     high_water: int
@@ -423,14 +411,11 @@ def resolve_version_namespace_authority(
         "--format=%(objecttype)%09%(*objecttype)%09%(refname:short)",
         f"refs/tags/{bot_tag_glob()}",
         f"refs/tags/{high_water_tag_glob()}",
-        f"refs/tags/{certified_tag_glob()}",
     ) or "")
     completion: dict[int, str] = {}
     high_water: dict[int, str] = {}
-    certified: dict[int, str] = {}
     active_tag_pattern = _active_tag_re()
     high_water_pattern = _high_water_tag_re()
-    certified_pattern = _certified_tag_re()
     for row in rows.splitlines():
         parts = row.split("\t")
         if len(parts) != 3:
@@ -446,10 +431,6 @@ def resolve_version_namespace_authority(
         high_water_match = high_water_pattern.fullmatch(tag)
         if high_water_match is not None:
             high_water[int(high_water_match.group(1))] = tag
-            continue
-        certified_match = certified_pattern.fullmatch(tag)
-        if certified_match is not None:
-            certified[int(certified_match.group(1))] = tag
 
     paired_versions = tuple(sorted(set(completion).intersection(high_water)))
     if not paired_versions:
@@ -458,7 +439,6 @@ def resolve_version_namespace_authority(
         )
 
     paired_commits: list[tuple[int, str]] = []
-    paired_commit_lookup: dict[int, str] = {}
     for version in paired_versions:
         completion_commit = str(git(
             "rev-parse",
@@ -476,29 +456,9 @@ def resolve_version_namespace_authority(
                 f"paired version authority commit mismatch for v{version}"
             )
         paired_commits.append((version, completion_commit))
-        paired_commit_lookup[version] = completion_commit
 
-    # Certified versions are a strict subset of paired versions whose async
-    # official certification subsequently completed and gained a third
-    # annotated tag at the SAME commit.  A certified tag at a different commit
-    # (or an orphan certified tag without the paired staging tags) is treated
-    # as an interrupted effect and silently ignored, never as authority.
-    certified_versions_list: list[int] = []
-    for version in paired_versions:
-        ctag = certified.get(version)
-        if ctag is None:
-            continue
-        certified_commit = str(git(
-            "rev-parse",
-            f"refs/tags/{ctag}^{{commit}}",
-        ) or "").strip().lower()
-        if (
-            _GIT_OBJECT_ID_RE.fullmatch(certified_commit) is not None
-            and certified_commit == paired_commit_lookup[version]
-        ):
-            certified_versions_list.append(version)
-    certified_versions = tuple(sorted(set(certified_versions_list)))
-
+    # Certification tier removed: there is no longer a third annotated tag
+    # family, so certified_versions is always empty.
     return VersionNamespaceAuthority(
         high_water=paired_versions[-1],
         paired_versions=paired_versions,
@@ -509,7 +469,7 @@ def resolve_version_namespace_authority(
         unpaired_high_water_versions=tuple(
             sorted(set(high_water).difference(completion))
         ),
-        certified_versions=certified_versions,
+        certified_versions=(),
     )
 
 
@@ -704,9 +664,9 @@ class NationalBotSpec:
     epoch_receipt: dict[str, Any] = field(default_factory=dict)
     publication_identity: dict[str, Any] = field(default_factory=dict)
     certificate_digest: str = ""
-    # "certified" = signed full certificate present; "staging" = published but
-    # awaiting async certification (only allowed for parent_source role).
-    publication_tier: str = "certified"
+    # Native tier: the certification system has been removed and every eligible
+    # published bot now resolves to a single native tier.
+    publication_tier: str = "native"
     issues: tuple[str, ...] = ()
 
     @property
@@ -748,9 +708,10 @@ def resolve_national_bot_spec(
 ) -> NationalBotSpec:
     """Resolve one strict policy bot without consulting archive directories.
 
-    Published roles require an immutable annotated completion identity and a
-    signed full official-EXE certificate.  Candidate validation is structural
-    so an in-flight bot can be gated before publication.
+    Published roles require an immutable annotated completion identity.  The
+    certification system has been removed, so no role requires (or even loads)
+    a signed certificate.  Candidate validation is structural so an in-flight
+    bot can be gated before publication.
     """
 
     root = Path(repo_root or Path(__file__).resolve().parents[2]).absolute()
@@ -810,15 +771,10 @@ def resolve_national_bot_spec(
         if require_completion is None
         else bool(require_completion)
     )
-    if require_certificate is not None:
-        certificate_required = bool(require_certificate)
-    elif role == ROLE_PARENT_SOURCE and ALLOW_STAGING_AS_PARENT:
-        # Two-tier: a staging bot may serve as a parent while its async
-        # certification runs.  Rating pool and official opponents ALWAYS
-        # require a signed certificate regardless of this flag.
-        certificate_required = False
-    else:
-        certificate_required = role in ACTIVE_PUBLISHED_ROLES
+    # Certification system removed: no role ever requires a certificate.  The
+    # ``require_certificate`` argument is accepted for API compatibility but
+    # can no longer turn the gate on.
+    certificate_required = False
     if completion_required and version is not None and path.is_dir():
         try:
             if publication_resolver is None:
@@ -836,63 +792,11 @@ def resolve_national_bot_spec(
             if publication.get("tag") != bot_tag(version):
                 issues.append("publication_completion_tag_mismatch")
 
-    if version is not None and path.is_dir() and (
-        certificate_required
-        or (role == ROLE_PARENT_SOURCE and not certificate_required)
-    ):
-        # Rating/opponent roles: certificate is mandatory (fail closed).
-        # Staging-as-parent: still best-effort load. A parent that already has a
-        # signed full certificate must bind that digest into the epoch checkpoint
-        # — otherwise prepare_generation dies with
-        # checkpoint_parent_publication_identity_incomplete even though the bot
-        # is fully certified (dual-tier phase2 gap).
-        try:
-            if certificate_resolver is None:
-                from official_certification import (
-                    official_full_certified,
-                    read_status,
-                )
-
-                status = read_status(path, ledger_fresh=ledger_fresh)
-                certificate = {
-                    "eligible": official_full_certified(
-                        status,
-                        path,
-                        require_published=True,
-                        ledger_fresh=ledger_fresh,
-                    ),
-                    "certificate_digest": status.get("certificate_digest"),
-                }
-            else:
-                certificate = certificate_resolver(path)
-        except Exception as exc:
-            if certificate_required:
-                issues.append(f"official_certificate_error:{type(exc).__name__}:{exc}")
-        else:
-            raw_digest = str(certificate.get("certificate_digest") or "")
-            digest_ok = bool(_HEX_SHA256_RE.fullmatch(raw_digest))
-            if certificate_required:
-                if certificate.get("eligible") is not True:
-                    issues.append("signed_full_official_certificate_required")
-                if not digest_ok:
-                    issues.append("official_certificate_digest_invalid")
-                else:
-                    certificate_digest = raw_digest
-            elif (
-                certificate.get("eligible") is True
-                and digest_ok
-            ):
-                certificate_digest = raw_digest
-
-    # Tier: certified when a valid digest is bound; staging only when
-    # ROLE_PARENT_SOURCE is allowed without a certificate and none was found.
-    publication_tier = "certified"
-    if (
-        not certificate_required
-        and role == ROLE_PARENT_SOURCE
-        and not certificate_digest
-    ):
-        publication_tier = "staging"
+    # Single native publication tier.  ``certificate_digest`` and
+    # ``publication_tier`` remain on the spec for API compatibility but no
+    # longer influence eligibility.
+    certificate_digest = None
+    publication_tier = "native"
     return NationalBotSpec(
         path=path,
         label=label,

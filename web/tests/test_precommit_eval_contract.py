@@ -601,7 +601,6 @@ async def test_control_attempt_freezes_or_reuses_journal_identity(
     attempt_case,
     checkpoint_stage,
 ):
-    import first_strict_control
     import system_strict_bootstrap
     from tool_gates import _bot_code_fingerprint
 
@@ -703,11 +702,6 @@ async def test_control_attempt_freezes_or_reuses_journal_identity(
     monkeypatch.setattr(
         system_strict_bootstrap,
         "validate_system_gate_receipt",
-        lambda *_args, **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        first_strict_control,
-        "validate_control_receipt",
         lambda *_args, **_kwargs: [],
     )
 

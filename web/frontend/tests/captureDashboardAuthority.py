@@ -58,7 +58,6 @@ def main() -> None:
         "_review_complete",
         "_critic_advisory_complete",
         "_precommit_complete",
-        "_official_full_complete",
     ):
         setattr(pipeline, helper, lambda _checkpoint: True)
 
@@ -69,7 +68,7 @@ def main() -> None:
         "next_v": STRICT_NEXT_V,
         "source_v": STRICT_SOURCE_V,
         "parent2_v": None,
-        "stage": "official_certifying",
+        "stage": "verified",
         "workflow_run_id": f"generation:{STRICT_NEXT_V}:fixture-v1",
         "run_id": f"{STRICT_NEXT_V}#0",
         "generation_attempt": 0,

@@ -32,7 +32,6 @@ import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaf
 import { HandoffEightStep } from "../components/evolution/HandoffEightStep";
 import { PipelineDiagnostics } from "../components/evolution/PipelineDiagnostics";
 import { PipelineStatus } from "../components/evolution/PipelineStatus";
-import { OfficialCertificationProgress } from "../components/evolution/OfficialCertificationProgress";
 import { EvolutionStreamPanel } from "../components/evolution/EvolutionStreamPanel";
 import { ToolCard, ThinkingBlock } from "../components/evolution/ToolCard";
 import type { ConvMsg } from "../components/evolution/ToolCard";
@@ -68,10 +67,9 @@ const transientStatusFallback = (task: TransientStatusTask | null): string => (
 
 /**
  * 当代进度页：合并原 PipelineMap（完整 stepper + 交接八步 + 诊断）与
- * AgentActivity（研发角色 + 实时 LLM 输入输出流），并加入国赛 EXE 认证进度。
+ * AgentActivity（研发角色 + 实时 LLM 输入输出流）。
  *
  * - 完整 stepper：prepare→master→workers→quality→review→critic→precommit→commit→publish
- * - 国赛 EXE 认证进度（轮次/手数/通过率）
  * - LLM 实时输入输出流
  * - handoff 八步
  */
@@ -453,9 +451,6 @@ export default function Generation() {
           />
         </div>
       </EvolutionSurface>
-
-      {/* 国赛 EXE 认证进度（轮次/手数/通过率）— 组件自带唯一轮询 */}
-      <OfficialCertificationProgress status={status} className="mt-4" />
 
       <HandoffEightStep handoff={handoff} className="mt-4" />
 

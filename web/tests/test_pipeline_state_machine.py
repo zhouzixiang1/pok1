@@ -1097,16 +1097,6 @@ def test_official_certifying_profile_refresh_transitions_are_legal():
         assert reason == "official_profile_refresh"
 
 
-def test_session_recovery_classification_covers_official_active_stages():
-    stages = session_recoverable_stages()
-
-    assert "official_certifying" in stages
-    assert "official_failed" in stages
-    assert "official_bootstrap_required" not in stages
-    assert "official_inconclusive" not in stages
-    assert "archived" not in stages
-
-
 def test_publishing_is_forward_only_recoverable_commit_route():
     checkpoint = {
         "stage": "publishing",
@@ -1130,18 +1120,10 @@ def test_publishing_is_forward_only_recoverable_commit_route():
 
 
 def test_profile_refresh_cancels_attached_official_job(monkeypatch):
-    import official_certification_job
-
+    # official_certification_job module removed: the attached-job cancellation
+    # path now treats the attachment as a terminal (missing) state because no
+    # EXE job can be cancelled before a profile refresh.
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
-    calls = []
-    monkeypatch.setattr(
-        official_certification_job,
-        "cancel_job",
-        lambda job_id, **kwargs: calls.append((job_id, kwargs)) or {
-            "job_id": job_id,
-            "state": "cancelled",
-        },
-    )
     checkpoint = {
         "stage": "official_certifying",
         "next_v": 300,
@@ -1161,5 +1143,4 @@ def test_profile_refresh_cancels_attached_official_job(monkeypatch):
 
     assert result["ok"] is True
     assert result["needed"] is True
-    assert result["job_state"] == "cancelled"
-    assert calls[0][0] == "official-job-1"
+    assert result["job_state"] == "missing"

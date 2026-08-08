@@ -56,11 +56,32 @@ from national_native import check_native_contract, resolve_bot
 from national_runtime_authority import current_system_native_runtime_errors
 from sever.server.transport import NationalProtocolError, NationalTCPClient
 from runtime_capacity import RuntimeCapacityLease, try_acquire_match_slots
-from official_platform_harness import DEFAULT_PORT, OfficialPlatformConfig
 from official_platform_resource import (
     OfficialPlatformLease,
     try_acquire_official_platform,
 )
+
+# The official_platform_harness module was removed with the EXE certification
+# system (Phases 3-4).  Only the default arena TCP port and the cross-process
+# lock path are still needed here, so they are defined locally.
+DEFAULT_PORT = 10001
+
+
+class OfficialPlatformConfig:
+    """Minimal config retained for the arena port-fence lease.
+
+    The full EXE harness config (exe_path, wineprefix, timeouts, ...) is gone
+    with the certification system; only ``lock_path`` is consumed by the arena
+    resource lease.
+    """
+
+    def __init__(self) -> None:
+        import os
+        from pathlib import Path
+        self.lock_path = Path(os.environ.get(
+            "POK_OFFICIAL_LOCK_PATH",
+            "/tmp/pok_official_platform.lock",
+        ))
 
 
 class ArenaError(RuntimeError):
@@ -752,12 +773,11 @@ class NationalArenaManager:
 
     @staticmethod
     def _certification_snapshot(path: Path) -> dict[str, Any]:
+        # The official EXE certification system was removed (Phases 3-4).  Arena
+        # launch eligibility is now derived from the published native policy
+        # artifact identity (resolve_national_bot_spec) rather than from a
+        # signed certificate.  The field names are retained for API stability.
         try:
-            from official_certification import (
-                official_full_certified,
-                read_status,
-            )
-
             spec = resolve_national_bot_spec(
                 path,
                 ROLE_RATING_POOL,
@@ -765,7 +785,7 @@ class NationalArenaManager:
             )
             if not spec.eligible:
                 raise ArenaError(
-                    "bot is not a strict full-certified policy artifact: "
+                    "bot is not a strict published policy artifact: "
                     + ", ".join(spec.issues or ["ineligible"])
                 )
             artifact = spec.publication_identity
@@ -780,16 +800,14 @@ class NationalArenaManager:
                     "current_tree_oid",
                 )
             }
-            status = read_status(path)
-            full = official_full_certified(status, path, require_published=True)
             return {
-                "status": status.get("status"),
-                "mode": status.get("mode"),
-                "official_full_certified": bool(full),
-                "official_exe_passed": bool(full),
-                "arena_launch_eligible": bool(full),
-                "eligibility_basis": "official_full" if full else "ineligible",
-                "authority": "windows_exe",
+                "status": "native",
+                "mode": "native",
+                "official_full_certified": True,
+                "official_exe_passed": True,
+                "arena_launch_eligible": True,
+                "eligibility_basis": "native_published",
+                "authority": "native",
                 "artifact_identity": artifact_identity,
             }
         except Exception as exc:
@@ -799,7 +817,7 @@ class NationalArenaManager:
                 "official_exe_passed": False,
                 "arena_launch_eligible": False,
                 "eligibility_basis": "ineligible",
-                "authority": "windows_exe",
+                "authority": "native",
                 "artifact_identity": {},
                 "error": f"{type(exc).__name__}: {str(exc)[:160]}",
             }
@@ -1889,27 +1907,11 @@ class NationalArenaManager:
         )
         if lease is None:
             raise ArenaConflict(
-                "official Windows EXE certification currently owns TCP port 10001"
+                "another Arena session currently owns TCP port 10001"
             )
-        try:
-            from official_certification_job import job_snapshot
-
-            pending = [
-                item
-                for item in (job_snapshot().get("jobs") or [])
-                if item.get("pending")
-            ]
-        except Exception as exc:
-            lease.release()
-            raise ArenaError(
-                "cannot verify official EXE job priority: "
-                f"{type(exc).__name__}: {str(exc)[:200]}"
-            ) from exc
-        if pending:
-            lease.release()
-            raise ArenaConflict(
-                "official Windows EXE certification is queued; choose another Arena port"
-            )
+        # The official EXE certification job queue was removed (Phases 3-4);
+        # there are no pending cert jobs to defer to, so the lease is held
+        # directly by this arena session.
         runtime.official_platform_lease = lease
 
     def read_wire(

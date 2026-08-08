@@ -42,10 +42,6 @@ const REACHED_AFTER_MASTER_PLAN: ReadonlySet<string> = new Set([
   "repair_planned",
   "rework_running",
   "verified",
-  "official_bootstrap_required",
-  "official_certifying",
-  "official_failed",
-  "official_inconclusive",
   "publishing",
 ]);
 
@@ -59,10 +55,6 @@ const REACHED_AFTER_QUALITY: ReadonlySet<string> = new Set([
   "repair_planned",
   "rework_running",
   "verified",
-  "official_bootstrap_required",
-  "official_certifying",
-  "official_failed",
-  "official_inconclusive",
   "publishing",
 ]);
 
@@ -74,10 +66,6 @@ const REACHED_AFTER_REVIEW: ReadonlySet<string> = new Set([
   "repair_planned",
   "rework_running",
   "verified",
-  "official_bootstrap_required",
-  "official_certifying",
-  "official_failed",
-  "official_inconclusive",
   "publishing",
 ]);
 
@@ -272,7 +260,6 @@ export interface AgentActivityView {
   workerFailures: AgentActivityProjection["worker_failures"];
   reviewerFeedback: string | null;
   infraFailure: Record<string, unknown> | null;
-  officialJobsPollingSupported: boolean;
   directionAudit: Record<string, unknown> | null;
 }
 
@@ -317,7 +304,6 @@ export function agentActivityView(
     workerFailures: response.worker_failures,
     reviewerFeedback: response.orchestrator.reviewer_feedback,
     infraFailure: response.orchestrator.infra_failure,
-    officialJobsPollingSupported: response.orchestrator.official_jobs_polling_supported,
     directionAudit: response.direction_audit,
   };
 }

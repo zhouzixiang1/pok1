@@ -2105,27 +2105,6 @@ async def _advance_deterministic_recovery(
         )
         if cleanup_ok is True:
             classified = None
-            # C1 fix: single chokepoint for async-certification self-heal.
-            # EVERY ``publication_handoff_completed`` terminal action that
-            # passes post-generation cleanup schedules the best-effort async
-            # official certification here, regardless of which loop branch
-            # (resume / selected-deterministic / actionable-handoff / one-gen
-            # CLI) consumed the handoff.  Previously this was wired into only
-            # 1 of 4 terminal sites, so depending on the active recovery route
-            # the staging tier silently never got promoted to certified.
-            #
-            # Lazy import: ``orchestrator_loop_phases`` imports ``orchestrator``
-            # (which imports this module), so a top-level import would cycle.
-            try:
-                from orchestrator_loop_phases import (
-                    _try_schedule_async_certification,
-                )
-
-                await _try_schedule_async_certification(ui, shutdown_mgr)
-            except Exception:
-                # Non-fatal: certification can be retried by a future tick or
-                # by the operator via scripts/official_certify.py.
-                pass
         else:
             classified = {
                 "action": "blocked",

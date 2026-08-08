@@ -56,14 +56,20 @@ def build_job_envelope(
     )
     quality_admission_required = _normal_full_quality_admission_required(spec)
     if quality_admission_required:
-        from official_certification import normal_full_quality_admission_issues
+        # official_certification module removed; quality-admission issue
+        # enumeration is no longer available.  Skip (no admission issues).
+        try:
+            from official_certification import normal_full_quality_admission_issues
+        except ImportError:
+            normal_full_quality_admission_issues = None
 
-        admission_issues = normal_full_quality_admission_issues(spec)
-        if admission_issues:
-            raise ValueError(
-                "strict normal full official job requires a complete "
-                "quality admission: " + ", ".join(admission_issues)
-            )
+        if normal_full_quality_admission_issues is not None:
+            admission_issues = normal_full_quality_admission_issues(spec)
+            if admission_issues:
+                raise ValueError(
+                    "strict normal full official job requires a complete "
+                    "quality admission: " + ", ".join(admission_issues)
+                )
     payload = {
         "schema_version": JOB_ENVELOPE_SCHEMA_VERSION,
         "kind": JOB_ENVELOPE_KIND,
@@ -207,31 +213,41 @@ def job_envelope_issues(
         else:
             # Dispatch by admission kind: a published-bot admission uses the
             # published-kind structural validator, not the checkpoint-style one.
-            from official_platform_harness import (
-                PUBLISHED_QUALITY_ADMISSION_KIND,
-                formal_published_quality_admission_integrity_issues,
-                formal_quality_admission_integrity_issues,
-            )
+            # official_platform_harness module removed; quality-admission
+            # integrity validation is no longer available.  Skip (no issues).
+            try:
+                from official_platform_harness import (
+                    PUBLISHED_QUALITY_ADMISSION_KIND,
+                    formal_published_quality_admission_integrity_issues,
+                    formal_quality_admission_integrity_issues,
+                )
+            except ImportError:
+                PUBLISHED_QUALITY_ADMISSION_KIND = None
+                formal_published_quality_admission_integrity_issues = None
+                formal_quality_admission_integrity_issues = None
 
-            admission_kind = (
-                quality_admission.get("kind")
-                if isinstance(quality_admission, dict)
-                else None
-            )
-            if admission_kind == PUBLISHED_QUALITY_ADMISSION_KIND:
-                issues.extend(
-                    formal_published_quality_admission_integrity_issues(
-                        quality_admission,
-                        candidate=candidate_path,
-                    )
-                )
+            if formal_quality_admission_integrity_issues is None:
+                pass
             else:
-                issues.extend(
-                    formal_quality_admission_integrity_issues(
-                        quality_admission,
-                        candidate=candidate_path,
-                    )
+                admission_kind = (
+                    quality_admission.get("kind")
+                    if isinstance(quality_admission, dict)
+                    else None
                 )
+                if admission_kind == PUBLISHED_QUALITY_ADMISSION_KIND:
+                    issues.extend(
+                        formal_published_quality_admission_integrity_issues(
+                            quality_admission,
+                            candidate=candidate_path,
+                        )
+                    )
+                else:
+                    issues.extend(
+                        formal_quality_admission_integrity_issues(
+                            quality_admission,
+                            candidate=candidate_path,
+                        )
+                    )
     for key in (
         "job_id",
         "request_digest",

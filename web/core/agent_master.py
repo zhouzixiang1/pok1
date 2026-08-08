@@ -217,79 +217,15 @@ def _exact_official_compliance_feedback(baseline_v: int) -> str:
     deliberately excluded.
     """
 
-    baseline = get_bot_dir(int(baseline_v))
     label = bot_name(int(baseline_v))
     unavailable = (
         f"No exact-identity official-full-v5 compliance fact is available for "
         f"{label}; feedback from other epochs, versions, or artifact hashes is excluded."
     )
-    try:
-        from bot_artifact import hash_path
-        from bot_namespace import ROLE_CANDIDATE, resolve_national_bot_spec
-        from official_certification import (
-            FULL_POLICY_ID,
-            _deterministic_status_receipt_issues,
-            read_status,
-        )
-
-        spec = resolve_national_bot_spec(
-            baseline,
-            ROLE_CANDIDATE,
-            require_completion=False,
-            require_certificate=False,
-        )
-        if not spec.eligible:
-            return unavailable
-        artifact_hash = hash_path(baseline)
-        status = read_status(baseline)
-        identity = (
-            status.get("certification_identity")
-            if isinstance(status, dict)
-            else None
-        )
-        if not isinstance(identity, dict):
-            return unavailable
-        if (
-            status.get("bot") != label
-            or status.get("mode") != "full"
-            or status.get("policy_id") != FULL_POLICY_ID
-            or identity.get("policy_id") != FULL_POLICY_ID
-            or identity.get("candidate_hash") != artifact_hash
-        ):
-            return unavailable
-        # Mutable status JSON and issue strings are never planning authority on
-        # their own. Re-open the content-bound deterministic evidence/archive
-        # receipt for this exact live artifact before admitting even a
-        # compliance-only issue. Signed publication certificates cover passes;
-        # this path exists to carry exact failed/inconclusive protocol facts.
-        if _deterministic_status_receipt_issues(status, candidate=baseline):
-            return unavailable
-        receipt = status.get("official_deterministic_status_receipt")
-        verdict = receipt.get("verdict") if isinstance(receipt, dict) else None
-        if not isinstance(verdict, dict):
-            return unavailable
-        issues = verdict.get("issues") or []
-        if not isinstance(issues, list):
-            return unavailable
-        lines = [
-            "Exact current-epoch artifact compliance fact only; official EXE "
-            "wins, losses, chips, THP earnings, and advisory repair prose are excluded.",
-            (
-                f"- {label}: artifact_hash={artifact_hash}, policy={FULL_POLICY_ID}, "
-                f"status={status.get('status')}, "
-                f"classification={verdict.get('classification')}, "
-                f"blocking={bool(verdict.get('blocking'))}, "
-                f"inconclusive={bool(verdict.get('inconclusive'))}"
-            ),
-        ]
-        if issues:
-            lines.append(
-                "  deterministic_issues: "
-                + "; ".join(str(item)[:180] for item in issues[:5])
-            )
-        return "\n".join(lines)
-    except Exception:
-        return unavailable
+    # The official EXE certification system was removed (Phases 3-4).  There is
+    # no signed compliance receipt to re-open, so this helper always reports
+    # that no compliance fact is available.
+    return unavailable
 
 
 # ──────────────────────────────────────────────

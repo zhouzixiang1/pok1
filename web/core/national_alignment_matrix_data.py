@@ -72,12 +72,10 @@ class MatrixRow:
 REQUIRED_COVERAGE = frozenset({
     "raw_tcp_delimiter_stream",
     "raw_tcp_name_handshake",
-    "official_called_allin_runout",
     "raise_terminal_hand70",
     "strict_abi_context_fallback_deadline",
     "system_asset_boundary",
     "strict_connection_memory",
-    "official_replay_harness",
     "quality_precommit_certification",
     "five_role_prompts",
     "evidence_history_isolation",
@@ -129,19 +127,12 @@ _QUALITY_RUNTIME_IDENTITY_REQUIRED_OWNER_SYMBOLS = (
     "validate_runtime_probe_repeatability_evidence",
     "web/core/tool_helpers.py::_quality_gate_ok",
     "web/core/system_strict_bootstrap.py::_quality_repeatability_errors",
-    "web/core/official_certification_job.py::_live_normal_full_admission_issues",
 )
 _QUALITY_RUNTIME_IDENTITY_REQUIRED_POSITIVE_TESTS = (
     "web/tests/test_national_runtime_authority.py::"
     "test_system_runtime_identity_accepts_only_exact_current_bytes",
     "web/tests/test_native_runtime_quality_identity.py::"
     "test_native_quality_reuse_requires_exact_template_evidence",
-    "web/tests/test_official_certification_job.py::"
-    "test_live_normal_full_admission_rebinds_current_receipt",
-    "web/tests/test_official_certification.py::"
-    "test_test_runner_envelope_preserves_normal_full_quality_admission",
-    "web/tests/test_official_commit_gate.py::"
-    "test_commit_bot_keeps_quality_admission_failure_out_of_infrastructure_retry",
     "web/tests/test_national_runtime_probe.py::"
     "test_repeatability_allows_only_active_nonbudget_row_action_variation",
 )
@@ -150,16 +141,10 @@ _QUALITY_RUNTIME_IDENTITY_REQUIRED_NEGATIVE_TESTS = (
     "test_system_runtime_identity_rejects_precompute_only_drift",
     "web/tests/test_native_runtime_quality_identity.py::"
     "test_commit_ledger_rejects_precommit_from_another_native_template",
-    "web/tests/test_official_certification_job.py::"
-    "test_stale_live_admission_never_creates_or_spawns_fresh_job",
-    "web/tests/test_official_certification_job.py::"
-    "test_stale_queued_job_becomes_terminal_before_queue_or_spawn",
     "web/tests/test_national_runtime_probe.py::"
     "test_repeatability_rejects_missing_required_activity_section",
     "web/tests/test_native_runtime_quality_identity.py::"
     "test_native_quality_reuse_rejects_tampered_repeatability_receipt",
-    "web/tests/test_official_platform_harness.py::"
-    "test_formal_quality_admission_rejects_missing_repeatability_receipt",
     "web/tests/test_system_control_contract.py::"
     "test_v143_bootstrap_requires_structural_dynamic_repeatability_receipt",
     "web/tests/test_precommit_eval_contract.py::"
@@ -342,112 +327,6 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
     ),
     MatrixRow(
-        rule_id="official_called_allin_runout_omission",
-        coverage=("official_called_allin_runout",),
-        status=CURRENT_STATUS,
-        evidence_state=SOURCE_CONTRACT,
-        authority=(
-            _ref("docs/official-allin-runout-wire-oracle-2026-07-19.md"),
-            _ref("AGENTS.md", "may omit every not-yet-sent public street"),
-        ),
-        production_owners=(
-            _ref("sever/engine/game.py", "allin_settled"),
-            _ref(
-                "web/core/official_wire_probe.py",
-                "_showdown_terminal_boundary",
-            ),
-            _ref(
-                "web/core/official_wire_probe.py",
-                "replay_events",
-            ),
-            _ref(
-                "web/core/official_wire_probe.py",
-                "_cross_bound_showdown_records",
-            ),
-            _ref(
-                "web/core/official_platform_harness.py",
-                "_omitted_allin_thp_bindings",
-            ),
-        ),
-        dynamic_gates=(
-            _ref(
-                "web/core/official_wire_probe.py",
-                "_showdown_terminal_boundary",
-            ),
-            _ref(
-                "web/core/official_wire_probe.py",
-                "replay_events",
-            ),
-            _ref(
-                "web/core/official_certification.py",
-                "_full_v5_completion_issues",
-            ),
-            _ref(
-                "web/core/official_platform_runtime.py",
-                "round_completion_issues",
-            ),
-        ),
-        prompts=_CORE_PROMPTS,
-        prompt_statement=(
-            "All five rendered roles must preserve the called all-in terminal "
-            "contract: the official EXE may present an omitted runout followed by "
-            "settlement/showdown, only exact cross-connection proof is accepted, no "
-            "role may fabricate unseen public cards, and strict THP must carry either "
-            "the exact observed wire prefix or a complete board, with complementary "
-            "cross-wire actions, exact all-in net settlement, and strict THP "
-            "exact-prefix-or-five-card board/action/blind/hole/earnings binding. Only a "
-            "same-connection raw action awaiting its bounded causal flush is "
-            "provisional during live replay; finalized replay is strict."
-        ),
-        prompt_required_terms=(
-            "called all-in",
-            "omitted runout",
-            "settlement/showdown",
-            "cross-connection",
-            "fabricate unseen public cards",
-            "complementary cross-wire actions",
-            "exact all-in net settlement",
-            "strict THP exact-prefix-or-five-card board/action/blind/hole/earnings",
-        ),
-        producer_consumer=(
-            "official EXE allin/call plus legal board prefix → two connection-local "
-            "terminal records → finalized cross-wire action/exact-settlement/reveal "
-            "proof → strict THP exact-prefix-or-five-card board/action/blind/hole/earnings "
-            "binding → formal "
-            "completion gate"
-        ),
-        positive_tests=(
-            "web/tests/test_official_wire_probe.py::"
-            "test_replay_accepts_cross_connection_settled_called_allin_without_runout",
-            "web/tests/test_official_wire_probe.py::"
-            "test_replay_defers_cross_socket_settlement_order_until_final_binding",
-            "web/tests/test_official_wire_probe.py::"
-            "test_replay_accepts_only_exact_called_allin_net_settlements",
-            "web/tests/test_official_wire_probe.py::"
-            "test_wire_probe_replays_idle_action_at_last_raw_observation",
-            "web/tests/test_official_platform_harness.py::"
-            "test_terminal_hand_completion_requires_exact_wire_boundary_and_thp",
-            "sever/tests/test_national_platform_alignment.py::"
-            "test_allin_runout_is_internal_thp_truth_but_omitted_from_wire",
-        ),
-        negative_tests=(
-            "web/tests/test_official_wire_probe.py::"
-            "test_replay_rejects_unproved_missing_runout_showdown",
-            "web/tests/test_official_wire_probe.py::"
-            "test_replay_rejects_showdown_cross_seat_mismatch_and_non_showdown_reveal",
-            "web/tests/test_official_wire_probe.py::"
-            "test_replay_keeps_unpaired_called_allin_reveal_provisional_until_finalized",
-        ),
-        fail_closed=(
-            "A malformed prefix, unfinished/folded all-in, nonterminal reveal, "
-            "cross-wire action mismatch, impossible all-in settlement, or any omitted "
-            "hand lacking an exact-prefix-or-complete THP board/action/blind/hole/earnings "
-            "binding remains an official wire/certification failure. A finalized or "
-            "source-less street boundary is never downgraded and no missing public "
-            "card is synthesized."
-        ),
-    ),
-    MatrixRow(
         rule_id="raise_terminal_hand70",
         coverage=("raise_terminal_hand70",),
         status=CURRENT_STATUS,
@@ -460,11 +339,9 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         production_owners=(
             _ref("sever/engine/validator.py", "validate_action"),
             _ref("sever/engine/game.py", "GameEngine"),
-            _ref("web/core/official_certification.py", "_full_v5_completion_issues"),
         ),
         dynamic_gates=(
             _ref("web/core/runtime_architecture_policy.py", "_verified_official_oracle_identity"),
-            _ref("web/core/official_certification.py", "receipt_validation_issues"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
@@ -484,10 +361,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_game_engine_matches_official_hand_70_wire_settlement_boundary",
         ),
         negative_tests=(
-            "web/tests/test_official_certification.py::"
-            "test_formal_certification_requires_the_final_settlement",
-            "web/tests/test_official_certification.py::"
-            "test_full_v5_rejects_paired_70_wire_settlement_bypass",
+            "sever/tests/test_national_platform_alignment.py::"
+            "test_postflop_first_raise_after_check_has_minimum_and_positive_amount",
         ),
         fail_closed=(
             "Illegal raise_to is sanitized before the socket; absent hand-70 wire "
@@ -659,57 +534,12 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
     ),
     MatrixRow(
-        rule_id="official_wire_replay_harness",
-        coverage=("official_replay_harness",),
-        status=CURRENT_STATUS,
-        evidence_state=SOURCE_CONTRACT,
-        authority=(
-            _ref("docs/official-terminal-settlement-oracle-2026-07-11.md"),
-            _ref("AGENTS.md"),
-        ),
-        production_owners=(
-            _ref("web/core/official_certification.py", "receipt_validation_issues"),
-            _ref("web/core/official_certification.py", "run_certification"),
-            _ref("scripts/official_certify.py"),
-        ),
-        dynamic_gates=(
-            _ref("web/core/official_certification.py", "official_full_certified"),
-            _ref("web/core/official_certification.py", "report_valid_for_spec"),
-        ),
-        prompts=_CORE_PROMPTS,
-        prompt_statement=(
-            "All five rendered roles must treat official-full-v5 certificate evidence as "
-            "the formal replay authority; they may describe a wire/THP failure but cannot "
-            "replace the deterministic certificate gate."
-        ),
-        prompt_required_terms=("official-full-v5", "certificate"),
-        producer_consumer=(
-            "official EXE raw wire and THP artifacts → identity-bound receipt/report "
-            "validator → signed certificate projection → publication eligibility"
-        ),
-        positive_tests=(
-            "web/tests/test_official_certification.py::"
-            "test_full_certification_accepts_exe_terminal_thp_completion_proof",
-        ),
-        negative_tests=(
-            "web/tests/test_official_certification.py::"
-            "test_full_v5_rejects_paired_70_wire_settlement_bypass",
-            "web/tests/test_official_wire_probe_cli_boundary.py::"
-            "test_wire_probe_is_short_diagnostic_and_rejects_unbound_hand_70",
-        ),
-        fail_closed=(
-            "A missing, mismatched, or fabricated wire/THP artifact is inconclusive or "
-            "failed and never becomes a formal certificate or strength result."
-        ),
-    ),
-    MatrixRow(
         rule_id=_QUALITY_RUNTIME_IDENTITY_RULE_ID,
         coverage=("quality_precommit_certification",),
         status=CURRENT_STATUS,
         evidence_state=SOURCE_CONTRACT,
         authority=(
             _ref("AGENTS.md", "Generation order"),
-            _ref("docs/official-certification-policy.md", "official-full-v5"),
         ),
         production_owners=(
             _ref(
@@ -732,16 +562,6 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/tool_eval.py", "run_precommit_eval"),
             _ref("web/core/precommit_eval_contract.py", "validate_precommit_plan"),
             _ref("web/core/tool_commit.py", "commit_bot"),
-            _ref(
-                "web/core/official_platform_harness.py",
-                "build_formal_quality_admission",
-            ),
-            _ref(
-                "web/core/official_certification_job.py",
-                "_live_normal_full_admission_issues",
-            ),
-            _ref("web/core/official_certification_job.py", "start_or_poll_job"),
-            _ref("web/core/official_certification_job.py", "_worker_main"),
             _ref("web/core/pipeline_state.py", "route_policy"),
             _ref("web/core/pipeline_state.py", "head_drift_resume_policy"),
             _ref("web/core/tool_helpers.py", "_prepare_official_profile_refresh"),
@@ -765,16 +585,6 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/tool_helpers.py", "_quality_gate_ok"),
             _ref("web/core/tool_eval.py", "run_precommit_eval"),
             _ref("web/core/tool_commit.py", "_run_official_full_commit_gate"),
-            _ref(
-                "web/core/official_platform_harness.py",
-                "formal_quality_admission_integrity_issues",
-            ),
-            _ref(
-                "web/core/official_certification_job.py",
-                "_live_normal_full_admission_issues",
-            ),
-            _ref("web/core/official_certification_job.py", "_spawn_worker"),
-            _ref("web/core/official_certification_job.py", "_worker_main"),
             _ref("web/core/pipeline_state.py", "head_drift_resume_policy"),
         ),
         prompts=_CORE_PROMPTS,
@@ -815,19 +625,11 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             *_QUALITY_RUNTIME_IDENTITY_REQUIRED_POSITIVE_TESTS,
             "web/tests/test_precommit_eval_contract.py::"
             "test_native_batch_plan_binds_ordered_samples_and_execution_phases",
-            "web/tests/test_official_commit_gate.py::"
-            "test_official_full_pass_is_persisted_in_verified_gate_ledger",
-            "web/tests/test_official_commit_gate.py::"
-            "test_strict_normal_full_commit_binds_admission_before_job_and_blocks_missing",
         ),
         negative_tests=(
             *_QUALITY_RUNTIME_IDENTITY_REQUIRED_NEGATIVE_TESTS,
-            "web/tests/test_official_commit_gate.py::"
-            "test_git_commit_bot_rejects_missing_official_certificate_before_git",
             "web/tests/test_precommit_eval_contract.py::"
             "test_plan_fails_closed_when_published_opponent_identity_drifts",
-            "web/tests/test_official_platform_harness.py::"
-            "test_strict_normal_full_refuses_missing_or_tampered_admission_before_worker",
         ),
         fail_closed=(
             "Any quality, plan, opponent, certificate, stale admission, malformed/missing "
@@ -1243,29 +1045,17 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         production_owners=(
             _ref("web/core/system_strict_bootstrap.py", "validate_bootstrap_checkpoint"),
-            _ref(
-                "web/core/official_bootstrap.py",
-                "validate_completed_operator_bootstrap_authorization",
-            ),
             _ref("web/core/national_native.py", "run_native_precommit"),
             _ref("web/core/pipeline_state.py", "head_drift_resume_policy"),
             _ref(
                 "web/core/pipeline_recovery.py",
                 "checkpoint_recovery_diagnostics",
             ),
-            _ref("web/core/first_strict_control.py", "validate_control_result"),
             _ref("web/core/tool_eval.py", "_build_first_strict_control_execution_scope"),
-            _ref("web/core/official_certification.py", "build_spec"),
             _ref("web/core/tool_commit.py", "commit_bot"),
         ),
         dynamic_gates=(
             _ref("web/core/system_strict_bootstrap.py", "is_declared_native_bootstrap"),
-            _ref(
-                "web/core/official_bootstrap.py",
-                "validate_completed_operator_bootstrap_authorization",
-            ),
-            _ref("web/core/first_strict_control.py", "control_gate_blockers"),
-            _ref("web/core/official_certification.py", "official_full_certified"),
             _ref("web/core/epoch_authority.py", "require_policy_epoch_initialized"),
             _ref("web/core/pipeline_state.py", "head_drift_allowed_tools"),
         ),
@@ -1284,10 +1074,6 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "non-abandoned singleton successor normal 5+3 full certification"
         ),
         positive_tests=(
-            "web/tests/test_official_bootstrap.py::"
-            "test_completed_authorization_accepts_production_normalized_selection",
-            "web/tests/test_first_strict_control.py::"
-            "test_control_is_a_direct_content_bound_policy_artifact",
             "web/tests/test_hidden_fixes.py::"
             "test_H1_completed_control_match_recovers_by_same_identity_after_cancel",
             "web/tests/test_checkpoint_epoch_recovery.py::"
@@ -1300,14 +1086,6 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_write_pipeline_checkpoint_refreshes_baseline_after_planning_handoff",
         ),
         negative_tests=(
-            "web/tests/test_official_bootstrap.py::"
-            "test_completed_authorization_accepts_production_normalized_selection",
-            "web/tests/test_first_strict_control.py::"
-            "test_control_receipt_rejects_pool_or_authority_escalation",
-            "web/tests/test_first_strict_control.py::"
-            "test_control_result_rejects_missing_zero_migration_projection",
-            "web/tests/test_official_certify_cli.py::"
-            "test_cli_first_strict_requires_explicit_one_time_acknowledgement",
             "web/tests/test_logic_mcp.py::"
             "test_singleton_live_allocation_rejects_redigested_skipped_target",
             "web/tests/test_pipeline_state_machine.py::"
@@ -1944,8 +1722,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "candidate, rating, prompt, certification, or runtime consumer"
         ),
         positive_tests=(
-            "web/tests/test_official_bootstrap.py::"
-            "test_active_module_contains_no_archive_bot_resolution",
+            "web/tests/test_strict_bot_namespace.py::"
+            "test_archive_path_and_pre_policy_version_never_resolve",
         ),
         negative_tests=(
             "web/tests/test_strict_prompt_evidence_boundary.py::"

@@ -1270,48 +1270,6 @@ def test_operator_bootstrap_stage_allows_commit_only_after_full_validation(monke
     assert calls == [STRICT_TARGET_V]
 
 
-def test_operator_bootstrap_guard_uses_complete_official_validator(tmp_path, monkeypatch):
-    import official_bootstrap
-    import official_certification
-    import tool_runtime_guard
-
-    candidate = _strict_artifact(tmp_path / "bots" / f"{bot_name(STRICT_TARGET_V)}", STRICT_TARGET_V)
-    status = {"status": "official-certified", "certificate_digest": "signed"}
-    calls = []
-    checkpoint = {
-        "stage": "official_bootstrap_required",
-        "next_v": STRICT_TARGET_V,
-        "source_v": STRICT_SOURCE_V,
-    }
-    monkeypatch.setattr(tool_runtime_guard, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(
-        tool_runtime_guard,
-        "read_pipeline_checkpoint",
-        lambda: checkpoint,
-    )
-    monkeypatch.setattr(official_certification, "read_status", lambda path: status)
-
-    def validate(requested_status, path):
-        calls.append((requested_status, path))
-        return requested_status is status and path == candidate
-
-    monkeypatch.setattr(official_certification, "official_full_certified", validate)
-    monkeypatch.setattr(
-        official_bootstrap,
-        "validate_completed_operator_bootstrap_authorization",
-        lambda requested_status, path, *, checkpoint: (
-            calls.append(("completed", requested_status, path, checkpoint))
-            or {"valid": True}
-        ),
-    )
-
-    assert tool_runtime_guard._operator_bootstrap_certificate_valid(STRICT_TARGET_V) is True
-    assert calls == [
-        (status, candidate),
-        ("completed", status, candidate, checkpoint),
-    ]
-
-
 def test_operator_bootstrap_stage_rejects_direct_commit_without_finalize_cli(monkeypatch):
     import tool_runtime_guard
 

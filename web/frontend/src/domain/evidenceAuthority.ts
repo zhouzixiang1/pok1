@@ -1,8 +1,4 @@
 import type { AgentGateView } from "../api/types.js";
-import type {
-  OfficialCertification,
-  OfficialCertificationJob,
-} from "../api/types.js";
 import { criticAdvisoryComplete } from "../lib/pipelinePresentation.js";
 
 /**
@@ -49,45 +45,7 @@ export function evidenceTierForGate(gate: AgentGateView | null): EvidenceAuthori
   if (gate.name === "review" || gate.name === "quality" || gate.name === "precommit_eval") {
     return gate.complete ? EVIDENCE_TIER_LABELS.compliance : EVIDENCE_TIER_LABELS.zero;
   }
-  if (gate.name === "official_full") {
-    return gate.complete ? EVIDENCE_TIER_LABELS.compliance : EVIDENCE_TIER_LABELS.zero;
-  }
   return EVIDENCE_TIER_LABELS.advisory;
-}
-
-export function evidenceTierForOfficialCertification(
-  cert: OfficialCertification | null | undefined,
-): EvidenceAuthorityLabel {
-  if (!cert) return EVIDENCE_TIER_LABELS.zero;
-  if (cert.formal_certified === true && cert.formal_authority === "signed_full_v5") {
-    return EVIDENCE_TIER_LABELS.compliance;
-  }
-  // Two-tier publication: a staging bot is published (staging tag) but its
-  // async official certification has not yet completed. It is NOT compliance
-  // evidence, but it is more than zero — it is a real published artifact
-  // awaiting certification.
-  if (cert.publication_tier === "staging" || cert.formal_authority === "staging_uncertified") {
-    return EVIDENCE_TIER_LABELS.staging;
-  }
-  // A pending/failed/bootstrap job is not evidence merely because it carries
-  // a formal_authority label. Only the server-validated signed certificate is
-  // compliance evidence; Official never becomes strength evidence here.
-  return EVIDENCE_TIER_LABELS.zero;
-}
-
-export function evidenceTierForBootstrapJob(
-  job: OfficialCertificationJob | null | undefined,
-): EvidenceAuthorityLabel {
-  if (!job) return EVIDENCE_TIER_LABELS.zero;
-  if (job.formal_authority === "operator_bootstrap_full_v5_job") {
-    // First-strict operator control is explicitly zero strength/strategy weight.
-    return { tier: "zero", label: "首代人工认证任务（零强度权重）", tone: "neutral" };
-  }
-  if (job.formal_authority === "pipeline_attached_full_v5_job") {
-    // A durable job row is execution progress, not the signed certificate.
-    return { tier: "zero", label: "官方认证任务（自身非证书、零强度权重）", tone: "neutral" };
-  }
-  return EVIDENCE_TIER_LABELS.zero;
 }
 
 /**

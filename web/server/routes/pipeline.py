@@ -236,47 +236,14 @@ def _precommit_complete(checkpoint: dict) -> bool:
 
 
 def _official_full_complete(checkpoint: dict) -> bool:
-    """Reopen the signed certificate and its formal content-bound profile."""
+    """Reopen the signed certificate and its formal content-bound profile.
 
-    gates = checkpoint.get("gate_results")
-    gate = gates.get("official_full") if isinstance(gates, dict) else None
-    status = gate.get("status") if isinstance(gate, dict) else None
-    version = checkpoint.get("next_v")
-    if (
-        not isinstance(gate, dict)
-        or gate.get("passed") is not True
-        or not isinstance(status, dict)
-        or type(version) is not int
-    ):
-        return False
-    digest = gate.get("certificate_digest")
-    if (
-        not isinstance(digest, str)
-        or len(digest) != 64
-        or any(char not in "0123456789abcdef" for char in digest)
-        or status.get("certificate_digest") != digest
-    ):
-        return False
-    try:
-        from bot_namespace import bot_name
-        from official_certification import (
-            official_certification_profile_projection,
-            official_full_certified,
-        )
+    The official EXE certification system has been removed (Phases 3-4).  No
+    candidate ever carries an ``official_full`` gate any more, so this predicate
+    is permanently ``False``; retained only to keep the gate-view key stable.
+    """
 
-        candidate = PROJECT_ROOT / "bots" / bot_name(version)
-        profile = official_certification_profile_projection(status, candidate)
-        return bool(
-            official_full_certified(status, candidate)
-            and isinstance(profile, dict)
-            and profile
-            and profile.get("strength_evidence_weight") == 0
-            and profile.get("strategy_evidence_weight") == 0
-            and (profile.get("formal_summary") or {}).get("rounds_run") == 8
-            and (profile.get("formal_summary") or {}).get("passed_rounds") == 8
-        )
-    except Exception:
-        return False
+    return False
 
 
 _GATE_FIELD_ALLOWLIST: dict[str, tuple[str, ...]] = {
@@ -319,23 +286,8 @@ _GATE_FIELD_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "receipt_digest",
         "candidate_artifact_hash",
     ),
-    "official_full": (
-        "passed",
-        "certificate_digest",
-        "certification_profile",
-        "opponent_authority",
-        "strength_evidence_weight",
-        "strategy_evidence_weight",
-        "reused_existing_certificate",
-    ),
 }
 _REPAIR_STAGES = frozenset({"repair_planned", "rework_running"})
-_OFFICIAL_CERTIFICATION_STAGES = frozenset({
-    "official_bootstrap_required",
-    "official_certifying",
-    "official_failed",
-    "official_inconclusive",
-})
 _MAX_AGENT_TEXT = 256
 _MAX_MASTER_ANALYSIS = 1_024
 _MAX_AGENT_TASKS = 8
@@ -445,10 +397,6 @@ def _master_view(checkpoint: dict) -> dict:
         "repair_planned",
         "rework_running",
         "verified",
-        "official_bootstrap_required",
-        "official_certifying",
-        "official_failed",
-        "official_inconclusive",
         "publishing",
         "archived",
     }
@@ -547,11 +495,6 @@ def _build_agents_projection(checkpoint: dict | None, failures: list[dict]) -> d
                     "identity_digest",
                 ),
             ),
-            # Consumers must not poll the durable official-job endpoint during
-            # ordinary planning/worker/quality stages.  This flag is derived
-            # solely from the exact checkpoint stage rather than from a stale
-            # gate result or browser-side stage guess.
-            "official_jobs_polling_supported": stage in _OFFICIAL_CERTIFICATION_STAGES,
         },
         "master": _master_view(checkpoint),
         "direction_audit": _bounded_mapping(
@@ -571,11 +514,6 @@ def _build_agents_projection(checkpoint: dict | None, failures: list[dict]) -> d
             "review": _gate_view(checkpoint, "review", complete_fn=_review_complete),
             "critic": _gate_view(checkpoint, "critic", complete_fn=_critic_advisory_complete),
             "precommit_eval": _gate_view(checkpoint, "precommit_eval", complete_fn=_precommit_complete),
-            "official_full": _gate_view(
-                checkpoint,
-                "official_full",
-                complete_fn=_official_full_complete,
-            ),
         },
         "gate_keys_present": sorted(
             key for key, value in gate_results.items()

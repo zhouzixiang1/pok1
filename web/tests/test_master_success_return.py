@@ -980,7 +980,6 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     import evidence_snapshot
     import evolution_infra
     import generation_evidence
-    import official_certification
     import strict_authority_workflow
     from claude_agent_sdk import ResultMessage
     from runtime_architecture_policy import native_policy_runtime_contract
@@ -1094,11 +1093,6 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         "load_generation_snapshot_identity",
         forbidden_loader,
     )
-    monkeypatch.setattr(
-        official_certification,
-        "official_feedback_summary",
-        forbidden_loader,
-    )
 
     sentinels = {
         "stagnation_info": "FORBIDDEN_STAGNATION_STRENGTH",
@@ -1170,84 +1164,6 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     # cannot be replayed as a complete authority packet; full six-slot replay
     # is exercised by the strict workflow/ensemble recovery regressions.
     assert len(captured_strict_logs) == 1
-
-
-def test_master_official_feedback_requires_exact_current_artifact_identity(
-    monkeypatch,
-    tmp_path,
-):
-    from types import SimpleNamespace
-
-    import agent_master
-    import bot_artifact
-    import bot_namespace
-    import official_certification
-
-    baseline = tmp_path / bot_name(STRICT_TARGET_V)
-    baseline.mkdir()
-    exact_hash = "a" * 64
-    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: baseline)
-    monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: exact_hash)
-    monkeypatch.setattr(
-        bot_namespace,
-        "resolve_national_bot_spec",
-        lambda *_args, **_kwargs: SimpleNamespace(eligible=True),
-    )
-    poisoned = {
-        "bot": bot_name(STRICT_SOURCE_V),
-        "mode": "full",
-        "policy_id": official_certification.FULL_POLICY_ID,
-        "status": official_certification.STATUS_FAILED,
-        "issues": ["RETIRED_OFFICIAL_SENTINEL"],
-        "certification_identity": {
-            "policy_id": official_certification.FULL_POLICY_ID,
-            "candidate_hash": "b" * 64,
-        },
-    }
-    monkeypatch.setattr(official_certification, "read_status", lambda _path: poisoned)
-    rejected = agent_master._exact_official_compliance_feedback(STRICT_TARGET_V)
-    assert "RETIRED_OFFICIAL_SENTINEL" not in rejected
-    assert "other epochs, versions, or artifact hashes is excluded" in rejected
-
-    exact = {
-        **poisoned,
-        "bot": bot_name(STRICT_TARGET_V),
-        "issues": ["MUTABLE_STATUS_POISON"],
-        "official_llm_repair_guidance": "UNTRUSTED_ADVISORY_REPAIR",
-        "official_deterministic_status_receipt": {
-            "verdict": {
-                "classification": "protocol",
-                "blocking": True,
-                "inconclusive": False,
-                "issues": ["exact_protocol_action_format"],
-            },
-        },
-        "certification_identity": {
-            "policy_id": official_certification.FULL_POLICY_ID,
-            "candidate_hash": exact_hash,
-        },
-    }
-    monkeypatch.setattr(official_certification, "read_status", lambda _path: exact)
-    monkeypatch.setattr(
-        official_certification,
-        "_deterministic_status_receipt_issues",
-        lambda *_args, **_kwargs: [],
-    )
-    admitted = agent_master._exact_official_compliance_feedback(STRICT_TARGET_V)
-    assert exact_hash in admitted
-    assert "exact_protocol_action_format" in admitted
-    assert "MUTABLE_STATUS_POISON" not in admitted
-    assert "UNTRUSTED_ADVISORY_REPAIR" not in admitted
-    assert "wins, losses, chips, THP earnings" in admitted
-
-    monkeypatch.setattr(
-        official_certification,
-        "_deterministic_status_receipt_issues",
-        lambda *_args, **_kwargs: ["evidence_digest_mismatch"],
-    )
-    receipt_rejected = agent_master._exact_official_compliance_feedback(STRICT_TARGET_V)
-    assert "exact_protocol_action_format" not in receipt_rejected
-    assert "other epochs, versions, or artifact hashes is excluded" in receipt_rejected
 
 
 @pytest.mark.asyncio

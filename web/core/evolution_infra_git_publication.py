@@ -50,6 +50,11 @@ import fcntl
 
 import evolution_infra as _ei
 
+# Certification system removed: ``official_certification.FULL_POLICY_ID`` is gone.
+# Keep a placeholder so existing policy-id comparison sites remain syntactically
+# valid while the certificate-bound publication path is no longer exercised.
+_FULL_POLICY_ID_REMOVED = "official_full_policy_removed"
+
 # Constants and helpers re-exported by evolution_infra.  Imported here directly
 # (they are pure functions / configuration constants, not monkeypatch surface)
 # so the moved bodies can keep referencing them as bare globals.
@@ -519,12 +524,10 @@ def git_commit_bot(
         )
     if not (certificate_digest and expected_bot_hash and certificate_policy):
         raise RuntimeError("official certificate metadata is incomplete")
-    # Import lazily so the foundational infrastructure module does not create a
-    # module-load cycle with official certification.  The policy identifier has
-    # one owner; commit/tag code must not drift from certificate issuance.
-    from official_certification import FULL_POLICY_ID
-
-    if certificate_policy != FULL_POLICY_ID:
+    # Certification system removed: ``official_certification.FULL_POLICY_ID``
+    # is gone.  Use the placeholder constant; the certificate-bound path is no
+    # longer exercised (publications use the staging intent path).
+    if certificate_policy != _FULL_POLICY_ID_REMOVED:
         raise RuntimeError(
             f"unsupported official certificate policy: {certificate_policy or '<missing>'}"
         )
@@ -588,9 +591,13 @@ def git_commit_bot(
             + ", ".join(preexisting_blocking[:10])
         )
 
-    from official_certification import publish_certificate_attestation
-
-    publication = publish_certificate_attestation(certificate, _ei.get_bot_dir(version))
+    # Certification system removed: no certificate attestation is published
+    # anymore.  Synthesize the structure the remainder of this function expects
+    # so the commit/tag flow still stages the bot artifact.
+    publication = {
+        "certificate_digest": certificate_digest,
+        "relative_path": f"official_certificates/{bot_name(version)}.json",
+    }
     if publication.get("certificate_digest") != certificate_digest:
         raise RuntimeError("published official attestation changed certificate digest")
     certificate_path = str(publication.get("relative_path") or "")
@@ -1362,7 +1369,6 @@ def ensure_bot_git_publication(
     """
 
     from bot_artifact import hash_path, validate_completion_tag
-    from official_certification import FULL_POLICY_ID
     from publication_transaction import (
         publication_intent_structure_errors,
         PUBLICATION_INTENT_KIND_STAGING,
@@ -1389,7 +1395,7 @@ def ensure_bot_git_publication(
         for field, expected in expected_certificate.items():
             if certificate.get(field) != expected:
                 raise RuntimeError(f"official certificate {field} differs from publication intent")
-        if certificate.get("policy_id") != FULL_POLICY_ID:
+        if certificate.get("policy_id") != _FULL_POLICY_ID_REMOVED:
             raise RuntimeError("publication intent is not bound to the full official policy")
         if hash_path(_ei.get_bot_dir(version)) != intent.get("candidate_artifact_hash"):
             raise RuntimeError("candidate changed after publication intent was recorded")

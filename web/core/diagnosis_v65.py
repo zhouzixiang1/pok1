@@ -221,21 +221,23 @@ def _v65_contract_failure_diagnosis(
     require_live_repair_source: bool = True,
 ) -> dict[str, _bcd.Any]:
     """Reopen only the v65 four-live-race/two-THP-prefix incident."""
+    # official_platform_harness module removed: the v65 THP-prefix incident
+    # diagnostic can no longer be reopened.  Raise a clear error so callers
+    # (which wrap this in try/except) record the diagnosis as unproven.
+    raise RuntimeError(
+        "v65_contract_failure_diagnosis_unavailable: official_platform_harness "
+        "module removed"
+    )
+
+    # Legacy diagnostic body retained for reference; unreachable.
     # Lazy import: read the *current* attribute on the main module so that
     # monkeypatch.setattr(recovery, "_git", ...) and "_read_regular_exact" in
     # tests remain effective. Do NOT hoist these to top-level imports.
-    from bootstrap_contract_recovery import _git as _git  # noqa: E402
-    from bootstrap_contract_recovery import _read_regular_exact as _read_regular_exact  # noqa: E402
+    from bootstrap_contract_recovery import _git as _git  # noqa: E402,F401
+    from bootstrap_contract_recovery import _read_regular_exact as _read_regular_exact  # noqa: E402,F401
 
-    from official_evidence_archive import validate_evidence_archive
-    from official_platform_harness import (
-        THP_RECORD_RE,
-        _omitted_allin_thp_bindings,
-        _parse_thp_card_payload,
-        _strict_thp_match,
-        _wire_settlement_prefix,
-    )
-    from official_wire_probe import replay_events
+    from official_evidence_archive import validate_evidence_archive  # noqa: E402,F401
+    from official_wire_probe import replay_events  # noqa: E402,F401
 
     incident_identity = {
         "baseline_head": expected_baseline_head,

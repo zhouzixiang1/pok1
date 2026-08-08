@@ -294,7 +294,7 @@ def _published_parent_identity(
     epoch_receipt = getattr(spec, "epoch_receipt", None)
     publication_identity = getattr(spec, "publication_identity", None)
     certificate_digest = getattr(spec, "certificate_digest", None)
-    publication_tier = str(getattr(spec, "publication_tier", None) or "certified")
+    publication_tier = str(getattr(spec, "publication_tier", None) or "native")
     if not all(
         isinstance(value, dict) and value
         for value in (runtime_manifest, epoch_receipt, publication_identity)
@@ -302,21 +302,17 @@ def _published_parent_identity(
         raise CheckpointSchemaError(
             ["checkpoint_parent_publication_identity_incomplete"]
         )
-    # Certified parents require a digest-bound signed certificate.  Pure
-    # staging parents (publication_tier=staging, no digest yet) still bind
-    # completion/high-water tag authority below; empty digest is the sentinel.
-    if publication_tier == "staging":
-        if certificate_digest not in (None, "") and not _digest_ok(certificate_digest):
-            raise CheckpointSchemaError(
-                ["checkpoint_parent_publication_identity_incomplete"]
-            )
-        certificate_digest = (
-            certificate_digest if _digest_ok(certificate_digest) else ""
-        )
-    elif not _digest_ok(certificate_digest):
+    # Certification system removed: every publication now resolves to the
+    # single native tier and ``certificate_digest`` is always empty.  A digest
+    # is still accepted (and validated when present) for backward-compat with
+    # parents published before the removal, but it is never required.
+    if certificate_digest not in (None, "") and not _digest_ok(certificate_digest):
         raise CheckpointSchemaError(
             ["checkpoint_parent_publication_identity_incomplete"]
         )
+    certificate_digest = (
+        certificate_digest if _digest_ok(certificate_digest) else ""
+    )
     tag_authority_resolver = (
         parent_tag_authority_resolver or resolve_published_parent_tag_authority
     )
@@ -601,8 +597,9 @@ def _published_parent_identity_errors(
     ):
         if not _digest_ok(identity.get(field)):
             errors.append(f"checkpoint_published_parent_identity_{field}_invalid")
-    # certificate_digest: certified requires 64-hex; pure staging may use the
-    # empty-string sentinel while still binding tag/artifact authority.
+    # certificate_digest: certification removed; the native tier always uses
+    # the empty-string sentinel.  A 64-hex value is still accepted for
+    # backward-compat with parents published before the removal.
     cert = identity.get("certificate_digest")
     if cert not in (None, "") and not _digest_ok(cert):
         errors.append("checkpoint_published_parent_identity_certificate_digest_invalid")

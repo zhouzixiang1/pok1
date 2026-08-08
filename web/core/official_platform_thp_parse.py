@@ -14,7 +14,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-import official_platform_harness as _oph
+# official_platform_harness was removed with the EXE certification system.
+# Import defensively so this companion module does not crash at import time;
+# the functions below are unreachable without their parent harness.
+try:
+    import official_platform_harness as _oph
+except ImportError:
+    _oph = None  # type: ignore[assignment]
 
 
 def _platform_thp_dirs(exe_path: Path) -> list[Path]:

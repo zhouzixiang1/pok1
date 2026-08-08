@@ -314,8 +314,15 @@ def _prepare_official_profile_refresh(checkpoint, tool_name):
     if not job_id:
         return {"ok": True, "needed": True, "job_state": "missing_attachment"}
     try:
+        # official_certification_job module removed: there is no official job to
+        # cancel before a profile refresh.  Treat the attachment as already in
+        # a terminal (missing) state.
         from official_certification_job import cancel_job
-
+    except ImportError:
+        cancel_job = None
+    if cancel_job is None:
+        return {"ok": True, "needed": True, "job_state": "missing"}
+    try:
         cancelled = cancel_job(job_id, reason=f"workflow_profile_refresh:{tool_name}")
     except Exception as exc:
         return {

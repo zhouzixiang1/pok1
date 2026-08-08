@@ -1,11 +1,9 @@
 import { useControlStatusValue } from "../context/DataProvider";
-import { useOfficialCertificationJobs } from "../hooks/useOfficialCertificationJobs";
 import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import PageMeta from "../components/common/PageMeta";
 import { EmptyState } from "../components/shared";
 import { EvolutionPageHeader } from "../components/evolution/EvolutionPageHeader";
 import { PhaseAProjectionStrip } from "../components/evolution/PhaseAProjectionStrip";
-import { OfficialCertificationProgressView } from "../components/evolution/OfficialCertificationProgress";
 import { OperatorSituation } from "../components/evolution/OperatorSituation";
 import {
   EvolutionSection,
@@ -16,17 +14,12 @@ import type { EvolutionStatusTone } from "../components/evolution/ui";
 import { agentActivityView } from "../domain/agentActivityView";
 import {
   evidenceTierForGate,
-  evidenceTierForBootstrapJob,
   criticAdvisoryVerdictLabel,
   EVIDENCE_TIER_LABELS,
   type EvidenceAuthorityLabel,
 } from "../domain/evidenceAuthority";
 import { operatorSituationView } from "../domain/operatorSituationView";
 import { cn } from "../lib/utils";
-import {
-  isOfficialCertificationStage,
-  officialJobsBindingIssues,
-} from "../api/officialJobs";
 
 const TONE_CLASS: Record<EvidenceAuthorityLabel["tone"], string> = {
   success: "text-success-600 dark:text-success-400 border-success-300 dark:border-success-800",
@@ -50,27 +43,9 @@ export default function EvidenceGates() {
     status?.epoch_initialized === true,
   );
   const view = agents ? agentActivityView(agents, health?.pipeline?.route) : null;
-  const {
-    jobsProjection,
-    loading: jobsLoading,
-    error: jobsError,
-  } = useOfficialCertificationJobs(
-    Boolean(
-      status?.epoch_initialized
-      && isOfficialCertificationStage(status.active_generation?.stage)
-      && view?.available === true
-      && view.officialJobsPollingSupported
-    ),
-    status?.active_generation,
-  );
   const gen = status?.active_generation ?? null;
   const pipeline = health?.pipeline ?? null;
   const stability = status?.stability_observation ?? null;
-  const boundJobsProjection = jobsProjection
-    && gen
-    && officialJobsBindingIssues(jobsProjection, gen).length === 0
-    ? jobsProjection
-    : null;
   const situation = operatorSituationView(status, health);
 
   return (
@@ -109,7 +84,7 @@ export default function EvidenceGates() {
               ))}
             </div>
             <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              Official 5+3 只决定官方平台兼容与发布资格，强度权重始终为 0；只有当前评测身份绑定的完整 70 手 native TCP 样本才能证明强度。
+              只有当前评测身份绑定的完整 70 手 native TCP 样本才能证明强度；建议与诊断证据不能互相替代。
             </div>
           </EvolutionSurface>
 
@@ -138,40 +113,7 @@ export default function EvidenceGates() {
                   <GateRow label="独立代码审核" gateName="review" gate={view.gates.review} />
                   <GateRow label="Critic 风险建议（不决定发布）" gateName="critic" gate={view.gates.critic} advisory />
                   <GateRow label="原生 TCP 预发布评测" gateName="precommit_eval" gate={view.gates.precommit_eval} />
-                  <GateRow label="官方平台完整认证" gateName="official_full" gate={view.gates.official_full} />
                 </>
-              )}
-            </div>
-          </EvolutionSurface>
-
-          <EvolutionSurface padding="sm">
-            <EvolutionSection
-              title="官方平台兼容认证"
-              subtitle="每轮 70 手；首代为 5 自对弈 + 3 system-control，后续为 5 自对弈 + 3 合格 strict 对手；强度权重为 0"
-            />
-            <div className="mt-3">
-              <OfficialCertificationProgressView
-                status={status}
-                jobsProjection={boundJobsProjection}
-                loading={jobsLoading}
-                error={jobsError}
-              />
-              {boundJobsProjection && boundJobsProjection.jobs.length > 0 && (
-                <div className="mt-3 space-y-1 border-t border-gray-100 pt-3 dark:border-gray-800">
-                  {boundJobsProjection.jobs.filter((job) => (
-                    job.workflow_run_id === gen?.workflow_run_id
-                    && job.candidate_version === gen?.next_v
-                  )).map((job) => {
-                    const tier = evidenceTierForBootstrapJob(job);
-                    return (
-                      <div key={job.job_id} className="flex items-center gap-2 text-xs">
-                        <EvolutionStatusBadge tone="neutral">{job.state}</EvolutionStatusBadge>
-                        <span className={cn("rounded-md border px-1.5 py-0.5", TONE_CLASS[tier.tone])}>{tier.label}</span>
-                        <span className="truncate font-mono text-gray-500">{job.job_id}</span>
-                      </div>
-                    );
-                  })}
-                </div>
               )}
             </div>
           </EvolutionSurface>
@@ -232,7 +174,7 @@ function Field({ label, value, mono }: { label: string; value: string; mono?: bo
 
 function GateRow({ label, gateName, gate, advisory }: {
   label: string;
-  gateName: "quality" | "review" | "critic" | "precommit_eval" | "official_full";
+  gateName: "quality" | "review" | "critic" | "precommit_eval";
   gate: { complete: boolean; authority_state: "current" | "historical_invalidated"; fields: Record<string, unknown> } | null;
   advisory?: boolean;
 }) {

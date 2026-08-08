@@ -137,14 +137,6 @@ running = True
 PICK_MATCH_LOG_INTERVAL_SEC = float(os.environ.get("POK_PICK_MATCH_LOG_INTERVAL_SEC", "30"))
 ACTION_STATS_REFRESH_INTERVAL_SEC = float(os.environ.get("POK_ACTION_STATS_REFRESH_INTERVAL_SEC", "30"))
 _pick_match_log_state: dict[str, object] = {"last_signature": None, "last_ts": 0.0}
-OFFICIAL_JOB_RECONCILE_INTERVAL_SEC = float(os.environ.get(
-    "POK_OFFICIAL_JOB_INTERVAL_SEC",
-    "60",
-))
-OFFICIAL_JOB_RECONCILE_LIMIT = max(1, int(os.environ.get(
-    "POK_OFFICIAL_JOB_LIMIT",
-    "1",
-)))
 
 
 def _acquire_daemon_writer_lease():
@@ -271,67 +263,6 @@ def _wait_for_minimum_rating_pool(
     return active_bots, h2h
 
 
-def start_official_certification_thread():
-    """Process official EXE certification jobs without blocking quality gates."""
-    enabled = os.environ.get("POK_OFFICIAL_JOB_RECONCILER", "1")
-    if enabled.strip().lower() in {"0", "false", "off", "no"}:
-        log.info("Official certification job reconciler disabled")
-        return None
-
-    interval = max(5.0, OFFICIAL_JOB_RECONCILE_INTERVAL_SEC)
-    limit = OFFICIAL_JOB_RECONCILE_LIMIT
-
-    def _worker():
-        log.info("Official certification job reconciler started (interval=%ss, limit=%s)", interval, limit)
-        while running:
-            try:
-                from official_certification_job import reconcile_jobs
-
-                result = reconcile_jobs(limit=limit)
-                if result.get("processed") or result.get("errors"):
-                    log.info(
-                        "Official certification jobs processed=%s remaining=%s errors=%s lock_busy=%s",
-                        result.get("processed"),
-                        result.get("remaining"),
-                        result.get("errors") or [],
-                        result.get("lock_busy"),
-                    )
-                    try:
-                        log_system_event(
-                            "official_certification.jobs_reconciled",
-                            "warn" if result.get("errors") else "info",
-                            "Official certification jobs reconciled in daemon background worker",
-                            {
-                                "processed": result.get("processed"),
-                                "remaining": result.get("remaining"),
-                                "lock_busy": result.get("lock_busy"),
-                                "errors": result.get("errors") or [],
-                                "results": result.get("results") or [],
-                            },
-                        )
-                    except Exception:
-                        pass
-            except Exception as exc:
-                log.warning("Official certification job reconciler failed: %s", exc)
-                try:
-                    log_system_event(
-                        "official_certification.job_reconciler_failed",
-                        "warn",
-                        f"Official certification job reconciler failed: {type(exc).__name__}",
-                        {"error": str(exc)[:500]},
-                    )
-                except Exception:
-                    pass
-
-            deadline = time.time() + interval
-            while running and time.time() < deadline:
-                time.sleep(min(1.0, deadline - time.time()))
-
-    thread = threading.Thread(target=_worker, name="official-certification-jobs", daemon=True)
-    thread.start()
-    return thread
-
-
 def handle_signal(signum, frame):
     global running
     # Group B diagnostic (root-cause-audit follow-up 2026-06-22): record the
@@ -388,14 +319,12 @@ def bot_path(bot_name):
 
 
 def _safe_bot_path(bot_name, *, verbose=False):
-    """Return the bot entrypoint path, or None if the bot is rating-ineligible.
+    """Return the bot entrypoint path, or None if the bot cannot be resolved.
 
-    A published-but-uncertified bot (staging tier, no signed certificate) is
-    not rating-eligible.  Rather than crash the daemon (which happened
-    repeatedly: signed_full_official_certificate_required → rc=1 loop), skip
-    it so the daemon degrades gracefully.  This is the authoritative filter
-    applied at every match-scheduling site, independent of pool membership
-    reconciliation timing.
+    The official EXE certification system has been removed (Phases 3-4), so
+    staging bots are now rating-eligible.  This guard now only filters out
+    bots whose entrypoint cannot be resolved for any other reason, keeping
+    the daemon from crashing on a bad path.
     """
 
     try:
@@ -403,22 +332,20 @@ def _safe_bot_path(bot_name, *, verbose=False):
     except Exception:
         if verbose:
             log.info(
-                "Skipping rating-ineligible bot %s (no signed certificate)",
+                "Skipping bot %s (entrypoint could not be resolved)",
                 bot_name,
             )
         return None
 
 
 def _rating_eligible_bots(bots, *, verbose=False):
-    """Filter a bot-name list to rating-pool-eligible bots.
+    """Filter a bot-name list to bots whose entrypoint can be resolved.
 
     Reused at daemon startup and at every periodic bot refresh so the active
-    pool never contains a bot whose path would resolve to None (a staging/
-    uncertified bot). Without this the periodic refresh (``active_bots =
-    get_active_bots()``) re-admitted ineligible bots, pick_matches selected
-    them, and ``Path(None)`` in run_single_match silently dropped those
-    matches (regression from the _safe_bot_path wrapping, commit e355d016
-    which only half-applied the None guard at the scheduling sites).
+    pool never contains a bot whose path would resolve to None.  Without this
+    the periodic refresh (``active_bots = get_active_bots()``) re-admitted
+    unresolved bots, pick_matches selected them, and ``Path(None)`` in
+    run_single_match silently dropped those matches.
     """
     eligible = []
     for _b in bots:
@@ -1407,21 +1334,19 @@ def main():
     )
 
     active_bots = get_active_bots()
-    # The rating pool requires ROLE_RATING_POOL eligibility (signed full
-    # certificate).  A published-but-uncertified bot (staging tier) would
-    # crash bot_path() with signed_full_official_certificate_required when
-    # pick_matches tries to launch it.  Filter here (before the minimum-pool
-    # wait loop) so the daemon degrades gracefully (idle when too few are
-    # certified) instead of crash-looping.
+    # Keep only bots whose entrypoint can be resolved, so pick_matches never
+    # receives a None path.  Filter here (before the minimum-pool wait loop)
+    # so the daemon degrades gracefully (idle when too few are eligible)
+    # instead of crash-looping.
     active_bots = _rating_eligible_bots(active_bots, verbose=args.verbose)
     n_workers = args.workers
     n_pairs = args.pairs
 
     # Prune ineligible bots from the in-memory rating/h2h/stats state so the
     # evaluation-bundle semantic check (set(ratings) == set(active_bots)) holds.
-    # Without this, a staging/uncertified bot loaded from a prior cycle's
+    # Without this, an unresolved bot loaded from a prior cycle's
     # glicko_ratings.json stays in `ratings` while `active_bots` is filtered,
-    # causing ratings_active_pool_mismatch → FATAL rc=1 crash-loop on save_cycle.
+    # causing ratings_active_pool_mismatch -> FATAL rc=1 crash-loop on save_cycle.
     #
     # The H2H rows for these ineligible bots must be pruned HERE (not by the
     # ``retired`` loop below): the ``retired`` loop only catches bots still IN
@@ -1467,11 +1392,6 @@ def main():
             0,
             active_bots,
         )
-
-    try:
-        start_official_certification_thread()
-    except Exception as e:
-        log.warning("Official certification job reconciler failed to start (non-fatal): %s", e)
 
     active_bots, h2h = _wait_for_minimum_rating_pool(
         active_bots,

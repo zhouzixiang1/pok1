@@ -54,26 +54,6 @@ def test_frontend_pipeline_stage_contract_matches_backend_order():
     assert "该租约不计入成功流水线进度" in component
 
 
-def test_frontend_has_no_retired_certification_launcher():
-    client = (FRONTEND / "api" / "client.ts").read_text(encoding="utf-8")
-    progress = (
-        FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx"
-    ).read_text(encoding="utf-8")
-
-    assert "enqueueFullCertification" not in client
-    assert "enqueueCertification" not in client
-    assert "postJSON" not in client
-    assert "/enqueue" not in client
-    assert "certificationJobs" in client
-    assert ("Certification" + "Queue") not in client
-    assert "/cancel" not in progress
-    assert "cancelCertification" not in client
-    assert 'stage === "official_bootstrap_required"' in progress
-    assert '"operator_bootstrap_full_v5_job"' in progress
-    assert "row.read_only === true" in progress
-    assert "row.cancel_allowed === false" in progress
-
-
 def test_dashboard_operator_contract_distinguishes_authority_shapes():
     runbook = (
         ROOT / "docs" / "evolution-continuous-delivery-runbook.md"
@@ -245,39 +225,6 @@ def test_pipeline_component_validates_identity_and_does_not_greenwash_repair_or_
     assert "策略审核通过" not in labels
 
 
-def test_official_ui_distinguishes_first_strict_control_from_normal_full_profile():
-    source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
-    bots = (FRONTEND / "pages" / "BotManager.tsx").read_text(encoding="utf-8")
-
-    for token in (
-        "operator_transition",
-        "first_strict_control_v1",
-        "system_control",
-        "strength_evidence_weight === 0",
-        "strategy_evidence_weight === 0",
-        "official_status",
-        "compliance_verdict",
-        "certificate_digest",
-        "ready_to_finalize",
-    ):
-        assert token in source
-    assert source.index("jobsProjection?.operator_transition") < source.index("status.operator_transition")
-    assert "5 轮自对弈 + 3 轮合格 strict 对手 × 70 手" in source
-    assert "这是受控暂停，不是认证失败" in source
-    assert "passed=false" in source
-    assert "零强度权重" in source
-    assert "first_strict_control_v1" in bots
-    assert "强度与策略证据权重均为 0" in bots
-    assert 'certification.certification_profile === "official-full-v5"' in bots
-    assert 'certification.opponent_authority === "strict_published_pool"' in bots
-    assert "published attestation:" in bots
-    assert "verdict-ledger identity:" in bots
-    assert "ledgerEntry?.certificate_digest === certification.certificate_digest" in bots
-    assert 'ledgerEntry?.outcome === "official-certified"' in bots
-    assert "正式证书身份投影不完整" in bots
-    assert "不猜测为普通 5+3" in bots
-
-
 def test_bot_page_consumes_backend_dual_identity_without_reindexing_or_tag_synthesis():
     bots = (FRONTEND / "pages" / "BotManager.tsx").read_text(encoding="utf-8")
 
@@ -311,65 +258,6 @@ def test_active_generation_views_render_backend_owned_dual_identity():
     assert "version -" not in helper
     assert "generation_ordinal +" not in helper
     assert "canonical_tag}" in helper
-
-
-def test_official_ui_preserves_jobless_digest_bound_bootstrap_failure_and_normal_stage_jobs():
-    source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
-    stages = (FRONTEND / "api" / "officialJobs.ts").read_text(encoding="utf-8")
-
-    assert "transitionJobBindingValid" in source
-    assert 'transition.state === "bootstrap_failed"' in source
-    assert "transition.job_id" in source and ": !job" in source
-    assert "failureProjectionValid" in source
-    assert "transition.certificate_digest === job.certificate_digest" in source
-    assert "原因：{transition.reason" in source
-    assert "动作：{transition.action}" in source
-    assert "digest-bound transition" in source
-    for stage in (
-        "official_bootstrap_required",
-        "official_certifying",
-        "official_failed",
-        "official_inconclusive",
-    ):
-        assert f'"{stage}"' in stages
-    assert '"publishing"' not in stages.split("as const;", 1)[0]
-    assert "isNormalOfficialCertificationStage(stage)" in source
-    assert "isOfficialCertificationStage(stage)" in source
-    assert "不从 stage 反推证书或发布完成" in source
-
-
-def test_v143_numeric_high_water_source_does_not_select_normal_certification_profile():
-    # The first-strict checkpoint binds the branch's archived high-water as
-    # source_v (cloud: 0; main historically: 142) while explicitly carrying no
-    # inherited source artifact.  Frontend profile selection must therefore
-    # consume the bound transition/job, not source_v. The frontend must NOT
-    # pin to a branch-specific literal (142/143) — it validates the
-    # backend-provided transition identity against the live active generation.
-    checkpoint_fixture = {"next_v": 143, "source_v": 142}
-    source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
-
-    # The historical main-branch fixture is still a valid example of the
-    # numeric-high-water-as-source_v pattern; it is not asserted as the only
-    # legal value.
-    assert checkpoint_fixture == {"next_v": 143, "source_v": 142}
-    # The frontend no longer pins source_v to 142; it validates against the
-    # live active_generation.source_v (branch-configurable).
-    assert "transition.source_v === 142" not in source
-    assert "generation.next_v === 143" not in source
-    assert "transition.candidate_version === 143" not in source
-    # Instead it binds candidate_version to generation.next_v and source_v to
-    # generation.source_v (both branch-configurable).
-    assert "transition.candidate_version === generation.next_v" in source
-    assert "transition.source_v == null ? generation.source_v == null : transition.source_v === generation.source_v" in source
-    assert 'certificationProfile === "first_strict_control_v1"' in source
-    assert 'job.certification_profile === "official-full-v5"' in source
-    assert 'job.opponent_authority === "strict_published_pool"' in source
-    assert "job.formal_profile?.self_play_rounds === 5" in source
-    assert "job.formal_profile.opponent_rounds === 3" in source
-    assert "job.formal_profile.target_hands === 70" in source
-    assert "job.strength_evidence_weight === 0" in source
-    assert "job.strategy_evidence_weight === 0" in source
-    assert "不从版本号或 source_v 猜测" in source
 
 
 def test_stability_ui_requires_fresh_background_verification_and_exact_state():
@@ -464,7 +352,6 @@ def test_evolution_ui_primitives_and_handoff_eight_step_exist():
     for name in (
         "EvolutionPageHeader.tsx",
         "PhaseAProjectionStrip.tsx",
-        "AsyncCertificationQueue.tsx",
         "EvolutionStreamPanel.tsx",
         "HandoffEightStep.tsx",
         "PipelineDiagnostics.tsx",
@@ -518,49 +405,6 @@ def test_evolution_ui_primitives_and_handoff_eight_step_exist():
         assert "CardHeader" not in page
 
 
-def test_dashboard_redesign_api_clients_validate_and_fail_closed():
-    client = (FRONTEND / "api" / "client.ts").read_text(encoding="utf-8")
-    agents_validator = (FRONTEND / "api" / "agentActivity.ts").read_text(encoding="utf-8")
-    strength_validator = (FRONTEND / "api" / "strengthJobs.ts").read_text(encoding="utf-8")
-    official_validator = (FRONTEND / "api" / "officialJobs.ts").read_text(encoding="utf-8")
-    agent_hook = (FRONTEND / "hooks" / "useBoundAgentActivity.ts").read_text(encoding="utf-8")
-    activity_page = (FRONTEND / "pages" / "AgentActivity.tsx").read_text(encoding="utf-8")
-    evidence_page = (FRONTEND / "pages" / "EvidenceGates.tsx").read_text(encoding="utf-8")
-
-    assert "pipelineAgents" in client
-    assert "pipelineStrengthJobs" in client
-    assert "expectAgentActivity" in client
-    assert "expectStrengthJobs" in client
-    assert "expectOfficialCertificationJobs" in client
-    assert "structurally incomplete" in agents_validator
-    assert "evaluation_identity_digest is invalid" in strength_validator
-    assert "daemon health snapshot" in strength_validator
-    assert "strengthJobsBindingIssues" in strength_validator
-    assert "authority_binding" in strength_validator
-    assert "producer_consumer_dispatch" in strength_validator
-    assert "officialJobsBindingIssues" in official_validator
-    for field in ("next_v", "source_v", "parent2_v", "stage", "run_id", "workflow_run_id", "checkpoint_revision"):
-        assert field in agents_validator
-    assert "agentActivityBindingIssues" in agent_hook
-    for token in (
-        "onTaskOwner", "onTaskAuthorityLost", "onClearIO",
-        "acceptedEvolutionStatusAllowsIO", "acceptedStatusAcceptedAtRef",
-        "acceptedStatusExpiryAt", "workflowIdentityKey",
-    ):
-        assert token in activity_page
-    assert evidence_page.count("useOfficialCertificationJobs(") == 1
-    assert "OfficialCertificationProgressView" in evidence_page
-    assert "OfficialCertificationProgress status=" not in evidence_page
-    assert "boundJobsProjection" in evidence_page
-    assert "officialJobsBindingIssues(jobsProjection, gen)" in evidence_page
-    assert "officialJobsPollingSupported" in evidence_page
-    for field in (
-        "next_v", "source_v", "parent2_v", "checkpoint_stage",
-        "checkpoint_revision", "run_id", "workflow_run_id",
-    ):
-        assert field in official_validator
-
-
 def test_dashboard_redesign_domain_layer_does_not_mix_authority_shapes():
     agent_view = (FRONTEND / "domain" / "agentActivityView.ts").read_text(encoding="utf-8")
     strength_view = (FRONTEND / "domain" / "strengthJobView.ts").read_text(encoding="utf-8")
@@ -592,7 +436,6 @@ def test_backend_agent_and_strength_endpoints_are_read_only_authority_bound():
     assert "from tool_helpers import _critic_gate_ok" in pipeline_route
     assert "from tool_helpers import _quality_gate_ok" in pipeline_route
     assert "from tool_helpers import _review_gate_ok" in pipeline_route
-    assert "official_certification_profile_projection" in pipeline_route
     assert "validate_native_replay" in pipeline_route
     assert "run_blocking_isolated" in pipeline_route
     assert "_GATE_FIELD_ALLOWLIST" in pipeline_route
@@ -601,6 +444,5 @@ def test_backend_agent_and_strength_endpoints_are_read_only_authority_bound():
     assert "_preflight_strength_bundle_budget" in pipeline_route
     assert "_paginate_strength_projection" in pipeline_route
     assert '"producer_consumer_dispatch": False' in pipeline_route
-    assert '"official_jobs_polling_supported"' in pipeline_route
     assert '"record_state": "historical"' in pipeline_route
     assert '"historical_invalidated"' in pipeline_route

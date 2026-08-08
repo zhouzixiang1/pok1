@@ -455,44 +455,6 @@ class TestBotDetail:
         assert result["active"][0]["strength_evidence_status"] == "awaiting_first_rating_cycle"
 
 
-class TestCertificationRoutes:
-    def test_jobs_are_empty_when_epoch_has_no_attached_job(self, client, monkeypatch):
-        from server.routes import certification as cert_mod
-
-        monkeypatch.setattr(cert_mod, "strict_epoch_projection", lambda: {
-            "state": "reset_required",
-            "initialized": False,
-            "reset_receipt_valid": False,
-            "active_bots": [],
-            "active_generation": None,
-        })
-
-        jobs = client.get("/api/certification/jobs")
-        assert jobs.status_code == 200
-        assert jobs.json()["pending"] == 0
-        assert jobs.json()["jobs"] == []
-        assert jobs.json()["evaluation_epoch"] == "national_tcp_policy_v1"
-
-    def test_http_enqueue_is_authenticated_and_retired(self, client, monkeypatch):
-        monkeypatch.setenv("POK_CONTROL_TOKEN", "route-test-token")
-
-        forbidden = client.post(
-            "/api/certification/9998/enqueue?mode=smoke",
-            headers={"Origin": "https://attacker.example"},
-        )
-        assert forbidden.status_code == 403
-
-        response = client.post(
-            "/api/certification/9998/enqueue?mode=compliance",
-            headers={"X-Control-Token": "route-test-token"},
-        )
-
-        assert response.status_code == 410
-        assert response.json()["code"] == "certification_http_enqueue_retired"
-        assert response.json()["formal_mode"] == "full"
-        assert response.json()["normal_entrypoint"] == "commit_bot"
-
-
 class TestBotDownload:
     def test_zip_archive(self, client, synthetic_published_bot_authority):
         import io

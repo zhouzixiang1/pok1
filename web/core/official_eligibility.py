@@ -54,7 +54,6 @@ def load_official_role_policy(path: str | Path | None = None) -> dict[str, Any]:
     required = {
         "strict_national_bot_spec",
         "annotated_completion_publication",
-        "signed_official-full-v5",
     }
     for role, contract in roles.items():
         if not isinstance(contract, dict) or set(contract.get("required") or []) != required:

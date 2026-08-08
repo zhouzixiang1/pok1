@@ -1,6 +1,8 @@
 import json
 import select
+import shutil
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +12,28 @@ from managed_bot_executor import (
     EndpointLeaseError,
     launch_managed_bot,
 )
-from official_bot_sandbox import seal_bot_artifact
+
+
+class _SealedArtifact:
+    """Minimal stand-in for the removed official_bot_sandbox sealer output.
+
+    This managed-bot socket test only needs a read-only copy of the synthetic
+    candidate tree with a ``.root`` path; it does not exercise the strict
+    arena launch boundary.  The official EXE certification sandbox that
+    previously produced this object was removed, so seal a plain copy here.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+
+
+def _seal_bot_artifact(source, destination, *, expected_hash):
+    source_path = Path(source).expanduser().absolute()
+    destination_path = Path(destination).expanduser().absolute()
+    assert hash_path(source_path) == expected_hash
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_path, destination_path, symlinks=False)
+    return _SealedArtifact(destination_path)
 
 
 def _listener() -> socket.socket:
@@ -76,7 +99,7 @@ def test_bwrap_bot_can_use_only_inherited_stream(tmp_path):
     (source / "policy_epoch_receipt.json").write_text(
         "{}\n", encoding="utf-8"
     )
-    sealed = seal_bot_artifact(
+    sealed = _seal_bot_artifact(
         source,
         tmp_path / "sealed" / "candidate",
         expected_hash=hash_path(source),

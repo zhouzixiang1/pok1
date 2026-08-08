@@ -22,10 +22,6 @@ export const PIPELINE_STAGE_CONTRACT = [
   "repair_planned",
   "rework_running",
   "verified",
-  "official_bootstrap_required",
-  "official_certifying",
-  "official_failed",
-  "official_inconclusive",
   "publishing",
   "archived",
 ] as const;
@@ -80,7 +76,6 @@ export const PIPELINE_STAGES = [
   "reviewed",
   "critic_checked",
   "verified",
-  "official_certifying",
   "publishing",
   "archived",
 ] as const;
@@ -123,12 +118,8 @@ export const PIPELINE_STAGE_PROGRESS: Record<PipelineStage, PipelineStageProgres
   precommit_failed: { kind: "failed_boundary", completedThrough: "critic_checked", activeMilestone: "verified" },
   repair_planned: { kind: "in_progress", completedThrough: "master_planned", activeMilestone: "workers_done" },
   rework_running: { kind: "in_progress", completedThrough: "master_planned", activeMilestone: "workers_done" },
-  verified: { kind: "completed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
-  official_bootstrap_required: { kind: "completed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
-  official_certifying: { kind: "in_progress", completedThrough: "verified", activeMilestone: "official_certifying" },
-  official_failed: { kind: "failed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
-  official_inconclusive: { kind: "failed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
-  publishing: { kind: "in_progress", completedThrough: "official_certifying", activeMilestone: "publishing" },
+  verified: { kind: "completed_boundary", completedThrough: "verified", activeMilestone: "publishing" },
+  publishing: { kind: "in_progress", completedThrough: "verified", activeMilestone: "publishing" },
   archived: { kind: "completed_boundary", completedThrough: "publishing", activeMilestone: "archived" },
 };
 
@@ -155,10 +146,6 @@ export const STAGE_LABELS: Record<PipelineStage | PipelineMilestone, string> = {
   repair_planned: "修复计划",
   rework_running: "修复执行中",
   verified: "本地预提交通过",
-  official_bootstrap_required: "等待首代官方引导",
-  official_certifying: "官方 EXE 正式认证",
-  official_failed: "官方认证失败",
-  official_inconclusive: "官方认证无结论",
   publishing: "签名发布",
   archived: "已发布，等待 Archivist 收尾",
 };

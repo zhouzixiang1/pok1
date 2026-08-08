@@ -403,38 +403,6 @@ def test_semantic_event_journal_fsync_runs_outside_event_loop_thread(tmp_path):
     asyncio.run(scenario())
 
 
-def test_arena_official_port_defers_to_pending_exe_job(tmp_path, monkeypatch):
-    import official_certification_job
-    import national_arena.manager as manager_module
-
-    lock_path = tmp_path / "official.lock"
-    monkeypatch.setattr(
-        manager_module,
-        "OfficialPlatformConfig",
-        lambda: type("Config", (), {"lock_path": lock_path})(),
-    )
-    monkeypatch.setattr(
-        official_certification_job,
-        "job_snapshot",
-        lambda: {"jobs": [{"job_id": "formal", "pending": True}]},
-    )
-    manager = NationalArenaManager(ArenaStore(tmp_path / "arena"))
-    session = ArenaSession(
-        session_id="arena_20260711_deadf00d",
-        mode="external_tcp",
-        port=10001,
-    )
-    runtime = _ArenaRuntime(session_id=session.session_id)
-
-    with pytest.raises(ArenaConflict, match="certification is queued"):
-        manager._claim_official_platform_resource(session, runtime)
-
-    assert runtime.official_platform_lease is None
-    lease = manager_module.try_acquire_official_platform(lock_path, owner="after-test")
-    assert lease is not None
-    lease.release()
-
-
 def test_concurrent_start_is_claimed_atomically_before_listener(tmp_path, monkeypatch):
     async def scenario():
         manager = NationalArenaManager(ArenaStore(tmp_path / "arena"))

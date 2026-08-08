@@ -69,7 +69,6 @@ from blocking_runtime import run_blocking_isolated
 from llm_availability import LLMAvailabilityBlocked
 
 import tool_commit_gate_ledger as _gl  # noqa: E402
-import tool_commit_official_gate as _og  # noqa: E402
 import tool_commit_archivist_orchestrator as _ao  # noqa: E402
 import tool_commit_publication as _pub  # noqa: E402
 import tool_commit_crossover as _cx  # noqa: E402
@@ -136,59 +135,73 @@ def validate_commit_gate_ledger(*args, **kwargs):
     return _gl.validate_commit_gate_ledger(*args, **kwargs)
 
 
-def _checkpoint_execution_mode(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._checkpoint_execution_mode(*args, **kwargs)
+# ---------------------------------------------------------------------------
+# Official-gate stubs (Phases 3-4): the tool_commit_official_gate companion
+# module and the entire official EXE certification system have been removed.
+# ``is_staging_publication`` is always True, so the inline official-full gate
+# branch in commit_bot is dead code; these stubs retain the public names so
+# external ``from tool_commit import <name>`` and test monkeypatches keep
+# resolving. They never block publication.
+# ---------------------------------------------------------------------------
+
+def _checkpoint_execution_mode(ckpt, gate_results) -> str:
+    """Return the recorded national execution mode (no official gate)."""
+    if ckpt:
+        mode = str(ckpt.get("national_execution_mode") or "")
+        if mode:
+            return mode
+    for gate_name in ("quality", "precommit_eval"):
+        gate = (gate_results or {}).get(gate_name) or {}
+        mode = str(gate.get("national_execution_mode") or "")
+        if mode:
+            return mode
+    return ""
 
 
-def _truthy_env(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._truthy_env(*args, **kwargs)
+def _truthy_env(name: str, default: str = "1") -> bool:
+    import os
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on", "required"}
 
 
 def _official_preferred_opponent(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._official_preferred_opponent(*args, **kwargs)
+    return None
 
 
 def _official_gate_feedback(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._official_gate_feedback(*args, **kwargs)
+    return ""
 
 
 def _official_gate_is_bot_blocker(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._official_gate_is_bot_blocker(*args, **kwargs)
+    return False
 
 
 def _official_job_projection(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._official_job_projection(*args, **kwargs)
+    return {}
 
 
 def _record_official_job_checkpoint(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._record_official_job_checkpoint(*args, **kwargs)
+    return False
 
 
 def _record_official_full_gate_checkpoint(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._record_official_full_gate_checkpoint(*args, **kwargs)
+    return ""
 
 
 def _record_official_bootstrap_required_checkpoint(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._record_official_bootstrap_required_checkpoint(*args, **kwargs)
+    return False
 
 
 def _record_official_full_pass_checkpoint(*args, **kwargs):
-    """Delegate to tool_commit_official_gate."""
-    return _og._record_official_full_pass_checkpoint(*args, **kwargs)
+    return False
 
 
 async def _run_official_full_commit_gate(*args, **kwargs):
-    """Delegate to tool_commit_official_gate (async)."""
-    return await _og._run_official_full_commit_gate(*args, **kwargs)
+    """Stubbed: the official EXE certification system was removed (Phases 3-4).
+
+    Publication always uses the native/staging tier now, so this gate is dead
+    code. If ever reached, report a non-blocking pass-through.
+    """
+    return {"outcome": "staging_skipped", "tier": "native", "passed": True}
 
 
 @tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
@@ -279,13 +292,12 @@ async def commit_bot(args):
             "validation_errors": publication_errors[:20],
         })
     ckpt = _matching_checkpoint(v, source_v)
-    # Two-tier publication: the checkpoint selects the publication tier.  The
-    # default ("certified") preserves the historical byte-identical official
-    # EXE certification path.  "staging" publishes the bot bytes immediately
-    # without an inline official certificate; async certification produces the
-    # certified-tier tag later.
-    publication_tier = str((ckpt or {}).get("publication_tier") or "certified")
-    is_staging_publication = publication_tier == "staging"
+    # Certification system removed: every publication now uses the staging
+    # intent path (no certificate fields) and reports a single native tier.
+    # ``is_staging_publication`` is kept True so the inline official EXE gate
+    # and the certificate-bound publication intent path stay disabled.
+    publication_tier = "native"
+    is_staging_publication = True
     ledger = validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=bot_dir)
     missing_gates = ledger["missing_gates"]
     failed_gates = ledger["failed_gates"]
@@ -553,50 +565,15 @@ async def commit_bot(args):
     wr_str = f" h2h_avg_wr={h2h_wr:.2%}" if h2h_wr is not None else ""
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
+    # Certification system removed: no certificate projection is produced and
+    # no candidate/certificate drift check is performed before publication.
     official_certificate = None
-    if official_certification_status:
-        from official_certification import official_full_certified
 
-        if not official_full_certified(
-            official_certification_status,
-            bot_dir,
-        ):
-            return _json_tool_result({
-                "error": "COMMIT BLOCKED: candidate or official certificate changed before Git commit.",
-                "version": v,
-                "source_v": source_v,
-            })
-        identity = official_certification_status.get("certification_identity") or {}
-        certificate_spec = (
-            identity.get("spec") if isinstance(identity.get("spec"), dict) else {}
-        )
-        if certificate_spec.get("bootstrap_control_id"):
-            from official_bootstrap import (
-                validate_completed_operator_bootstrap_authorization,
-            )
-
-            completed_rebind = validate_completed_operator_bootstrap_authorization(
-                official_certification_status,
-                bot_dir,
-                checkpoint=ckpt,
-            )
-            if completed_rebind.get("valid") is not True:
-                return _json_tool_result({
-                    "error": (
-                        "COMMIT BLOCKED: bootstrap authorization drifted immediately "
-                        "before Git publication."
-                    ),
-                    "failure_class": "authorization",
-                    "checkpoint_preserved": True,
-                    "version": v,
-                    "source_v": source_v,
-                    "validation": completed_rebind,
-                })
-        official_certificate = _official_certificate_projection(
-            official_certification_status
-        )
-
-    # Official certification may take minutes.  Re-open the checkpoint and
+    # Re-open the checkpoint and force the complete gate ledger (including the
+    # empty strict-pool receipt) through its live validators immediately before
+    # any Git tag/commit/push action.  A strict publication that appeared while
+    # the EXE job was running therefore revokes the one-time control authority.
+    ckpt = read_pipeline_checkpoint() or ckpt
     # force the complete gate ledger (including the empty strict-pool receipt)
     # through its live validators after certification and immediately before
     # any Git tag/commit/push action.  A strict publication that appeared while
@@ -635,96 +612,40 @@ async def commit_bot(args):
             "source_v": source_v,
             "checkpoint_preserved": True,
         })
-    if not is_staging_publication and not official_certificate:
-        return _json_tool_result({
-            "error": "COMMIT BLOCKED: official certificate projection is missing.",
-            "version": v,
-            "source_v": source_v,
-        })
     try:
         from national_runtime_authority import strict_published_bot_names
         from publication_transaction import (
-            build_publication_intent,
             build_staging_publication_intent,
-            file_sha256,
             publication_gate_ledger_digest,
         )
 
-        if is_staging_publication:
-            # Staging tier: no official certificate.  Bind the candidate hash
-            # from the gate-ledger code fingerprint and publish without any
-            # certificate-bound fields; async certification follows.
-            publication_intent = build_staging_publication_intent(
-                checkpoint=ckpt,
-                candidate_artifact_hash=str(
-                    ledger.get("current_code_fingerprint") or ""
-                ),
-                final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
-                strategy_tag=strategy,
-                rating_info=rating_info,
-                baseline_head=_git("rev-parse", f"refs/heads/{EVOLUTION_BRANCH}").strip(),
-                baseline_remote_main=_git(
-                    "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
-                ).strip(),
-                baseline_remote_completion_refs=(
-                    remote_completion_ref_snapshot()
-                    if (
-                        evolution_git_push_required()
-                        or evolution_git_push_enabled()
-                    )
-                    else {}
-                ),
-                prepublication_strict_bots=strict_published_bot_names(),
-                remote_publication_required=evolution_git_push_required(),
-                remote_publication_enabled=evolution_git_push_enabled(),
-            )
-        else:
-            from official_certification import publish_certificate_attestation
-
-            certificate_publication = publish_certificate_attestation(
-                official_certification_status,
-                bot_dir,
-            )
-            certificate_relative_path = str(
-                certificate_publication.get("relative_path") or ""
-            )
-            certificate_path = PROJECT_ROOT / certificate_relative_path
-            publication_intent = build_publication_intent(
-                checkpoint=ckpt,
-                candidate_artifact_hash=str(
-                    official_certificate.get("candidate_hash") or ""
-                ),
-                certificate_digest=str(
-                    official_certificate.get("certificate_digest") or ""
-                ),
-                certificate_policy_id=str(
-                    official_certificate.get("policy_id") or ""
-                ),
-                official_status=official_certification_status,
-                certificate_relative_path=certificate_relative_path,
-                certificate_file_sha256=file_sha256(certificate_path),
-                certificate_attestation_digest=str(
-                    certificate_publication.get("attestation_digest") or ""
-                ),
-                final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
-                strategy_tag=strategy,
-                rating_info=rating_info,
-                baseline_head=_git("rev-parse", f"refs/heads/{EVOLUTION_BRANCH}").strip(),
-                baseline_remote_main=_git(
-                    "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
-                ).strip(),
-                baseline_remote_completion_refs=(
-                    remote_completion_ref_snapshot()
-                    if (
-                        evolution_git_push_required()
-                        or evolution_git_push_enabled()
-                    )
-                    else {}
-                ),
-                prepublication_strict_bots=strict_published_bot_names(),
-                remote_publication_required=evolution_git_push_required(),
-                remote_publication_enabled=evolution_git_push_enabled(),
-            )
+        # Certification system removed: the staging intent (no certificate
+        # fields) is the only publication path.  Every publication reports the
+        # single native tier.
+        publication_intent = build_staging_publication_intent(
+            checkpoint=ckpt,
+            candidate_artifact_hash=str(
+                ledger.get("current_code_fingerprint") or ""
+            ),
+            final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
+            strategy_tag=strategy,
+            rating_info=rating_info,
+            baseline_head=_git("rev-parse", f"refs/heads/{EVOLUTION_BRANCH}").strip(),
+            baseline_remote_main=_git(
+                "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
+            ).strip(),
+            baseline_remote_completion_refs=(
+                remote_completion_ref_snapshot()
+                if (
+                    evolution_git_push_required()
+                    or evolution_git_push_enabled()
+                )
+                else {}
+            ),
+            prepublication_strict_bots=strict_published_bot_names(),
+            remote_publication_required=evolution_git_push_required(),
+            remote_publication_enabled=evolution_git_push_enabled(),
+        )
     except Exception as exc:
         return _json_tool_result({
             "error": "COMMIT BLOCKED: publication intent could not be built.",
@@ -791,23 +712,6 @@ async def commit_bot(args):
             "another generation."
         ),
     }
-    if is_staging_publication:
-        # Staging published the bot bytes without an official certificate.
-        # Async certification must follow to produce the certified-tier tag at
-        # the same commit.
-        handoff_result["async_certification_pending"] = True
-    if official_full_gate and not is_staging_publication:
-        handoff_result["official_full_gate"] = {
-            "status": official_certification_status.get("status"),
-            "mode": official_certification_status.get("mode"),
-            "cache_hit": official_certification_status.get("cache_hit"),
-            "official_evidence_path": official_certification_status.get(
-                "official_evidence_path"
-            ),
-            "opponent": (official_full_gate.get("opponent_selection") or {}).get(
-                "opponent"
-            ),
-        }
     if novelty_info:
         handoff_result["novelty_gate"] = novelty_info
     return _json_tool_result(handoff_result)

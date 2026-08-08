@@ -27,7 +27,6 @@ export {
   isInteger,
   isOptional,
   isNullableNumber,
-  isNullableString,
   isStringArray,
   isHexDigest,
   isEpochBlocked,
@@ -40,7 +39,6 @@ import {
   isInteger,
   isOptional,
   isNullableNumber,
-  isNullableString,
   isStringArray,
   isHexDigest,
   isEpochBlocked,
@@ -231,91 +229,6 @@ const isBotStatsEntry = (value: unknown): value is BotStatsEntry => (
   && isNumber(value.win_rate)
 );
 
-const OFFICIAL_STATUSES = new Set([
-  "local-pass",
-  "official-smoke-pass",
-  "official-compliance-pass",
-  "official-pending",
-  "official-certified",
-  "official-inconclusive",
-  "official-failed",
-  "official-uncertified",
-  // Two-tier publication: staging tag published, async official cert pending.
-  "official-staging",
-  "official-unavailable",
-]);
-const OFFICIAL_MODES = new Set(["smoke", "compliance", "full"]);
-const FORMAL_AUTHORITIES = new Set([
-  "signed_full_v5",
-  "staging_uncertified",
-  "none",
-  "pipeline_attached_full_v5_job",
-]);
-
-const isFormalSummary = (value: unknown): boolean => (
-  isObject(value)
-  && [
-    "self_play_rounds",
-    "opponent_rounds",
-    "target_hands",
-    "rounds_requested",
-    "rounds_run",
-    "passed_rounds",
-    "failed_rounds",
-  ].every((key) => isInteger(value[key]))
-);
-
-const isOfficialCertification = (value: unknown): boolean => {
-  if (
-    !isObject(value)
-    || typeof value.bot !== "string"
-    || typeof value.status !== "string"
-    || !OFFICIAL_STATUSES.has(value.status)
-  ) return false;
-  if (!isOptional(value.status_label, (item) => typeof item === "string")) return false;
-  if (!isOptional(value.mode, (item) => (
-    item === null || (typeof item === "string" && OFFICIAL_MODES.has(item))
-  ))) return false;
-  for (const key of ["policy_id", "updated_at", "workflow_run_id", "certification_profile", "opponent_authority"]) {
-    if (!isOptional(value[key], isNullableString)) return false;
-  }
-  for (const key of ["cache_hit", "queued", "formal_certified", "epoch_initialized"]) {
-    if (!isOptional(value[key], (item) => typeof item === "boolean")) return false;
-  }
-  for (const key of [
-    "cache_key",
-    "reason",
-    "certification_root",
-    "certificate_digest",
-    "certificate_signature_sha256",
-    "published_attestation_digest",
-    "epoch_state",
-  ]) {
-    if (!isOptional(value[key], (item) => typeof item === "string")) return false;
-  }
-  if (!isOptional(value.issues, isStringArray)) return false;
-  for (const key of ["summary", "compliance_verdict", "result", "official_verdict_ledger_entry"]) {
-    if (!isOptional(value[key], isObject)) return false;
-  }
-  if (!isOptional(value.certificate_schema_version, isInteger)) return false;
-  if (!isOptional(value.formal_authority, (item) => (
-    typeof item === "string" && FORMAL_AUTHORITIES.has(item)
-  ))) return false;
-  if (!isOptional(value.publication_tier, (item) => (
-    item === "staging" || item === "certified"
-  ))) return false;
-  if (!isOptional(value.formal_summary, (item) => item === null || isFormalSummary(item))) return false;
-  if (!isOptional(value.subject_kind, (item) => (
-    item === "strict_published" || item === "active_candidate"
-  ))) return false;
-  if (!isOptional(value.evaluation_epoch, (item) => item === "national_tcp_policy_v1")) return false;
-  if (!isOptional(value.candidate_version, (item) => item === null || isInteger(item))) return false;
-  for (const key of ["strength_evidence_weight", "strategy_evidence_weight"]) {
-    if (!isOptional(value[key], isNumber)) return false;
-  }
-  return true;
-};
-
 const isBotSummary = (value: unknown): value is BotSummary => {
   if (
     !isObject(value)
@@ -382,7 +295,6 @@ const isBotSummary = (value: unknown): value is BotSummary => {
     if (!isOptional(value[key], (item) => typeof item === "string")) return false;
   }
   if (!isOptional(value.strength_order_contract, isStringArray)) return false;
-  if (!isOptional(value.official_certification, isOfficialCertification)) return false;
   return true;
 };
 

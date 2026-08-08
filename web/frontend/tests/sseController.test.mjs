@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+
+// Resolve the project Web Python interpreter for the cross-language producer
+// contract test. An explicit ``PYTHON`` env var always wins; otherwise fall
+// back to the repo venv so the test runs from a normal checkout without
+// forcing the operator to export ``PYTHON``.
+function resolveProjectPython() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, "..", "..", "..", ".venv", "bin", "python"),
+    resolve(here, "..", "..", ".venv", "bin", "python"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
 
 import {
   createDataStreamController,
@@ -786,7 +800,7 @@ function botSummary(name = "national_v143") {
     strength_evidence_status: "current_evaluation_cycle",
     official_certification: {
       bot: name,
-      status: "official-certified",
+      status: "native",
     },
   };
 }
@@ -1587,10 +1601,10 @@ test("all production stream events have rejecting minimal runtime schemas", () =
 });
 
 test("actual Python producers satisfy the TypeScript stream validators", () => {
-  const python = process.env.PYTHON;
+  const python = process.env.PYTHON || resolveProjectPython();
   assert.ok(
     python,
-    "set PYTHON to the project Web interpreter before npm test; the producer "
+    "set PYTHON to the project Web interpreter before npm test, or run from a checkout with /.venv/bin/python; the producer "
       + "contract imports live FastAPI/LLM dependencies and must not run on a bare Python",
   );
   const result = spawnSync(
@@ -1791,31 +1805,6 @@ test("source-bound static receipt rejects stale frontend code before --no-build"
   assert.match(malformed.stderr, /receipt keys do not match/);
 });
 
-test("data stream accepts staging_uncertified / official-staging bots", () => {
-  const base = botSummary("national_v143");
-  const stagingBot = {
-    ...base,
-    official_certification: {
-      bot: base.name,
-      status: "official-staging",
-      formal_authority: "staging_uncertified",
-      publication_tier: "staging",
-      formal_certified: false,
-    },
-  };
-  assert.equal(validateDataStreamEvent("bots", { active: [stagingBot] }), true);
-
-  const unknownAuthority = {
-    ...base,
-    official_certification: {
-      bot: base.name,
-      status: "official-staging",
-      formal_authority: "not_a_real_authority",
-    },
-  };
-  assert.equal(validateDataStreamEvent("bots", { active: [unknownAuthority] }), false);
-});
-
 test("pipelineStepperStage (PipelineMap null-checkpoint contract) uses active_generation.stage", () => {
   assert.equal(
     pipelineStepperStage(null, { stage: "precommit_eval" }),
@@ -1878,8 +1867,8 @@ test("control Phase A helpers and abandon API surface", () => {
   assert.equal(controlAbandonAvailable(status), true);
   assert.equal(controlAbandonAvailable({
     ...status,
-    active_generation: { ...status.active_generation, stage: "official_certifying" },
-    active_generations: [{ ...status.active_generations[0], stage: "official_certifying" }, draft],
+    active_generation: { ...status.active_generation, stage: "publishing" },
+    active_generations: [{ ...status.active_generations[0], stage: "publishing" }, draft],
   }), false);
   assert.equal(typeof controlApi.abandon, "function");
   assert.equal(typeof controlApi.status, "function");

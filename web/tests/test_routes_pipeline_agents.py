@@ -120,7 +120,6 @@ class TestPipelineAgents:
         assert "quality" in data["gate_keys_present"]
 
         assert data["orchestrator"]["reviewer_feedback"] == "looks good"
-        assert data["orchestrator"]["official_jobs_polling_supported"] is False
         assert len(data["worker_failures"]) == 1
         assert data["worker_failures"][0]["worker_id"] == 2
         assert data["worker_failures"][0]["record_state"] == "historical"
@@ -197,80 +196,6 @@ class TestPipelineAgents:
         # No fabricated identity fields leak when the workflow is unavailable.
         assert "next_v" not in data
         assert "stage" not in data
-
-    def test_gate_completion_reuses_production_authority_helpers(self, monkeypatch):
-        from server.routes import pipeline
-        import tool_helpers
-        import pipeline_state
-        import official_certification
-
-        checkpoint = {
-            "evaluation_epoch": "national_tcp_policy_v1",
-            "next_v": 143,
-            "source_v": 142,
-            "stage": "verified",
-            "workflow_run_id": "generation:143:authority-helper",
-            "run_id": "143#0",
-            "checkpoint_revision": 9,
-            "gate_results": {
-                "quality": {"all_passed": True, "critical_scenarios_passed": True},
-                "review": {"approved": True},
-                "critic": {"approved": True},
-                "precommit_eval": {"passed": True},
-                "official_full": {
-                    "passed": True,
-                    "certificate_digest": "d" * 64,
-                    "status": {"certificate_digest": "d" * 64},
-                },
-            },
-        }
-        monkeypatch.setattr(tool_helpers, "_quality_gate_ok", lambda supplied: supplied is checkpoint)
-        monkeypatch.setattr(tool_helpers, "_review_gate_ok", lambda supplied: supplied is checkpoint)
-        monkeypatch.setattr(tool_helpers, "_critic_gate_ok", lambda supplied: supplied is checkpoint)
-        monkeypatch.setattr(
-            pipeline_state,
-            "_precommit_gate_matches_active_workflow",
-            lambda supplied: supplied is checkpoint["gate_results"],
-        )
-        monkeypatch.setattr(official_certification, "official_full_certified", lambda *_a, **_k: True)
-        monkeypatch.setattr(
-            official_certification,
-            "official_certification_profile_projection",
-            lambda *_a, **_k: {
-                "strength_evidence_weight": 0,
-                "strategy_evidence_weight": 0,
-                "formal_summary": {"rounds_run": 8, "passed_rounds": 8},
-            },
-        )
-
-        projection = pipeline._build_agents_projection(checkpoint, [])
-        assert all(
-            projection["gates"][name]["complete"] is True
-            for name in ("quality", "review", "critic", "precommit_eval", "official_full")
-        )
-
-        monkeypatch.setattr(tool_helpers, "_quality_gate_ok", lambda _supplied: False)
-        monkeypatch.setattr(tool_helpers, "_review_gate_ok", lambda _supplied: False)
-        monkeypatch.setattr(tool_helpers, "_critic_gate_ok", lambda _supplied: False)
-        monkeypatch.setattr(pipeline_state, "_precommit_gate_matches_active_workflow", lambda _supplied: False)
-        monkeypatch.setattr(official_certification, "official_full_certified", lambda *_a, **_k: False)
-        drifted = pipeline._build_agents_projection(checkpoint, [])
-        assert drifted["gates"]["quality"]["complete"] is False
-        assert drifted["gates"]["review"]["complete"] is False
-        assert drifted["gates"]["critic"]["complete"] is False
-        assert drifted["gates"]["precommit_eval"]["complete"] is False
-        assert drifted["gates"]["official_full"]["complete"] is False
-
-        # A signed-looking status still has zero UI authority if the formal
-        # profile cannot be reconstructed from the content-bound certificate.
-        monkeypatch.setattr(official_certification, "official_full_certified", lambda *_a, **_k: True)
-        monkeypatch.setattr(
-            official_certification,
-            "official_certification_profile_projection",
-            lambda *_a, **_k: {},
-        )
-        profile_drift = pipeline._build_agents_projection(checkpoint, [])
-        assert profile_drift["gates"]["official_full"]["complete"] is False
 
     def test_direction_audited_master_is_started_not_completed(self):
         from server.routes import pipeline
@@ -547,36 +472,3 @@ class TestPipelineAgents:
         assert row["record_state"] == "historical"
         assert row["current_blocker"] is False
 
-    def test_official_job_poll_support_is_stage_owned(self):
-        from server.routes import pipeline
-
-        base = {
-            "evaluation_epoch": "national_tcp_policy_v1",
-            "next_v": 144,
-            "source_v": 143,
-            "parent2_v": None,
-            "workflow_run_id": "generation:144:poll-support",
-            "run_id": "144#1",
-            "checkpoint_revision": 1,
-            "gate_results": {},
-        }
-        for stage in (
-            "official_bootstrap_required",
-            "official_certifying",
-            "official_failed",
-            "official_inconclusive",
-        ):
-            projection = pipeline._build_agents_projection({**base, "stage": stage}, [])
-            assert projection["orchestrator"]["official_jobs_polling_supported"] is True
-        for stage in (
-            "direction_audited",
-            "master_planned",
-            "workers_done",
-            "quality_passed",
-            "reviewed",
-            "critic_checked",
-            "verified",
-            "publishing",
-        ):
-            projection = pipeline._build_agents_projection({**base, "stage": stage}, [])
-            assert projection["orchestrator"]["official_jobs_polling_supported"] is False

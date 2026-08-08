@@ -23,8 +23,7 @@ export type EpochOperatorAction =
   | "complete_runtime_reconciliation"
   | "quarantine_legacy_ledger_and_abandon_checkpoint"
   | "operator_reconcile_checkpoint"
-  | "finalize_recorded_abandon_checkpoint"
-  | "run_first_strict_official_certification";
+  | "finalize_recorded_abandon_checkpoint";
 
 export type IgnoredCheckpointReason =
   | "checkpoint_unreadable_or_not_object"
@@ -90,31 +89,14 @@ export interface PipelineModeProjection {
 export interface FeatureFlagsProjection {
   slice2b_enabled: boolean;
   staging_as_parent: boolean;
-  certified_tag_prefix: string;
   tag_prefix: string;
 }
 
 export interface VersionAuthorityProjection {
   high_water: number;
   paired_versions: number[];
-  certified_versions: number[];
   unpaired_completion_versions: number[];
   unpaired_high_water_versions: number[];
-}
-
-export interface AsyncCertificationItem {
-  version: number;
-  bot_name: string;
-  state: "passed" | "pending" | "running" | string;
-  staging_tag: string;
-  certified_tag: string | null;
-  job_id: string | null;
-  formal_authority: "signed_full_v5" | "staging_uncertified" | string;
-}
-
-export interface AsyncCertificationProjection {
-  items: AsyncCertificationItem[];
-  any_pending: boolean;
 }
 
 export interface EvalWaitProjection {
@@ -144,35 +126,6 @@ export interface PipelineRoute {
   /** Typed enough for presentation; the backend remains the classification authority. */
   infra_failure?: Record<string, unknown> | null;
   directive: string;
-}
-
-export interface OperatorTransition {
-  schema_version: 1;
-  kind: "first-strict-official-operator-transition";
-  state: "bootstrap_required" | "bootstrap_running" | "bootstrap_failed" | "ready_to_finalize";
-  action: string;
-  command: string | null;
-  reason: string | null;
-  certification_profile: "first_strict_control_v1";
-  opponent_authority: "system_control";
-  strength_evidence_weight: 0;
-  strategy_evidence_weight: 0;
-  evaluation_epoch: EvaluationEpoch;
-  workflow_run_id: string | null;
-  // The first-strict candidate/source versions are branch-configurable
-  // (national_cloud_v1 with source_v=null on the cloud branch; the
-  // historical national_v143/source_v=142 on main). The frontend must not
-  // pin these to a specific branch's literals — it validates the values
-  // carried by the backend projection against the active generation.
-  candidate_version: number | null;
-  source_v: number | null;
-  checkpoint_stage: "official_bootstrap_required" | null;
-  checkpoint_revision: number | null;
-  candidate_hash?: string | null;
-  parked_request_digest?: string | null;
-  job_id?: string | null;
-  certificate_digest?: string | null;
-  transition_digest: string;
 }
 
 export interface IgnoredCheckpoint {
@@ -296,16 +249,14 @@ export interface ControlStatus {
   unpublished_candidate_versions: number[];
   stability_observation: StabilityObservation;
   stability_observation_digest: string;
-  operator_transition?: OperatorTransition | null;
   status_sync_error?: string;
   /**
-   * Phase A multi-slot / slice2b / cert / eval-wait blocks. Optional for
+   * Phase A multi-slot / slice2b / eval-wait blocks. Optional for
    * backward compatibility with pre-Phase-A observers; missing means empty /
    * unavailable, never a fail-closed unknown-field rejection.
    */
   active_generations?: GenerationSlot[];
   pipeline_mode?: PipelineModeProjection;
-  async_certification?: AsyncCertificationProjection;
   eval_wait?: EvalWaitProjection;
   feature_flags?: FeatureFlagsProjection;
   version_authority?: VersionAuthorityProjection;
@@ -666,9 +617,6 @@ export function draftGenerations(
 /** Stages where HTTP/MCP generic abandon is refused (mirrors backend never_disposable). */
 export const CONTROL_NEVER_DISPOSABLE_STAGES = new Set([
   "verified",
-  "official_bootstrap_required",
-  "official_certifying",
-  "official_inconclusive",
   "publishing",
   "archived",
 ]);

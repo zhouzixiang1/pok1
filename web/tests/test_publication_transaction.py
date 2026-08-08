@@ -70,7 +70,7 @@ def _intent(
         checkpoint=checkpoint,
         candidate_artifact_hash=hash_path(candidate),
         certificate_digest=payload["certificate_digest"],
-        certificate_policy_id="official-full-v5",
+        certificate_policy_id="official_full_policy_removed",
         official_status={"status": "certified", "certificate_digest": "b" * 64},
         certificate_relative_path=f"official_certificates/{bot_name(version)}.json",
         certificate_file_sha256=file_sha256(certificate),
@@ -317,7 +317,7 @@ def test_remote_publication_requires_exact_objects_peeled_commits_and_main(
         checkpoint=checkpoint,
         candidate_artifact_hash="a" * 64,
         certificate_digest="b" * 64,
-        certificate_policy_id="official-full-v5",
+        certificate_policy_id="official_full_policy_removed",
         official_status={"status": "certified"},
         certificate_relative_path=f"official_certificates/{bot_name(version)}.json",
         certificate_file_sha256="c" * 64,
@@ -998,7 +998,6 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     tmp_path, monkeypatch, first_failure
 ):
     import national_runtime_authority
-    import official_certification
     import post_publication_handoff
     import publication_transaction
     import tool_commit
@@ -1022,7 +1021,7 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     )
     official_status = {
         "status": "certified",
-        "policy_id": "official-full-v5",
+        "policy_id": "official_full_policy_removed",
         "certificate_digest": "b" * 64,
         "certification_identity": {
             "candidate_hash": intent["candidate_artifact_hash"],
@@ -1083,11 +1082,6 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
             "bot": bot_name(version),
             "proof_digest": "proof",
         },
-    )
-    monkeypatch.setattr(
-        official_certification,
-        "official_full_certified",
-        lambda *_a, **_k: True,
     )
 
     def ensure(*_a, **_k):
@@ -1189,7 +1183,7 @@ def test_publication_intent_digest_covers_strategy_and_remote_requirement():
         checkpoint=checkpoint,
         candidate_artifact_hash="a" * 64,
         certificate_digest="b" * 64,
-        certificate_policy_id="official-full-v5",
+        certificate_policy_id="official_full_policy_removed",
         official_status={"status": "certified"},
         certificate_relative_path=f"official_certificates/{bot_name(version)}.json",
         certificate_file_sha256="c" * 64,
@@ -1363,7 +1357,6 @@ def test_private_index_commit_is_immune_to_post_seal_worktree_drift(
 def test_pre_push_authority_reopens_latest_publishing_checkpoint(
     tmp_path, monkeypatch
 ):
-    import official_certification
     import publication_transaction
     import national_runtime_authority
     import tool_commit
@@ -1421,11 +1414,6 @@ def test_pre_push_authority_reopens_latest_publishing_checkpoint(
         tool_commit,
         "_existing_local_bot_tag_matches_certificate",
         lambda *_a, **_k: (True, ""),
-    )
-    monkeypatch.setattr(
-        official_certification,
-        "official_full_certified",
-        lambda *_a, **_k: True,
     )
     monkeypatch.setattr(tool_commit, "evolution_git_push_required", lambda: True)
 

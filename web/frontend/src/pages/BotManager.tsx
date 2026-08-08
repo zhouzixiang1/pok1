@@ -14,7 +14,6 @@ import {
   canonicalGenerationIdentityIssues,
   sameCanonicalGenerationIdentity,
 } from "../lib/canonicalGenerationIdentity";
-import { certificationView } from "../domain/certificationView";
 import { operatorSituationView } from "../domain/operatorSituationView";
 
 const CheckIcon = () => (
@@ -111,22 +110,9 @@ function BotCard({
       .finally(() => setLoadingCode(false));
   }, [bot.version, expanded, selectedFile]);
 
-  const certification = detail?.official_certification ?? bot.official_certification;
   // Both identities are backend projections cross-bound against the epoch
   // inventory above.  Neither sorting nor filtering can mint a new ordinal.
   const completionTag = identity?.canonical_tag ?? null;
-  const certView = certificationView(certification, {
-    publication_tier: bot.publication_tier ?? certification?.publication_tier ?? null,
-    certified_tag: bot.certified_tag ?? null,
-  });
-  const formalSummary = certification?.formal_summary;
-  const ledgerEntry = certification?.official_verdict_ledger_entry;
-  const ledgerIdentity = ledgerEntry && (
-    ledgerEntry.entry_digest
-    ?? ledgerEntry.ledger_entry_digest
-    ?? ledgerEntry.digest
-    ?? ledgerEntry.sequence
-  );
   const opponents = useMemo(() => {
     const rows: Array<{ name: string; wins: number; losses: number; draws: number; games: number; wr: number }> = [];
     for (const [key, value] of Object.entries(h2hData)) {
@@ -186,17 +172,6 @@ function BotCard({
             )}
             <span className="font-mono text-[10px] text-gray-400">{identity?.canonical_bot_name ?? bot.name}</span>
             <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"><CheckIcon /> 严格发布</span>
-            {certView.publicationTier && (
-              <span className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                tier: {certView.publicationTier}
-              </span>
-            )}
-            <span className={`rounded border px-1.5 py-0.5 text-[10px] ${certView.tone}`}>{certView.label}</span>
-            {certView.certifiedTag && (
-              <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
-                certified: {certView.certifiedTag}
-              </span>
-            )}
           </div>
           <div className="mt-1"><RatingLine bot={bot} /></div>
         </div>
@@ -209,61 +184,6 @@ function BotCard({
             <div className="space-y-2"><Skeleton.Line /><Skeleton.Line className="w-1/2" /></div>
           ) : detail ? (
             <>
-              <div className={`rounded-lg border p-3 text-xs ${certView.tone}`}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold">{certView.label}</span>
-                  <span>{certView.detail}</span>
-                </div>
-                {certification && (
-                  <>
-                    {certification.certification_profile === "first_strict_control_v1" && (
-                      <p className="mt-2 text-[11px] text-amber-800 dark:text-amber-200">
-                        first_strict_control_v1：system-control 仅证明官方协议合规；强度与策略证据权重均为 0。
-                      </p>
-                    )}
-                    {certification.certification_profile === "official-full-v5"
-                      && certification.opponent_authority === "strict_published_pool" && (
-                      <p className="mt-2 text-[11px] text-emerald-800 dark:text-emerald-200">
-                        signed official-full-v5 · opponent_authority=strict_published_pool
-                      </p>
-                    )}
-                    {certView.label === "正式证书身份投影不完整" && (
-                      <p className="mt-2 text-[11px] text-red-700 dark:text-red-300">
-                        formal_certified 存在，但 profile、对手权威、5/3/70 或零权重字段不匹配；不显示为正式通过，也不猜测为普通 5+3。
-                      </p>
-                    )}
-                    <div className="mt-2 grid gap-1 font-mono text-[11px] sm:grid-cols-2">
-                      <span>mode: {certification.mode ?? "—"}</span>
-                      <span>policy: {certification.policy_id ?? "—"}</span>
-                      <span>schema: {certification.certificate_schema_version ?? "—"}</span>
-                      <span>publication_tier: {certView.publicationTier ?? certification.publication_tier ?? "—"}</span>
-                      <span>certified_tag: {certView.certifiedTag ?? "—"}</span>
-                      <span>rounds: {formalSummary?.self_play_rounds ?? "—"}+{formalSummary?.opponent_rounds ?? "—"} × {formalSummary?.target_hands ?? "—"} hands</span>
-                      <span>profile: {certification.certification_profile ?? "权威投影不可用"}</span>
-                      <span>opponent authority: {certification.opponent_authority ?? "权威投影不可用"}</span>
-                      <span>strength weight: {certification.strength_evidence_weight ?? "不可用"}</span>
-                      <span>strategy weight: {certification.strategy_evidence_weight ?? "不可用"}</span>
-                      <span className="break-all sm:col-span-2">certificate: {certification.certificate_digest ?? "—"}</span>
-                      <span className="break-all sm:col-span-2">signature sha256: {certification.certificate_signature_sha256 ?? "—"}</span>
-                      <span className="break-all sm:col-span-2">published attestation: {certification.published_attestation_digest ?? "权威投影不可用"}</span>
-                      <span className="break-all sm:col-span-2">verdict-ledger identity: {ledgerIdentity != null ? String(ledgerIdentity) : "权威投影不可用"}</span>
-                      {ledgerEntry
-                        && ledgerEntry?.certificate_digest === certification.certificate_digest
-                        && ledgerEntry?.outcome === "official-certified" && (
-                        <span className="sm:col-span-2 text-emerald-700 dark:text-emerald-300">
-                          ledger binds certificate_digest + official-certified
-                        </span>
-                      )}
-                    </div>
-                  </>
-                )}
-                {(certification?.issues?.length ?? 0) > 0 && (
-                  <ul className="mt-2 space-y-1 font-mono text-[11px]">
-                    {certification!.issues!.slice(0, 6).map((issue) => <li key={issue}>{issue}</li>)}
-                  </ul>
-                )}
-              </div>
-
               {detail.parent && <p className="text-xs text-gray-500">发布父代：<span className="font-mono">{detail.parent}</span></p>}
 
               <div>

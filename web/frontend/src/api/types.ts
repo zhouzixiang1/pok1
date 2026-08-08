@@ -201,149 +201,6 @@ export interface MatchReplayData extends MatchSummary {
 }
 
 // Bot management
-export type OfficialCertificationState =
-  | "local-pass"
-  | "official-smoke-pass"
-  | "official-compliance-pass"
-  | "official-pending"
-  | "official-certified"
-  | "official-inconclusive"
-  | "official-failed"
-  | "official-uncertified"
-  | "official-staging"
-  | "official-unavailable";
-
-export interface OfficialCertification {
-  bot: string;
-  status: OfficialCertificationState;
-  status_label?: string;
-  mode?: "smoke" | "compliance" | "full" | null;
-  policy_id?: string | null;
-  updated_at?: string | null;
-  cache_hit?: boolean;
-  queued?: boolean;
-  cache_key?: string;
-  reason?: string;
-  issues?: string[];
-  summary?: Record<string, unknown>;
-  compliance_verdict?: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  certification_root?: string;
-  certificate_schema_version?: number;
-  certificate_digest?: string;
-  certificate_signature_sha256?: string;
-  published_attestation_digest?: string;
-  official_verdict_ledger_entry?: Record<string, unknown>;
-  /** Backend-validated publication authority; the UI must not reconstruct it. */
-  formal_certified?: boolean;
-  formal_authority?:
-    | "signed_full_v5"
-    | "staging_uncertified"
-    | "none"
-    | "pipeline_attached_full_v5_job";
-  /** Two-tier publication: "staging" = published but awaiting async cert; "certified" = signed. */
-  publication_tier?: "staging" | "certified";
-  formal_summary?: {
-    self_play_rounds: number;
-    opponent_rounds: number;
-    target_hands: number;
-    rounds_requested: number;
-    rounds_run: number;
-    passed_rounds: number;
-    failed_rounds: number;
-  } | null;
-  subject_kind?: "strict_published" | "active_candidate";
-  evaluation_epoch?: "national_tcp_policy_v1";
-  epoch_state?: string;
-  epoch_initialized?: boolean;
-  workflow_run_id?: string | null;
-  candidate_version?: number | null;
-  certification_profile?: string | null;
-  opponent_authority?: "system_control" | "strict_published_pool" | string | null;
-  strength_evidence_weight?: number;
-  strategy_evidence_weight?: number;
-}
-
-export interface OfficialCertificationProgressRound {
-  kind: "self_play" | "opponent";
-  index: number;
-  passed: boolean;
-  hands_started: number;
-  settlements: number;
-  observed_bytes: number;
-  duration_sec: number | null;
-  issue_count: number;
-}
-
-export interface OfficialCertificationJob {
-  job_id: string;
-  state: "created" | "queued" | "starting" | "running" | "finalizing" | "cancel_requested" | "completed" | "failed" | "cancelled";
-  phase?: string;
-  pending?: boolean;
-  attempt?: number;
-  revision?: number;
-  candidate?: string;
-  workflow_run_id: string;
-  candidate_version: number;
-  evaluation_epoch: "national_tcp_policy_v1";
-  epoch_initialized: true;
-  formal_policy_id: "official-full-v5";
-  formal_mode: "full";
-  formal_authority: "pipeline_attached_full_v5_job" | "operator_bootstrap_full_v5_job";
-  bootstrap_control_id?: string | null;
-  read_only?: boolean;
-  cancel_allowed?: false;
-  progress?: {
-    suite_attempt: number;
-    rounds_requested: number;
-    rounds_completed: number;
-    rounds_passed: number;
-    active_round: OfficialCertificationProgressRound | null;
-    rounds: OfficialCertificationProgressRound[];
-  };
-  /** Exact terminal/running status projection; never infer it from job.state. */
-  status?: Record<string, unknown> | null;
-  official_status?: OfficialCertificationState | null;
-  compliance_verdict?: {
-    ok: boolean;
-    classification: string;
-    blocking: boolean;
-    inconclusive: boolean;
-  } | null;
-  issues?: string[];
-  certificate_digest?: string | null;
-  certification_profile?: string | null;
-  opponent_authority?: "system_control" | "strict_published_pool" | string | null;
-  formal_profile?: {
-    self_play_rounds: number;
-    opponent_rounds: number;
-    target_hands: number;
-  } | null;
-  strength_evidence_weight?: number;
-  strategy_evidence_weight?: number;
-}
-
-export interface OfficialCertificationJobsProjection {
-  schema_version: 1;
-  evaluation_epoch: "national_tcp_policy_v1";
-  epoch_state: string;
-  epoch_initialized: boolean;
-  workflow_run_id: string | null;
-  candidate_version: number | null;
-  next_v: number | null;
-  source_v: number | null;
-  parent2_v: number | null;
-  checkpoint_stage: string | null;
-  checkpoint_revision: number | null;
-  run_id: string | null;
-  formal_policy_id: "official-full-v5";
-  formal_mode: "full";
-  pending: number;
-  running: number;
-  jobs: OfficialCertificationJob[];
-  operator_transition?: import("./control").OperatorTransition | null;
-}
-
 export interface BotSummary {
   name: string;
   version: number;
@@ -386,11 +243,6 @@ export interface BotSummary {
   lifecycle_status?: "active";
   status_label?: string;
   status_reasons?: string[];
-  official_certification?: OfficialCertification;
-  /** Two-tier: "staging" = published awaiting async cert; "certified" = signed full cert. */
-  publication_tier?: "staging" | "certified";
-  /** Certified-tier annotated tag (only present after async official cert completes). */
-  certified_tag?: string | null;
 }
 
 export interface BotDetail extends BotSummary {
@@ -755,7 +607,7 @@ export interface AgentGateFieldMap {
 }
 
 export interface AgentGateView {
-  name: "quality" | "review" | "critic" | "precommit_eval" | "official_full";
+  name: "quality" | "review" | "critic" | "precommit_eval";
   present: true;
   /** True only when the gate's own completion field chain passed. */
   complete: boolean;
@@ -815,13 +667,11 @@ export interface AgentActivityProjection {
   rework_counts: {
     worker_failure: number;
     precommit: number;
-    official: number;
   };
   orchestrator: {
     stage: string | null;
     reviewer_feedback: string | null;
     infra_failure: Record<string, unknown> | null;
-    official_jobs_polling_supported: boolean;
   };
   master: AgentMasterView;
   direction_audit: Record<string, unknown> | null;
@@ -830,7 +680,6 @@ export interface AgentActivityProjection {
     review: AgentGateView | null;
     critic: AgentGateView | null;
     precommit_eval: AgentGateView | null;
-    official_full: AgentGateView | null;
   };
   gate_keys_present: string[];
   worker_failures: AgentWorkerFailureRow[];

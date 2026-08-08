@@ -1,6 +1,5 @@
 import type { AgentActivityResponse } from "./types.js";
 import type { ActiveGeneration } from "./control.js";
-import { isOfficialCertificationStage } from "./officialJobs.js";
 import { FIRST_STRICT_POLICY_VERSION } from "../lib/canonicalGenerationIdentity.js";
 
 type JsonObject = Record<string, unknown>;
@@ -22,7 +21,6 @@ const GATE_FIELDS: Record<string, ReadonlySet<string>> = {
   review: new Set(["approved", "schema_valid", "llm_invoked", "reviewer_llm_executed", "llm_failed", "parse_failed", "quality_score", "receipt_digest"]),
   critic: new Set(["approved", "schema_valid", "llm_invoked", "critic_llm_executed", "llm_failed", "parse_failed", "advisory_approved", "advisory_score", "receipt_digest"]),
   precommit_eval: new Set(["passed", "attempt", "native_matches", "hands_per_match", "receipt_digest", "candidate_artifact_hash"]),
-  official_full: new Set(["passed", "certificate_digest", "certification_profile", "opponent_authority", "strength_evidence_weight", "strategy_evidence_weight", "reused_existing_certificate"]),
 };
 const INFRA_FAILURE_FIELDS: ReadonlySet<string> = new Set([
   "schema_version",
@@ -203,16 +201,13 @@ export function expectAgentActivity(value: unknown): AgentActivityResponse {
     || value.orchestrator.stage !== value.stage
     || !nullableString(value.orchestrator.reviewer_feedback)
     || !isInfraFailure(value.orchestrator.infra_failure)
-    || typeof value.orchestrator.official_jobs_polling_supported !== "boolean"
-    || value.orchestrator.official_jobs_polling_supported !== isOfficialCertificationStage(value.stage)
     || !(value.direction_audit === null || isObject(value.direction_audit))
     || !["generation", "audit", "precommit"].every((key) => isInteger(attempts[key]) && Number(attempts[key]) >= 0)
-    || !["worker_failure", "precommit", "official"].every((key) => isInteger(rework[key]) && Number(rework[key]) >= 0)
+    || !["worker_failure", "precommit"].every((key) => isInteger(rework[key]) && Number(rework[key]) >= 0)
     || !isGate(gates.quality, "quality")
     || !isGate(gates.review, "review")
     || !isGate(gates.critic, "critic")
     || !isGate(gates.precommit_eval, "precommit_eval")
-    || !isGate(gates.official_full, "official_full")
     || !stringArray(value.gate_keys_present)
     || !value.worker_failures.every(isFailure)
     || value.worker_failures.length > 10

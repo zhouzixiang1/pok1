@@ -418,7 +418,6 @@ def _observer_authority_content_key() -> tuple:
     from bot_namespace import bot_name
 
     publication_paths: list[Path] = []
-    project_root = Path(infra.PROJECT_ROOT)
     for version in published_versions:
         bot_dir = Path(infra.BOTS_DIR) / bot_name(version)
         publication_paths.extend((
@@ -429,7 +428,6 @@ def _observer_authority_content_key() -> tuple:
             bot_dir / "policy.py",
             bot_dir / "national_runtime_manifest.json",
             bot_dir / "policy_epoch_receipt.json",
-            project_root / "official_certificates" / f"{bot_name(version)}.json",
         ))
     return (
         namespace_token,
@@ -1517,16 +1515,14 @@ def _stability_observation_digest(observation: Any) -> str:
 
 
 def _dynamic_first_strict_operator_transition(epoch: dict) -> dict | None:
-    """Read the durable bootstrap job through certification's strict reader."""
+    """Read the durable bootstrap job through certification's strict reader.
 
-    try:
-        from server.routes.certification import (
-            operator_transition_for_epoch_projection,
-        )
+    The official certification system has been removed (Phases 3-4), so there is
+    no durable bootstrap job to project. Always returns ``None``; callers fall
+    back to the epoch-owned baseline operator transition.
+    """
 
-        return operator_transition_for_epoch_projection(epoch)
-    except Exception:
-        return None
+    return None
 
 
 def _operator_transition_matches_active(

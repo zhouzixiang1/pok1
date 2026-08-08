@@ -341,23 +341,32 @@ async def run_quality_gates(args):
             declared_first_strict = False
         if declared_first_strict:
             first_strict_control_required = True
+            # first_strict_control module removed; build_control_receipt is no
+            # longer available.  Skip receipt construction cleanly.
             try:
                 from first_strict_control import build_control_receipt
-
-                first_strict_control_receipt = build_control_receipt(active_ckpt)
-                first_strict_control_path = str(
-                    (first_strict_control_receipt.get("control") or {}).get("path")
-                    or ""
-                )
-            except Exception as exc:
+            except ImportError:
+                build_control_receipt = None
+            if build_control_receipt is None:
                 # Empty string is an explicit (invalid) token to smoke, so its
                 # resolver fails closed instead of falling back to source_v142.
                 first_strict_control_path = ""
-                mark_quality_infrastructure(
-                    "first_strict_control",
-                    "quality_opponent",
-                    f"{type(exc).__name__}: {str(exc)[:500]}",
-                )
+            else:
+                try:
+                    first_strict_control_receipt = build_control_receipt(active_ckpt)
+                    first_strict_control_path = str(
+                        (first_strict_control_receipt.get("control") or {}).get("path")
+                        or ""
+                    )
+                except Exception as exc:
+                    # Empty string is an explicit (invalid) token to smoke, so its
+                    # resolver fails closed instead of falling back to source_v142.
+                    first_strict_control_path = ""
+                    mark_quality_infrastructure(
+                        "first_strict_control",
+                        "quality_opponent",
+                        f"{type(exc).__name__}: {str(exc)[:500]}",
+                    )
     candidate_observability = (
         candidate_observability_identity(v, source_v)
         if candidate_observability_identity is not None
@@ -1403,19 +1412,24 @@ async def run_quality_gates(args):
     )
     official_local_status = None
     if candidate_gate_checks_passed and native_tcp_mode and not quality_infra_issues:
+        # official_certification module removed; record_local_pass is gone, so
+        # no local official status is persisted anymore.
         try:
             from official_certification import record_local_pass
-
-            official_local_status = record_local_pass(bot_dir)
-        except Exception as exc:
-            official_local_status = {
-                "error": f"{type(exc).__name__}: {str(exc)[:200]}"
-            }
-            mark_quality_infrastructure(
-                "official_status_store",
-                "official_status_persistence",
-                official_local_status["error"],
-            )
+        except ImportError:
+            record_local_pass = None
+        if record_local_pass is not None:
+            try:
+                official_local_status = record_local_pass(bot_dir)
+            except Exception as exc:
+                official_local_status = {
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}"
+                }
+                mark_quality_infrastructure(
+                    "official_status_store",
+                    "official_status_persistence",
+                    official_local_status["error"],
+                )
 
     if quality_infra_issues:
         try:

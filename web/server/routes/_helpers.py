@@ -413,98 +413,22 @@ def build_bot_summary(
         "win_rate": bs.get("win_rate"), "games": bs.get("games", 0),
         "h2h_avg_wr": wr,
     }
-    try:
-        from official_certification import (
-            official_certification_profile_projection,
-            status_payload,
-        )
-
-        raw_certification = status_payload(bot_dir)
-        if not isinstance(raw_certification, dict):
-            raise TypeError("official certification status must be an object")
-        certification = dict(raw_certification)
-        # Mutable status JSON may contain profile-looking fields.  Bot list and
-        # detail routes share the certification endpoint's stronger boundary:
-        # strip them and add them back only from the reopened signed
-        # certificate, artifact, publication refs, and verdict ledger.
-        for key in (
-            "certification_profile",
-            "opponent_authority",
-            "strength_evidence_weight",
-            "strategy_evidence_weight",
-            "formal_summary",
-        ):
-            certification.pop(key, None)
-        try:
-            profile = official_certification_profile_projection(
-                raw_certification,
-                bot_dir,
-                require_published=True,
-            )
-            if not isinstance(profile, dict):
-                profile = {}
-        except Exception:
-            profile = {}
-        formal = bool(profile)
-        # Two-tier publication: detect staging tier. A staging bot is published
-        # (has a completion tag + .completed) but lacks a signed certificate.
-        # If it has a staging tag but no certified tag, it's awaiting async cert.
-        publication_tier = "certified" if formal else "staging"
-        try:
-            if not formal:
-                from bot_namespace import certified_tag, parse_bot_version
-                _bv = parse_bot_version(bot_name)
-                if _bv is not None:
-                    import subprocess
-                    _ct = certified_tag(_bv)
-                    _has_certified = subprocess.run(
-                        ["git", "tag", "-l", _ct],
-                        capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]),
-                    ).stdout.strip()
-                    if not _has_certified:
-                        publication_tier = "staging"
-                    else:
-                        publication_tier = "certified"
-        except Exception:
-            pass
-        formal_authority = "signed_full_v5" if formal else (
-            "staging_uncertified" if publication_tier == "staging" else "none"
-        )
-        certified_tag_value = None
-        try:
-            from bot_namespace import certified_tag, parse_bot_version
-
-            _bv = parse_bot_version(bot_name)
-            if _bv is not None and publication_tier == "certified":
-                certified_tag_value = certified_tag(_bv)
-        except Exception:
-            certified_tag_value = None
-        certification.update({
-            "formal_certified": formal,
-            "formal_authority": formal_authority,
-            "publication_tier": publication_tier,
-            "certified_tag": certified_tag_value,
-            "formal_summary": None,
-            **profile,
-        })
-        summary["official_certification"] = certification
-        summary["publication_tier"] = publication_tier
-        summary["certified_tag"] = certified_tag_value
-    except Exception:
-        summary["official_certification"] = {
-            "bot": bot_name,
-            "status": "official-unavailable",
-            "status_label": "official-unavailable",
-            "issues": ["certification_status_unavailable"],
-            "formal_certified": False,
-            "formal_authority": "none",
-            # Unknown — never default to "certified" (would lie about authority).
-            "publication_tier": None,
-            "certified_tag": None,
-            "formal_summary": None,
-        }
-        summary["publication_tier"] = None
-        summary["certified_tag"] = None
+    # The official EXE certification system has been removed (Phases 3-4).
+    # Every published bot now carries a single native publication tier; there is
+    # no signed certificate, verdict ledger, or staging-vs-certified split.
+    summary["official_certification"] = {
+        "bot": bot_name,
+        "status": "native",
+        "status_label": "native",
+        "issues": [],
+        "formal_certified": False,
+        "formal_authority": "native",
+        "publication_tier": "native",
+        "certified_tag": None,
+        "formal_summary": None,
+    }
+    summary["publication_tier"] = "native"
+    summary["certified_tag"] = None
     for key in (
         "leaderboard_score", "rank_basis", "strength_confidence", "h2h_coverage",
         "h2h_games", "h2h_opponents", "h2h_opponents_total", "h2h_source",

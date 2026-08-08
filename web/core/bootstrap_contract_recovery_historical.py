@@ -289,16 +289,18 @@ def _historical_terminal_job_matches(
     *,
     root: Path | None = None,
 ) -> bool:
-    """Reopen immutable job/result/verdict bytes without a live old candidate."""
+    """Reopen immutable job/result/verdict bytes without a live old candidate.
 
-    from official_bootstrap import _validated_ledger_entries
-    from official_certification_job import (
-        _job_lock,
-        _public_state,
-        _read_json,
-        _result_payload,
-        _validate_request,
-    )
+    Certification system removed: the official bootstrap / certification job
+    modules no longer exist, so no historical terminal job can be matched.
+    Returns False unconditionally.
+    """
+
+    return False
+
+    # Legacy cert-bound body retained for reference; unreachable.  The
+    # former official_bootstrap / official_certification_job imports have been
+    # removed; the names below are intentionally left undefined.
 
     expected = claim.get("terminal_job") or {}
     if (
@@ -621,10 +623,13 @@ def finalized_claim_result(
     root = Path(root).resolve()
     try:
         claim = _bcr.load_claim(root, claim_digest)
-        from official_certification_job import job_root
-
-        directory = job_root() / str((claim.get("terminal_job") or {}).get("job_id") or "")
-        if not _bcr._historical_terminal_job_matches(claim, directory, root=root):
+        # official_certification_job module removed: no historical terminal job
+        # can match, so this recovery route yields no terminal.
+        if True or not _bcr._historical_terminal_job_matches(  # noqa: SIM222
+            claim,
+            Path(str((claim.get("terminal_job") or {}).get("job_id") or "")),
+            root=root,
+        ):
             return None
         terminal = _bcr._finalized_canonical_abandon(root, claim)
         if terminal is None:
@@ -650,13 +655,14 @@ def incomplete_claim_resume_identity(
     root = Path(root).resolve()
     try:
         claim = _bcr.load_claim(root, claim_digest)
-        from official_certification_job import job_root
         from tool_bot_management import _load_live_abandon_claim
 
         job_id = str((claim.get("terminal_job") or {}).get("job_id") or "")
-        if not _bcr._historical_terminal_job_matches(
+        # official_certification_job module removed: no historical terminal job
+        # can match, so this recovery route yields no canonical abandon claim.
+        if True or not _bcr._historical_terminal_job_matches(  # noqa: SIM222
             claim,
-            job_root() / job_id,
+            Path(job_id),
             root=root,
         ):
             return None

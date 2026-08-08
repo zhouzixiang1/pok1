@@ -25,7 +25,6 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaffold";
 import { EvolutionSection, EvolutionStatusBadge, EvolutionSurface } from "../components/evolution/ui";
-import { certificationView } from "../domain/certificationView";
 import type { CanonicalGenerationIdentity } from "../api/control";
 import {
   canonicalGenerationIdentityIssues,
@@ -638,10 +637,6 @@ export default function Bots() {
                 && sameCanonicalGenerationIdentity(bot, identity)
                   ? identity
                   : null;
-              const certView = certificationView(bot.official_certification, {
-                publication_tier: bot.publication_tier ?? bot.official_certification?.publication_tier ?? null,
-                certified_tag: bot.certified_tag ?? null,
-              });
               return (
                 <PublishedBotRow
                   key={bot.name}
@@ -654,9 +649,6 @@ export default function Bots() {
                     else next.delete("v");
                     setSearchParams(next, { replace: true });
                   }}
-                  certLabel={certView.label}
-                  certTone={certView.tone}
-                  certDetail={certView.detail}
                 />
               );
             })}
@@ -698,9 +690,6 @@ type PublishedBotRowProps = {
   identity: CanonicalGenerationIdentity | null;
   defaultExpanded: boolean;
   onToggleExpand: (expanded: boolean) => void;
-  certLabel: string;
-  certTone: string;
-  certDetail: string;
 };
 
 function PublishedBotRow({
@@ -708,9 +697,6 @@ function PublishedBotRow({
   identity,
   defaultExpanded,
   onToggleExpand,
-  certLabel,
-  certTone,
-  certDetail,
 }: PublishedBotRowProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [detail, setDetail] = useState<import("../api/types").BotDetail | null>(null);
@@ -765,8 +751,6 @@ function PublishedBotRow({
     }
   };
 
-  const certification = detail?.official_certification ?? bot.official_certification;
-
   return (
     <article className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
       <button
@@ -781,13 +765,11 @@ function PublishedBotRow({
               <span className="font-semibold text-red-700 dark:text-red-300">Bot 双身份不可用</span>
             )}
             <span className="font-mono text-[10px] text-gray-400">{identity?.canonical_bot_name ?? bot.name}</span>
-            <span className={`rounded border px-1.5 py-0.5 text-[10px] ${certTone}`}>{certLabel}</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
             <span>选择分 <span className="font-mono font-semibold text-gray-800 dark:text-gray-200">{(bot.selection_score ?? bot.leaderboard_score) != null ? (bot.selection_score ?? bot.leaderboard_score)!.toFixed(4) : "—"}</span></span>
             <span>H2H {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}</span>
             <span>70 手样本 {bot.strength_sample_count ?? bot.games ?? 0}</span>
-            <span className="text-[10px]">{certDetail}</span>
           </div>
         </div>
         <span className="shrink-0 text-xs text-gray-400">{expanded ? "▲" : "▼"}</span>
@@ -801,15 +783,6 @@ function PublishedBotRow({
             <div className="space-y-2"><Skeleton.Line /><Skeleton.Line className="w-1/2" /></div>
           ) : detail ? (
             <>
-              {certification && (
-                <div className="grid gap-1 font-mono text-[11px] text-gray-600 dark:text-gray-300 sm:grid-cols-2">
-                  <span>mode: {certification.mode ?? "—"}</span>
-                  <span>policy: {certification.policy_id ?? "—"}</span>
-                  <span>profile: {certification.certification_profile ?? "权威投影不可用"}</span>
-                  <span>opponent authority: {certification.opponent_authority ?? "权威投影不可用"}</span>
-                  <span className="break-all sm:col-span-2">certificate: {certification.certificate_digest ?? "—"}</span>
-                </div>
-              )}
               {detail.parent && <p className="text-xs text-gray-500">发布父代：<span className="font-mono">{detail.parent}</span></p>}
               <div>
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">

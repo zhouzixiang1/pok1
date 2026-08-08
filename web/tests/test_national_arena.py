@@ -165,12 +165,13 @@ def test_manager_ignores_mismatched_epoch_session_without_touching_it(tmp_path):
 
 
 def test_arena_certification_snapshot_fails_closed_when_status_unavailable(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
-    def fail(_candidate):
-        raise RuntimeError("status store unavailable")
-
-    monkeypatch.setattr("official_certification.read_status", fail)
+    # The official EXE certification store was removed; arena launch eligibility
+    # is now derived from the strict published native artifact identity.  A
+    # non-bot path (tmp_path) still resolves to the fail-closed ineligible
+    # snapshot, preserving the original "status unavailable -> ineligible"
+    # contract.
     snapshot = NationalArenaManager._certification_snapshot(tmp_path)
 
     assert snapshot["arena_launch_eligible"] is False

@@ -169,7 +169,6 @@ def _revalidate_publication_authority_before_push(
         build_pending_local_publication_proof,
         strict_published_bot_names,
     )
-    from official_certification import official_full_certified
     from publication_transaction import (
         PUBLICATION_INTENT_KIND_STAGING,
         publication_gate_ledger_digest,
@@ -215,25 +214,9 @@ def _revalidate_publication_authority_before_push(
             current_remote_required=_tc.evolution_git_push_required(),
         )
     )
-    if not staging_intent:
-        # Certificate-bound identity checks apply only to the certified tier.
-        # A staging intent has no official certificate; its completion tag
-        # carries staging metadata, not official-certificate lines.
-        tag_matches, tag_mismatch = _tc._existing_local_bot_tag_matches_certificate(
-            v,
-            _tc._official_certificate_projection(official_status),
-        )
-        if not tag_matches:
-            errors.append(
-                "pre_push_completion_identity_invalid:"
-                + (tag_mismatch or "unknown")
-            )
-        if not official_full_certified(
-            official_status,
-            bot_dir,
-            require_published=True,
-        ):
-            errors.append("pre_push_official_certificate_identity_invalid")
+    # Certification system removed: no certificate-bound identity check runs
+    # at the pre-push revalidation point.  Every publication uses the staging
+    # intent path (no certificate fields).
     errors = list(dict.fromkeys(errors))
     if errors:
         raise RuntimeError(
@@ -254,7 +237,6 @@ def _resume_publication_transaction(v, source_v, ckpt):
         build_pending_local_publication_proof,
         strict_published_bot_names,
     )
-    from official_certification import official_full_certified
     from publication_transaction import (
         PUBLICATION_INTENT_KIND_STAGING,
         publication_gate_ledger_digest,
@@ -376,12 +358,9 @@ def _resume_publication_transaction(v, source_v, ckpt):
             error="COMMIT BLOCKED: publication intent or its live inputs drifted.",
             validation_errors=live_errors[:30],
         )
-    if not staging_intent and not official_full_certified(official_status, bot_dir):
-        return _publication_pending_result(
-            v,
-            source_v,
-            error="COMMIT BLOCKED: frozen official full certificate is no longer valid.",
-        )
+    # Certification system removed: no official_full_certified recheck runs
+    # after the frozen gate ledger validates.  Publication proceeds without a
+    # certificate.
 
     def pre_push_authority():
         return _revalidate_publication_authority_before_push(
@@ -443,18 +422,9 @@ def _resume_publication_transaction(v, source_v, ckpt):
             reason=f"{type(exc).__name__}: {str(exc)[:300]}",
             remote_proof=remote_proof,
         )
-    if not staging_intent and not official_full_certified(
-        official_status,
-        bot_dir,
-        require_published=True,
-    ):
-        return _publication_pending_result(
-            v,
-            source_v,
-            error="COMMIT BLOCKED: committed certificate/tag attestation is invalid.",
-            local_publication_proof=frozen_local_proof,
-            remote_proof=remote_proof,
-        )
+    # Certification system removed: the post-push official_full_certified
+    # attestation recheck no longer runs.  The frozen local/remote publication
+    # proof above is the sole post-push authority.
 
     _tc._write_completed_sentinel_durable(bot_dir, intent.get("publication_id"))
     current = _tc.read_pipeline_checkpoint()

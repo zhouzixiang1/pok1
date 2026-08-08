@@ -55,7 +55,6 @@ const TOOL_LABELS: Record<string, string> = {
   run_review: "执行独立代码审核",
   run_critic: "执行建议性 Critic",
   run_precommit_eval: "运行原生 TCP 预发布评测",
-  run_official_certification: "运行官方平台认证",
   run_commit: "签名并发布 Bot",
   run_archivist: "完成发布收尾并准备下一代",
   abandon_generation: "按权威收据结束本次尝试并创建继任尝试",
@@ -72,7 +71,6 @@ const OPERATOR_ACTION_LABELS: Record<string, string> = {
   quarantine_legacy_ledger_and_abandon_checkpoint: "隔离旧账本并受控放弃 checkpoint",
   operator_reconcile_checkpoint: "由操作员核对 checkpoint",
   finalize_recorded_abandon_checkpoint: "完成已记录的受控放弃",
-  run_first_strict_official_certification: "启动首个 Bot 的官方平台认证",
 };
 
 function stageLabel(stage: string | null | undefined): string {
@@ -213,14 +211,7 @@ function buildContextNotes(status: ControlStatus | null): string[] {
   const primary = primaryGenerationSlot(status) ?? status.active_generation;
   const sourceV = primary?.source_v ?? null;
   if (flags?.staging_as_parent && sourceV != null) {
-    const certified = status.version_authority?.certified_versions ?? [];
-    if (!certified.includes(sourceV)) {
-      notes.push(
-        `允许暂存父本：当前主父本 v${sourceV} 尚未取得正式证书；发布权威仍以证书/标签为准。`,
-      );
-    } else {
-      notes.push(`允许暂存父本：当前主父本 v${sourceV} 已有正式认证身份。`);
-    }
+    notes.push(`允许暂存父本：当前主父本 v${sourceV} 暂存身份；发布权威以签名发布为准。`);
   }
 
   return notes;
@@ -322,77 +313,17 @@ export function operatorSituationView(
     }, s);
   }
 
-  const transition = s.operator_transition;
-  const transitionMatches = Boolean(
-    transition
-    && transition.kind === "first-strict-official-operator-transition"
-    && transition.certification_profile === "first_strict_control_v1"
-    && transition.opponent_authority === "system_control"
-    && transition.strength_evidence_weight === 0
-    && transition.strategy_evidence_weight === 0
-    && active
-    && transition.workflow_run_id === active.workflow_run_id
-    && transition.candidate_version === active.next_v
-    && transition.source_v === active.source_v
-    && transition.checkpoint_stage === active.stage
-    && transition.checkpoint_revision === active.checkpoint_revision
-    && /^[0-9a-f]{64}$/.test(transition.transition_digest),
-  );
-  if (transition && transitionMatches) {
-    const state = transition.state;
-    const running = state === "bootstrap_running";
-    const failed = state === "bootstrap_failed";
-    const ready = state === "ready_to_finalize";
-    return withPhaseDContext({
-      tone: failed ? "error" : running ? "info" : ready ? "success" : "warning",
-      headline: failed
-        ? "首代官方认证没有形成可发布结果"
-        : ready
-          ? "首代官方证书已验证，等待完成发布"
-          : running
-            ? "首个 Bot 正在做官方平台认证"
-            : "首个 Bot 等待操作员启动官方认证",
-      what: failed
-        ? "绑定当前候选的系统控制台认证任务已终态失败；候选尚未发布。"
-        : ready
-          ? "8 个认证回合已闭合并形成当前候选的有效证书；仍未完成提交、.completed 与标签。"
-          : running
-            ? "首代一次性任务正在执行 5 轮自对弈 + 3 轮系统控制台对手认证。"
-            : "本地质量和原生预发布门已完成，首代候选停在一次性官方认证边界。",
-    why: "首个严格 Bot 没有合格已发布对手，第三方对手的 3 轮由一次性系统控制台提供；它只证明官方兼容，强度与策略证据权重均为 0。",
-      next: failed
-        ? "按 transition 给出的受控命令处理失败；不要自动降级或复用旧任务。"
-        : ready
-          ? "由操作员执行绑定该证书的完成发布命令。"
-          : running
-            ? "等待全部 8 个 70 手认证回合终态。"
-            : "由操作员启动 transition 给出的只读认证命令。",
-      manualRequired: !running,
-      manualLabel: running ? "无需人工" : "需要操作员",
-      manualDetail: running
-        ? "不要重复启动或取消认证。"
-        : "只执行 transition 中内容绑定的命令；Official 结果不能替代 native 强度评估。",
-      continuityNote,
-      technical,
-    }, s);
-  }
-
   if (s.operator_action) {
     const actionLabel = OPERATOR_ACTION_LABELS[s.operator_action] ?? s.operator_action;
-    const firstStrictCertification = s.operator_action === "run_first_strict_official_certification";
     return withPhaseDContext({
       tone: "warning",
-      headline: firstStrictCertification ? "首个 Bot 等待操作员启动官方认证" : "系统正在等待操作员动作",
+      headline: "系统正在等待操作员动作",
       what: active ? `第 ${active.generation_ordinal} 代已推进到“${stageLabel(active.stage)}”，自动流程暂时停在安全边界。` : "自动流程停在受控边界。",
-      why: firstStrictCertification
-        ? "首代没有合格已发布对手，因此执行 5 轮自对弈 + 3 轮一次性系统控制台对手认证；它证明官方兼容，但强度与策略证据权重均为 0。"
-        : `后端明确要求：${actionLabel}。`,
+      why: `后端明确要求：${actionLabel}。`,
       next: s.operator_command ? "核对并执行后端给出的操作员命令。" : actionLabel,
       manualRequired: true,
       manualLabel: "需要操作员",
-      manualDetail: firstStrictCertification
-        ? "只启动绑定当前 workflow 的只读任务；不要把 Official 结果当 native 强度，也不要重复提交。"
-        : "完成动作并取得新健康快照后，编排器才会继续。",
+      manualDetail: "完成动作并取得新健康快照后，编排器才会继续。",
       continuityNote,
       technical,
     }, s);
@@ -448,21 +379,6 @@ export function operatorSituationView(
       manualDetail: automatic
         ? "编排器会在同一阶段重试；达到上限后才会受控放弃并创建继任尝试。"
         : "编排器当前未运行；恢复运行后只执行权威路径指定的工具。",
-      continuityNote,
-      technical,
-    }, s);
-  }
-
-  if (active?.stage === "official_bootstrap_required") {
-    return withPhaseDContext({
-      tone: "warning",
-      headline: "首个 Bot 已到官方认证边界",
-      what: "本地合规、代码门和原生 TCP 预发布评测已完成；候选尚未发布。",
-      why: "首代必须由操作员启动一次性系统控制台 5+3；它只证明官方兼容性，强度权重为 0。",
-      next: "等待后端发布操作员交接指令，并由操作员启动认证。",
-      manualRequired: true,
-      manualLabel: "需要操作员",
-      manualDetail: "不要把官方结果当作原生强度，也不要自动降级为首代引导。",
       continuityNote,
       technical,
     }, s);

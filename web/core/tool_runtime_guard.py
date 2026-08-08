@@ -214,28 +214,14 @@ def _same_int(left: Any, right: Any) -> bool:
 
 
 def _operator_bootstrap_certificate_valid(candidate_v: int | None) -> bool:
-    """Fail closed unless the parked candidate has completed authorization."""
-    if candidate_v is None:
-        return False
-    try:
-        from official_bootstrap import (
-            validate_completed_operator_bootstrap_authorization,
-        )
-        from official_certification import official_full_certified, read_status
+    """Fail closed unless the parked candidate has completed authorization.
 
-        candidate = PROJECT_ROOT / bot_relpath(int(candidate_v))
-        status = read_status(candidate)
-        if not official_full_certified(status, candidate):
-            return False
-        checkpoint = read_pipeline_checkpoint()
-        completed = validate_completed_operator_bootstrap_authorization(
-            status,
-            candidate,
-            checkpoint=checkpoint,
-        )
-        return completed.get("valid") is True
-    except Exception:
-        return False
+    The official EXE certification / bootstrap-authorization system was removed
+    (Phases 3-4), so a parked ``official_bootstrap_required`` candidate can no
+    longer produce a signed certificate.  Always returns ``False``; the
+    ``official_bootstrap_required`` checkpoint stage is no longer reachable.
+    """
+    return False
 
 
 def _pipeline_route_guard(
