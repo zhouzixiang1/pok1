@@ -562,6 +562,17 @@ def _slice2b_ensure_activation():
         return None
     activation = _o._slice2b_activation_registry("get")
     if activation is not None:
+        # Re-run boot recovery on every call, not just the first. recover_at_boot
+        # is idempotent (it only stashes factories for sealed-but-unresolved
+        # candidates; already-registered candidates are skipped). Running it on
+        # every ensure_activation catches candidates that the first-pass recovery
+        # missed (e.g. a DB lock or timing issue at startup left a consuming
+        # candidate without a scheduled factory -> the consumer never launched and
+        # the primary parked forever at workers_done, burning zero LLM for 30+ min).
+        try:
+            activation.recover_at_boot()
+        except Exception:
+            pass
         return activation
     try:
         from pathlib import Path
