@@ -65,14 +65,11 @@ def test_crossover_enabled_when_pool_meets_threshold():
     """When the pool has >= _MIN_CROSSOVER_POOL_SIZE bots, crossover selection
     is not suppressed by the pool-size guard (it may still return None for
     other reasons, but not the pool-size guard)."""
-    # Three distinct versions, far apart so a version-gap parent B exists.
-    v_a = 27
-    v_b1 = 17
-    v_b2 = STRICT_TARGET_V  # the bootstrap, furthest away
-    sv = _selection_view([v_b2, v_b1, v_a])
+    # Enough distinct versions to clear the raised threshold.
+    versions = list(range(STRICT_TARGET_V, STRICT_TARGET_V + source_selection._MIN_CROSSOVER_POOL_SIZE + 5))
+    sv = _selection_view(versions)
+    v_a = versions[-1]
     result = source_selection._pick_crossover_parents({}, v_a, selection_view=sv)
-    # With 3 bots the pool-size guard passes; a valid parent pair should be
-    # returned (strongest A + a gap candidate B).
     assert result is not None, (
         "crossover should not be suppressed by the pool-size guard when the "
         f"pool has >= {source_selection._MIN_CROSSOVER_POOL_SIZE} bots"
@@ -80,7 +77,8 @@ def test_crossover_enabled_when_pool_meets_threshold():
     assert isinstance(result, tuple) and len(result) == 2
 
 
-def test_min_crossover_pool_size_is_three():
-    """The threshold constant is 3 (two evolved lines + the bootstrap is the
-    minimum for crossover to contribute a genuinely different lineage)."""
-    assert source_selection._MIN_CROSSOVER_POOL_SIZE == 3
+def test_min_crossover_pool_size_value():
+    """The threshold constant is set high enough to keep crossover disabled
+    until the rating pool is diverse enough for reliable crossover (raised
+    from 3→12 after crossover infrastructure failures dead-looped v128-v152)."""
+    assert source_selection._MIN_CROSSOVER_POOL_SIZE == 12

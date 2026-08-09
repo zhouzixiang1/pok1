@@ -20,7 +20,7 @@ _COMBINED_RECOMMENDATIONS = {
 # the first-strict bootstrap, so no genuinely different second lineage exists
 # and crossover deterministically dead-loops (the bootstrap child always
 # regresses).  See _pick_crossover_parents.
-_MIN_CROSSOVER_POOL_SIZE = 3
+_MIN_CROSSOVER_POOL_SIZE = 12
 
 
 def _normalize_combined_control(combined):
