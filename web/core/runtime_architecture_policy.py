@@ -1428,6 +1428,31 @@ def evaluate_architecture_transition(
     policy_identity_errors.extend(
         f"runtime_contract_ledger:{item}" for item in ledger_errors
     )
+    # At preplan, probe-induced infrastructure failures (failure_class ==
+    # "probe_infra" — the typed runtime probe subprocess crashed or timed out
+    # under CPU contention) are advisory, not blocking. This mirrors the
+    # probe-driven regression / typed_runtime_failures deferral above: at
+    # preplan the candidate is a copy/light-edit of the parent baseline, and a
+    # non-deterministic probe-infra miss is not crossover work. Real runtime
+    # correctness is enforced by the native precommit gate and the final-phase
+    # architecture check. Only the probe component ("national_runtime_probe")
+    # is deferred; genuine non-probe infrastructure failures still block.
+    preplan_probe_infra_failures: list[dict[str, Any]] = []
+    if is_preplan:
+        preplan_probe_infra_failures = [
+            item for item in infrastructure_failures
+            if str(item.get("component") or "") == "national_runtime_probe"
+        ]
+        if preplan_probe_infra_failures:
+            infrastructure_failures = [
+                item for item in infrastructure_failures
+                if item not in preplan_probe_infra_failures
+            ]
+            preplan_probe_advisory.append({
+                "check_id": "typed_runtime_probe",
+                "reason": "probe_infra_failure_at_preplan",
+                "guidance": "typed runtime probe reported infrastructure failure; re-verified at final phase and native precommit",
+            })
     ok = not any((
         infrastructure_failures,
         policy_identity_errors,

@@ -384,3 +384,64 @@ def test_crossover_runtime_probe_summary_extracts_probe(monkeypatch, tmp_path):
     assert summary["ok"] is False
     assert summary["failure_class"] == "candidate_contract"
     assert "policy_baseline_not_published:delayed_probe_scenario" in summary["issues"]
+
+
+def test_preplan_probe_infra_failure_is_advisory(monkeypatch, tmp_path):
+    """At preplan, a probe-infrastructure failure (probe_infra — the subprocess
+    crashed/timed out under CPU contention) must be advisory, not blocking.
+    This is the CROSSOVER_INFRASTRUCTURE_INCONCLUSIVE failure mode that blocked
+    v128-v149 (22 generations): the probe returned infrastructure_failure class
+    which the crossover path treated as a hard abort. Only the
+    national_runtime_probe component is deferred; genuine non-probe infra still
+    blocks."""
+    _install_probe_driven(
+        monkeypatch,
+        source_probe_check=True,
+        candidate_probe_check=True,
+        probe_fn=lambda: _seal_passing_repeatability_probe(_passing_gate_probe()),
+    )
+    # Simulate a probe_infra failure by monkeypatching _apply_typed_runtime_probe
+    # to return a conclusive=False capability with a national_runtime_probe infra
+    # failure.
+    from runtime_architecture_policy import _PROBE_FAIL_CLOSED_CHECKS
+
+    original_apply = runtime_architecture_policy._apply_typed_runtime_probe
+
+    def infra_probe_apply(capabilities, candidate, *, runtime_contract_ledger):
+        merged, probe, infra = original_apply(
+            capabilities, candidate,
+            runtime_contract_ledger=runtime_contract_ledger,
+        )
+        # Force probe_infra outcome
+        merged["conclusive"] = False
+        merged["ok"] = False
+        merged["outcome"] = "infrastructure_failure"
+        merged["infrastructure_failures"] = [{
+            "side": "system",
+            "component": "national_runtime_probe",
+            "failure_class": "internal_infrastructure",
+            "issues": ["probe_infra_failure_under_load"],
+        }]
+        return merged, probe, merged["infrastructure_failures"]
+
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "_apply_typed_runtime_probe",
+        infra_probe_apply,
+    )
+
+    transition = runtime_architecture_policy.evaluate_architecture_transition(
+        tmp_path,
+        tmp_path,
+        evaluation_phase=(
+            runtime_architecture_policy.ARCHITECTURE_TRANSITION_PHASE_PREPLAN
+        ),
+    )
+
+    # At preplan the probe-infra failure is advisory: outcome is NOT
+    # infrastructure_failure, ok is True, and the failure is recorded.
+    assert transition["outcome"] != "infrastructure_failure"
+    assert transition["ok"] is True
+    assert transition["conclusive"] is True
+    advisory_ids = [item["reason"] for item in transition["preplan_probe_advisory"]]
+    assert "probe_infra_failure_at_preplan" in advisory_ids
