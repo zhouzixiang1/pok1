@@ -73,3 +73,24 @@ def get_llm_semaphore_for_role(role_name: str | None) -> asyncio.Semaphore:
     roughly doubling real utilization for the same permit count.
     """
     return _get_shared_semaphore()
+
+
+def get_active_stream_count() -> int:
+    """Approximate count of currently in-use LLM permits (capacity - available).
+
+    This is an instantaneous read of ``capacity - semaphore._value``. It is an
+    approximation: a permit that was just released but not yet reacquired by a
+    queued acquirer momentarily reads as free. The dashboard polls every few
+    seconds, so transient under-counts wash out and the gauge tracks real
+    utilization accurately for monitoring purposes.
+
+    Returns 0 if the semaphore has never been instantiated (no LLM call has
+    run yet in this process), which is the correct "nothing in flight" value.
+    """
+    sem = _get_shared_semaphore()
+    return max(0, GLOBAL_LLM_CONCURRENCY - sem._value) if sem else 0
+
+
+def get_capacity() -> int:
+    """The configured max concurrent LLM streams."""
+    return GLOBAL_LLM_CONCURRENCY

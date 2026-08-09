@@ -5,7 +5,7 @@ import type {
   H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse,
   ArenaCreatePayload, ArenaEventHistoryResponse, ArenaSession, ArenaSessionUnavailable,
   ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
-  LlmCallMetric, LlmMetricsSummary,
+  LlmCallMetric, LlmMetricsSummary, LlmLiveMetrics, LlmGenerationSummary,
 } from "./types";
 import { expectPipelineCheckpoint } from "./pipeline";
 import { expectAgentActivity } from "./agentActivity";
@@ -225,5 +225,7 @@ export const api = {
   // LLM call metrics
   llmMetrics: (limit = 50) => fetchJSON<LlmCallMetric[]>(`${BASE}/llm/metrics?limit=${limit}`),
   llmMetricsSummary: () => fetchJSON<LlmMetricsSummary>(`${BASE}/llm/metrics/summary`),
+  llmMetricsLive: () => fetchJSON<LlmLiveMetrics>(`${BASE}/llm/metrics/live`),
+  llmMetricsByGeneration: () => fetchJSON<LlmGenerationSummary[]>(`${BASE}/llm/metrics/by-generation`),
 
 };

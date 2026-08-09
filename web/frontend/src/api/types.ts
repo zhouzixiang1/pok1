@@ -896,8 +896,18 @@ export interface LlmRoleSummary {
 
 /** Response shape for GET /api/llm/metrics/summary (aggregated by role). */
 export interface LlmMetricsSummary {
-  /** Per-role aggregation, in arbitrary order from the backend. */
+  /** Per-role aggregation as the canonical frontend array shape. */
   by_role: LlmRoleSummary[];
+  /**
+   * Legacy per-role dict emitted by the backend for backwards compatibility.
+   * Each value mirrors the corresponding `LlmRoleSummary` entry but with the
+   * raw finalize-field names (`calls`, `success_rate`, `*_avg`, `*_max`,
+   * `*_total`). The dashboard consumes `by_role`; this is retained so older
+   * consumers keep resolving. Absent on backends that only publish `by_role`.
+   */
+  roles?: Record<string, Record<string, unknown>>;
+  /** Aggregated totals rolled up across every role. */
+  total?: Record<string, unknown>;
   /** Optional backend-computed totals; absent fields mean "not provided". */
   total_count?: number;
   total_success_count?: number;
@@ -906,4 +916,29 @@ export interface LlmMetricsSummary {
   total_tokens?: number | null;
   avg_total_elapsed_sec?: number | null;
   avg_first_token_latency_sec?: number | null;
+}
+
+/** Real-time LLM utilization snapshot from GET /api/llm/metrics/live. */
+export interface LlmLiveMetrics {
+  /** Currently in-use permits (capacity - available). */
+  active_streams: number;
+  /** Configured max concurrent LLM streams. */
+  capacity: number;
+  /** active_streams / capacity * 100, rounded to 1 decimal; 0 when capacity is 0. */
+  utilization_pct: number;
+  /** Count of calls in the trailing 5-minute window. */
+  recent_calls_5min: number;
+  /** Server epoch seconds when the snapshot was produced. */
+  timestamp: number;
+}
+
+/** Per-generation cost/token aggregation from GET /api/llm/metrics/by-generation. */
+export interface LlmGenerationSummary {
+  generation_id: string;
+  calls: number;
+  total_cost: number;
+  avg_elapsed: number;
+  input_tokens: number;
+  output_tokens: number;
+  thinking_tokens: number;
 }
