@@ -1038,7 +1038,94 @@ def test_recover_at_boot_skips_terminal_candidates(tmp_path):
     assert "candidate-v301" not in crashed_activation._sealed_snapshots
 
 
-def test_death_proof_resolver_marks_absent_owner_dead(tmp_path):
+def test_recover_at_boot_surfaces_rejected_candidates(tmp_path):
+    """Regression: recover_at_boot must surface terminal-REJECTED candidates.
+
+    Previously ``recover_at_boot`` iterated only ``non_terminal_candidates()``
+    (SEALED/CONSUMING) and silently dropped REJECTED rows.  A rejected consumer
+    candidate can never be promoted, so the primary lane parked at
+    ``workers_done`` for that generation must canonically abandon it.  Without
+    this surfacing, a rejected-but-not-yet-abandoned candidate was invisible to
+    boot recovery and could zombie the generation after a restart until manual
+    intervention.  The rejected rows are now returned under the ``rejected``
+    key so the orchestrator can drive the canonical abandon.
+    """
+    from producer_consumer_slice2b_activation import Slice2bActivation
+
+    adapter = _adapter(tmp_path)
+    snapshot = _snapshot(candidate_id="candidate-v302")
+    activation = Slice2bActivation(adapter=adapter)
+    activation.seal_at_workers_done(
+        snapshot=snapshot,
+        run_id="run-302",
+        job_id="job:draft-v302:quality-static",
+        idempotency_key="draft-v302:quality-static:v1",
+        artifact_digest=snapshot["artifact_hash"],
+        resource_claim=_RESOURCE_CLAIM,
+        retry_policy=_RETRY_POLICY,
+        deadline=_DEADLINE,
+        evaluation_contract_digest=DIGESTS["1"],
+        executor_digest=DIGESTS["2"],
+        repository_digest=DIGESTS["5"],
+        runtime_digest=DIGESTS["4"],
+    )
+    # Consumer gate chain failed -> terminal REJECTED with a persisted reason.
+    activation.ledger.reject(
+        candidate_id="candidate-v302",
+        reason="gate_failed:run_review",
+        completed_at=400.0,
+    )
+    entry = activation.ledger.snapshot("candidate-v302")
+    assert entry["validation_outcome"] == "rejected"
+
+    # Simulate a crash: a FRESH activation over the same persisted lifecycle.
+    crashed_activation = Slice2bActivation(adapter=adapter)
+    recovered = crashed_activation.recover_at_boot()
+    # The rejected candidate is NOT re-scheduled (it can never advance)...
+    assert recovered["rescheduled"] == []
+    assert "candidate-v302" not in crashed_activation._sealed_snapshots
+    # ...but it IS surfaced under ``rejected`` so the orchestrator can abandon
+    # the wedged generation instead of parking at workers_done forever.
+    rejected_ids = [r["candidate_id"] for r in recovered["rejected"]]
+    assert "candidate-v302" in rejected_ids
+    rejected_entry = next(
+        r for r in recovered["rejected"] if r["candidate_id"] == "candidate-v302"
+    )
+    assert rejected_entry["terminal_reason"] == "gate_failed:run_review"
+    assert rejected_entry["next_v"] == 143
+    assert rejected_entry["source_v"] == 142
+
+
+def test_rejected_candidates_lists_only_rejected_rows(tmp_path):
+    """CandidateLifecycle.rejected_candidates() returns only REJECTED rows."""
+    lifecycle = CandidateLifecycle(tmp_path / "lc.sqlite3")
+    # No rows yet -> empty.
+    assert lifecycle.rejected_candidates() == []
+    # Seed two candidates via the ledger and drive one to REJECTED, one to
+    # PROMOTED, leaving a third non-terminal.
+    for cid in ("candidate-v401", "candidate-v402", "candidate-v403"):
+        lifecycle.start(
+            candidate_id=cid,
+            sealed_artifact_hash=DIGESTS["a"],
+            envelope_effect_id="env-" + cid,
+            envelope_digest=DIGESTS["b"],
+        )
+    lifecycle.reject(
+        candidate_id="candidate-v402",
+        reason="consumer_task_infrastructure_failure",
+        completed_at=500.0,
+    )
+    lifecycle.promote(
+        candidate_id="candidate-v401",
+        promotion_receipt={"receipt_digest": DIGESTS["c"]},
+        completed_at=600.0,
+    )
+    rejected = lifecycle.rejected_candidates()
+    assert [r["candidate_id"] for r in rejected] == ["candidate-v402"]
+    assert rejected[0]["terminal_reason"] == "consumer_task_infrastructure_failure"
+
+
+
     """The death-proof resolver proves prior-owner death when no live task
     exists for the effect (the post-restart case).
 

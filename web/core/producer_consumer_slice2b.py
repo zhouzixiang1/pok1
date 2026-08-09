@@ -771,6 +771,30 @@ class CandidateLifecycle:
             ).fetchall()
         return [deepcopy(self._row_to_entry(row)) for row in rows]
 
+    def rejected_candidates(self) -> list[dict[str, Any]]:
+        """Full rows for every candidate in the terminal ``rejected`` state.
+
+        Used by :meth:`Slice2bActivation.recover_at_boot` to surface rejected-
+        but-not-yet-abandoned candidates after a process restart.  A rejected
+        consumer candidate can never be promoted, so the primary lane parked at
+        ``workers_done`` for that generation must canonically abandon it.
+        Without this query the rejected row is invisible to boot recovery
+        (``non_terminal_candidates`` only returns SEALED/CONSUMING rows), and if
+        the primary's per-route ``_slice2b_consumer_rejected`` check is not
+        reached for any reason the generation wedges at ``workers_done`` with
+        zero LLM work until manual intervention.  Surfacing the rejected rows
+        at boot lets the activation explicitly signal the orchestrator to
+        abandon them.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM slice2b_candidate_lifecycle "
+                "WHERE state = ? "
+                "ORDER BY sealed_at_epoch ASC",
+                (_CANDIDATE_REJECTED,),
+            ).fetchall()
+        return [deepcopy(self._row_to_entry(row)) for row in rows]
+
     def recover_snapshot(self, candidate_id: str) -> dict[str, Any] | None:
         """Return the persisted sealed snapshot for boot-recovery, or None."""
         entry = self.snapshot(candidate_id)

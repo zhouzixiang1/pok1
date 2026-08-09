@@ -704,13 +704,54 @@ class Slice2bActivation:
         be called from the orchestrator event loop thread.
         """
 
-        recovered: dict[str, Any] = {"rescheduled": [], "terminal": []}
+        recovered: dict[str, Any] = {
+            "rescheduled": [],
+            "terminal": [],
+            "rejected": [],
+        }
         try:
             non_terminal = self.ledger.non_terminal_candidates()
         except Exception:
             # The lifecycle store may not be initialized yet (first-ever
             # boot); nothing to recover.
             return recovered
+
+        # REJECTED-CANDIDATE BRIDGE: surface every candidate the persisted
+        # lifecycle shows as terminal ``rejected``.  ``non_terminal_candidates``
+        # below only returns SEALED/CONSUMING rows, so without this query a
+        # rejected candidate is invisible to boot recovery.  A rejected
+        # consumer candidate can never be promoted; the primary lane parked at
+        # ``workers_done`` for that generation must canonically abandon it so
+        # the epoch allocates a fresh successor.  The per-route
+        # ``_slice2b_consumer_rejected`` check is the canonical abandon driver,
+        # but it only fires when the route is actually traversed for the parked
+        # generation.  Surfacing the rejected rows here lets the activation
+        # (and any boot-time orchestrator integration) explicitly prove the
+        # set of generations that must be abandoned instead of relying solely
+        # on the next route traversal, which closes the restart wedge where a
+        # rejected-but-not-abandoned candidate zombies forever.
+        try:
+            for entry in self.ledger.rejected_candidates():
+                # next_v/source_v live inside the sealed snapshot (the lifecycle
+                # row itself only carries reserved_next_v, which is NULL for a
+                # primary-lane candidate).  Fall back to reserved_next_v / 0 so
+                # the surfacing stays well-typed even for a legacy row whose
+                # snapshot was not persisted.
+                snap = entry.get("sealed_snapshot") or {}
+                next_v = int(snap.get("next_v") or entry.get("reserved_next_v") or 0)
+                source_v = int(snap.get("source_v") or 0)
+                recovered["rejected"].append({
+                    "candidate_id": str(entry.get("candidate_id") or ""),
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "terminal_reason": str(
+                        entry.get("terminal_reason")
+                        or "slice2b_consumer_rejected"
+                    ),
+                })
+        except Exception:
+            pass
+
         for candidate_id, artifact_hash in non_terminal.items():
             snapshot = self.ledger.recover_snapshot(candidate_id)
             if snapshot is None:

@@ -1501,6 +1501,141 @@ def test_slice2b_consumer_rejected_detects_effect_exhaustion(monkeypatch, tmp_pa
         _o._slice2b_activation_registry("clear")
 
 
+@pytest.mark.asyncio
+async def test_route_abandons_rejected_candidate_regardless_of_next_tool(
+    monkeypatch, tmp_path,
+):
+    """Regression for the workers_done rejection wedge.
+
+    When the Slice-2b consumer rejects a candidate, the primary lane parked at
+    ``workers_done`` must canonically abandon the generation so the epoch
+    allocates a fresh successor.  The original workers_done-only check ran only
+    when ``next_tool == "run_quality_gates"``; if the primary re-entered at a
+    later consumer-owned gate (or route-policy ever resolved a different
+    next_tool at workers_done), the check was bypassed and the primary spun at
+    workers_done forever with zero LLM work.  The route now consults
+    ``_slice2b_consumer_rejected`` BEFORE the workers_done branch, so a rejected
+    candidate triggers the canonical abandon for ANY next_tool.  This test
+    proves the early check fires for a next_tool that is NOT run_quality_gates.
+    """
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    adapter = _adapter(tmp_path)
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    checkpoint = _checkpoint(next_v=146, source_v=142)
+    snapshot = _snapshot(checkpoint=checkpoint)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+    # Drive the consumer to a terminal REJECT inline (this test is itself
+    # async, so we cannot use the asyncio.run-based _run_consumer helper).
+    task = activation.launch_consumer_task(
+        candidate_id=candidate_id,
+        gate_runner_factory=_gate_runner_factory(fail_at="run_review"),
+    )
+    await task
+    entry = activation.ledger.snapshot(candidate_id)
+    assert entry["validation_outcome"] == "rejected"
+
+    # Force the route to resolve a next_tool that is NOT run_quality_gates
+    # (simulating a future route-policy change or a recovery edge).  The early
+    # rejected-candidate guard must STILL fire the abandon path.
+    abandoned_calls = []
+
+    async def fake_abandon(cp, nv, sv, *, ui, outcome, reject_reason):
+        abandoned_calls.append({
+            "next_v": nv,
+            "reject_reason": reject_reason,
+        })
+        if outcome is not None:
+            outcome["terminal_abandon_result"] = {
+                "abandoned": True,
+                "cleared_checkpoint": True,
+            }
+        return True
+
+    monkeypatch.setattr(odr, "_slice2b_abandon_rejected_candidate", fake_abandon)
+
+    try:
+        recovery = {
+            "action": "resume",
+            "checkpoint": checkpoint,
+            "stage": "workers_done",
+            "next_v": 146,
+            "source_v": 142,
+        }
+        # Monkeypatch route_policy so next_tool resolves to run_review (a
+        # consumer-owned gate that is NOT the workers_done seam tool), proving
+        # the early guard fires independent of the workers_done branch.
+        import pipeline_state as _ps
+
+        def _fake_route_policy(cp):
+            return {"next_tool": "run_review", "directive": "deterministic"}
+
+        monkeypatch.setattr(_ps, "route_policy", _fake_route_policy)
+
+        outcome = {}
+        routed = await odr._try_deterministic_checkpoint_route(
+            recovery, ui=None, outcome=outcome,
+        )
+        assert routed is True
+        assert len(abandoned_calls) == 1, (
+            "early rejected-candidate guard did not fire for non-quality next_tool"
+        )
+        assert abandoned_calls[0]["next_v"] == 146
+        assert "gate_failed" in abandoned_calls[0]["reject_reason"]
+    finally:
+        _o._slice2b_activation_registry("clear")
+
+
+@pytest.mark.asyncio
+async def test_route_does_not_abandon_when_candidate_not_rejected(monkeypatch, tmp_path):
+    """Negative regression: a SEALED (not rejected) candidate must NOT trigger
+    the early abandon guard.  The primary must proceed to seal/park normally so
+    the consumer gate chain can run.  Without this guard the early check would
+    false-positive on every normal workers_done seal.
+    """
+    monkeypatch.setenv(SLICE2B_ENV_VAR, "1")
+    import orchestrator as _o
+    import orchestrator_deterministic_route as odr
+
+    adapter = _adapter(tmp_path)
+    activation = _o._slice2b_activation_registry("set", adapter=adapter)
+    checkpoint = _checkpoint(next_v=147, source_v=142)
+    snapshot = _snapshot(checkpoint=checkpoint)
+    activation.seal_at_workers_done(**_seal_kwargs(snapshot))
+    candidate_id = snapshot["candidate_id"]
+    entry = activation.ledger.snapshot(candidate_id)
+    assert entry["validation_outcome"] != "rejected"
+
+    abandoned_calls = []
+
+    async def fake_abandon(cp, nv, sv, *, ui, outcome, reject_reason):
+        abandoned_calls.append(nv)
+        return True
+
+    monkeypatch.setattr(odr, "_slice2b_abandon_rejected_candidate", fake_abandon)
+
+    try:
+        recovery = {
+            "action": "resume",
+            "checkpoint": checkpoint,
+            "stage": "workers_done",
+            "next_v": 147,
+            "source_v": 142,
+        }
+        outcome = {}
+        await odr._try_deterministic_checkpoint_route(
+            recovery, ui=None, outcome=outcome,
+        )
+        assert abandoned_calls == [], (
+            "early guard falsely abandoned a non-rejected candidate"
+        )
+    finally:
+        _o._slice2b_activation_registry("clear")
+
+
 def test_slice2b_consumer_promoted_returns_true_after_promotion(monkeypatch, tmp_path):
     """Promoted fast-forward regression: after the consumer PROMOTES a
     candidate, the helper must return True so the primary lane fast-forwards

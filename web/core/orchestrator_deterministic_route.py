@@ -1347,6 +1347,31 @@ async def _try_deterministic_checkpoint_route(
         if parent2_v is None:
             return False
 
+    # Slice 2b rejected-candidate guard (defense-in-depth): a sealed candidate
+    # whose consumer gate chain reached the terminal ``rejected`` state can
+    # never be promoted, so the primary lane MUST abandon this generation and
+    # let the epoch allocate a fresh successor.  The dedicated workers_done
+    # branch below already runs this check, but only when ``next_tool`` is
+    # exactly ``run_quality_gates``.  If a checkpoint at ``workers_done`` ever
+    # resolves to a different ``next_tool`` (a future route-policy change, or a
+    # recovery edge), or if the primary re-enters at a later consumer-owned
+    # gate (run_review/run_critic/run_precommit_eval) after the consumer
+    # already rejected, the workers_done-only check is bypassed and the primary
+    # parks/spins at that gate forever with zero LLM work (the documented
+    # ``workers_done`` wedge).  Running this check here, for ANY next_tool while
+    # the primary still owns a sealed candidate for this generation, makes the
+    # abandon path robust to route-policy drift and gate-stage races alike.
+    _rejected_reason = _slice2b_consumer_rejected(checkpoint, next_v)
+    if _rejected_reason is not None:
+        return await _slice2b_abandon_rejected_candidate(
+            checkpoint,
+            next_v,
+            source_v,
+            ui=ui,
+            outcome=outcome,
+            reject_reason=_rejected_reason,
+        )
+
     # Slice 2b one-ahead seam: at workers_done, seal the candidate and launch
     # the background consumer gate chain instead of blocking on the inline
     # run_quality_gates.  The canonical gate chain runs unchanged inside the
