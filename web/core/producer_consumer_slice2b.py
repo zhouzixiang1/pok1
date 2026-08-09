@@ -1346,6 +1346,38 @@ class ConsumerDispatcher:
             if isinstance(res, dict) and res.get("outcome") == "success"
         }
 
+        # PRECOMMIT ATTEMPT CAP: if the consumer checkpoint records that
+        # precommit has already exhausted MAX_PRECOMMIT_RETRIES, reject the
+        # candidate immediately instead of running another round of native
+        # matches.  The per-attempt native match sequence (4-8 × 70-hand)
+        # takes 10-30 min with zero LLM, and without this cap a candidate
+        # whose precommit results are consistently inconclusive (infra-class
+        # blockers) loops indefinitely because the infra-retry path bypasses
+        # the attempt counter in tool_eval.py.
+        _ckpt_attempt = int(
+            (_resume_entry.get("precommit_attempt") or 0)
+        )
+        if _ckpt_attempt >= 3:  # MAX_PRECOMMIT_RETRIES (imported below)
+            self._ledger.reject(
+                candidate_id=candidate_id,
+                reason=(
+                    f"consumer_precommit_attempts_exhausted:"
+                    f"{_ckpt_attempt}"
+                ),
+                completed_at=now,
+            )
+            self._finalize_terminal_candidate(
+                candidate_id=candidate_id, lease=lease,
+                outcome="candidate_failure", now=now,
+            )
+            return {
+                "dispatched": True,
+                "candidate_id": candidate_id,
+                "failed_at_gate": "run_precommit_eval",
+                "reason": "precommit_attempts_exhausted",
+                "now": now,
+            }
+
         for gate_name in CONSUMER_GATE_CHAIN_ORDER:
             if gate_name in _completed_gates:
                 # Already passed in a prior (possibly interrupted) dispatch;
