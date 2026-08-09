@@ -444,4 +444,4 @@ def test_preplan_probe_infra_failure_is_advisory(monkeypatch, tmp_path):
     assert transition["ok"] is True
     assert transition["conclusive"] is True
     advisory_ids = [item["reason"] for item in transition["preplan_probe_advisory"]]
-    assert "probe_infra_failure_at_preplan" in advisory_ids
+    assert "infrastructure_failure_deferred_at_preplan" in advisory_ids
