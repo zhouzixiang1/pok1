@@ -1464,7 +1464,7 @@ async def _run_national_precommit_backend(
             _precommit_gate_class = classify_precommit_gate(
                 {"passed": False, "blockers": blockers}
             )
-            if _precommit_gate_class == "infra_timeout":
+            if _precommit_gate_class == "infra_timeout" and precommit_attempt < MAX_PRECOMMIT_RETRIES:
                 result["directive"] = (
                     f"National precommit could not reach a conclusive verdict "
                     f"(attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}): "
@@ -1483,6 +1483,12 @@ async def _run_national_precommit_backend(
                     reason="native_precommit_infra_blocker",
                 )
             else:
+                # Either a genuine regression, OR an infra_timeout that has
+                # exhausted MAX_PRECOMMIT_RETRIES.  The infra path used to retry
+                # unconditionally, which caused 80+ min zero-LLM loops when
+                # native TCP matches hit persistent transport stalls.  Once the
+                # attempt budget is exhausted, treat it as a regression so the
+                # system moves on instead of looping forever.
                 result["failure_class"] = "regression"
                 result["intent"] = make_intent(
                     "rework",
