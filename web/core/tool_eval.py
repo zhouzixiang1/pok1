@@ -87,7 +87,7 @@ _PRECOMMIT_SHUTDOWN = threading.Event()
 # the exact-tie CI escape hatch (paired_bootstrap_ci upper>0) handles the
 # 4W-4L case. 8 (down from 12) reduces precommit wall-clock ~33% to free CPU
 # for LLM work. 16 is the hard ceiling.
-PRECOMMIT_DEFAULT_N_GAMES = 8
+PRECOMMIT_DEFAULT_N_GAMES = 4
 PRECOMMIT_MIN_N_GAMES = 4
 PRECOMMIT_MAX_N_GAMES = 16
 
