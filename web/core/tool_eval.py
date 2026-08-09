@@ -1487,16 +1487,18 @@ async def _run_national_precommit_backend(
                 # exhausted MAX_PRECOMMIT_RETRIES.  The infra path used to retry
                 # unconditionally, which caused 80+ min zero-LLM loops when
                 # native TCP matches hit persistent transport stalls.  Once the
-                # attempt budget is exhausted, treat it as a regression so the
-                # system moves on instead of looping forever.
+                # attempt budget is exhausted, the consumer cannot rework
+                # (execute_workers is not a gate-chain tool), so emit a
+                # candidate_failure that the consumer rejects immediately —
+                # the system auto-abandons and moves to the next generation.
                 result["failure_class"] = "regression"
                 result["intent"] = make_intent(
-                    "rework",
-                    next_tool="execute_workers",
-                    failure_class="regression",
+                    "abandon",
+                    next_tool=None,
+                    failure_class="candidate",
                     authority="tool:precommit_eval",
                     safe_to_auto_execute=True,
-                    reason="national_precommit_regression",
+                    reason="national_precommit_regression_exhausted",
                 )
 
     checkpoint_stage = "verified" if passed else "precommit_failed"
