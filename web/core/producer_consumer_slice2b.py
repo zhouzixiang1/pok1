@@ -1354,10 +1354,20 @@ class ConsumerDispatcher:
         # whose precommit results are consistently inconclusive (infra-class
         # blockers) loops indefinitely because the infra-retry path bypasses
         # the attempt counter in tool_eval.py.
-        _ckpt_attempt = int(
-            (_resume_entry.get("precommit_attempt") or 0)
-        )
-        if _ckpt_attempt >= 3:  # MAX_PRECOMMIT_RETRIES (imported below)
+        # NOTE: precommit_attempt lives in the consumer CHECKPOINT FILE
+        # (pipeline_state_consumer-candidate-<v>.json), NOT in the lifecycle
+        # snapshot — the snapshot only holds sealed-artifact identity.
+        _ckpt_attempt = 0
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+            _slot = self._ledger.consumer_checkpoint_slot(candidate_id)
+            if _slot:
+                _consumer_ckpt = read_pipeline_checkpoint(slot_id=_slot)
+                if isinstance(_consumer_ckpt, dict):
+                    _ckpt_attempt = int(_consumer_ckpt.get("precommit_attempt") or 0)
+        except Exception:
+            pass
+        if _ckpt_attempt >= 3:  # MAX_PRECOMMIT_RETRIES
             self._ledger.reject(
                 candidate_id=candidate_id,
                 reason=(
