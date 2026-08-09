@@ -1,4 +1,10 @@
-"""Tests for the partitioned LLM concurrency limiter (producer-consumer model)."""
+"""Tests for the single shared-pool LLM concurrency limiter.
+
+The former producer/consumer hard partition left slots idle during temporally-
+separated pipeline phases (Master/Workers vs gates).  A single shared FIFO
+semaphore lets every permit fill whichever role has work, roughly doubling
+real utilization for the same permit count.
+"""
 
 import asyncio
 
@@ -9,99 +15,57 @@ import llm_concurrency
 
 @pytest.fixture(autouse=True)
 def _reset_module(monkeypatch):
-    """Reset the lazily-created semaphores between tests."""
+    """Reset the lazily-created semaphore between tests."""
+    monkeypatch.setattr(llm_concurrency, "_SHARED_LLM_SEMAPHORE", None)
     monkeypatch.setattr(llm_concurrency, "_GLOBAL_LLM_SEMAPHORE", None)
-    monkeypatch.setattr(llm_concurrency, "_CONSUMER_LLM_SEMAPHORE", None)
-    monkeypatch.setattr(llm_concurrency, "_PRODUCER_LLM_SEMAPHORE", None)
     yield
 
 
-def test_partition_split_logic():
-    """The split logic: consumer = max(1, total//3), producer = total - consumer."""
-    # total=3 → consumer=1, producer=2
-    assert max(1, 3 // 3) == 1
-    assert max(1, 3 - 1) == 2
-    # total=2 → consumer=1 (max(1, 0)), producer=1
-    assert max(1, 2 // 3) == 1
-    assert max(1, 2 - 1) == 1
-    # total=6 → consumer=2, producer=4
-    assert max(1, 6 // 3) == 2
-    assert max(1, 6 - 2) == 4
-
-
-def test_consumer_and_producer_semaphores_are_distinct():
-    """The two sub-pools are separate Semaphore instances."""
-    consumer = llm_concurrency.get_consumer_llm_semaphore()
-    producer = llm_concurrency.get_producer_llm_semaphore()
-    assert consumer is not producer
-    assert consumer._value == llm_concurrency.CONSUMER_LLM_CONCURRENCY
-    assert producer._value == llm_concurrency.PRODUCER_LLM_CONCURRENCY
-
-
-def test_role_classification_review_is_consumer():
-    """Review/critic roles route to the consumer sub-pool."""
+def test_shared_pool_all_roles_get_same_semaphore():
+    """All roles — producer and consumer alike — share one semaphore."""
+    sem_global = llm_concurrency.get_global_llm_semaphore()
     sem_review = llm_concurrency.get_llm_semaphore_for_role("review")
     sem_critic = llm_concurrency.get_llm_semaphore_for_role("critic")
-    consumer = llm_concurrency.get_consumer_llm_semaphore()
-    assert sem_review is consumer
-    assert sem_critic is consumer
-
-
-def test_role_classification_master_is_producer():
-    """Master/Worker/direction roles route to the producer sub-pool."""
     sem_master = llm_concurrency.get_llm_semaphore_for_role("master")
     sem_worker = llm_concurrency.get_llm_semaphore_for_role("worker")
     sem_direction = llm_concurrency.get_llm_semaphore_for_role("direction_audit")
-    producer = llm_concurrency.get_producer_llm_semaphore()
-    assert sem_master is producer
-    assert sem_worker is producer
-    assert sem_direction is producer
+    sem_none = llm_concurrency.get_llm_semaphore_for_role(None)
+    assert sem_review is sem_global
+    assert sem_critic is sem_global
+    assert sem_master is sem_global
+    assert sem_worker is sem_global
+    assert sem_direction is sem_global
+    assert sem_none is sem_global
 
 
-def test_role_classification_none_is_producer():
-    """Unknown/None role defaults to the producer lane."""
-    sem = llm_concurrency.get_llm_semaphore_for_role(None)
-    assert sem is llm_concurrency.get_producer_llm_semaphore()
-
-
-def test_role_classification_substring_match():
-    """Role names containing the marker (e.g. 'master_review') still classify."""
-    # 'review' substring → consumer
-    assert llm_concurrency.get_llm_semaphore_for_role("code_review") is llm_concurrency.get_consumer_llm_semaphore()
-    # 'critic' substring → consumer
-    assert llm_concurrency.get_llm_semaphore_for_role("advisory_critic_check") is llm_concurrency.get_consumer_llm_semaphore()
-    # 'master' (no marker) → producer
-    assert llm_concurrency.get_llm_semaphore_for_role("master_proposal_1") is llm_concurrency.get_producer_llm_semaphore()
-
-
-def test_master_proposal_critic_is_producer_not_consumer():
-    """Regression: MASTER PROPOSAL CRITIC roles are producer-lane.
-
-    The Master proposal ensemble runs falsification/scope critics as part of
-    draft preparation (the producer lane), NOT the publication critical path.
-    The naive ``"critic" in role_name`` substring match misrouted them into
-    the (1-permit) consumer pool, serializing the two concurrent proposal
-    critics and idling the producer pool during the critic wave.  The
-    ``"MASTER PROPOSAL"`` prefix must take precedence over the critic marker.
-    """
-    producer = llm_concurrency.get_producer_llm_semaphore()
+def test_legacy_aliases_return_shared_semaphore():
+    """The legacy get_consumer/get_producer aliases return the same shared pool."""
+    shared = llm_concurrency.get_global_llm_semaphore()
     consumer = llm_concurrency.get_consumer_llm_semaphore()
-    # Both Master proposal critic variants must route to the producer pool.
+    producer = llm_concurrency.get_producer_llm_semaphore()
+    assert consumer is shared
+    assert producer is shared
+    assert consumer is producer
+
+
+def test_semaphore_capacity_matches_config():
+    """The shared semaphore capacity equals GLOBAL_LLM_CONCURRENCY."""
+    sem = llm_concurrency.get_global_llm_semaphore()
+    assert sem._value == llm_concurrency.GLOBAL_LLM_CONCURRENCY
+
+
+def test_master_proposal_critic_uses_shared_pool():
+    """All Master proposal roles (Scouts, Critics, final) use the shared pool."""
+    shared = llm_concurrency.get_global_llm_semaphore()
     assert (
         llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL CRITIC falsification")
-        is producer
+        is shared
     )
-    assert (
-        llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL CRITIC scope")
-        is producer
-    )
-    # The plain proposal Scouts are also producer (already correct; this guards
-    # against a future regression that moves the prefix check after the markers).
     assert (
         llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL mechanism")
-        is producer
+        is shared
     )
-    # A genuine gate-chain critic (no MASTER PROPOSAL prefix) stays consumer.
-    assert llm_concurrency.get_llm_semaphore_for_role("STRATEGY CRITIC") is consumer
-    assert llm_concurrency.get_llm_semaphore_for_role("LEAD CODE REVIEWER") is consumer
-
+    assert (
+        llm_concurrency.get_llm_semaphore_for_role("STRATEGY CRITIC")
+        is shared
+    )
