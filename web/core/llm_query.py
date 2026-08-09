@@ -1788,9 +1788,11 @@ async def run_claude_query(
             # sleeps RELEASE the permit so other LLM work can fill the gap —
             # critical for keeping the pool fully utilized.
             #
-            # Partitioned semaphore: consumer-lane roles (review/critic) get an
-            # exclusive sub-pool so the publication critical path is never
-            # starved by producer Scout bursts under multi-ahead.
+            # Shared semaphore: all roles (Master/Workers/gates/draft) compete
+            # for one FIFO pool. The former producer/consumer hard partition was
+            # removed because temporally-separated pipeline phases left slots
+            # idle; a single shared pool lets every permit fill whichever role
+            # has work.
             from llm_concurrency import get_llm_semaphore_for_role
 
             _role_sem = get_llm_semaphore_for_role(role_name)

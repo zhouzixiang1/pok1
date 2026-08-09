@@ -160,7 +160,13 @@ class Slice2bActivation:
             except Exception:
                 lifecycle_db_path = None  # ValidationLedger() temp fallback
         self.ledger = ValidationLedger(lifecycle_db_path)
-        self.coordinator = coordinator or OneAheadCoordinator(self.ledger)
+        if coordinator is None:
+            import os as _os
+            _env_ahead = _os.environ.get("POK_SLICE2B_MAX_AHEAD")
+            _max_ahead = int(_env_ahead) if _env_ahead and _env_ahead.isdigit() and int(_env_ahead) >= 1 else None
+            self.coordinator = OneAheadCoordinator(self.ledger, max_ahead=_max_ahead)
+        else:
+            self.coordinator = coordinator
         self.dispatcher = ConsumerDispatcher(
             self.adapter,
             self.ledger,
