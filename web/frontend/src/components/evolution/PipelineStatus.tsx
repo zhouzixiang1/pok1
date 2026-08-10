@@ -319,7 +319,7 @@ export function PipelineStatus({
           流水线 {activeIdentityText}
           {activeGeneration.source_v != null ? ` · source_v=v${activeGeneration.source_v}` : ""}
           {activeGeneration.attempt.generation ? ` (尝试 ${activeGeneration.attempt.generation})` : ""}
-          {consumerParked ? " · consumer park" : ""}
+          {consumerParked ? " · 主槽旁路" : ""}
         </h3>
         <span className="text-[10px] text-gray-400">{expanded ? "▲" : "▼"}</span>
       </button>
@@ -385,7 +385,7 @@ export function PipelineStatus({
           )}
           {plan.length > 0 && (
             <div>
-              <p className="text-[10px] text-gray-500 mb-1">Master Plan</p>
+              <p className="text-[10px] text-gray-500 mb-1">实现任务清单</p>
               {plan.map((task: MasterPlanTask, i: number) => (
                 <div key={i} className="text-[10px] text-gray-600 dark:text-gray-400 pl-2 border-l-2 border-brand-300 mb-1">
                   <span className="font-medium">{String(task.role || `Task ${i + 1}`)}</span>

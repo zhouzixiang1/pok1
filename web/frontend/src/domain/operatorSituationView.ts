@@ -461,6 +461,28 @@ export function operatorSituationView(
     }, s);
   }
 
+  // Draft-only state (Slice-2b one-ahead): the primary slot is idle but a
+  // draft slot is actively preparing the next generation.  Without this
+  // branch, the view falls through to "进化系统当前已停止 / 当前没有活跃代次"
+  // which directly contradicts the 草稿 vN badge shown in the same card.
+  if (!active && drafts.length > 0) {
+    const draftLabels = drafts
+      .map((d) => `草稿 v${d.next_v ?? "?"}（${stageLabel(d.stage)}）`)
+      .join("、");
+    return withPhaseDContext({
+      tone: "neutral",
+      headline: "草稿槽并行准备中（主槽空闲）",
+      what: draftLabels,
+      why: "Slice-2b 一前一后：草稿在主槽发布间隙预计算下一代（prepare→Master→Workers），不占用主槽。",
+      next: "草稿到达 workers_done 后等待主槽 promote；主槽发布完成后自动衔接。",
+      manualRequired: false,
+      manualLabel: "无需人工",
+      manualDetail: "草稿预计算是自动的；不需要手工创建 checkpoint。",
+      continuityNote,
+      technical,
+    }, s);
+  }
+
   const blockedReason = controlStartBlockedReason(s, h);
   return withPhaseDContext({
     tone: blockedReason ? "warning" : "neutral",

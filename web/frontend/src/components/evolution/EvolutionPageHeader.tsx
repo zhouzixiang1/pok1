@@ -115,7 +115,7 @@ export function EvolutionPageHeader({
           {genLabel}
         </span>
         {drafts.length === 0 ? (
-          <span className="text-gray-400">草稿槽：无（显式空）</span>
+          <span className="text-gray-400">草稿槽：空闲</span>
         ) : (
           drafts.map((d) => (
             <EvolutionStatusBadge key={`${d.next_v}-${d.stage}`} tone="park" pulse>

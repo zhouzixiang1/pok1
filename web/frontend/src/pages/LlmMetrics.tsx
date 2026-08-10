@@ -35,7 +35,7 @@ import { cn } from "../lib/utils";
  */
 
 const REFRESH_INTERVAL_MS = 15_000;
-const LIVE_INTERVAL_MS = 5_000;
+const LIVE_INTERVAL_MS = 10_000;
 const CONCURRENCY_WINDOW_MIN = 60;
 const CHART_COLORS = {
   elapsed: "#465FFF",
@@ -45,6 +45,46 @@ const CHART_COLORS = {
   cost: "#EF4444",
   ttft: "#06B6D4",
 };
+
+// LLM 调用角色 → 中文标签（后端 role 原始码作为 fallback 保留，便于对照日志）。
+const ROLE_LABELS: Record<string, string> = {
+  COMBINED_ANALYST: "综合分析师",
+  DIRECTION_AUDITOR: "方向审计",
+  DEGENERATION_DIAGNOSIS: "退化诊断",
+  MASTER_PLAN_AUDIT: "方案审计",
+  WORKER_COT_CHECK_1: "Worker 推理检查",
+  WORKER_COT_CHECK_2: "Worker 推理检查 2",
+  FINAL_ANALYSIS: "Master 最终分析",
+};
+const MASTER_PROPOSAL_LABELS: Record<string, string> = {
+  mechanism: "机制方向",
+  counterfactual: "反事实方向",
+  compute_memory: "计算/记忆方向",
+};
+const MASTER_CRITIC_LABELS: Record<string, string> = {
+  falsification: "证伪评审",
+  scope: "范围评审",
+};
+
+/** 把后端 role 原始码映射为中文标签，未命中时原样返回。 */
+function roleLabel(role: string): string {
+  if (ROLE_LABELS[role]) return ROLE_LABELS[role];
+  // MASTER PROPOSAL <direction> / MASTER PROPOSAL CRITIC <scope> / MASTER (Try N)
+  const proposalMatch = role.match(/^MASTER PROPOSAL (.+)$/);
+  if (proposalMatch) {
+    const sub = proposalMatch[1];
+    if (sub.startsWith("CRITIC ")) {
+      const criticSub = sub.slice(7);
+      return `方案提议 · ${MASTER_CRITIC_LABELS[criticSub] ?? criticSub}评审`;
+    }
+    return `方案提议 · ${MASTER_PROPOSAL_LABELS[sub] ?? sub}`;
+  }
+  const tryMatch = role.match(/^MASTER \(Try (\d+)\)$/);
+  if (tryMatch) return `Master 最终分析（第 ${tryMatch[1]} 次）`;
+  if (role === "MASTER PROPOSAL CRITIC") return "方案提议 · 评审";
+  if (role.startsWith("WORKER")) return `Worker 实现${role.slice(6) ? " · " + role.slice(6) : ""}`;
+  return role;
+}
 
 // ── 小工具 ────────────────────────────────────────────────────────────────
 
@@ -576,9 +616,9 @@ export default function LlmMetrics() {
         </div>
       </Card>
 
-      {/* 按 Role 分组统计表 */}
+      {/* 按角色分组统计表 */}
       <Card className="mb-4" padding="p-0">
-        <CardHeader title="按 Role 分组统计" />
+        <CardHeader title="按角色分组统计" />
         <RoleSummaryTable
           rows={summary?.by_role ?? null}
           fallbackRows={metrics}
@@ -859,7 +899,7 @@ function RoleFilterControl({
       >
         <option value="">全部 ({roles.length})</option>
         {roles.map((role) => (
-          <option key={role} value={role}>{role}</option>
+          <option key={role} value={role}>{roleLabel(role)}</option>
         ))}
       </select>
     </label>
@@ -923,7 +963,7 @@ function RoleSummaryTable({
         <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
           {displayRows.map((r) => (
             <tr key={r.role} className="hover:bg-gray-50 dark:hover:bg-white/[0.02]">
-              <td className="px-3 py-2 font-medium text-gray-800 dark:text-gray-200">{r.role}</td>
+              <td className="px-3 py-2 font-medium text-gray-800 dark:text-gray-200" title={r.role}>{roleLabel(r.role)}</td>
               <td className="px-3 py-2 text-right font-mono text-gray-700 dark:text-gray-300">{r.count}</td>
               <td className={cn(
                 "px-3 py-2 text-right font-mono",
@@ -964,8 +1004,8 @@ function DetailRow({
       >
         <td className="whitespace-nowrap px-3 py-2 text-gray-600 dark:text-gray-400">{shortTs(m.ts)}</td>
         <td className="px-3 py-2">
-          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 dark:bg-white/10 dark:text-gray-300">
-            {m.role}
+          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 dark:bg-white/10 dark:text-gray-300" title={m.role}>
+            {roleLabel(m.role)}
           </span>
         </td>
         <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{m.model}</td>

@@ -45,7 +45,8 @@ export default function ControlPanel() {
   const [mutationError, setMutationError] = useState("");
   const [configSynced, setConfigSynced] = useState(false);
 
-  // config + decisions：用 useBoundPolling 统一轮询（替换原 setInterval(3s)）。
+  // decisions 是唯一实时变化的字段，5s 轮询足够。
+  // config 只在 mount + 保存后拉取（daemon_workers/pairs/enabled 不在轮询中变化）。
   const {
     data: configProjection,
     error: configError,
@@ -58,15 +59,15 @@ export default function ControlPanel() {
       ]);
       return { decisions, config };
     },
-    { pollMs: 3_000 },
+    { pollMs: 5_000 },
   );
-  // checkpoint：独立轮询（替换原 setInterval(5s)）。
+  // checkpoint：独立轮询；已在 /health active_generation 中投影，10s 足够。
   const {
     data: checkpoint,
     refresh: refreshCheckpoint,
   } = useBoundPolling<PipelineCheckpoint | null>(
     async () => api.pipelineCheckpoint(),
-    { pollMs: 5_000 },
+    { pollMs: 10_000 },
   );
 
   const decisions = configProjection?.decisions ?? [];
