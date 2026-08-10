@@ -851,7 +851,7 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                         # avoid a CPU/log busy-spin while the (native, slow)
                         # consumer runs.  Shutdown remains interruptible.
                         if advanced["terminal_action"] == "slice2b_consumer_parked":
-                            if await _parked_sleep(shutdown_mgr, seconds=45.0):
+                            if await _parked_wait(shutdown_mgr, seconds=45.0):
                                 break
                     recovery = advanced["recovery"]
                     await _orch.asyncio.sleep(1)
@@ -987,7 +987,7 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             # Bounded park sleep to avoid the busy-spin (see
                             # the primary seal branch above for rationale).
                             if advanced["terminal_action"] == "slice2b_consumer_parked":
-                                if await _parked_sleep(shutdown_mgr, seconds=45.0):
+                                if await _parked_wait(shutdown_mgr, seconds=45.0):
                                     break
                         recovery = advanced["recovery"]
                         await _orch.asyncio.sleep(1)
@@ -1759,6 +1759,68 @@ async def _parked_sleep(shutdown_mgr, seconds: float = 45.0) -> bool:
     return False
 
 
+async def _parked_wait(shutdown_mgr, seconds: float = 45.0) -> bool:
+    """Event-driven wake for the parked primary lane.
+
+    Deep-parallelism: replaces the blind 45s ``_parked_sleep`` poll with an
+    ``asyncio.Event`` wait so the producer wakes ~instantly when a candidate
+    terminates (freeing LLM capacity) instead of up to 45s later.  Falls back
+    to ``_parked_sleep`` when slice2b is inactive or the coordinator has no
+    slot-freed event (defensive: never blocks longer than the poll fallback).
+
+    Returns ``True`` if shutdown fired during the wait (caller should break),
+    ``False`` otherwise (timeout or slot-freed event).
+    """
+
+    try:
+        from producer_consumer_slice2b_activation import slice2b_active
+    except Exception:
+        slice2b_active = None
+    if slice2b_active is None or not slice2b_active():
+        return await _parked_sleep(shutdown_mgr, seconds)
+    try:
+        activation = _orch._slice2b_activation_registry("get")
+    except Exception:
+        activation = None
+    coordinator = getattr(activation, "coordinator", None) if activation else None
+    event = getattr(coordinator, "_slot_freed_event", None) if coordinator else None
+    if event is None:
+        return await _parked_sleep(shutdown_mgr, seconds)
+    event.clear()
+    # Wait for either the slot-freed event OR shutdown OR the timeout, whichever
+    # comes first.  The timeout is the safety net so a missed event (e.g. the
+    # terminal fired before we cleared) still re-polls within the poll window.
+    try:
+        if shutdown_mgr is not None:
+            shutdown_wait = shutdown_mgr.wait_for_shutdown()
+            done, pending = await _orch.asyncio.wait(
+                {
+                    _orch.asyncio.ensure_future(event.wait()),
+                    _orch.asyncio.ensure_future(shutdown_wait),
+                },
+                timeout=seconds,
+                return_when=_orch.asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            # Shutdown takes priority: if it fired (or is firing), return True so
+            # the caller breaks out of the generation loop cleanly.
+            try:
+                if shutdown_mgr.is_shutting_down:
+                    return True
+            except Exception:
+                pass
+            return False
+        # No shutdown manager: just wait on the event with a timeout.
+        try:
+            await _orch.asyncio.wait_for(event.wait(), timeout=seconds)
+        except _orch.asyncio.TimeoutError:
+            pass
+        return False
+    except _orch.asyncio.CancelledError:
+        return False
+
+
 async def _ensure_slice2b_consumer_running(checkpoint: dict) -> None:
     """Ensure the Slice 2b consumer gate-chain task is actually running.
 
@@ -2061,7 +2123,7 @@ async def _draft_prepare_task(ui, shutdown_mgr, gen_count, slot_id="draft"):
 
 
 async def _run_draft_cycle(ui, shutdown_mgr, gen_count, *, slot_id="draft"):
-    """Drive the one-ahead draft (gen N+1) through its LLM stages.
+    """Drive the one-ahead draft (gen N+1) through its LLM stages AND seal it.
 
     Runs entirely inside an ``active_slot_override(slot_id)`` asyncio task
     context so that every checkpoint read/write performed by
@@ -2073,12 +2135,21 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count, *, slot_id="draft"):
         direction_audited -> master_planned      (run_master)
         master_planned -> workers_done           (execute_workers)
 
-    and STOPS at ``workers_done``.  It deliberately does NOT run the consumer
-    gate chain (quality->review->critic->precommit->commit) nor trigger the
-    Slice 2b seal-at-workers_done seam: the draft is a pre-computed candidate
-    that is promoted to the primary slot when gen N publishes (see the
-    promotion barrier), after which the canonical primary loop owns its gate
-    chain and publication.
+    At ``workers_done`` the deep-parallelism seam fires: the deterministic
+    route hits ``_slice2b_seal_at_workers_done``, which seals the draft
+    candidate under its ``reserved_next_v`` and launches a background consumer
+    task running the FULL gate chain (quality->review->critic->precommit) in
+    the isolated ``consumer-<candidate_id>`` slot.  The route then returns the
+    ``slice2b_consumer_parked`` terminal action, which this cycle treats as
+    "draft sealed, consumer owns the rest" and returns (preserving the draft
+    slot for the promotion barrier).
+
+    This is the core of deep-parallelism: while the primary generation's
+    consumer runs its native (slow, zero-LLM) precommit, this draft's consumer
+    concurrently runs its review/critic (LLM) work — keeping the LLM pool
+    saturated.  Native precommit concurrency is bounded separately (see
+    ``POK_NATIVE_PRECOMMIT_CONCURRENCY``) so it does not OOM, and LLM gates are
+    never blocked behind a native slot.
 
     ``slot_id`` selects the multi-ahead draft slot (``draft`` for single-ahead /
     legacy; ``draft1``/``draft2``/... for multi-ahead).  Best-effort and
@@ -2135,25 +2206,18 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count, *, slot_id="draft"):
             checkpoint = recovery.get("checkpoint") or {}
             stage = checkpoint.get("stage")
             if stage == "workers_done":
-                # Draft pre-computation complete.  Do NOT route
-                # run_quality_gates: that would trigger the Slice 2b
-                # seal-at-workers-done seam and launch a consumer for the
-                # draft, which is not what we want.  Leave the draft sitting
-                # at workers_done for the promotion barrier to promote.
-                try:
-                    _orch.log_system_event(
-                        "orchestrator.slice2b_draft_workers_done",
-                        "info",
-                        "One-ahead draft reached workers_done; awaiting promotion",
-                        {
-                            "next_v": checkpoint.get("next_v"),
-                            "source_v": checkpoint.get("source_v"),
-                            "gen_count": gen_count,
-                        },
-                    )
-                except Exception:
-                    pass
-                return
+                # Deep-parallelism: the draft drives the FULL gate chain.  At
+                # ``workers_done`` the deterministic route hits the Slice 2b
+                # seal seam (``_slice2b_seal_at_workers_done``), which seals the
+                # draft candidate under its ``reserved_next_v`` and launches a
+                # consumer task that runs quality->review->critic->precommit in
+                # the isolated ``consumer-<candidate_id>`` slot.  The route
+                # then returns a ``slice2b_consumer_parked`` terminal action,
+                # which we handle below (keep the draft slot intact, return).
+                # This is what fills the LLM-idle window: while the primary's
+                # consumer runs its (native, slow) precommit, this draft's
+                # consumer concurrently runs review/critic (LLM) work.
+                pass
 
             # Route exactly one stage.  _advance_deterministic_recovery drives
             # the handler (prepare_next_gen / run_direction_audit / run_master /
@@ -2171,6 +2235,31 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count, *, slot_id="draft"):
             )
             terminal_action = advanced.get("terminal_action")
             if terminal_action:
+                if terminal_action == "slice2b_consumer_parked":
+                    # Deep-parallelism: the draft was sealed at ``workers_done``
+                    # and its consumer gate-chain task was launched in the
+                    # isolated ``consumer-<candidate_id>`` slot.  The draft
+                    # slot checkpoint MUST stay in place: the promotion barrier
+                    # (``_promote_draft_to_primary``) and the draft's consumer
+                    # slot both depend on it.  Do NOT clear it (unlike the
+                    # abandon/handoff terminal actions below).  The draft cycle
+                    # is done; the consumer + promotion barrier own the rest.
+                    try:
+                        _orch.log_system_event(
+                            "orchestrator.slice2b_draft_sealed_awaiting_consumer",
+                            "info",
+                            "One-ahead draft sealed at workers_done; consumer "
+                            "gate chain launched in isolated slot, draft slot "
+                            "preserved for promotion barrier",
+                            {
+                                "next_v": (recovery or {}).get("checkpoint", {}).get("next_v"),
+                                "slot_id": slot_id,
+                                "gen_count": gen_count,
+                            },
+                        )
+                    except Exception:
+                        pass
+                    return
                 # The draft reached a terminal state (e.g. its worker stage
                 # abandoned, or classification produced a terminal action).
                 # Clear the draft slot -- it cannot be promoted.

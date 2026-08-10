@@ -94,3 +94,25 @@ def get_active_stream_count() -> int:
 def get_capacity() -> int:
     """The configured max concurrent LLM streams."""
     return GLOBAL_LLM_CONCURRENCY
+
+
+def llm_semaphore_has_capacity(n: int = 1) -> bool:
+    """Advisory predicate: are at least ``n`` LLM permits likely free right now?
+
+    Used by the deep-parallelism producer to decide whether to launch another
+    draft (or a filler draft) so the pool is kept saturated without
+    over-launching. Reads ``semaphore._value`` — the same instantaneous read
+    ``get_active_stream_count`` uses — so it is a *hint*, not a reservation:
+    a permit that was just released but not yet reacquired by a queued
+    acquirer momentarily reads free, and the launched draft's first LLM call
+    simply queues on the semaphore if the hint was optimistic (FIFO fairness
+    is preserved). This is the desired behaviour: we *want* to keep a draft
+    staged behind the semaphore so it starts the moment a permit frees, rather
+    than waiting for a poll interval to notice capacity.
+
+    Returns ``False`` when the semaphore has never been instantiated (treated
+    as "unknown capacity — do not launch speculatively"); the first real LLM
+    call materializes it.
+    """
+    sem = _get_shared_semaphore()
+    return bool(sem and sem._value >= n)

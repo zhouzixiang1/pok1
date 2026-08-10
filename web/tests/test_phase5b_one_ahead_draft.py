@@ -318,7 +318,7 @@ async def test_run_draft_cycle_drives_to_workers_done(monkeypatch):
     # stage is tracked in call_state (not via real CAS writes, which require
     # full strict-epoch parent authority out of scope for this loop-logic
     # test); fake_recovery_context reports the tracked stage so the cycle's
-    # workers_done stop condition fires exactly when expected.
+    # workers_done seal-seam stop condition fires exactly when expected.
     stage_progression = [
         "selected",
         "prepared",
@@ -344,6 +344,17 @@ async def test_run_draft_cycle_drives_to_workers_done(monkeypatch):
                            log_level="info", label="[Pipeline]",
                            gen_ctx=None, gen_count=None):
         call_state["advances"] += 1
+        # Deep-parallelism: at workers_done the deterministic route hits the
+        # Slice 2b seal seam and returns the slice2b_consumer_parked terminal
+        # action (the draft is sealed + its consumer gate chain launched).
+        # The cycle treats this as "draft sealed, consumer owns the rest" and
+        # returns, preserving the draft slot for the promotion barrier.
+        ckpt = (recovery or {}).get("checkpoint") or {}
+        if ckpt.get("stage") == "workers_done":
+            return {
+                "routed": True, "recovery": recovery, "outcome": {},
+                "terminal_action": "slice2b_consumer_parked",
+            }
         call_state["stage_idx"] += 1
         return {"routed": True, "recovery": recovery, "outcome": {},
                 "terminal_action": None}
@@ -362,11 +373,17 @@ async def test_run_draft_cycle_drives_to_workers_done(monkeypatch):
     await orchestrator_loop_phases._run_draft_cycle(None, None, 11)
 
     # The cycle routed exactly four stages (selected->prepared->
-    # direction_audited->master_planned) and then observed workers_done on
-    # the fifth recovery read, stopping without routing run_quality_gates.
-    assert call_state["advances"] == 4
+    # direction_audited->master_planned) and then on the fifth recovery read
+    # observed workers_done.  The route returned slice2b_consumer_parked
+    # (the seal seam fired), so the cycle returned WITHOUT clearing the draft
+    # slot (preserved for the promotion barrier) and WITHOUT advancing the
+    # stage index past workers_done.
+    assert call_state["advances"] == 5  # the workers_done route counted
     assert call_state["recovery_calls"] == 5
-    assert call_state["stage_idx"] == 4  # advanced to workers_done
+    assert call_state["stage_idx"] == 4  # did NOT advance past workers_done
+    # The draft slot is PRESERVED (not cleared) — the seal handed the draft
+    # to its consumer; the promotion barrier owns the rest.
+    assert read_pipeline_checkpoint(slot_id="draft") is not None
 
 
 @pytest.mark.asyncio

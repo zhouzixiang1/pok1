@@ -540,27 +540,56 @@ def _seal_into_fsm(ledger, candidate_id, artifact_hash=DIGESTS["a"]):
 def test_producer_may_advance_when_buffer_has_capacity():
     ledger = ValidationLedger()
     coord = AheadCoordinator(ledger)
-    # Empty FSM: buffer has full capacity (producer may seal); no candidate to
-    # draft behind yet.
+    # Deep-parallelism: producer_may_advance is gated on LLM capacity first,
+    # then the max_ahead backstop.  The LLM semaphore is lazily instantiated
+    # on first read; before any real LLM call it reports full capacity, so an
+    # empty FSM (0 < max_ahead=32, capacity available) permits sealing.
     assert coord.producer_may_advance() is True
     assert coord.producer_may_draft_behind() is False  # nothing in flight
     _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
-    # Single-ahead (max_ahead=1): the seal slot is occupied, no room to SEAL
-    # another.  But drafting is UNBOUNDED (draft is LLM planning that doesn't
-    # consume a publication slot), so the producer may always draft behind an
-    # in-flight consumer to fill LLM idle time.
+    # Drafting is UNBOUNDED (draft is LLM planning that doesn't consume a
+    # publication slot), so the producer may always draft behind an in-flight
+    # consumer to fill LLM idle time.
     assert coord.producer_may_draft_behind() is True  # unbounded draft
-    assert coord.producer_may_advance() is False  # bounded seal (max_ahead=1)
+    # Sealing is still permitted (1 < max_ahead=32 backstop, LLM capacity
+    # available) — the real throttle is the LLM-capacity predicate, not a
+    # hard count.  This is what keeps the pool saturated.
+    assert coord.producer_may_advance() is True
+
+
+def test_producer_may_advance_respects_llm_capacity(monkeypatch):
+    """Deep-parallelism: when the LLM semaphore reports NO capacity,
+    producer_may_advance refuses even though the max_ahead backstop has room.
+    This is the load-bearing throttle that keeps the pool saturated without
+    over-launching."""
+    ledger = ValidationLedger()
+    coord = AheadCoordinator(ledger)
+    import llm_concurrency
+
+    monkeypatch.setattr(
+        llm_concurrency, "llm_semaphore_has_capacity", lambda n=1: False
+    )
+    # Re-import inside producer_consumer_slice2b resolves the symbol at call
+    # time, so the monkeypatch takes effect.
+    assert coord.producer_may_advance() is False
+    assert coord.producer_may_draft_ahead_of_eval() is False
+    # Restoring capacity re-permits.
+    monkeypatch.setattr(
+        llm_concurrency, "llm_semaphore_has_capacity", lambda n=1: True
+    )
+    assert coord.producer_may_advance() is True
 
 
 def test_high_water_refuses_second_seal_in_minimum_slice():
     ledger = ValidationLedger()
-    coord = AheadCoordinator(ledger)
+    # Force the backstop low so the test exercises the high-water guard
+    # (the real throttle is LLM capacity; max_ahead is a generous backstop).
+    coord = AheadCoordinator(ledger, max_ahead=1)
     _seal_into_fsm(ledger, "c1")
     coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
     # The real seal path seeds the FSM (ledger.start) before note_sealed.  With
-    # max_ahead=1, a second sealed candidate exceeds the high-water.
+    # max_ahead=1, a second sealed candidate exceeds the high-water backstop.
     _seal_into_fsm(ledger, "c2", artifact_hash=DIGESTS["b"])
     with pytest.raises(Slice2bError, match="high_water_exceeded"):
         coord.note_sealed(candidate_id="c2", artifact_hash=DIGESTS["b"])
@@ -603,7 +632,7 @@ def test_producer_may_draft_ahead_of_eval_when_nothing_sealed():
     ledger = ValidationLedger()
     coord = AheadCoordinator(ledger)
     # Empty FSM: nothing to draft behind, BUT ahead-of-eval is permitted (the
-    # high-water room check passes: 0 < max_ahead=1).
+    # LLM-capacity check passes and 0 < max_ahead backstop).
     assert coord.producer_may_draft_behind() is False
     assert coord.producer_may_draft_ahead_of_eval() is True
     # Once a candidate is sealed, ``draft behind`` covers it and the
@@ -615,12 +644,18 @@ def test_producer_may_draft_ahead_of_eval_when_nothing_sealed():
 
 
 def test_producer_may_draft_ahead_of_eval_respects_max_ahead():
-    """The ahead-of-eval path is bounded by max_ahead so a multi-ahead config
-    cannot launch an unbounded flock of eval-wait drafts."""
+    """The ahead-of-eval path is bounded by the max_ahead backstop so a
+    pathological runaway cannot launch an unbounded flock of eval-wait drafts
+    even if the LLM-capacity predicate disagrees with reality."""
     ledger = ValidationLedger()
-    coord = AheadCoordinator(ledger, max_ahead=2)
-    # Empty FSM, max_ahead=2: ahead-of-eval permitted.
+    coord = AheadCoordinator(ledger, max_ahead=1)
+    # Empty FSM, max_ahead=1: ahead-of-eval permitted (0 < 1, capacity OK).
     assert coord.producer_may_draft_ahead_of_eval() is True
+    # Seal one candidate; max_ahead=1 backstop now saturated.
+    _seal_into_fsm(ledger, "c1")
+    coord.note_sealed(candidate_id="c1", artifact_hash=DIGESTS["a"])
+    # ahead-of-eval defers to draft-behind (c1 sealed) regardless of capacity.
+    assert coord.producer_may_draft_ahead_of_eval() is False
 
 
 def test_promotion_barrier_blocks_until_consumer_promotes():

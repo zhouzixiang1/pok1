@@ -497,6 +497,49 @@ this work (re-enabled 2026-07-31 after fixing defect E; see
    ``_run_draft_cycle`` is parameterized by ``slot_id``. See
    ``docs/multi-ahead-architecture-2026-07-31.md``.
 
+5. **Deep parallelism (2026-08-10): LLM-capacity-driven drafts + native
+   precommit decoupling.** The refactoring keeps the LLM pool saturated by
+   decoupling LLM work from native work so neither blocks the other. Three
+   mechanisms (full design: ``docs/deep-parallelism-architecture-2026-08-10.md``):
+   - **LLM-capacity-driven draft creation/sealing** — a new
+     ``llm_concurrency.llm_semaphore_has_capacity(n=1)`` predicate (reads
+     ``semaphore._value``, advisory) gates ``AheadCoordinator.producer_may_advance``
+     and ``producer_may_draft_ahead_of_eval``. A draft is launched/sealed only
+     when an LLM permit is likely free, so the pool stays saturated without
+     over-launching. ``max_ahead`` (default now 32) is a generous **backstop**
+     hard-cap, no longer the real throttle.
+   - **Draft drives the full gate chain** — ``_run_draft_cycle`` no longer
+     early-returns at ``workers_done``. The deterministic route hits the
+     ``_slice2b_seal_at_workers_done`` seam, sealing the draft candidate under
+     its ``reserved_next_v`` and launching a consumer that runs
+     ``quality→review→critic→precommit`` in the isolated
+     ``consumer-candidate-v<reserved>`` slot. The draft cycle returns on the
+     ``slice2b_consumer_parked`` terminal action, **preserving** the draft slot.
+     This fills the LLM-idle window: while the primary's consumer runs its
+     native precommit, the draft's consumer concurrently runs review/critic.
+   - **Native precommit concurrency limiter (OOM safety valve)** — a
+     process-wide ``asyncio.Semaphore(POK_NATIVE_PRECOMMIT_CONCURRENCY=1)``
+     wraps only ``run_precommit_eval`` in ``ConsumerDispatcher.run_once``. When
+     exhausted (``sem._value <= 0``), it returns ``native_precommit_slot_busy``
+     backpressure (dispatched=False); the consumer gate-loop backs off
+     ``POK_NATIVE_BACKOFF_SECONDS`` (default 30) and re-dispatches WITHOUT
+     consuming the infra-retry budget. **Crucially this does NOT block LLM
+     work**: the candidate pauses at ``critic_checked``; other drafts' LLM
+     stages keep running.
+   - **Event-driven producer launch** — ``_parked_sleep(45s)`` is replaced by
+     ``_parked_wait``, which awaits ``coordinator._slot_freed_event`` (fired in
+     ``note_terminal``). A candidate terminating wakes the producer in ~0s
+     instead of up to 45s. A 45s timeout fallback covers a missed event.
+   - **Promotion** — ``_promote_draft_to_primary`` writes the draft to primary
+     at ``workers_done`` and **preserves the draft's consumer slot**. Because
+     the draft's consumer ``candidate_id`` matches the next primary's, the
+     primary's seal seam recognizes the candidate as already-sealed and the
+     promotion barrier collapses the verified consumer evidence — ``commit_bot``
+     publishes without re-running any gate. No new collapse machinery needed.
+   **Target:** LLM ``utilization_pct`` from ~3.4% → ≥70% (tokens/hour ~242K →
+   ~20M at 8 permits × 85% × ~819 tokens/stream-second). Observe via
+   ``/api/llm/metrics/live``.
+
 ### CLAUDE.md / AGENTS.md memory injection
 
 The Claude CLI discovers and injects project-level `CLAUDE.md`/`AGENTS.md`

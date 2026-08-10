@@ -292,11 +292,14 @@ def test_seal_at_workers_done_registers_one_ahead_slot(tmp_path):
     snapshot = _snapshot()
     sealed = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
     assert sealed["candidate_id"] == "candidate-v143"
-    # After seal there is 1 candidate in flight.  SEALING is bounded by
-    # max_ahead=1 (buffer full -> False), but drafting (prepare_next) is
-    # UNBOUNDED and returns True whenever >=1 is in flight.
+    # Deep-parallelism: after seal there is 1 candidate in flight.
+    # producer_may_advance is gated on LLM capacity (not a hard max_ahead=1
+    # count).  With the default lazy semaphore (full capacity) sealing is
+    # still permitted — the real throttle is the LLM-capacity predicate.
+    # Drafting (prepare_next) is UNBOUNDED and returns True whenever >=1 is
+    # in flight.
     assert activation.producer_may_prepare_next() is True  # unbounded draft
-    assert activation.producer_may_advance() is False  # bounded seal (max_ahead=1)
+    assert activation.producer_may_advance() is True  # LLM-capacity-driven, room available
     # Sealing the same candidate again is idempotent and does not raise.
     sealed_again = activation.seal_at_workers_done(**_seal_kwargs(snapshot))
     assert sealed_again["effect_id"] == sealed["effect_id"]
@@ -322,7 +325,15 @@ def test_activation_exposes_producer_may_draft_behind_accessor(tmp_path):
 
 
 def test_seal_at_workers_done_high_water_refuses_second_candidate(tmp_path):
+    # Deep-parallelism: the real throttle is LLM capacity; max_ahead is a
+    # generous backstop.  Force max_ahead=1 here so the backstop itself is the
+    # thing under test (a second sealed candidate exceeds the hard cap).  We
+    # override the activation's OWN coordinator (sharing its ledger) so the
+    # FSM source of truth stays consistent.
+    from producer_consumer_slice2b import OneAheadCoordinator
+
     activation = Slice2bActivation(adapter=_adapter(tmp_path))
+    activation.coordinator = OneAheadCoordinator(activation.ledger, max_ahead=1)
     snap_a = _snapshot(_checkpoint(next_v=143, source_v=142))
     activation.seal_at_workers_done(**_seal_kwargs(snap_a))
     snap_b = _snapshot(
@@ -731,7 +742,10 @@ def test_seal_seam_seals_and_schedules_consumer_when_active(monkeypatch, tmp_pat
             # SEALING is bounded (no room), but drafting (prepare_next) is
             # UNBOUNDED and returns True (>=1 in flight).
             assert activation.producer_may_prepare_next() is True  # unbounded draft
-            assert activation.producer_may_advance() is False  # bounded seal (max_ahead=1)
+            # Deep-parallelism: sealing is LLM-capacity-driven (not a hard
+            # max_ahead=1 count).  With the default lazy semaphore (full
+            # capacity), sealing is still permitted after one seal.
+            assert activation.producer_may_advance() is True  # LLM-capacity-driven
             # The consumer task was launched by the seal (ensure_consumer_running).
             task = activation.consumer_task("candidate-v143")
             assert task is not None

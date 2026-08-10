@@ -502,6 +502,40 @@ class Slice2bActivation:
                         if not result.get("dispatched"):
                             if ledger.is_terminal(candidate_id):
                                 break
+                            # Deep-parallelism: native precommit backpressure.
+                            # The dispatcher found the native-precommit
+                            # semaphore exhausted and returned without
+                            # dispatching (the candidate stays at critic_checked).
+                            # This is EXPECTED backpressure, not an infra
+                            # failure: do NOT break (which would exit the
+                            # consumer task and require an external relaunch)
+                            # and do NOT consume the infra-retry budget.
+                            # Instead, back off briefly and re-enter run_once
+                            # so the candidate resumes the moment a native
+                            # slot frees.  Other drafts' LLM gates (review/
+                            # critic) are unaffected because each candidate
+                            # has its own consumer task.
+                            if (
+                                result.get("reason")
+                                == "native_precommit_slot_busy"
+                            ):
+                                try:
+                                    from producer_consumer_slice2b import (
+                                        POK_NATIVE_BACKOFF_SECONDS,
+                                    )
+                                    _backoff = POK_NATIVE_BACKOFF_SECONDS
+                                except Exception:
+                                    _backoff = 30.0
+                                # Cooperative sleep: bounded into 5s slices so
+                                # a process shutdown between native-slot frees
+                                # is observed promptly (the consumer task is
+                                # cancelled on shutdown; this just avoids a
+                                # single uninterruptible 30s+ sleep).
+                                _slept = 0.0
+                                while _slept < _backoff:
+                                    await asyncio.sleep(min(5.0, _backoff - _slept))
+                                    _slept += 5.0
+                                continue
                             _exhausted = self._consumer_effect_exhausted(
                                 candidate_id
                             )

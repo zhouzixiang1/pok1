@@ -1179,14 +1179,22 @@ async def _slice2b_promotion_barrier(checkpoint, next_v, source_v):
 def _promote_draft_to_primary(published_next_v):
     """Best-effort move of the one-ahead draft checkpoint to the primary slot.
 
-    Reads ``pipeline_state_draft.json``; if it holds a complete draft at
-    ``workers_done`` whose target is exactly one ahead of the just-published
-    generation (``published_next_v + 1``), it writes that checkpoint to the
-    primary slot and clears the draft slot.  The primary write goes through
-    the canonical CAS, so it is refused harmlessly when the primary checkpoint
-    is still active (gen N mid-publication) -- in that case the draft is left
-    in place and the promotion is retried at the next barrier firing or
-    rediscovered by ``prepare_generation``.
+    Deep-parallelism: the draft drives its FULL gate chain, so by the time the
+    primary publishes it may already be ``verified`` in its own consumer slot
+    (``consumer-candidate-v<reserved_next_v>``).  This function prefers that
+    verified-evidence fast path: if the draft's consumer slot exists and is at
+    ``verified``, it collapses the FULL consumer evidence (quality/review/
+    critic/precommit gate_results + stage) onto the next primary so the primary
+    loop resumes directly at ``commit_bot`` without re-running any gate.
+
+    Fallback: if the draft has not yet sealed (still pre-computing), or its
+    consumer is still mid-chain (not ``verified``), the legacy path writes the
+    draft's ``workers_done`` checkpoint to primary so the canonical inline gate
+    chain owns validation.  In every case the primary write goes through the
+    canonical CAS, so it is refused harmlessly when the primary checkpoint is
+    still active (gen N mid-publication) -- the draft is left in place and the
+    promotion is retried at the next barrier firing or rediscovered by
+    ``prepare_generation``.
 
     Non-fatal: any exception is swallowed by the caller.  Never raises into
     the publication path.
@@ -1227,6 +1235,25 @@ def _promote_draft_to_primary(published_next_v):
         _relocate_draft_candidate_to_live(draft_next_v, formal_next_v)
     except Exception:
         pass
+
+    # --- Deep-parallelism: the draft may have already driven its full gate
+    # chain to ``verified`` in its own consumer slot
+    # (``consumer-candidate-v<reserved_next_v>``).  We deliberately do NOT
+    # collapse that verified evidence directly onto the primary here: the
+    # checkpoint stage-transition guard refuses an empty-primary -> verified
+    # write, and more importantly the existing promotion-barrier machinery
+    # already handles this case correctly.  The draft's consumer slot
+    # ``candidate_id`` (``candidate-v<formal_next_v>``) MATCHES the next
+    # primary's candidate_id, so when the legacy promote below writes the
+    # primary to ``workers_done`` and the primary's seal seam fires, the
+    # ALREADY-SEALED GUARD (``_slice2b_seal_at_workers_done``) recognizes the
+    # candidate as already-sealed+promoted, parks the primary, and the
+    # promotion barrier (``_slice2b_promotion_barrier``) finds the promoted
+    # candidate, collapses the consumer slot's verified evidence, and clears
+    # commit_bot to publish -- WITHOUT re-running any gate.  This maximally
+    # reuses the tested primary-consumer path.  We therefore preserve the
+    # draft's consumer slot (do NOT clear it) so the barrier can collapse it.
+
     # Build a minimal promote payload from the draft fields.  Remap onto the
     # formal next_v so the primary loop's deterministic recovery picks up at
     # run_quality_gates.  The CAS refuses if the primary is still active.

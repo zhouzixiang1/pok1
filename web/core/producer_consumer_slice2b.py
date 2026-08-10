@@ -86,6 +86,49 @@ CONSUMER_GATE_CHAIN_ORDER = (
 # Full publication chain (consumer precommit + primary commit_bot).
 GATE_CHAIN_ORDER = CONSUMER_GATE_CHAIN_ORDER + ("commit_bot",)
 
+
+# ---------------------------------------------------------------------------
+# Deep-parallelism: native precommit concurrency limiter (OOM safety valve)
+# ---------------------------------------------------------------------------
+#
+# ``run_precommit_eval`` drives native 70-hand TCP matches that consume CPU +
+# memory (subprocess + TCP I/O) but ZERO LLM permits.  With deep parallelism
+# (many drafts driving their full gate chain concurrently), multiple
+# precommits could run in parallel and OOM the host (observed SIGKILL rc=-9
+# on the 3.6Gi VM).  This independent semaphore bounds the number of
+# simultaneous precommit chains so the LLM pool stays saturated (review/critic
+# on other drafts keep running) while native memory stays bounded.
+#
+# It is deliberately SEPARATE from the global LLM semaphore: a precommit at
+# its limit must NOT block LLM work.  When this semaphore is exhausted, the
+# dispatcher returns a "native_precommit_slot_busy" backpressure result and the
+# candidate pauses (stays at critic_checked) until a native slot frees; other
+# drafts' LLM gates proceed unaffected.
+
+POK_NATIVE_PRECOMMIT_CONCURRENCY = max(
+    1, int(os.environ.get("POK_NATIVE_PRECOMMIT_CONCURRENCY", "1"))
+)
+# Backoff (seconds) between native-slot-busy retries in the consumer gate loop.
+POK_NATIVE_BACKOFF_SECONDS = float(
+    os.environ.get("POK_NATIVE_BACKOFF_SECONDS", "30")
+)
+_native_precommit_sem: "asyncio.Semaphore | None" = None
+
+
+def _get_native_precommit_semaphore() -> "asyncio.Semaphore":
+    """Lazily instantiate the process-wide native-precommit concurrency limiter."""
+    global _native_precommit_sem
+    if _native_precommit_sem is None:
+        _native_precommit_sem = asyncio.Semaphore(POK_NATIVE_PRECOMMIT_CONCURRENCY)
+    return _native_precommit_sem
+
+
+def _reset_native_precommit_semaphore_for_tests() -> None:
+    """Test hook: drop the cached semaphore so a new POK_NATIVE_PRECOMMIT_CONCURRENCY
+    takes effect on the next ``_get_native_precommit_semaphore`` call."""
+    global _native_precommit_sem
+    _native_precommit_sem = None
+
 _VALID_SUBSTATE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -1393,35 +1436,87 @@ class ConsumerDispatcher:
                 # Already passed in a prior (possibly interrupted) dispatch;
                 # resume past it without re-running the gate.
                 continue
-            runner = gates[gate_name]
-            try:
-                # Mark this call as part of the consumer's in-chain gate loop.
-                # The frozen-snapshot consumer slot checkpoint deliberately
-                # stays at ``workers_done`` for the whole chain; the route
-                # guard skips its stage-ordering check under this authority
-                # (the gate order is owned by CONSUMER_GATE_CHAIN_ORDER here,
-                # not by the checkpoint stage).  Worktree/branch/HEAD guards
-                # still apply.
-                from tool_runtime_guard import consumer_in_chain_gate_authority
+            # Deep-parallelism: native precommit concurrency limiter.
+            # ``run_precommit_eval`` drives native 70-hand TCP matches that
+            # consume CPU+RAM but ZERO LLM permits.  Without bounding it, N
+            # concurrent drafts' precommits would OOM the host.  When the
+            # native semaphore is exhausted, return a backpressure result so
+            # THIS candidate pauses (stays at critic_checked) while other
+            # drafts' LLM gates (review/critic) keep the pool saturated.  The
+            # consumer gate-loop (_run_gate_chain) re-dispatches after
+            # POK_NATIVE_BACKOFF_SECONDS.  Crucially this does NOT block LLM
+            # work: the semaphore is held only across the native run, and
+            # other consumer tasks are not LLM-permit-blocked by it.
+            if gate_name == "run_precommit_eval":
+                _native_sem = _get_native_precommit_semaphore()
+                if _native_sem._value <= 0:
+                    # Native slot busy: non-blocking backpressure.  The
+                    # candidate stays non-terminal at critic_checked; other
+                    # candidates' gates proceed.  Re-dispatched on backoff.
+                    return {
+                        "dispatched": False,
+                        "candidate_id": candidate_id,
+                        "paused_at_gate": gate_name,
+                        "reason": "native_precommit_slot_busy",
+                        "now": now,
+                    }
+                runner = gates[gate_name]
+                try:
+                    from tool_runtime_guard import (
+                        consumer_in_chain_gate_authority,
+                    )
 
-                with consumer_in_chain_gate_authority():
-                    gate_result = await runner(snapshot)
-            except Exception as exc:  # gate-runner contract violation
-                self._ledger.record_gate(
-                    candidate_id=candidate_id,
-                    gate_name=gate_name,
-                    outcome="infrastructure_failure",
-                    result_digest="0" * 64,
-                    finished_at=now,
-                    detail={"error": f"{type(exc).__name__}:{exc}"[:300]},
-                )
-                return {
-                    "dispatched": True,
-                    "candidate_id": candidate_id,
-                    "failed_at_gate": gate_name,
-                    "reason": "gate_runner_raised",
-                    "now": now,
-                }
+                    with consumer_in_chain_gate_authority():
+                        async with _native_sem:
+                            gate_result = await runner(snapshot)
+                except Exception as exc:  # gate-runner contract violation
+                    self._ledger.record_gate(
+                        candidate_id=candidate_id,
+                        gate_name=gate_name,
+                        outcome="infrastructure_failure",
+                        result_digest="0" * 64,
+                        finished_at=now,
+                        detail={
+                            "error": f"{type(exc).__name__}:{exc}"[:300]
+                        },
+                    )
+                    return {
+                        "dispatched": True,
+                        "candidate_id": candidate_id,
+                        "failed_at_gate": gate_name,
+                        "reason": "gate_runner_raised",
+                        "now": now,
+                    }
+            else:
+                runner = gates[gate_name]
+                try:
+                    # Mark this call as part of the consumer's in-chain gate loop.
+                    # The frozen-snapshot consumer slot checkpoint deliberately
+                    # stays at ``workers_done`` for the whole chain; the route
+                    # guard skips its stage-ordering check under this authority
+                    # (the gate order is owned by CONSUMER_GATE_CHAIN_ORDER here,
+                    # not by the checkpoint stage).  Worktree/branch/HEAD guards
+                    # still apply.
+                    from tool_runtime_guard import consumer_in_chain_gate_authority
+
+                    with consumer_in_chain_gate_authority():
+                        gate_result = await runner(snapshot)
+                except Exception as exc:  # gate-runner contract violation
+                    self._ledger.record_gate(
+                        candidate_id=candidate_id,
+                        gate_name=gate_name,
+                        outcome="infrastructure_failure",
+                        result_digest="0" * 64,
+                        finished_at=now,
+                        detail={"error": f"{type(exc).__name__}:{exc}"[:300]},
+                    )
+                    return {
+                        "dispatched": True,
+                        "candidate_id": candidate_id,
+                        "failed_at_gate": gate_name,
+                        "reason": "gate_runner_raised",
+                        "now": now,
+                    }
             outcome = gate_result.get("outcome")
             result_digest = gate_result.get("result_digest")
             if outcome not in {"success", "candidate_failure", "infrastructure_failure"}:
@@ -1540,14 +1635,24 @@ class AheadCoordinator:
         max_ahead: int | None = None,
     ) -> None:
         self._lifecycle = lifecycle
-        # Configurable high-water (multi-ahead).  Defaults to the legacy
-        # single-ahead value unless the caller (activation) passes a larger one.
-        self.max_ahead = int(max_ahead) if max_ahead and int(max_ahead) >= 1 else 1
+        # Deep-parallelism: the real throttle on in-flight candidates is the
+        # GLOBAL LLM semaphore (``llm_semaphore_has_capacity``), so the pool is
+        # kept saturated without over-launching.  ``max_ahead`` is retained only
+        # as a generous backstop hard-cap (default 32) to bound disk/checkpoint
+        # growth if the capacity predicate ever disagrees with reality.  The
+        # launch predicates below gate on LLM capacity first, then max_ahead.
+        self.max_ahead = (
+            int(max_ahead) if max_ahead and int(max_ahead) >= 1 else 32
+        )
         # Runtime wake-up events only (NOT candidate state).  candidate_id ->
         # asyncio.Event fired when the Consumer reaches a terminal state.  These
         # are rebuilt lazily; their absence does not affect correctness because
         # the barrier polls the FSM as the source of truth.
         self._events: dict[str, asyncio.Event] = {}
+        # Slot-freed wake-up event: fired in note_terminal so the producer's
+        # parked launch loop wakes immediately (instead of a 45s poll) when a
+        # candidate terminates and its LLM permits free up.
+        self._slot_freed_event: "asyncio.Event | None" = None
 
     # Backwards-compat: the class formerly hardcoded this as 1.
     @property
@@ -1566,9 +1671,12 @@ class AheadCoordinator:
         """
         _require_safe_id(candidate_id, "candidate_id")
         _require_digest(artifact_hash, "artifact_hash")
-        # The candidate is already counted in the FSM (start ran first).  If the
-        # count now EXCEEDS max_ahead, the producer over-sealed; reject.  (Equal
-        # is fine: exactly max_ahead in flight is the intended full buffer.)
+        # The candidate is already counted in the FSM (start ran first).  The
+        # LLM-capacity predicate throttles *launching* (producer_may_advance);
+        # by the time we reach seal-at-workers_done the LLM planning work is
+        # already done, so refusing the seal here would strand a candidate with
+        # no LLM recourse.  max_ahead remains as a generous backstop: only a
+        # pathological runaway (predicate disagrees with reality) trips it.
         if self._non_terminal_count() > self.max_ahead:
             raise Slice2bError("one_ahead_high_water_exceeded")
         self._events.setdefault(candidate_id, asyncio.Event())
@@ -1592,12 +1700,32 @@ class AheadCoordinator:
     def producer_may_advance(self) -> bool:
         """Producer may SEAL another candidate (advance the high-water).
 
-        Unlike :meth:`producer_may_draft_behind` (which is unbounded -- drafting
-        is LLM planning that doesn't consume a publication slot), sealing IS
-        bounded by ``max_ahead``: the producer may not seal more candidates
-        than the configured high-water allows.  Derived from the FSM.
+        Deep-parallelism: this is gated on **LLM capacity** first, then the
+        ``max_ahead`` backstop.  A sealed candidate's consumer gate chain will
+        immediately compete for LLM permits (review/critic), so we only seal
+        when there is likely a free permit for that work.  This is what keeps
+        the pool saturated without over-launching: the moment permits free up,
+        a draft may seal and its consumer fills the LLM slot; the moment they
+        are saturated, sealing pauses and drafts accumulate at workers_done
+        (LLM-idle there is fine — the LLM work is done).  Derived from the FSM
+        for the count, and from the global LLM semaphore for capacity.
         """
-        return self._non_terminal_count() < self.max_ahead
+        if self._non_terminal_count() >= self.max_ahead:
+            return False
+        # The LLM-capacity predicate is advisory (reads sem._value).  A draft
+        # sealed on an optimistic read still queues its consumer's review/critic
+        # on the FIFO semaphore — which is exactly the desired behaviour (work
+        # staged, not dropped).  When the semaphore has not yet been
+        # instantiated (no LLM call in this process), treat as "capacity
+        # unknown — defer to max_ahead only" so first-launch bootstraps.
+        try:
+            from llm_concurrency import llm_semaphore_has_capacity
+
+            if not llm_semaphore_has_capacity(1):
+                return False
+        except Exception:
+            pass
+        return True
 
     def producer_may_draft_ahead_of_eval(self) -> bool:
         """Producer may launch a speculative draft while the primary lane is
@@ -1610,16 +1738,24 @@ class AheadCoordinator:
         eval_wait outcome diverges it is stale-reaped.
 
         Permitted iff there is currently nothing sealed-but-unresolved (the
-        ``draft behind`` path already covers the sealed case) and the
-        high-water room check passes.  Derived from the FSM, so it is correct
-        after a restart without any in-memory replay.  Bounded by
-        ``max_ahead`` so multi-ahead configs do not launch an unbounded flock
-        of eval-wait drafts.
+        ``draft behind`` path already covers the sealed case) and the LLM
+        capacity check passes.  Derived from the FSM, so it is correct after a
+        restart without any in-memory replay.  ``max_ahead`` remains as a
+        backstop so a pathological runaway cannot launch an unbounded flock.
         """
         if self._non_terminal_count() >= 1:
             # The "draft behind" path covers this; do not double-launch.
             return False
-        return self._non_terminal_count() < self.max_ahead
+        if self._non_terminal_count() >= self.max_ahead:
+            return False
+        try:
+            from llm_concurrency import llm_semaphore_has_capacity
+
+            if not llm_semaphore_has_capacity(1):
+                return False
+        except Exception:
+            pass
+        return True
 
     # Backwards-compatible alias used by the control-plane projection.
     def producer_may_prepare_next(self) -> bool:
@@ -1641,6 +1777,26 @@ class AheadCoordinator:
         event = self._events.get(candidate_id)
         if event is not None:
             event.set()
+        # Deep-parallelism: also wake the producer's parked launch loop so it
+        # notices the freed LLM capacity immediately (instead of a 45s poll).
+        self.notify_slot_freed()
+
+    def notify_slot_freed(self) -> None:
+        """Wake the producer's parked launch loop (event-driven launch).
+
+        Lazily binds an ``asyncio.Event`` on first call from a running loop.
+        The producer's ``_parked_wait`` clears it after reading, so each
+        terminal fires exactly one wake.  Absence of the event (e.g. before any
+        producer park) is harmless: the predicate is advisory.
+        """
+        if self._slot_freed_event is None:
+            try:
+                self._slot_freed_event = asyncio.Event()
+            except RuntimeError:
+                # No running loop (e.g. called from a worker thread during
+                # shutdown); the producer falls back to its poll timeout.
+                return
+        self._slot_freed_event.set()
 
     async def wait_for_promotion_readiness(
         self,
