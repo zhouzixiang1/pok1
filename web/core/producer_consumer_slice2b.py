@@ -112,14 +112,25 @@ POK_NATIVE_PRECOMMIT_CONCURRENCY = max(
 POK_NATIVE_BACKOFF_SECONDS = float(
     os.environ.get("POK_NATIVE_BACKOFF_SECONDS", "30")
 )
-_native_precommit_sem: "asyncio.Semaphore | None" = None
+# CRITICAL (audit D): use threading.Semaphore, NOT asyncio.Semaphore. The
+# consumer gate chain runs via run_async_off_event_loop, which creates a FRESH
+# private event loop per dispatch (asyncio.run in a worker thread). Python 3.12's
+# asyncio.Semaphore uses _LoopBoundMixin: a blocking acquire binds it to the
+# current loop, and a subsequent acquire/release from a different private loop
+# either deadlocks (cross-loop call_soon wake never reaches the other loop's
+# selector) or raises RuntimeError. threading.Semaphore is loop-agnostic and
+# safe across worker threads (the actual concurrency unit here).
+import threading as _threading_native
+_native_precommit_sem: "_threading_native.Semaphore | None" = None
 
 
-def _get_native_precommit_semaphore() -> "asyncio.Semaphore":
+def _get_native_precommit_semaphore() -> "_threading_native.Semaphore":
     """Lazily instantiate the process-wide native-precommit concurrency limiter."""
     global _native_precommit_sem
     if _native_precommit_sem is None:
-        _native_precommit_sem = asyncio.Semaphore(POK_NATIVE_PRECOMMIT_CONCURRENCY)
+        _native_precommit_sem = _threading_native.Semaphore(
+            POK_NATIVE_PRECOMMIT_CONCURRENCY
+        )
     return _native_precommit_sem
 
 
@@ -1476,9 +1487,16 @@ class ConsumerDispatcher:
                         consumer_in_chain_gate_authority,
                     )
 
-                    with consumer_in_chain_gate_authority():
-                        async with _native_sem:
+                    # threading.Semaphore (not asyncio): blocking acquire is safe
+                    # here because run_once runs inside a worker thread (via
+                    # run_async_off_event_loop). The native runner is itself async
+                    # (drives TCP matches) so we release after it completes.
+                    _native_sem.acquire()
+                    try:
+                        with consumer_in_chain_gate_authority():
                             gate_result = await runner(snapshot)
+                    finally:
+                        _native_sem.release()
                 except Exception as exc:  # gate-runner contract violation
                     self._ledger.record_gate(
                         candidate_id=candidate_id,

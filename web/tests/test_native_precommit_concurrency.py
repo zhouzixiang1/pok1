@@ -47,14 +47,12 @@ def test_semaphore_reflects_configured_concurrency(monkeypatch):
 
 def test_semaphore_acquire_decrements_value():
     """Acquiring a permit reduces the available count (the dispatcher's gate
-    reads sem._value to decide backpressure)."""
+    reads sem._value to decide backpressure). threading.Semaphore.acquire is
+    a blocking call (not a coroutine) — safe because the dispatcher runs in a
+    worker thread."""
     sem = _get_native_precommit_semaphore()
     initial = sem._value
-
-    async def acquire():
-        await sem.acquire()
-
-    asyncio.run(acquire())
+    sem.acquire()
     assert sem._value == initial - 1
     sem.release()
     assert sem._value == initial
@@ -74,17 +72,14 @@ def test_dispatcher_returns_native_precommit_slot_busy_when_exhausted():
     test the value-check predicate the dispatcher uses directly (the full
     dispatcher needs a sealed envelope; covered by integration tests)."""
 
-    async def driver():
-        sem = _get_native_precommit_semaphore()
-        # Acquire all permits (default concurrency=1).
-        await sem.acquire()
-        # The dispatcher checks ``sem._value <= 0`` to decide backpressure.
-        assert sem._value <= 0
-        # After release, a new precommit would proceed.
-        sem.release()
-        assert sem._value >= 1
-
-    asyncio.run(driver())
+    sem = _get_native_precommit_semaphore()
+    # Acquire all permits (default concurrency=1). threading.Semaphore.
+    sem.acquire()
+    # The dispatcher checks ``sem._value <= 0`` to decide backpressure.
+    assert sem._value <= 0
+    # After release, a new precommit would proceed.
+    sem.release()
+    assert sem._value >= 1
 
 
 def test_semaphore_is_separate_from_llm_semaphore():
