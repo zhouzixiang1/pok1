@@ -205,12 +205,33 @@ def _literature_checkpoint_identity(
     *,
     origin_revision: int | None = None,
 ) -> str:
-    """Digest the semantic checkpoint preimage across the receipt CAS write."""
+    """Digest the semantic checkpoint preimage across the receipt CAS write.
+
+    Strips transient bookkeeping that changes between Master retries
+    (audit_attempt bumps, audit_context.master_analysis evidence) so a normal
+    Master-retry does not invalidate a valid probe receipt. The genuine
+    research-requirement content is independently bound by the four
+    master_context_digest / direction_audit_digest / requirement_context[_digest]
+    fields checked separately in _literature_probe_payload_errors.
+    """
 
     projection = deepcopy(checkpoint)
     projection.pop("literature_probe", None)
     for field in ("timestamp", "last_update_ts", "last_stage_change_ts"):
         projection.pop(field, None)
+    # Strip Master-retry transient bookkeeping (audit C/D literature-probe
+    # diagnosis 2026-08-10): a normal Master attempt that gets 2/3 scouts
+    # bumps audit_attempt and writes audit_context.master_analysis, which
+    # changed this digest and falsely invalidated a valid probe receipt,
+    # causing every generation to abandon at the Master stage.
+    projection.pop("audit_attempt", None)
+    _audit_ctx = projection.get("audit_context")
+    if isinstance(_audit_ctx, dict):
+        _audit_ctx = {
+            k: v for k, v in _audit_ctx.items()
+            if k != "master_analysis"
+        }
+        projection["audit_context"] = _audit_ctx
     projection["checkpoint_revision"] = (
         int(origin_revision)
         if origin_revision is not None
