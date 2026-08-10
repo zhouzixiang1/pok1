@@ -1315,6 +1315,16 @@ async def _do_abandon_generation(
     """
     from evolution_core import PIPELINE_STATE_FILE
 
+    # Defense-in-depth (2026-08-10): normalize the reason string so a caller
+    # that constructs it with stray trailing/leading whitespace (observed:
+    # ``"master_literature_probe_receipt_invalid v164: "`` when the binding-
+    # error list is empty) cannot trip the schema-2 validator's
+    # ``reason != reason.strip()`` check (``recorded_abandon_reason_invalid``),
+    # which refused the abandon and caused a 41-minute master-abandon death
+    # loop burning LLM budget. The validator's intent is canonical reasons;
+    # stripping at the entry makes the system robust to any future caller.
+    reason = str(reason).strip() or "abandon_generation"
+
     def expected_identity_conflict(candidate):
         if not any(value is not None for value in (
             expected_workflow_run_id,

@@ -485,7 +485,7 @@ async def run_master_impl(args):
                     + str(next_v)
                     + ": "
                     + ";".join(_literature_binding_errors or [])[:700]
-                ),
+                ).rstrip(),
                 event_type="pipeline.master_blocked_invalid_literature_probe",
                 event_message=(
                     f"Master v{next_v} blocked: mandatory literature probe "
@@ -1474,7 +1474,7 @@ async def run_master_impl(args):
                 reason=(
                     f"master_validation_failed v{next_v}: "
                     f"{'; '.join(plan_errors[:3])[:300]}"
-                ),
+                ).rstrip(),
                 event_type="pipeline.master_validation_exhausted_abandon",
                 event_message=(
                     f"Master plan validation failed {_nf} times for v{next_v} — "
