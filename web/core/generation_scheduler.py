@@ -366,8 +366,18 @@ def _load_post_wait_evaluation_evidence(
     rd_min_games: int,
     expected_active_bots: list[str] | tuple[str, ...],
     snapshot_bundle: dict,
+    allow_stale_readiness: bool = False,
 ) -> EvaluationEvidence | None:
-    """Validate one manifest-bound daemon cycle after the async eval wait."""
+    """Validate one manifest-bound daemon cycle after the async eval wait.
+
+    ``allow_stale_readiness`` (True for speculative draft prepares): tolerate an
+    incomplete rating rebuild (fewer than ``min_games`` and RD still high).  The
+    draft is designed to run on the existing — possibly stale — snapshot so the
+    LLM stays busy during the eval-wait window; if the rating later drifts
+    enough to change parent selection, the draft is reaped (LLM-token cost only).
+    Without this flag the post-wait readiness gate makes every eval_wait draft
+    prepare return ``None``, leaving the LLM idle for the entire rating rebuild.
+    """
     from evolution_infra import (
         Glicko2Player,
         find_latest_active_v,
@@ -452,7 +462,13 @@ def _load_post_wait_evaluation_evidence(
         readiness_reason = "rd_threshold"
     else:
         readiness_reason = "not_ready"
-        issues.append("post_wait_readiness_not_reproducible")
+        # A speculative draft (allow_stale_readiness=True) is *designed* to run
+        # on the existing snapshot during the eval-wait window, so an incomplete
+        # rating rebuild is expected and non-fatal. The primary lane still
+        # requires full readiness (the wait exists to guarantee a correct parent
+        # choice for publication-authority work).
+        if not allow_stale_readiness:
+            issues.append("post_wait_readiness_not_reproducible")
 
     _raw_active_bots_after = tuple(sorted(get_active_bots()))
     active_bots_after = tuple(
@@ -1524,6 +1540,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
             rd_min_games=_expected_rd_min_games,
             expected_active_bots=expected,
             snapshot_bundle=frozen_bundle,
+            allow_stale_readiness=slot_id is not None,
         )
 
     evidence = await run_blocking_isolated(
