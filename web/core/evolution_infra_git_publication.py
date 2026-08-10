@@ -757,6 +757,13 @@ def git_commit_bot(
     if _ei.evolution_git_push_enabled() or _ei.evolution_git_push_required():
         push_ok = _ei.git_push_refs(EVOLUTION_BRANCH, tag, *high_water_refs)
         _ei.publish_runtime_expected_head("bot_commit_push", version=version)
+    # Deep-parallelism: invalidate the active-bot TTL cache so the newly
+    # published bot appears in the pool immediately (otherwise up to 15s lag).
+    try:
+        from evolution_infra_active_bots import invalidate_active_bots_cache
+        invalidate_active_bots_cache()
+    except Exception:
+        pass
     return push_ok
 
 

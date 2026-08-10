@@ -63,7 +63,12 @@ export function createEventSourceController(
 ): EventSourceController {
   const createSource = dependencies.createSource ?? defaultCreateSource;
   const scheduler = dependencies.scheduler ?? defaultScheduler;
+  // Base reconnect delay; actual delay grows exponentially (audit C finding 1:
+  // a fixed 5s reconnect hammered a loaded server, forming a feedback loop that
+  // prevented the observer cache from finishing its ~76s build).
   const reconnectDelayMs = options.reconnectDelayMs ?? 5_000;
+  const reconnectMaxMs = 30_000;
+  let reconnectAttempts = 0;
   const registeredEvents = new Set(options.events);
   if (options.pingEvent) registeredEvents.add(options.pingEvent);
   if (options.epochBlockedEvent) registeredEvents.add(options.epochBlockedEvent);
@@ -89,11 +94,19 @@ export function createEventSourceController(
 
   const scheduleReconnect = () => {
     if (!active || authorityBlocked || reconnectTimer !== null) return;
+    // Exponential backoff with jitter (audit C finding 1): a fixed 5s reconnect
+    // hammered a loaded server every 5s, forming a feedback loop that prevented
+    // the observer cache from finishing its ~76s build. Backoff: base × 2^attempts
+    // capped at reconnectMaxMs, with ±20% jitter to de-synchronize multiple tabs.
+    const exp = Math.min(reconnectMaxMs, reconnectDelayMs * 2 ** reconnectAttempts);
+    const jitter = exp * (0.8 + Math.random() * 0.4);
+    const delay = Math.min(reconnectMaxMs, Math.round(jitter));
+    reconnectAttempts += 1;
     const handle = scheduler.setTimeout(() => {
       if (reconnectTimer !== handle) return;
       reconnectTimer = null;
       if (active && !authorityBlocked) connect();
-    }, reconnectDelayMs);
+    }, delay);
     reconnectTimer = handle;
   };
 
@@ -115,6 +128,8 @@ export function createEventSourceController(
 
     source.onopen = () => {
       if (!isCurrent(source, sourceGeneration)) return;
+      // Reset backoff on successful connect (audit C finding 1).
+      reconnectAttempts = 0;
       options.onOpen?.();
     };
 

@@ -466,6 +466,16 @@ class CandidateLifecycle:
                     "UPDATE slice2b_lifecycle_meta SET value = ? WHERE key = 'schema_version'",
                     (str(_LIFECYCLE_SCHEMA_VERSION),),
                 )
+            # Performance (audit B): index the `state` column so the hot-path
+            # queries (non_terminal_candidates / non_terminal_entries /
+            # rejected_candidates, all `WHERE state IN (...)`) don't full-table-
+            # scan the 119MB lifecycle DB (which materializes every row's large
+            # sealed_snapshot_json/gate_results_json blob on each scan). The
+            # composite key covers the ORDER BY in non_terminal_entries too.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lifecycle_state "
+                "ON slice2b_candidate_lifecycle(state, reserved_next_v, sealed_at_epoch)"
+            )
             connection.commit()
 
     @staticmethod

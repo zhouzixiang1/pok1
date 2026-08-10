@@ -2071,6 +2071,16 @@ async def _do_abandon_generation(
         except Exception:
             pass
 
+    # Deep-parallelism: invalidate the active-bot discovery TTL cache so the
+    # next get_active_bots_*  call sees the post-abandon pool immediately
+    # (without this, a just-abandoned candidate's directory lingers in the
+    # cached list for up to POK_ACTIVE_BOTS_CACHE_TTL_SEC=15s).
+    try:
+        from evolution_infra_active_bots import invalidate_active_bots_cache
+        invalidate_active_bots_cache()
+    except Exception:
+        pass
+
     return {
         "abandoned": True,
         "cleared_checkpoint": cleared_checkpoint,
