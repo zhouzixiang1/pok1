@@ -90,6 +90,62 @@ def active_native_contract_filter_enabled() -> bool:
 _ACTIVE_BOT_PROTOCOL_CACHE: dict[tuple, tuple[str, ...]] = {}
 
 
+# ---------------------------------------------------------------------------
+# TTL cache for active-bot discovery (deep-parallelism git-storm mitigation)
+# ---------------------------------------------------------------------------
+#
+# ``_discover_active_bots`` issues ~12 git subprocesses per published bot
+# (tag/rev-parse/merge-base/diff), so a single discovery with 8 bots fans into
+# ~96 git calls. The elo daemon polls every 30s, and deep-parallelism lets the
+# primary prepare + N draft prepares run concurrently — without a cache each
+# fires its own discovery, and the concurrent git subprocesses saturate the
+# CPU/page-cache so a 0.007s ``merge-base`` stalls past its 30s timeout (the
+# observed git-storm that crashed the daemon and rejected every parent).
+#
+# A short TTL (default 15s, env POK_ACTIVE_BOTS_CACHE_TTL_SEC) collapses all
+# concurrent discoveries in a window into one git fan-out: the daemon's 30s
+# poll, a prepare, and draft prepares share a single result. New publications
+# are picked up on the next window expiry (max 15s lag, acceptable for a
+# control-plane projection that is never prompt evidence). Cache is skipped
+# when the caller needs a fresh repair (``get_active_bots`` repairs sentinels,
+# which is a side effect we don't want to suppress).
+
+import time as _time_mod
+import threading as _threading_mod
+
+_ACTIVE_BOTS_CACHE_TTL_SEC = float(
+    os.environ.get("POK_ACTIVE_BOTS_CACHE_TTL_SEC", "15")
+)
+_active_bots_cache_lock = _threading_mod.Lock()
+_active_bots_cache: dict[str, object] = {}  # key -> {"ts": float, "value": list}
+
+
+def _active_bots_cache_get(key: str) -> "list[str] | None":
+    """Return the cached discovery result if within TTL, else None."""
+    with _active_bots_cache_lock:
+        entry = _active_bots_cache.get(key)
+        if entry is None:
+            return None
+        if _time_mod.monotonic() - entry["ts"] > _ACTIVE_BOTS_CACHE_TTL_SEC:
+            return None
+        return list(entry["value"])
+
+
+def _active_bots_cache_set(key: str, value: "list[str]") -> "list[str]":
+    with _active_bots_cache_lock:
+        _active_bots_cache[key] = {
+            "ts": _time_mod.monotonic(),
+            "value": list(value),
+        }
+    return list(value)
+
+
+def invalidate_active_bots_cache() -> None:
+    """Drop the active-bot discovery cache (call after a publication/abandon)."""
+    with _active_bots_cache_lock:
+        _active_bots_cache.clear()
+
+
 def _bot_protocol_fingerprint(bot_dir: Path) -> tuple[tuple, ...]:
     files: list[tuple] = []
     if not bot_dir.exists():
@@ -311,12 +367,24 @@ def get_active_bots_read_only(*, ledger_fresh: bool = True):
 
     Read-only HTTP/catalog code must use this API so a GET request cannot create
     completion sentinels or otherwise mutate the evolution checkout.
+
+    Deep-parallelism (2026-08-10): a short TTL cache
+    (``POK_ACTIVE_BOTS_CACHE_TTL_SEC``, default 15s) collapses concurrent
+    discoveries (daemon 30s poll + prepare + draft prepares) into one git
+    fan-out per window, preventing the git-subprocess storm that timed out
+    ``merge-base`` and crashed the daemon under load. The cache is keyed on
+    ``ledger_fresh`` so the two read-only variants don't cross-contaminate.
     """
 
-    return _ei._discover_active_bots(
+    cache_key = f"ro:{ledger_fresh}"
+    cached = _active_bots_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = _ei._discover_active_bots(
         repair_completed_sentinels=False,
         ledger_fresh=ledger_fresh,
     )
+    return _active_bots_cache_set(cache_key, result)
 
 
 def get_published_active_bots_read_only(*, ledger_fresh: bool = True):
@@ -325,13 +393,21 @@ def get_published_active_bots_read_only(*, ledger_fresh: bool = True):
     View-only clones do not carry the gitignored ``.completed`` cache. Git tag,
     artifact, protocol, lifecycle, and official eligibility checks remain
     mandatory, so omitting that cache does not weaken completion authority.
+
+    TTL-cached like ``get_active_bots_read_only`` (deep-parallelism git-storm
+    mitigation).
     """
 
-    return _ei._discover_active_bots(
+    cache_key = f"pub:{ledger_fresh}"
+    cached = _active_bots_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    result = _ei._discover_active_bots(
         repair_completed_sentinels=False,
         require_completed_sentinel=False,
         ledger_fresh=ledger_fresh,
     )
+    return _active_bots_cache_set(cache_key, result)
 
 
 def _official_parent_eligible(

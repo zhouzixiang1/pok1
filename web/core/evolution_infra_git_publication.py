@@ -85,6 +85,19 @@ _LOCAL_PUB_REF = f"refs/heads/{EVOLUTION_BRANCH}"
 _REMOTE_PUB_REF = f"refs/remotes/origin/{EVOLUTION_BRANCH}"
 
 
+# Deep-parallelism (2026-08-10): bounded concurrency for git read subprocesses.
+# Without this, concurrent discoveries (daemon 30s poll + prepare + draft
+# prepares) each fan into ~12 git calls × N bots, saturating the CPU/page-cache
+# so a 0.007s merge-base stalls past its 30s timeout (the git-storm that crashed
+# the daemon). A small semaphore (default 4, env POK_GIT_CONCURRENCY) serializes
+# git reads enough to keep the OS scheduler and page cache stable while staying
+# well within the 30s timeout. Git read commands against one repo serialize fine;
+# the 0.007s isolated cost means a 4-deep queue drains in milliseconds.
+import threading as _threading_mod_git
+_POK_GIT_CONCURRENCY = max(1, int(os.environ.get("POK_GIT_CONCURRENCY", "4")))
+_git_concurrency_sem = _threading_mod_git.Semaphore(_POK_GIT_CONCURRENCY)
+
+
 def _git(*args, check=True):
     """Run git command, return stdout.
 
@@ -93,15 +106,16 @@ def _git(*args, check=True):
     the moved bodies because every internal call site here routes through
     ``_ei._git(...)`` rather than calling this function directly.
     """
-    try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            cwd=str(_ei.PROJECT_ROOT),
-            capture_output=True, text=True,
-            timeout=30
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"git {args[0]}: timed out after 30s")
+    with _git_concurrency_sem:
+        try:
+            result = subprocess.run(
+                ["git"] + list(args),
+                cwd=str(_ei.PROJECT_ROOT),
+                capture_output=True, text=True,
+                timeout=30
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"git {args[0]}: timed out after 30s")
     if check and result.returncode != 0:
         raise RuntimeError(f"git {args[0]}: {result.stderr.strip()}")
     return result.stdout.strip()
@@ -115,35 +129,17 @@ def _git_explicit_presence(*args):
     monkeypatches propagate.
     """
 
-    try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            cwd=str(_ei.PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"git {args[0]}: timed out after 30s") from exc
-    if result.returncode == 0:
-        return True
-    if result.returncode == 1:
-        return False
-    raise RuntimeError(
-        f"git {args[0]} unavailable (rc={result.returncode}): "
-        f"{result.stderr.strip()}"
-    )
-
-    try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            cwd=str(_ei.PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"git {args[0]}: timed out after 30s") from exc
+    with _git_concurrency_sem:
+        try:
+            result = subprocess.run(
+                ["git"] + list(args),
+                cwd=str(_ei.PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"git {args[0]}: timed out after 30s") from exc
     if result.returncode == 0:
         return True
     if result.returncode == 1:
@@ -767,16 +763,17 @@ def git_commit_bot(
 def _git_command_succeeds(*args: str) -> bool:
     """Run a Git predicate while retaining its return code."""
 
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=str(_ei.PROJECT_ROOT),
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+    with _git_concurrency_sem:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=str(_ei.PROJECT_ROOT),
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
     return result.returncode == 0
 
 
