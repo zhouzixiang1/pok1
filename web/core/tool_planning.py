@@ -804,11 +804,29 @@ def _clear_master_runtime_heartbeat(next_v, source_v):
 async def _abandon_master_generation(next_v, source_v, *, error, fail_count, reason,
                                      event_type, event_message, ui=None,
                                      payload=None, directive=None):
-    """Clear a Master-stuck generation from the tool layer itself.
+    """Signal a Master-stuck generation abandon for the orchestrator to finalize.
 
     The orchestrator is intentionally LLM-driven, so returning a plain text
     "please abandon" directive is not a reliable control plane. All Master
-    retry-budget exhaustion paths route here and perform the cleanup directly.
+    retry-budget exhaustion paths route here.
+
+    This function used to call ``_do_abandon_generation`` *inline* (from inside
+    a tool dispatch, while the orchestrator loop was still running).  That raced
+    the loop's concurrent ``checkpoint_revision`` bumps: the canonical abandon's
+    CAS revalidation refused with ``expected_checkpoint_identity_mismatch``,
+    the ``abandoned: False`` result was ignored, and the orchestrator re-entered
+    ``run_master`` every ~30 s — burning LLM budget forever (the v161 / v106
+    livelock class).  See ``master_abandon_signal.py`` for the full background.
+
+    The fix mirrors the HTTP ``POST /api/control/abandon`` "stop-then-abandon"
+    pattern: instead of running the publication-authority transaction from the
+    tool layer against a moving checkpoint, we just *signal* the request
+    (``master_abandon_signal.request_abandon``) and return a terminal tool
+    result.  The orchestrator loop, which is the sole owner of the publication
+    lifecycle *between* cycles, finalizes the abandon right after
+    ``_run_one_cycle`` returns — when the checkpoint is guaranteed quiescent —
+    by re-reading the live checkpoint for a fresh ``expected_abandon_identity``
+    and calling ``_do_abandon_generation`` with ``_bypass_rate_limit=True``.
     """
     payload = dict(payload or {})
     event_data = {"next_v": next_v, "source_v": source_v, "fail_count": fail_count}
@@ -822,48 +840,36 @@ async def _abandon_master_generation(next_v, source_v, *, error, fail_count, rea
             ui.log_history(event_message, "error")
         except Exception:
             pass
+    # Signal the orchestrator loop to finalize this abandon against a quiescent
+    # checkpoint.  We do NOT pass an identity snapshot: by the time the loop
+    # consumes the signal the checkpoint is static, and the loop re-reads the
+    # live checkpoint for a fresh CAS identity (carrying a stale snapshot here
+    # would re-introduce the exact race this fix closes).
+    try:
+        from master_abandon_signal import request_abandon
+        request_abandon(reason)
+    except Exception:
+        pass
     try:
         from orchestrator_session import _clear_orchestrator_session
         _clear_orchestrator_session()
     except Exception:
         pass
-    try:
-        from evolution_core import read_pipeline_checkpoint
-        from tool_bot_management import (
-            _do_abandon_generation,
-            expected_abandon_identity,
-        )
-        abandon_identity = expected_abandon_identity(read_pipeline_checkpoint())
-        abandon_result = await _do_abandon_generation(
-            reason=reason,
-            # This is a system-owned fail-closed path: the caller has already
-            # proved the Master exhausted its bounded retry budget
-            # (MAX_MASTER_TOTAL_FAILURES) and the immutable candidate cannot be
-            # retried.  Without the bypass, the 60-second abandon rate-limit
-            # gate (tool_bot_management.py) refuses the abandon whenever one
-            # was attempted in the last minute, returning
-            # ``{"abandoned": False, "rate_limited": True}``.  The orchestrator
-            # then re-invokes run_master and the Master burns another full
-            # analysis+audit cycle (6+ LLM role calls) on a doomed direction —
-            # the gen-64 proposal_mechanism_foreign_targets loop.  The bypass
-            # does NOT skip checkpoint identity, workflow fencing, or stage
-            # guards (per _do_abandon_generation's docstring); it only defeats
-            # the cooldown that exists to protect against LLM-driven abandon
-            # spam, which cannot happen from this deterministic tool path.
-            _bypass_rate_limit=True,
-            **abandon_identity,
-        )
-    except Exception as exc:
-        abandon_result = {"abandoned": False, "error": str(exc)}
     result = {
         "error": error,
         "fail_count": fail_count,
         **payload,
-        **abandon_result,
+        # The abandon is pending finalization by the orchestrator loop.  We do
+        # not claim ``abandoned: True`` here (the transaction has not run yet),
+        # but we tag the result so any observability layer can distinguish a
+        # signaled-but-pending abandon from a normal tool completion.
+        "abandon_signaled": True,
+        "abandon_reason": reason,
         "directive": directive or (
             "Master planning exhausted its retry budget and this generation "
-            "was abandoned by the tool layer. Start a fresh generation; do not "
-            "call run_master again for the abandoned candidate."
+            "was signaled for abandonment. The orchestrator will finalize the "
+            "abandon against a quiescent checkpoint and start a fresh "
+            "generation; do not call run_master again for this candidate."
         ),
         "logs": ui.get_output() if ui else "",
     }

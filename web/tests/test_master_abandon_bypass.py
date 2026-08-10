@@ -1,68 +1,83 @@
-"""Regression guard for the Master-abandon rate-limit refusal loop.
+"""Regression guard for the Master-abandon livelock class.
 
-_abandon_master_generation previously called _do_abandon_generation without
-_bypass_rate_limit=True, so the 60-second abandon rate-limit gate refused the
-abandon whenever one was attempted in the last minute. The orchestrator then
-re-invoked run_master and the Master burned another full analysis+audit
-cycle (6+ LLM role calls) on a doomed direction — the gen-64
-proposal_mechanism_foreign_targets loop. The Master-exhaustion path is a
-system-owned fail-closed path that has already proved the immutable candidate
-cannot be retried, so it must bypass the cooldown (the cooldown exists to
-protect against LLM-driven abandon spam, which cannot happen from this
-deterministic tool path).
+_abandon_master_generation previously called _do_abandon_generation *inline*
+from inside a tool dispatch.  While the orchestrator loop was still running it
+concurrently bumped the checkpoint ``checkpoint_revision``, so the canonical
+abandon's CAS revalidation refused with ``expected_checkpoint_identity_mismatch``,
+the ``abandoned: False`` result was ignored, and the orchestrator re-entered
+``run_master`` every ~30 s — burning LLM budget forever (the v161/v106
+livelock class).
+
+The fix (Stage-0 of the deep-parallelism redesign) moves the canonical abandon
+out of the tool layer entirely: ``_abandon_master_generation`` now only
+*signals* the request via ``master_abandon_signal.request_abandon`` and returns
+a terminal tool result tagged ``abandon_signaled: True``.  The orchestrator
+loop finalizes the abandon against a quiescent checkpoint right after
+``_run_one_cycle`` returns (mirroring the HTTP ``POST /api/control/abandon``
+"stop-then-abandon" pattern).  These tests guard that contract.
 """
 
 import asyncio
 import json
 
 from conftest import STRICT_SOURCE_V, STRICT_TARGET_V
+import master_abandon_signal
 import pytest
 import tool_planning
 
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
-def test_abandon_master_generation_bypasses_rate_limit(monkeypatch):
-    """_abandon_master_generation forwards _bypass_rate_limit=True so the
-    deterministic Master-exhaustion abandon is not refused by the 60s cooldown."""
-    import evolution_core
+def test_abandon_master_generation_signals_not_inline(monkeypatch):
+    """_abandon_master_generation signals the abandon via master_abandon_signal
+    instead of calling _do_abandon_generation inline (the CAS-race root cause).
+
+    The tool layer must NOT run the publication-authority transaction itself —
+    that races the concurrently-mutated checkpoint.  It must only record the
+    request and let the orchestrator loop finalize it against a quiescent
+    checkpoint.
+    """
     import tool_bot_management
 
-    # Stub the checkpoint read so the lazy import path inside
-    # _abandon_master_generation reaches _do_abandon_generation instead of
-    # raising on a missing checkpoint.  expected_abandon_identity is stubbed
-    # to return no identity kwargs so the call focuses on the bypass kwarg.
-    monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: {"stub": True})
+    master_abandon_signal.clear()
+
+    # If _abandon_master_generation ever calls _do_abandon_generation directly,
+    # this stub will record it and the test fails.
+    inline_called = []
+
+    async def _must_not_be_called_inline(*args, **kwargs):
+        inline_called.append(kwargs)
+        return {"abandoned": True}
+
     monkeypatch.setattr(
-        tool_bot_management,
-        "expected_abandon_identity",
-        lambda _ckpt: {},
+        tool_bot_management, "_do_abandon_generation", _must_not_be_called_inline
     )
 
-    captured = {}
-
-    async def fake_do_abandon(reason, **kwargs):
-        captured["reason"] = reason
-        captured["bypass"] = kwargs.get("_bypass_rate_limit")
-        return {"abandoned": True, "reason": reason}
-
-    monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", fake_do_abandon)
-
+    reason = "master_validation_failed v%s: proposal stuck" % STRICT_TARGET_V
     result = asyncio.run(tool_planning._abandon_master_generation(
         STRICT_TARGET_V,
         STRICT_SOURCE_V,
         error="MASTER_EXHAUSTED",
         fail_count=2,
-        reason="master_validation_failed v%s: proposal stuck" % STRICT_TARGET_V,
+        reason=reason,
         event_type="pipeline.master_exhausted",
         event_message="Master exhausted retry budget",
     ))
     payload = json.loads(result["content"][0]["text"])
-    assert payload["abandoned"] is True
-    assert captured["bypass"] is True, (
-        "_abandon_master_generation must pass _bypass_rate_limit=True so the "
-        "deterministic Master-exhaustion abandon is not refused by the 60s "
-        "rate-limit cooldown (gen-64 loop root cause)"
+
+    # The signal must be pending for the orchestrator loop to finalize.
+    assert master_abandon_signal.consume_pending() == reason, (
+        "_abandon_master_generation must signal master_abandon_signal so the "
+        "orchestrator loop finalizes the abandon against a quiescent checkpoint "
+        "(inline abandon races the concurrent checkpoint_revision bump — "
+        "v161/v106 livelock root cause)"
+    )
+    # The tool result must indicate the abandon was signaled, not finalized.
+    assert payload.get("abandon_signaled") is True
+    assert payload.get("abandon_reason") == reason
+    # The inline path must NOT have been invoked.
+    assert not inline_called, (
+        "_abandon_master_generation must NOT call _do_abandon_generation inline"
     )
 
 

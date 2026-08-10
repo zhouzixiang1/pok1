@@ -612,10 +612,62 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
         _reset_canonical_abandon_streak()
         return True
 
+    # Clear any stale Master-abandon signal left over from a previous loop
+    # lifetime (service restart reuses the module-level singleton).
+    try:
+        from master_abandon_signal import clear as _clear_master_abandon_signal
+        _clear_master_abandon_signal()
+    except Exception:
+        pass
+
     try:
         while True:
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 break
+
+            # Master-abandon signal drain (top-of-loop safety net).  A Master-
+            # exhaustion path may have signaled an abandon during a deterministic
+            # route (Phase 1, before _run_one_cycle) or during the previous
+            # cycle's tail.  Drain it here while the checkpoint is quiescent so
+            # the canonical abandon transaction does not race a concurrent
+            # ``checkpoint_revision`` bump (the v161/v106 livelock root cause).
+            # The primary drain is right after _run_one_cycle (below); this
+            # top-of-loop drain catches the deterministic-route + cross-cycle
+            # tails.  ``consume_pending`` is idempotent (returns None if nothing
+            # is pending), so double-draining is harmless.
+            try:
+                from master_abandon_signal import consume_pending as _consume_master_abandon_top
+                _top_reason = _consume_master_abandon_top()
+            except Exception:
+                _top_reason = None
+            if _top_reason is not None:
+                _top_ok = False
+                try:
+                    from evolution_core import read_pipeline_checkpoint
+                    from tool_bot_management import (
+                        _do_abandon_generation,
+                        expected_abandon_identity,
+                    )
+                    _top_ckpt = read_pipeline_checkpoint()
+                    if _top_ckpt:
+                        _top_result = await _do_abandon_generation(
+                            reason=_top_reason,
+                            _bypass_rate_limit=True,
+                            **expected_abandon_identity(_top_ckpt),
+                        )
+                        _top_ok = bool(isinstance(_top_result, dict) and _top_result.get("abandoned"))
+                except Exception:
+                    pass
+                try:
+                    _orch.log_system_event(
+                        "orchestrator.master_abandon_finalized_top",
+                        "info" if _top_ok else "error",
+                        f"Master-abandon signal drained at loop top (ok={_top_ok})",
+                        {"reason": _top_reason, "finalized": _top_ok},
+                    )
+                except Exception:
+                    pass
+                continue
 
             # Watchdog recovery: if background watchdog detected a stuck pipeline,
             # clear state and force a fresh cycle from the checkpoint stage.
@@ -958,6 +1010,83 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                 shutdown_mgr=shutdown_mgr,
                 _cost_policy=operator_cost_policy,
             )
+
+            # Master-abandon signal finalization (Stage-0 fix for the v161/v106
+            # livelock class).  When a Master-exhaustion path inside the just-
+            # finished cycle called ``_abandon_master_generation``, it did NOT
+            # run the publication-authority abandon inline (that raced the
+            # concurrently-mutated checkpoint and lost every CAS revalidation).
+            # It only signaled the request via ``master_abandon_signal``.  Now
+            # that ``_run_one_cycle`` has returned and the loop is between
+            # cycles, the checkpoint is quiescent — this is the safe point to
+            # finalize the canonical abandon transaction, exactly mirroring the
+            # HTTP ``POST /api/control/abandon`` "stop-then-abandon" pattern.
+            _master_abandon_reason = None
+            try:
+                from master_abandon_signal import consume_pending as _consume_master_abandon
+                _master_abandon_reason = _consume_master_abandon()
+            except Exception:
+                _master_abandon_reason = None
+            if _master_abandon_reason is not None:
+                _master_abandon_ok = False
+                try:
+                    from evolution_core import read_pipeline_checkpoint
+                    from tool_bot_management import (
+                        _do_abandon_generation,
+                        expected_abandon_identity,
+                    )
+                    _ma_ckpt = read_pipeline_checkpoint()
+                    if _ma_ckpt:
+                        _ma_result = await _do_abandon_generation(
+                            reason=_master_abandon_reason,
+                            # System-owned fail-closed path: the tool layer
+                            # already proved the Master exhausted its bounded
+                            # retry budget.  Bypass the 60s cooldown that
+                            # protects against LLM-driven abandon spam (which
+                            # cannot happen from this deterministic path).
+                            _bypass_rate_limit=True,
+                            **expected_abandon_identity(_ma_ckpt),
+                        )
+                        _master_abandon_ok = bool(isinstance(_ma_result, dict) and _ma_result.get("abandoned"))
+                        if ui:
+                            if _master_abandon_ok:
+                                ui.log_history(
+                                    f"Master-abandon finalized (quiescent): v{_ma_ckpt.get('next_v')} "
+                                    f"abandoned, starting fresh generation.",
+                                    "info",
+                                )
+                            else:
+                                ui.log_history(
+                                    f"Master-abandon finalization refused: "
+                                    f"{_ma_result if isinstance(_ma_result, dict) else 'unknown'}",
+                                    "error",
+                                )
+                except Exception as _ma_exc:
+                    if ui:
+                        ui.log_history(
+                            f"Master-abandon finalization error: {_ma_exc}",
+                            "error",
+                        )
+                try:
+                    _orch.log_system_event(
+                        "orchestrator.master_abandon_finalized",
+                        "info" if _master_abandon_ok else "error",
+                        f"Master-abandon signal finalized against quiescent checkpoint "
+                        f"(ok={_master_abandon_ok})",
+                        {"reason": _master_abandon_reason, "finalized": _master_abandon_ok},
+                    )
+                except Exception:
+                    pass
+                # Whether the abandon succeeded or was refused, do NOT re-enter
+                # the cycle on the same checkpoint (that is the livelock).  A
+                # successful abandon cleared the checkpoint so the loop top will
+                # prepare a fresh generation; a refused abandon means the
+                # canonical transaction itself reported a typed boundary (e.g.
+                # stage_not_disposable) and operator intervention is needed —
+                # either way, ``continue`` lets the loop top re-read the
+                # checkpoint state and route correctly instead of re-entering
+                # run_master on a doomed direction.
+                continue
 
             if cost == _orch.ORCH_OPERATOR_COST_LIMIT_COST:
                 terminal_outcome = _orch.ORCH_OPERATOR_COST_LIMIT_COST
