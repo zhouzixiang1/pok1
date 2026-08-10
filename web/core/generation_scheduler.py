@@ -1411,15 +1411,21 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     if min_games is not None:
         eval_kwargs["min_games"] = min_games
     _ensure_priority_eval_signal(active_bot_name, eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL))
-    # Speculative preparation: a draft (slot_id is not None) skips the blocking
-    # wait_for_daemon_eval and proceeds with the existing (possibly stale)
-    # evaluation snapshot. This keeps the LLM producing (Master/Workers) while
-    # the daemon rates the just-published parent. If the rating drifts enough
-    # to change the parent selection, the draft is marked stale and reaped
-    # (cost = LLM tokens only; no matches/gates run for a draft). The primary
-    # lane (slot_id=None) always waits — its parent choice must be correct.
-    if slot_id is not None:
-        # Draft: don't block on daemon eval. Use whatever rating exists now.
+    # Deep-parallelism "LLM never stops" mode (2026-08-10): the primary lane
+    # ALSO skips the blocking wait_for_daemon_eval, exactly like drafts. The
+    # daemon continues rating in the background (for final delivery / pool
+    # selection), but it no longer blocks the LLM evolution line. This is safe
+    # because eval_wait was degrading 54/54 times anyway (it NEVER reached
+    # min_games before timeout) — the primary was already using stale ratings.
+    # Skipping the wait removes the multi-minute LLM-idle window before every
+    # prepare. Controlled by POK_SKIP_PRIMARY_EVAL_WAIT (default 1 = skip on
+    # this cloud runtime; set 0 to restore the blocking wait for debugging).
+    import os as _os_eval
+    _skip_primary_eval_wait = _os_eval.environ.get(
+        "POK_SKIP_PRIMARY_EVAL_WAIT", "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if slot_id is not None or _skip_primary_eval_wait:
+        # Draft OR primary-in-skip-mode: don't block on daemon eval.
         eval_ok = True
         if ui:
             ui.log_history(
