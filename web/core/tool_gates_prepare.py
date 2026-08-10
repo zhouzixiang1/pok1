@@ -266,6 +266,45 @@ async def prepare_next_gen(args):
         # adopted by filename.  Resolve that kill window here, inside the
         # system-owned prepare route, with the same exact workflow/revision
         # canonical-abandon transaction used by every other terminal path.
+        #
+        # DRAFT-SLOT SHORT-CIRCUIT: ``_do_abandon_generation`` is PRIMARY-scoped
+        # (it clears the primary checkpoint under no_slot_override).  A draft
+        # slot has no primary checkpoint to clear — its checkpoint lives in
+        # ``pipeline_state_<slot>.json``.  Calling the primary abandon against a
+        # draft preimage therefore always fails (no matching primary checkpoint
+        # → the transaction refuses), and the draft loops forever re-hitting the
+        # same stale bytes.  For a draft, the correct recovery is to clear the
+        # draft slot checkpoint + quarantine the stale candidate directory
+        # directly, then let the draft prepare restart from ``selected``.  This
+        # mirrors the primary path's intent (never adopt unbound bytes) without
+        # the primary-scoped publication-authority machinery that does not apply
+        # to a speculative draft.
+        from evolution_infra import current_slot_override, clear_pipeline_checkpoint
+        import shutil as _shutil
+        import time as _time
+
+        _draft_slot = current_slot_override()
+        if _draft_slot is not None:
+            # Draft preimage: clear the draft slot and quarantine the stale dir
+            # so the next prepare materializes a fresh candidate.
+            try:
+                _quarantine = next_dir.parent / f"_quarantine_{next_dir.name}_{int(_time.time())}"
+                _shutil.move(str(next_dir), str(_quarantine))
+            except Exception:
+                pass
+            clear_pipeline_checkpoint(slot_id=_draft_slot)
+            return _tg._json_tool_result({
+                "error": "DRAFT_PREIMAGE_CLEARED",
+                "version": int(next_v),
+                "source_v": int(source_v),
+                "stage": (_ckpt or {}).get("stage"),
+                "slot_id": _draft_slot,
+                "abandoned": True,
+                "directive": (
+                    "Stale draft preimage cleared; the draft slot will restart "
+                    "from selected with a fresh materialization."
+                ),
+            })
         try:
             from tool_bot_management import (
                 _do_abandon_generation,
