@@ -1083,6 +1083,17 @@ async def _run_national_precommit_backend(
         }
 
     official_platform_result = {}
+    # Lazy import: ``_official_gate_enabled`` lives in tool_gates_native_smoke
+    # (re-exported by tool_gates). The official EXE certification system was
+    # removed, so this gate is disabled by default (returns False unless
+    # POK_OFFICIAL_PRECOMMIT_GATE/POK_OFFICIAL_REQUIRED is set); the block is
+    # an optional diagnostic. Without this import the precommit path raised
+    # NameError (v171, 2026-08-13) — latent for 5 days because no generation
+    # reached precommit during the v170 stall.
+    try:
+        from tool_gates_native_smoke import _official_gate_enabled
+    except Exception:
+        _official_gate_enabled = lambda *a, **k: False
     if native_tcp_mode and _official_gate_enabled("POK_OFFICIAL_PRECOMMIT_GATE") and not blockers:
         # The official Windows platform is a protocol/compliance oracle here.
         # Strength and long-run tracking stay on the local native TCP harness.
