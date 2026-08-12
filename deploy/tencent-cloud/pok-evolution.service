@@ -79,7 +79,7 @@ LimitNOFILE=4096
 # box. Legitimate bursts (main ~1G + 2x claude ~0.8G + daemon ~0.25G ~= 2.05G)
 # fit under the cap. Tunable; swap was also raised to 6G (2G + 4G swapfile2).
 MemoryHigh=2400M
-MemoryMax=2800M
+MemoryMax=3500M
 
 # Bubblewrap (bwrap) sandboxing notes:
 #
