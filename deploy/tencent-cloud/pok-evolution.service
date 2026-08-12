@@ -71,6 +71,16 @@ StandardError=journal
 # Resource sanity for a small VM: evolution forks many native-TCP match workers.
 LimitNOFILE=4096
 
+# Memory containment for the web/main.py heap (it grows ~2GiB over ~7h; root
+# cause under investigation). Without a cgroup limit the growth hits whole-box
+# global OOM and takes down the ZCode client too. MemoryHigh makes the kernel
+# reclaim aggressively above 2400M; MemoryMax=2800M is a hard kill that systemd
+# auto-restarts (Restart=on-failure), isolating the leak from the rest of the
+# box. Legitimate bursts (main ~1G + 2x claude ~0.8G + daemon ~0.25G ~= 2.05G)
+# fit under the cap. Tunable; swap was also raised to 6G (2G + 4G swapfile2).
+MemoryHigh=2400M
+MemoryMax=2800M
+
 # Bubblewrap (bwrap) sandboxing notes:
 #
 # The candidate quality-gate runtime import and the typed runtime probe both

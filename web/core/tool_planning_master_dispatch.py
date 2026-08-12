@@ -203,17 +203,39 @@ async def run_master_impl(args):
                     "errors": prepared_artifact_errors,
                 },
             )
-            return _json_tool_result({
-                "error": "PREPARED_ARTIFACT_CONTRACT_INVALID",
-                "next_v": next_v,
-                "source_v": source_v,
-                "validation_errors": prepared_artifact_errors,
-                "next_tool": "abandon_generation",
-                "directive": (
-                    "The candidate changed after prepare/crossover and before Master. "
-                    "Abandon and rebuild from a fresh scheduler-owned baseline."
+            # Canonical abandon, mirroring LITERATURE_PROBE_RECEIPT_INVALID:
+            # the MCP abandon_generation tool is blocked by the
+            # direction_audited route guard (allowed_tools is
+            # run_literature_probe/run_master only), so a "call
+            # abandon_generation" directive loops forever. The ``master_``
+            # reason prefix is in the direction_audited disposable allowlist,
+            # so _abandon_master_generation succeeds.
+            ui = _tp._get_ui()
+            return await _tp._abandon_master_generation(
+                next_v,
+                source_v,
+                error="PREPARED_ARTIFACT_CONTRACT_INVALID",
+                fail_count=0,
+                reason=(
+                    "master_prepared_artifact_contract_invalid v"
+                    + str(next_v)
+                    + ": "
+                    + ";".join(prepared_artifact_errors or [])[:700]
+                ).rstrip(),
+                event_type="pipeline.master_blocked_prepared_artifact_drift",
+                event_message=(
+                    f"Master v{next_v} blocked: prepared artifact contract is "
+                    f"invalid and cannot be repaired by replanning; canonically "
+                    f"abandoning"
                 ),
-            })
+                ui=ui,
+                payload={"validation_errors": prepared_artifact_errors},
+                directive=(
+                    "The candidate changed after prepare/crossover and before "
+                    "Master. This generation was canonically abandoned; rebuild "
+                    "from a fresh scheduler-owned baseline."
+                ),
+            )
     # fix-4: idempotency guard — if master already planned for this (next_v, source_v),
     # return cached result instead of re-running (LLM intermittently violates
     # orchestrator.md:43, causing duplicate run_master calls in the same cycle).
@@ -365,18 +387,37 @@ async def run_master_impl(args):
                 "errors": _snapshot_binding_errors,
             },
         )
-        return _json_tool_result({
-            "error": "GENERATION_EVIDENCE_BINDING_INVALID",
-            "next_v": next_v,
-            "source_v": source_v,
-            "validation_errors": _snapshot_binding_errors,
-            "next_tool": "abandon_generation",
-            "directive": (
-                "The selected generation snapshot is missing or no longer matches "
-                "its checkpoint. Do not recreate a cutoff or run Master; abandon "
-                "and re-prepare from a fresh coherent evaluation cycle."
+        # Canonical abandon, mirroring LITERATURE_PROBE_RECEIPT_INVALID:
+        # the MCP abandon_generation tool is blocked by the
+        # direction_audited route guard, so a "call abandon_generation"
+        # directive would loop forever. The ``master_`` reason prefix is in
+        # the direction_audited disposable allowlist.
+        ui = _tp._get_ui()
+        return await _tp._abandon_master_generation(
+            next_v,
+            source_v,
+            error="GENERATION_EVIDENCE_BINDING_INVALID",
+            fail_count=0,
+            reason=(
+                "master_generation_evidence_binding_invalid v"
+                + str(next_v)
+                + ": "
+                + ";".join(_snapshot_binding_errors or [])[:700]
+            ).rstrip(),
+            event_type="pipeline.master_blocked_evidence_binding",
+            event_message=(
+                f"Master v{next_v} blocked: generation evidence binding is "
+                f"invalid and cannot be repaired by replanning; canonically "
+                f"abandoning"
             ),
-        })
+            ui=ui,
+            payload={"validation_errors": _snapshot_binding_errors},
+            directive=(
+                "The selected generation snapshot is missing or no longer matches "
+                "its checkpoint. This generation was canonically abandoned; "
+                "re-prepare from a fresh coherent evaluation cycle."
+            ),
+        )
 
     # Literature-probe output is checkpoint-owned and producer-receipt bound.
     # Caller text and legacy four-field receipts have no injection authority.
@@ -575,19 +616,40 @@ async def run_master_impl(args):
                     "errors": baseline_errors[:20],
                 },
             )
-            return _json_tool_result({
-                "error": "CROSSOVER_PREPARED_BASELINE_INVALID",
-                "next_v": next_v,
-                "source_v": source_v,
-                "parent2_v": _master_entry_ckpt.get("parent2_v"),
-                "validation_errors": baseline_errors,
-                "next_tool": "abandon_generation",
-                "directive": (
-                    "The digest-bound prepared crossover child no longer matches "
-                    "its checkpoint contract. Do not reconstruct it from Parent A or "
-                    "run Workers; abandon and rerun crossover from a fresh baseline."
+            # Canonical abandon, mirroring LITERATURE_PROBE_RECEIPT_INVALID:
+            # the MCP abandon_generation tool is blocked by the
+            # direction_audited route guard, so a "call abandon_generation"
+            # directive would loop forever. The ``master_`` reason prefix is in
+            # the direction_audited disposable allowlist.
+            ui = _tp._get_ui()
+            return await _tp._abandon_master_generation(
+                next_v,
+                source_v,
+                error="CROSSOVER_PREPARED_BASELINE_INVALID",
+                fail_count=0,
+                reason=(
+                    "master_crossover_prepared_baseline_invalid v"
+                    + str(next_v)
+                    + ": "
+                    + ";".join(baseline_errors or [])[:700]
+                ).rstrip(),
+                event_type="pipeline.master_blocked_crossover_baseline",
+                event_message=(
+                    f"Master v{next_v} blocked: prepared crossover baseline is "
+                    f"invalid and cannot be repaired by replanning; canonically "
+                    f"abandoning"
                 ),
-            })
+                ui=ui,
+                payload={
+                    "validation_errors": baseline_errors,
+                    "parent2_v": _master_entry_ckpt.get("parent2_v"),
+                },
+                directive=(
+                    "The digest-bound prepared crossover child no longer matches "
+                    "its checkpoint contract. This generation was canonically "
+                    "abandoned; rerun crossover from a fresh baseline."
+                ),
+            )
         prepared_capability_snapshot = prepared_baseline.get(
             "capability_snapshot"
         )
@@ -739,26 +801,60 @@ async def run_master_impl(args):
             stored_prepared_policy.get("policy_digest")
             != (architecture_policy or {}).get("policy_digest")
         ):
-            return _json_tool_result({
-                "error": "CROSSOVER_PREPARED_POLICY_IDENTITY_MISMATCH",
-                "next_v": next_v,
-                "source_v": source_v,
-                "parent2_v": _master_entry_ckpt.get("parent2_v"),
-                "stored_policy_digest": (
+            # Canonical abandon, mirroring LITERATURE_PROBE_RECEIPT_INVALID:
+            # the MCP abandon_generation tool is blocked by the
+            # direction_audited route guard, so a "call abandon_generation"
+            # directive would loop forever. The ``master_`` reason prefix is in
+            # the direction_audited disposable allowlist.
+            _identity_errors = [
+                "prepared_architecture_policy_digest_mismatch",
+                "stored=" + str(
                     (stored_prepared_policy or {}).get("policy_digest")
                     if isinstance(stored_prepared_policy, dict)
                     else ""
                 ),
-                "current_policy_digest": (
+                "current=" + str(
                     (architecture_policy or {}).get("policy_digest")
                 ),
-                "next_tool": "abandon_generation",
-                "directive": (
-                    "The prepared child policy no longer matches the current "
-                    "system contract. Fail closed and rerun crossover; never reset "
-                    "the child to Parent A while retaining two-parent lineage."
+            ]
+            ui = _tp._get_ui()
+            return await _tp._abandon_master_generation(
+                next_v,
+                source_v,
+                error="CROSSOVER_PREPARED_POLICY_IDENTITY_MISMATCH",
+                fail_count=0,
+                reason=(
+                    "master_crossover_policy_identity_mismatch v"
+                    + str(next_v)
+                    + ": "
+                    + ";".join(_identity_errors)[:700]
+                ).rstrip(),
+                event_type="pipeline.master_blocked_crossover_identity",
+                event_message=(
+                    f"Master v{next_v} blocked: prepared crossover policy identity "
+                    f"mismatch and cannot be repaired by replanning; canonically "
+                    f"abandoning"
                 ),
-            })
+                ui=ui,
+                payload={
+                    "validation_errors": _identity_errors,
+                    "parent2_v": _master_entry_ckpt.get("parent2_v"),
+                    "stored_policy_digest": (
+                        (stored_prepared_policy or {}).get("policy_digest")
+                        if isinstance(stored_prepared_policy, dict)
+                        else ""
+                    ),
+                    "current_policy_digest": (
+                        (architecture_policy or {}).get("policy_digest")
+                    ),
+                },
+                directive=(
+                    "The prepared child policy no longer matches the current "
+                    "system contract. This generation was canonically abandoned; "
+                    "rerun crossover. Never reset the child to Parent A while "
+                    "retaining two-parent lineage."
+                ),
+            )
     if (
         _master_infra is not None
         and _master_infra.get("component")

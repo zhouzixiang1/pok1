@@ -1279,6 +1279,107 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                 active_recovery = _orch._checkpoint_recovery_context("cycle_completed_with_active_checkpoint", ui)
                 if active_recovery:
                     recovery = active_recovery
+                    ckpt = active_recovery.get("checkpoint") or {}
+                    _yield_stage = ckpt.get("stage")
+                    _yield_nvv = ckpt.get("next_v")
+                    # === Cross-cycle livelock circuit breaker (2026-08-12) ===
+                    # A fast-cycling livelock (e.g. run_master early-validation
+                    # returns an abandon_generation directive that the
+                    # direction_audited route guard blocks) yields active-
+                    # checkpoint cycles every ~60-90s WITHOUT advancing the
+                    # stage or hitting the 3600s CYCLE_TIMEOUT (B3). v170 spun
+                    # here for 36h (1,950 throwaway sessions, 0 publications).
+                    # Count consecutive same-(version,stage) yields; after
+                    # POK_ACTIVE_CKPT_CYCLE_BREAKER (default 5) force a canonical
+                    # abandon. ``infrastructure_exhausted:`` is admitted at every
+                    # disposable stage (pipeline_state.py broad_infra_stages), so
+                    # this bounds ANY directive-path livelock (21 known sites +
+                    # future regressions), not just the ones with inline abandons.
+                    try:
+                        import os as _os_brk
+                        _breaker_cap = max(
+                            2, int(_os_brk.environ.get(
+                                "POK_ACTIVE_CKPT_CYCLE_BREAKER", "5"))
+                        )
+                    except Exception:
+                        _breaker_cap = 5
+                    _yield_counts = getattr(
+                        _orch.orchestrator_loop, "_active_ckpt_yield_counts", {}
+                    )
+                    if not isinstance(_yield_counts, dict):
+                        _yield_counts = {}
+                    _yk = (_yield_nvv, _yield_stage)
+                    _yield_counts.clear()  # track only the current target
+                    _yield_counts[_yk] = _yield_counts.get(_yk, 0) + 1
+                    _orch.orchestrator_loop._active_ckpt_yield_counts = _yield_counts
+                    _yield_n = _yield_counts[_yk]
+                    if _yield_n >= _breaker_cap and _yield_stage:
+                        _orch.log.warning(
+                            "Active-checkpoint livelock breaker: %d consecutive "
+                            "cycles at stage=%s v%s — forcing canonical abandon.",
+                            _yield_n, _yield_stage, _yield_nvv,
+                        )
+                        try:
+                            _orch.log_system_event(
+                                "pipeline.active_checkpoint_livelock_abandon",
+                                "error",
+                                f"Forcing abandon after {_yield_n} consecutive "
+                                f"active-checkpoint cycles stuck at "
+                                f"{_yield_stage} (v{_yield_nvv}) — directive-path "
+                                f"livelock breaker.",
+                                {
+                                    "stage": _yield_stage,
+                                    "next_v": _yield_nvv,
+                                    "consecutive_cycles": _yield_n,
+                                    "cap": _breaker_cap,
+                                },
+                            )
+                        except Exception:
+                            pass
+                        _breaker_broke = False
+                        try:
+                            from tool_bot_management import (
+                                _do_abandon_generation,
+                                expected_abandon_identity,
+                                validate_completed_abandon_handoff,
+                            )
+                            _abandon_result = await _do_abandon_generation(
+                                reason=(
+                                    f"infrastructure_exhausted:active_checkpoint_"
+                                    f"livelock ({_yield_n} cycles at "
+                                    f"{_yield_stage})"
+                                ),
+                                _bypass_rate_limit=True,
+                                **expected_abandon_identity(ckpt),
+                            )
+                            _terminal = _orch._completed_abandon_tool_result(
+                                _abandon_result
+                            )
+                            if _terminal is not None:
+                                if gen_ctx is not None:
+                                    _proof = validate_completed_abandon_handoff(
+                                        ckpt, _terminal
+                                    )
+                                    _orch._remember_verified_canonical_abandon(
+                                        gen_ctx, _proof
+                                    )
+                                _orch.orchestrator_loop._active_ckpt_yield_counts = {}
+                                _breaker_broke = True
+                                if ui:
+                                    ui.log_history(
+                                        f"[Orchestrator] Livelock breaker: "
+                                        f"abandoned after {_yield_n} stuck "
+                                        f"cycles at {_yield_stage}.",
+                                        "error",
+                                    )
+                        except Exception as _ae:
+                            _orch.log.error(
+                                "active-checkpoint livelock breaker abandon "
+                                "failed closed: %s",
+                                _ae,
+                            )
+                        if _breaker_broke:
+                            continue
                     if ui:
                         ui.log_history(
                             "Orchestrator cycle ended while checkpoint is still active; "
@@ -1286,15 +1387,14 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             "warn",
                         )
                     try:
-                        ckpt = active_recovery.get("checkpoint") or {}
                         _orch.log_system_event(
                             "orchestrator.cycle_yielded_active_checkpoint",
                             "warn",
                             "Cycle ended with active checkpoint; skipping post-generation cleanup",
                             {
                                 "gen_count": gen_count,
-                                "stage": ckpt.get("stage"),
-                                "next_v": ckpt.get("next_v"),
+                                "stage": _yield_stage,
+                                "next_v": _yield_nvv,
                                 "source_v": ckpt.get("source_v"),
                                 "cost": round(cost, 4),
                             },

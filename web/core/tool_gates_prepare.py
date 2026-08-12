@@ -279,19 +279,60 @@ async def prepare_next_gen(args):
         # mirrors the primary path's intent (never adopt unbound bytes) without
         # the primary-scoped publication-authority machinery that does not apply
         # to a speculative draft.
-        from evolution_infra import current_slot_override, clear_pipeline_checkpoint
+        from evolution_infra import (
+            current_slot_override,
+            clear_pipeline_checkpoint,
+            BOTS_DIR,
+        )
         import shutil as _shutil
         import time as _time
 
         _draft_slot = current_slot_override()
         if _draft_slot is not None:
-            # Draft preimage: clear the draft slot and quarantine the stale dir
-            # so the next prepare materializes a fresh candidate.
+            # CRITICAL scope guard (root cause of the v170 livelock, 2026-08-12):
+            # ``get_bot_dir`` returns the canonical ``BOTS_DIR`` path when it
+            # already exists, EVEN under a draft/consumer slot override
+            # (evolution_infra.py only redirects to ``draft_candidates/`` when
+            # the canonical dir does NOT exist). So a slot preparing a version
+            # whose canonical dir the PRIMARY already materialized resolves
+            # ``next_dir`` to the PRIMARY's live dir. Quarantining it would
+            # destroy the primary's artifact and livelock the primary
+            # generation (ArtifactIntegrityError at direction_audited, then
+            # run_master's abandon directive is route-guard-blocked forever).
+            # A slot must NEVER quarantine a directory under ``BOTS_DIR``; it
+            # only owns its own ``draft_candidates/``/consumer-candidate tree.
             try:
-                _quarantine = next_dir.parent / f"_quarantine_{next_dir.name}_{int(_time.time())}"
-                _shutil.move(str(next_dir), str(_quarantine))
+                _in_bots = next_dir.resolve().is_relative_to(BOTS_DIR.resolve())
             except Exception:
-                pass
+                _in_bots = str(next_dir).startswith(str(BOTS_DIR))
+            if _in_bots:
+                # Collision: the slot's reserved version matches a version the
+                # primary/published tree already owns. Do NOT touch the primary
+                # artifact. Release only this slot's stale reservation so the
+                # one-ahead coordinator reconciles it away from the collision.
+                _tg.log_system_event(
+                    "pipeline.draft_preimage_collision_skips_quarantine",
+                    "warn",
+                    (
+                        f"slot {_draft_slot} preimage-clear for v{next_v} resolved to "
+                        f"canonical BOTS_DIR path ({next_dir}) owned by the primary/"
+                        f"published tree; skipping quarantine to avoid clobbering the "
+                        f"live primary artifact; clearing slot checkpoint only"
+                    ),
+                    {
+                        "slot_id": _draft_slot,
+                        "next_v": int(next_v),
+                        "source_v": int(source_v),
+                        "next_dir": str(next_dir),
+                    },
+                )
+            else:
+                # Slot-scoped dir (draft_candidates/...): safe to quarantine.
+                try:
+                    _quarantine = next_dir.parent / f"_quarantine_{next_dir.name}_{int(_time.time())}"
+                    _shutil.move(str(next_dir), str(_quarantine))
+                except Exception:
+                    pass
             clear_pipeline_checkpoint(slot_id=_draft_slot)
             return _tg._json_tool_result({
                 "error": "DRAFT_PREIMAGE_CLEARED",

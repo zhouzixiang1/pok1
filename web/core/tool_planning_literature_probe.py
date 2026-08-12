@@ -1404,17 +1404,46 @@ async def run_literature_probe(args):
             pass
         return _tp._json_tool_result(checkpoint_probe)
     if probe_checkpoint.get("literature_probe") is not None:
-        return _tp._json_tool_result({
-            "error": "LITERATURE_PROBE_RECEIPT_INVALID",
-            "next_v": next_v,
-            "source_v": source_v,
-            "next_tool": "abandon_generation",
-            "directive": (
-                "The checkpoint contains a literature outcome that is not an "
-                "exact schema-v2 terminal producer receipt. Do not overwrite or "
-                "inject it; use governed abandon/reprepare."
+        # Canonical abandon, mirroring the LITERATURE_PROBE_RECEIPT_INVALID
+        # fix in tool_planning_master_dispatch: the MCP abandon_generation
+        # tool is blocked by the direction_audited route guard (allowed_tools
+        # is run_literature_probe/run_master only), so a "call
+        # abandon_generation" directive loops forever. The ``master_`` reason
+        # prefix is in the direction_audited disposable allowlist, so
+        # _abandon_master_generation succeeds.
+        _receipt_invalid_errors = [
+            "checkpoint literature_probe is not a valid schema-v2 terminal "
+            "producer receipt"
+        ]
+        ui = _tp._get_ui()
+        return await _tp._abandon_master_generation(
+            next_v,
+            source_v,
+            error="LITERATURE_PROBE_RECEIPT_INVALID",
+            fail_count=0,
+            reason=(
+                "master_literature_probe_receipt_invalid v"
+                + str(next_v)
+                + ": "
+                + ";".join(_receipt_invalid_errors)[:700]
+            ).rstrip(),
+            event_type="pipeline.literature_probe_blocked_invalid_receipt",
+            event_message=(
+                f"Literature probe v{next_v} blocked: checkpoint literature probe "
+                f"receipt is invalid and cannot be repaired by replanning; "
+                f"canonically abandoning"
             ),
-        })
+            ui=ui,
+            payload={
+                "validation_errors": _receipt_invalid_errors,
+                "literature_probe_invalid": True,
+            },
+            directive=(
+                "The checkpoint contains a literature outcome that is not an "
+                "exact schema-v2 terminal producer receipt. This generation was "
+                "canonically abandoned; use governed reprepare for a fresh receipt."
+            ),
+        )
 
     cached_probe = _read_literature_probe_cache(
         next_v,

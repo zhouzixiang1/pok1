@@ -3,9 +3,16 @@
 import json
 import hashlib
 import logging
+import os
 from pathlib import Path
 
 log = logging.getLogger('pok.analyst')
+
+# Max prepare-phase combined-analyst attempts. Default 1: logs (2026-08-10)
+# proved retrying did not recover GLM 0-TextBlock storms — 33 dispatches for a
+# single v105 call still collapsed to safe_default, each ~100s stream piled on
+# the LLM semaphore. One attempt + fast safe-default unblocks prepare instead.
+_ANALYST_MAX_ATTEMPTS = max(1, int(os.environ.get("POK_COMBINED_ANALYST_MAX_ATTEMPTS", "1")))
 
 CAUSAL_ANALYSIS_UNKNOWN = (
     "unknown: no content-bound artifact/diff digest is present in this frozen "
@@ -390,7 +397,7 @@ async def _run_combined_analysis(
     }
 
     log_file = get_logs_dir(source_v) / "combined_analysis.txt"
-    for attempt in range(3):
+    for attempt in range(_ANALYST_MAX_ATTEMPTS):
         try:
             from llm_query import render_llm_prompt
 
@@ -451,17 +458,18 @@ async def _run_combined_analysis(
                 result["causal_analysis"] = CAUSAL_ANALYSIS_UNKNOWN
                 result["evidence_status"] = "sufficient_llm_analysis"
                 return result
-            ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3, mode={locals().get('failure_mode', 'UNKNOWN')}), retrying...", "warn")
+            ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/{_ANALYST_MAX_ATTEMPTS}, mode={locals().get('failure_mode', 'UNKNOWN')}), retrying...", "warn")
         except LLMAvailabilityBlocked:
-            # Provider availability is attempt-neutral.  Do not burn the three
-            # analysis retries or synthesize an optimistic control verdict.
+            # Provider availability (incl. 429 quota exhaustion) is attempt-
+            # neutral.  Re-raise immediately so the rate_limiter pause / quota
+            # reset window is honored — never burn retries or sleep through it.
             raise
         except Exception as e:
             from llm_failure import is_llm_infra_error
             if is_llm_infra_error(e):
                 ui.log_history(
                     f"Combined analyst LLM infrastructure error (NOT a business judgement): {e} "
-                    f"(attempt {attempt+1}/3)",
+                    f"(attempt {attempt+1}/{_ANALYST_MAX_ATTEMPTS})",
                     "warn",
                 )
                 # Mark the safe default so _decide_strategy (generation_scheduler)
@@ -470,10 +478,13 @@ async def _run_combined_analysis(
                 # "improving / not stagnant".
                 safe_default["llm_failed"] = True
             else:
-                ui.log_history(f"Combined analyst failed: {e} (attempt {attempt+1}/3)", "warn")
-        if attempt < 2:
-            import asyncio
-            await asyncio.sleep(30 * (attempt + 1))
+                ui.log_history(f"Combined analyst failed: {e} (attempt {attempt+1}/{_ANALYST_MAX_ATTEMPTS})", "warn")
+        # No inter-attempt sleep.  Logs (2026-08-10) proved the former
+        # ``sleep(30 * (attempt + 1))`` was pure waste: GLM 0-TextBlock storms
+        # did not recover after the backoff (33 dispatches for one v105 call
+        # still ended in safe_default), and 429 quota is already handled by the
+        # LLMAvailabilityBlocked re-raise above.  Failing fast onto the safe
+        # default unblocks the prepare phase instead of queuing behind a storm.
 
     # If the last attempt crashed as an infra error, safe_default already carries
     # llm_failed=True. Otherwise this is the no-valid-output-after-retries path,
@@ -485,7 +496,7 @@ async def _run_combined_analysis(
         try:
             from event_bus import warn
             warn("pipeline.combined_analyst_parse_failed",
-                 f"Combined analyst v{source_v} parse failed after 3 attempts (mode={_fm}); "
+                 f"Combined analyst v{source_v} parse failed after {_ANALYST_MAX_ATTEMPTS} attempts (mode={_fm}); "
                  "returning safe default (recommendation=continue)",
                  source_v=source_v, failure_mode=_fm)
         except Exception:
