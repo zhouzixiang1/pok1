@@ -921,6 +921,30 @@ class CandidateLifecycle:
 
     # -- multi-ahead version reservation registry ---------------------------
 
+    @staticmethod
+    def _bump_past_existing_bot_dirs(start_v: int, *, _bound: int = 2000) -> int:
+        """Bump ``start_v`` past any version whose canonical ``BOTS_DIR`` dir exists.
+
+        A draft must never reserve a version whose canonical bot directory is
+        already materialized (a published bot, or stale debris from an aborted
+        prior generation). ``get_bot_dir`` returns the canonical path under a
+        draft override when it exists, so reserving such a V makes the draft's
+        prepare resolve ``next_dir`` to a dir it does not own and hit
+        ``DRAFT_PREIMAGE_CLEARED`` in an infinite loop (the v173 collision,
+        2026-08-13). Skipping past existing dirs prevents the collision at
+        reservation time.
+        """
+        v = int(start_v)
+        try:
+            from bot_namespace import bot_name
+            from evolution_infra import BOTS_DIR
+            bots = Path(BOTS_DIR)
+            while (bots / bot_name(v)).exists() and v < int(start_v) + _bound:
+                v += 1
+        except Exception:
+            pass
+        return v
+
     def reserve_draft_version(
         self,
         *,
@@ -971,6 +995,13 @@ class CandidateLifecycle:
                 # reservation wins).  ``highest_v`` excludes this slot, so a
                 # same-floor re-reserve stays stable (no self-inflation).
                 needed = max(floor, highest_v) + 1
+                # Bump past any version whose canonical BOTS_DIR dir already
+                # exists (published bot or stale debris). get_bot_dir returns
+                # the canonical path under a draft override when it exists, so
+                # reserving such a V makes the draft's prepare hit
+                # DRAFT_PREIMAGE_CLEARED in an infinite loop (v173 collision,
+                # 2026-08-13). Skipping past existing dirs prevents it.
+                needed = self._bump_past_existing_bot_dirs(needed)
                 if cur < needed:
                     connection.execute(
                         "UPDATE draft_version_reservation "
@@ -983,6 +1014,7 @@ class CandidateLifecycle:
                 connection.commit()
                 return cur
             reserved = max(floor, highest_v) + 1
+            reserved = self._bump_past_existing_bot_dirs(reserved)
             connection.execute(
                 "INSERT INTO draft_version_reservation"
                 "(slot_id, reserved_next_v, candidate_id, created_at, released_at) "
