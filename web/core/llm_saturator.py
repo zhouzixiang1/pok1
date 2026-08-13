@@ -61,32 +61,38 @@ def _latest_bot_policy_path() -> Path | None:
 
 
 _SATURATOR_PROMPT = """\
-You are a senior heads-up no-limit poker strategy researcher. Your job is to
-perform a DEEP, thorough analysis of the attached bot policy and produce
-concrete, actionable refinement proposals.
+You are a senior heads-up no-limit poker strategy researcher performing a DEEP,
+exhaustive analysis. Take your time and be thorough — rigor and depth are the
+whole point. Use the Read tool liberally to inspect source across many turns.
 
-Do the following, reasoning carefully and exhaustively (take your time, this is
-the valuable part):
+Do this iteratively, reading and reasoning in multiple passes:
 
-1. Read the full policy.py source (use Read). Map every decision branch:
-   preflop open/3bet/fold ranges, postflop line construction (cbet, double-barrel,
-   check-raise, river polarisation), stack-depth adjustments, and any
-   opponent-model coupling.
+1. Read the bot's policy.py, precompute.py, and national_bot.py in full. Map
+   every decision branch: preflop open/3bet/fold ranges, postflop line
+   construction (cbet, double-barrel, check-raise, river polarisation),
+   stack-depth adjustments, opponent-model coupling, and the precompute tables.
 
-2. For each branch, reason about exploitative weaknesses vs a strong adaptive
-   opponent: which lines are too predictable, which sizes are exploitable, where
-   the range is uncapped/blended poorly, where the bot folds too much or too
-   little on specific runouts.
+2. Read the game rules / evaluator in sever/engine/ to ground your analysis in
+   the actual hand evaluation, blinds, and street semantics.
 
-3. Walk through 4-6 concrete hand scenarios (specific hole cards + board runouts)
-   and trace the bot's exact decision, identifying any suboptimal play and the
-   principled fix.
+3. For EACH decision branch, reason about exploitative weaknesses vs a strong
+   adaptive opponent: predictable lines, exploitable sizes, poorly
+   blended/uncapped ranges, over/under-folding on specific runouts.
 
-4. Propose 3-5 concrete, localized code refinements (specific functions/lines in
-   policy.py), each with: the weakness, the proposed change, the expected EV
-   reasoning, and any risk.
+4. Walk through 8-12 concrete hand scenarios (specific hole cards + board
+   runouts across preflop/flop/turn/river), trace the bot's exact decision
+   step by step, and identify suboptimal play + the principled fix. Re-read the
+   relevant code section for each scenario.
 
-Be specific and cite the actual code. Depth and rigor matter more than brevity.
+5. Read any strategy/oracle docs in docs/ that inform the protocol boundaries,
+   and reconcile your recommendations against them.
+
+6. Propose 5-8 concrete, localized code refinements (specific functions/lines),
+   each with: the weakness, the proposed change, EV reasoning, and risk.
+
+Cite actual code you Read. Re-read and cross-check across passes. The goal is a
+deep, evidence-grounded strategy audit — work through it methodically over many
+Read+reason turns.
 """
 
 
@@ -111,7 +117,9 @@ def _register_saturator_role() -> None:
     The role registry lives in llm_query.py (a semantic path we must not edit
     without an identity re-init). Instead we append the saturator contract to
     the runtime tuple at import time. The contract's evidence_provenance_kind
-    is ``none`` to match the trivial producer above.
+    is ``none`` to match the trivial producer above. Read tools + requires_read_scope
+    enable deep MULTI-TURN analysis (the agent reads across many turns, context
+    compounds, driving high token consumption).
     """
     try:
         import llm_query as _lq
@@ -125,12 +133,14 @@ def _register_saturator_role() -> None:
             producer_name="_saturator_producer",
             template_paths=(),
             evidence_kind="none",
-            scope_policy="none",
-            tools=((),),
-            read_scope="none",
+            scope_policy="explicit_saturator_read_dirs",
+            tools=(("Read",),),
+            read_scope="explicit_saturator_read_dirs",
             write_scope="none",
             evidence_policy="system_bound_prompt_only",
             history_policy="forbidden",
+            requires_read_scope=True,
+            allows_context_files=True,
         )
         _lq.ACTIVE_LLM_ROLE_CONTRACTS = _lq.ACTIVE_LLM_ROLE_CONTRACTS + (contract,)
         _lq._saturator_role_registered = True
@@ -144,28 +154,41 @@ _register_saturator_role()
 SATURATOR_ROLE = "SATURATOR STRATEGY RESEARCH"
 
 
+def _saturator_read_dirs(policy: Path | None) -> list:
+    """Read scope for the multi-turn analysis: the latest bot dir + engine + docs."""
+    dirs = []
+    try:
+        if policy is not None:
+            dirs.append(str(policy.parent.resolve()))  # the bot dir
+        # Rich exploration targets for deep multi-turn analysis.
+        from evolution_infra import RESULTS_DIR
+        root = Path(RESULTS_DIR).resolve().parents[2]
+        for sub in ("sever/engine", "docs"):
+            p = (root / sub).resolve()
+            if p.exists():
+                dirs.append(str(p))
+    except Exception:
+        pass
+    return dirs
+
+
 async def _one_saturator_session(session_id: int) -> dict:
-    """Run one deep analysis session. Returns a small result summary."""
+    """Run one deep multi-turn analysis session. Returns a small result summary."""
     from llm_query import run_claude_query, render_llm_prompt
     from tool_helpers import ToolUI
     from evolution_infra import RESULTS_DIR
 
     policy = _latest_bot_policy_path()
-    policy_src = ""
-    if policy is not None:
-        try:
-            policy_src = policy.read_text(errors="replace")
-        except Exception:
-            policy_src = ""
     prompt = _SATURATOR_PROMPT
-    if policy_src:
+    if policy is not None:
         prompt = (
             _SATURATOR_PROMPT
-            + "\n\n=== policy.py (national_cloud_v"
-            + str(int(policy.parent.name.rsplit("_v", 1)[1]))
-            + ") ===\n"
-            + policy_src
+            + "\n\nStart by Reading the bot at: "
+            + str(policy.parent)
+            + " (policy.py, precompute.py, national_bot.py)."
         )
+    read_dirs = _saturator_read_dirs(policy)
+    context_files = [str(policy)] if policy is not None else []
     ui = ToolUI()
     log_dir = Path(RESULTS_DIR) / "saturator"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -179,17 +202,18 @@ async def _one_saturator_session(session_id: int) -> dict:
         )
         output, _cost, _usage = await run_claude_query(
             rendered,
-            [],
+            context_files,
             ui,
             SATURATOR_ROLE,
             str(log_file),
-            tools=None,
+            tools=None,  # contract supplies Read tool set
+            allowed_read_dirs=read_dirs,
         )
         out_len = len(output or "")
         log.info(
-            "saturator session %d done: %d chars in %.0fs (policy=%s, prompt=%d)",
+            "saturator session %d done: %d chars in %.0fs (policy=%s, read_dirs=%d)",
             session_id, out_len, time.time() - t0,
-            policy.parent.name if policy else "none", len(prompt),
+            policy.parent.name if policy else "none", len(read_dirs),
         )
         return {"session": session_id, "chars": out_len, "ok": True}
     except Exception as e:
