@@ -206,7 +206,7 @@ async def _one_saturator_session(session_id: int) -> dict:
             ui,
             SATURATOR_ROLE,
             str(log_file),
-            tools=None,  # contract supplies Read tool set
+            tools=["Read"],  # match the contract's allowed Read tool set
             allowed_read_dirs=read_dirs,
         )
         out_len = len(output or "")
