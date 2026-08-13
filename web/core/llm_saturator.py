@@ -67,28 +67,24 @@ whole point. Use the Read tool liberally to inspect source across many turns.
 
 Do this iteratively, reading and reasoning in multiple passes:
 
-1. Read the bot's policy.py, precompute.py, and national_bot.py in full. Map
+1. Read the bot's policy.py, precompute.py, national_bot.py, and
+   national_runtime_manifest.json in full (use the Read tool on each). Map
    every decision branch: preflop open/3bet/fold ranges, postflop line
    construction (cbet, double-barrel, check-raise, river polarisation),
    stack-depth adjustments, opponent-model coupling, and the precompute tables.
 
-2. Read the game rules / evaluator in sever/engine/ to ground your analysis in
-   the actual hand evaluation, blinds, and street semantics.
-
-3. For EACH decision branch, reason about exploitative weaknesses vs a strong
+2. For EACH decision branch, reason about exploitative weaknesses vs a strong
    adaptive opponent: predictable lines, exploitable sizes, poorly
    blended/uncapped ranges, over/under-folding on specific runouts.
 
-4. Walk through 8-12 concrete hand scenarios (specific hole cards + board
+3. Walk through 8-12 concrete hand scenarios (specific hole cards + board
    runouts across preflop/flop/turn/river), trace the bot's exact decision
-   step by step, and identify suboptimal play + the principled fix. Re-read the
-   relevant code section for each scenario.
+   step by step (re-reading the relevant code section each time), and identify
+   suboptimal play + the principled fix.
 
-5. Read any strategy/oracle docs in docs/ that inform the protocol boundaries,
-   and reconcile your recommendations against them.
-
-6. Propose 5-8 concrete, localized code refinements (specific functions/lines),
-   each with: the weakness, the proposed change, EV reasoning, and risk.
+4. Propose 5-8 concrete, localized code refinements (specific functions/lines
+   in policy.py), each with: the weakness, the proposed change, EV reasoning,
+   and risk.
 
 Cite actual code you Read. Re-read and cross-check across passes. The goal is a
 deep, evidence-grounded strategy audit — work through it methodically over many
@@ -133,14 +129,14 @@ def _register_saturator_role() -> None:
             producer_name="_saturator_producer",
             template_paths=(),
             evidence_kind="none",
-            scope_policy="explicit_saturator_read_dirs",
+            scope_policy="canonical_candidates",
             tools=(("Read",),),
-            read_scope="explicit_saturator_read_dirs",
+            read_scope="explicit_candidate_and_generation_snapshot_dirs",
             write_scope="none",
             evidence_policy="system_bound_prompt_only",
             history_policy="forbidden",
             requires_read_scope=True,
-            allows_context_files=True,
+            allows_context_files=False,
         )
         _lq.ACTIVE_LLM_ROLE_CONTRACTS = _lq.ACTIVE_LLM_ROLE_CONTRACTS + (contract,)
         _lq._saturator_role_registered = True
@@ -155,18 +151,11 @@ SATURATOR_ROLE = "SATURATOR STRATEGY RESEARCH"
 
 
 def _saturator_read_dirs(policy: Path | None) -> list:
-    """Read scope for the multi-turn analysis: the latest bot dir + engine + docs."""
+    """Read scope for the multi-turn analysis: the latest bot (candidate) dir."""
     dirs = []
     try:
         if policy is not None:
-            dirs.append(str(policy.parent.resolve()))  # the bot dir
-        # Rich exploration targets for deep multi-turn analysis.
-        from evolution_infra import RESULTS_DIR
-        root = Path(RESULTS_DIR).resolve().parents[2]
-        for sub in ("sever/engine", "docs"):
-            p = (root / sub).resolve()
-            if p.exists():
-                dirs.append(str(p))
+            dirs.append(str(policy.parent.resolve()))  # the canonical bot dir
     except Exception:
         pass
     return dirs
