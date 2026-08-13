@@ -177,6 +177,21 @@ async def lifespan(app: FastAPI):
     # which triggers sse-starlette shutdown → lifespan shutdown below.
     from shutdown_manager import ShutdownManager
     shutdown_mgr = ShutdownManager(grace_period=15.0)
+    # LLM saturator: an independent background workload that keeps free LLM
+    # permits filled with deep analysis sessions, decoupled from the (bursty,
+    # stall-prone) pipeline. Runs regardless of epoch/orchestrator launch state
+    # so LLM consumption does not depend on the pipeline being healthy. Gated by
+    # POK_LLM_SATURATOR_ENABLED; cancelled in the finally below.
+    saturator_task = None
+    try:
+        from llm_saturator import run_llm_saturator, SATURATOR_ENABLED
+        if SATURATOR_ENABLED:
+            saturator_task = asyncio.create_task(run_llm_saturator(shutdown_mgr))
+            app.state.saturator_task = saturator_task
+    except Exception as _sat_exc:
+        import logging as _sat_log
+        _sat_log.getLogger("pok.saturator").warning(
+            "LLM saturator launch failed: %s", _sat_exc)
     app.state.national_arena_manager = arena_manager
     app.state.national_arena_epoch_authority = epoch_launch_state
     arena_started = False
@@ -376,6 +391,15 @@ async def lifespan(app: FastAPI):
                 raise
         yield
     finally:
+        # Cancel the LLM saturator background task (independent of the
+        # orchestrator owner logic below).
+        _sat = getattr(app.state, "saturator_task", None)
+        if _sat is not None and not _sat.done():
+            _sat.cancel()
+            try:
+                await asyncio.wait_for(_sat, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         # ``AppState`` is process-local, so any live owner here was started by
         # this server (including a later /api/control/start).  Do not rely on
         # the initial auto-launch flag: it is stale after a control restart.
