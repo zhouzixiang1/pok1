@@ -188,7 +188,9 @@ async def _one_saturator_session(session_id: int) -> dict:
             + " (policy.py, precompute.py, national_bot.py)."
         )
     read_dirs = _saturator_read_dirs(policy)
-    context_files = [str(policy)] if policy is not None else []
+    # No context_files (contract forbids them): the agent Reads policy.py etc.
+    # itself via the Read tool across multiple turns (context compounds).
+    context_files = []
     ui = ToolUI()
     log_dir = Path(RESULTS_DIR) / "saturator"
     log_dir.mkdir(parents=True, exist_ok=True)
