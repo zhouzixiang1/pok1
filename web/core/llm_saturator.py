@@ -9,12 +9,13 @@ near zero.
 The saturator decouples raw LLM consumption from the pipeline. It is a
 long-running background task (started from the app lifespan, NOT the
 orchestrator) that, whenever the global LLM semaphore has a free permit,
-launches a deep multi-turn agent session — reading the latest published bot's
-policy.py and producing a thorough strategy-refinement analysis. Each session
-is a high-token multi-turn call (Read tools + growing context), and the loop
-launches the next the moment a permit frees. This keeps the permits saturated
-with useful deep-LLM work regardless of what the pipeline is doing (or whether
-it is stalled).
+launches a deep multi-turn agent session — a comparative strategy study of
+several published bots (focus bot rotating per session), reading each bot's
+policy.py across many tool turns with a compounding context. Consumption is
+dominated by per-turn cache re-reads of the growing context (the same term
+that makes long agentic coding sessions expensive), NOT by output generation
+speed — so session SHAPE (bot count × turn count) is the consumption lever,
+independent of the model's output token rate.
 
 Gated by ``POK_LLM_SATURATOR_ENABLED`` (default off). Shares the single global
 LLM semaphore via ``run_claude_query`` (so it never over-subscribes beyond
@@ -38,13 +39,56 @@ SATURATOR_ENABLED = (
 )
 
 
-def _latest_bot_policy_path() -> Path | None:
-    """Return the policy.py of the highest-versioned published bot dir."""
+_PUBLISHED_TAG_CACHE: "tuple[float, set[int]] | None" = None
+
+
+def _published_versions() -> "set[int]":
+    """Versions carrying an annotated completion tag (cached 10 min).
+
+    An in-flight draft's candidate dir (no completion tag yet) is NOT
+    published evidence and must not be served to the saturator as a
+    reference bot.
+    """
+    global _PUBLISHED_TAG_CACHE
+    import subprocess
+
+    now = time.time()
+    if _PUBLISHED_TAG_CACHE and now - _PUBLISHED_TAG_CACHE[0] < 600:
+        return _PUBLISHED_TAG_CACHE[1]
+    versions: "set[int]" = set()
     try:
         from evolution_infra import BOTS_DIR
 
+        root = Path(BOTS_DIR).parent
+        out = subprocess.run(
+            ["git", "tag", "--list", "national-cloud-bot-v*"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=20,
+        ).stdout
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                versions.add(int(line.rsplit("-v", 1)[1]))
+            except (ValueError, IndexError):
+                continue
+    except Exception:
+        pass
+    _PUBLISHED_TAG_CACHE = (now, versions)
+    return versions
+
+
+def _published_bot_dirs() -> "list[Path]":
+    """Published canonical bot dirs, newest version first."""
+    try:
+        from evolution_infra import BOTS_DIR
+
+        published = _published_versions()
         bots = Path(BOTS_DIR)
-        best_v, best_path = -1, None
+        found = []
         for d in bots.iterdir():
             if not d.is_dir() or not d.name.startswith("national_cloud_v"):
                 continue
@@ -52,43 +96,63 @@ def _latest_bot_policy_path() -> Path | None:
                 v = int(d.name.rsplit("_v", 1)[1])
             except (ValueError, IndexError):
                 continue
-            policy = d / "policy.py"
-            if policy.exists() and v > best_v:
-                best_v, best_path = v, policy
-        return best_path
+            if v in published and (d / "policy.py").exists():
+                found.append((v, d))
+        found.sort(key=lambda t: t[0], reverse=True)
+        return [d for _, d in found]
     except Exception:
-        return None
+        return []
+
+
+def _saturator_bots(session_id: int, limit: int = 5) -> "list[Path]":
+    """Pick this session's bot set: FOCUS bot first (rotating by session id so
+    successive sessions deep-dive different bots), then the newest others.
+
+    A 5-bot set (~100K tokens of policy source) is the deliberate context
+    sweet spot: large enough that every additional tool turn re-reads a big
+    cached prefix (the dominant consumption term), small enough to stay well
+    inside the model context window across 40+ turns of growing analysis."""
+    dirs = _published_bot_dirs()
+    if not dirs:
+        return []
+    focus = dirs[session_id % len(dirs)]
+    others = [d for d in dirs if d != focus][: max(0, limit - 1)]
+    return [focus] + others
 
 
 _SATURATOR_PROMPT = """\
-You are a senior heads-up no-limit poker strategy researcher performing a DEEP,
-exhaustive analysis. Take your time and be thorough — rigor and depth are the
-whole point. Use the Read tool liberally to inspect source across many turns.
+You are a senior heads-up no-limit poker strategy researcher running a DEEP,
+multi-bot comparative study. Depth and evidence density are the whole point:
+work methodically across MANY Read+reason turns (expect 40+ tool turns; do not
+rush to conclusions), re-reading code before every citation.
 
-Do this iteratively, reading and reasoning in multiple passes:
+You are given several published bot directories. The first is the FOCUS bot;
+the others are OPPONENTS.
 
-1. Read the bot's policy.py, precompute.py, national_bot.py, and
-   national_runtime_manifest.json in full (use the Read tool on each). Map
-   every decision branch: preflop open/3bet/fold ranges, postflop line
-   construction (cbet, double-barrel, check-raise, river polarisation),
-   stack-depth adjustments, opponent-model coupling, and the precompute tables.
+Phase 1 — per-bot mapping (one bot at a time; full Read of policy.py plus
+national_runtime_manifest.json for EACH bot): map every decision branch —
+preflop open/3bet/fold ranges, postflop line construction (cbet, double-barrel,
+check-raise, river polarisation), stack-depth adjustments, opponent-model
+coupling, precompute usage. Record a style fingerprint per bot (aggression
+frequency, sizing scheme, bluffing texture, adaptivity).
 
-2. For EACH decision branch, reason about exploitative weaknesses vs a strong
-   adaptive opponent: predictable lines, exploitable sizes, poorly
-   blended/uncapped ranges, over/under-folding on specific runouts.
+Phase 2 — pairwise duels (FOCUS bot vs each opponent): identify the decisive
+strategic asymmetries. Which FOCUS-bot lines are exploitable by THIS opponent
+specifically (predictable sizing, uncapped ranges, over-folding runouts)?
+Quote exact code for every claim — RE-READ the relevant section before citing
+it; never cite from memory.
 
-3. Walk through 8-12 concrete hand scenarios (specific hole cards + board
-   runouts across preflop/flop/turn/river), trace the bot's exact decision
-   step by step (re-reading the relevant code section each time), and identify
-   suboptimal play + the principled fix.
+Phase 3 — scenario walkthroughs: walk through 8-10 concrete hands (specific
+hole cards + boards across streets) for the 2-3 most instructive matchups.
+Trace BOTH bots' decisions step by step through their code (re-read each
+function as you trace it). Identify suboptimal play and the principled fix.
 
-4. Propose 5-8 concrete, localized code refinements (specific functions/lines
-   in policy.py), each with: the weakness, the proposed change, EV reasoning,
-   and risk.
+Phase 4 — synthesis: (a) evidence-grounded ranking of all bots with
+citations; (b) 6-10 localized refinements to the FOCUS bot's policy.py
+(function/line, weakness, proposed change, EV reasoning, risk).
 
-Cite actual code you Read. Re-read and cross-check across passes. The goal is a
-deep, evidence-grounded strategy audit — work through it methodically over many
-Read+reason turns.
+The goal is a deep, evidence-grounded comparative strategy audit — work
+through it methodically over many Read+reason turns.
 """
 
 
@@ -150,15 +214,34 @@ _register_saturator_role()
 SATURATOR_ROLE = "SATURATOR STRATEGY RESEARCH"
 
 
-def _saturator_read_dirs(policy: Path | None) -> list:
-    """Read scope for the multi-turn analysis: the latest bot (candidate) dir."""
+def _saturator_read_dirs(bots: "list[Path]") -> list:
+    """Read scope for the multi-turn analysis: the selected published bot dirs."""
     dirs = []
     try:
-        if policy is not None:
-            dirs.append(str(policy.parent.resolve()))  # the canonical bot dir
+        for b in bots:
+            dirs.append(str(b.resolve()))
     except Exception:
         pass
     return dirs
+
+
+def _usage_tokens(usage) -> int:
+    """Full consumption tokens (in + cache read/write + out) from a usage blob."""
+    try:
+        data = usage if isinstance(usage, dict) else usage.model_dump()
+    except Exception:
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    return sum(
+        int(data.get(k) or 0)
+        for k in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
 
 
 async def _one_saturator_session(session_id: int) -> dict:
@@ -167,16 +250,17 @@ async def _one_saturator_session(session_id: int) -> dict:
     from tool_helpers import ToolUI
     from evolution_infra import RESULTS_DIR
 
-    policy = _latest_bot_policy_path()
+    bots = _saturator_bots(session_id)
+    focus = bots[0] if bots else None
     prompt = _SATURATOR_PROMPT
-    if policy is not None:
+    if bots:
+        listing = "\n".join(f"  - {b.resolve()}" for b in bots)
         prompt = (
             _SATURATOR_PROMPT
-            + "\n\nStart by Reading the bot at: "
-            + str(policy.parent)
-            + " (policy.py, precompute.py, national_bot.py)."
+            + f"\n\nFOCUS bot (deep-dive this one): {focus.resolve()}\n"
+            + f"Bot directories to analyze ({len(bots)}):\n{listing}\n"
         )
-    read_dirs = _saturator_read_dirs(policy)
+    read_dirs = _saturator_read_dirs(bots)
     # No context_files (contract forbids them): the agent Reads policy.py etc.
     # itself via the Read tool across multiple turns (context compounds).
     context_files = []
@@ -191,7 +275,7 @@ async def _one_saturator_session(session_id: int) -> dict:
             producer=_saturator_producer,
             renderer_inputs={"prompt": prompt},
         )
-        output, _cost, _usage = await run_claude_query(
+        output, _cost, usage = await run_claude_query(
             rendered,
             context_files,
             ui,
@@ -201,12 +285,16 @@ async def _one_saturator_session(session_id: int) -> dict:
             allowed_read_dirs=read_dirs,
         )
         out_len = len(output or "")
+        tokens = _usage_tokens(usage)
         log.info(
-            "saturator session %d done: %d chars in %.0fs (policy=%s, read_dirs=%d)",
-            session_id, out_len, time.time() - t0,
-            policy.parent.name if policy else "none", len(read_dirs),
+            "saturator session %d done: %d chars, %d tokens in %.0fs (focus=%s, bots=%d)",
+            session_id, out_len, tokens, time.time() - t0,
+            focus.name if focus else "none", len(bots),
         )
-        return {"session": session_id, "chars": out_len, "ok": True}
+        return {
+            "session": session_id, "chars": out_len,
+            "tokens": tokens, "ok": True,
+        }
     except Exception as e:
         log.warning("saturator session %d failed: %s", session_id, e)
         return {"session": session_id, "ok": False, "error": str(e)[:200]}
