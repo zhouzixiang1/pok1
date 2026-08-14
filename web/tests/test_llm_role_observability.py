@@ -1921,3 +1921,43 @@ def test_strict_invocation_log_never_rotates_evidence_bytes(
     live = log_file.read_text(encoding="utf-8")
     assert "sealed prefix" in live
     assert "continued evidence" in live
+
+
+def test_saturator_deep_research_role_has_uncapped_stall_policy(monkeypatch):
+    """SATURATOR must resolve to its own bucket, exempt from the 180s stall clamp.
+
+    2026-08-14 regression: "SATURATOR STRATEGY RESEARCH" matched no keyword, so
+    it fell into the DEFAULT bucket whose stall ceiling is clamped to
+    ``max(60, min(180, idle*0.55))`` = 180s. GLM effort=max routinely thinks
+    200-500s between productive messages, so every deep saturator session was
+    killed mid-thought (5,944 stall-killed vs 9 completed that day, zero
+    completions after 07:46). The SATURATOR bucket gets generous first/idle
+    timeouts, a 2h total ceiling, and the WORKER-class 360s stall default
+    (still env-overridable via POK_LLM_SATURATOR_*).
+    """
+    for suffix in (
+        "FIRST_ACTIVITY_TIMEOUT",
+        "IDLE_TIMEOUT",
+        "STALL_TIMEOUT",
+        "TOTAL_TIMEOUT",
+    ):
+        monkeypatch.delenv(f"POK_LLM_SATURATOR_{suffix}", raising=False)
+        monkeypatch.delenv(f"POK_LLM_DEFAULT_{suffix}", raising=False)
+
+    policy = llm_query._role_timeout_policy("SATURATOR STRATEGY RESEARCH")
+
+    assert policy == {
+        "policy_key": "SATURATOR",
+        "first_activity_timeout": 900.0,
+        "idle_timeout": 900.0,
+        "stall_timeout": 360.0,
+        "total_timeout": 7200.0,
+    }
+    # The stall ceiling must NOT be the generic [60,180]s clamp: a productive
+    # deep-thinking session survives >180s of thinking silence.
+    assert policy["stall_timeout"] > 180.0
+    # Operator overrides win over the compiled defaults.
+    monkeypatch.setenv("POK_LLM_SATURATOR_STALL_TIMEOUT", "600")
+    tuned = llm_query._role_timeout_policy("SATURATOR STRATEGY RESEARCH")
+    assert tuned["stall_timeout"] == 600.0
+    assert tuned["policy_key"] == "SATURATOR"

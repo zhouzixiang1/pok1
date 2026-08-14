@@ -102,6 +102,17 @@ _ROLE_TIMEOUT_DEFAULTS = {
     # before any Edit could land. Give a productive Worker the full 360s idle
     # window while retaining the 180s no-first-output gate and 1000s total cap.
     "WORKER": (180.0, 360.0, 1000.0),
+    # The background LLM saturator ("SATURATOR STRATEGY RESEARCH") runs long
+    # single-agent deep strategy research sessions (Read-tool, effort=max,
+    # 64k thinking budget) whose purpose is to consume idle LLM capacity.
+    # GLM routinely thinks 200-500s between productive messages; the generic
+    # DEFAULT stall clamp (180s) killed every deep session mid-thought
+    # (2026-08-14: 5,944 sessions stall-killed vs 9 completed, zero after
+    # 07:46). Give it its own bucket: generous first-activity/idle (900s),
+    # a 2h total ceiling, and exemption from the [60,180]s stall clamp so a
+    # productive deep-thinking session is judged by the WORKER-class 360s
+    # stall default (or the POK_LLM_SATURATOR_* env overrides).
+    "SATURATOR": (900.0, 900.0, 7200.0),
 }
 
 
@@ -177,6 +188,8 @@ def _role_timeout_policy(role_name: str) -> dict:
         key = "COMBINED_ANALYST"
     elif "WORKER" in role:
         key = "WORKER"
+    elif "SATURATOR" in role:
+        key = "SATURATOR"
     # Read _ROLE_TIMEOUT_DEFAULTS through llm_query so test monkeypatches on
     # llm_query._ROLE_TIMEOUT_DEFAULTS take effect.
     import llm_query as _lq
@@ -225,13 +238,14 @@ def _role_timeout_policy(role_name: str) -> dict:
     # slow tool/think deltas. 0 disables (falls back to idle_timeout).
     stall_default = (
         360.0
-        if key in {"MASTER_PROPOSAL", "MASTER_FINAL", "WORKER"}
+        if key in {"MASTER_PROPOSAL", "MASTER_FINAL", "WORKER", "SATURATOR"}
         else 0.0
     )
     if idle > 0 and key not in {
         "MASTER_FINAL",
         "MASTER_PROPOSAL",
         "WORKER",
+        "SATURATOR",
     }:
         stall_default = max(60.0, min(180.0, idle * 0.55))
     stall = _env(prefix + "STALL_TIMEOUT", stall_default)
