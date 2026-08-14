@@ -9,12 +9,12 @@ near zero.
 The saturator decouples raw LLM consumption from the pipeline. It is a
 long-running background task (started from the app lifespan, NOT the
 orchestrator) that, whenever the global LLM semaphore has a free permit,
-launches a deep multi-turn agent session — a comparative strategy study of
-several published bots (focus bot rotating per session), reading each bot's
-policy.py across many tool turns with a compounding context. Consumption is
+launches a deep multi-turn agent session — a two-bot comparative duel study
+(focus bot rotating per session), reading every file in both bots'
+directories across many tool turns with a compounding context. Consumption is
 dominated by per-turn cache re-reads of the growing context (the same term
 that makes long agentic coding sessions expensive), NOT by output generation
-speed — so session SHAPE (bot count × turn count) is the consumption lever,
+speed — so session SHAPE (files read x turn count) is the consumption lever,
 independent of the model's output token rate.
 
 Gated by ``POK_LLM_SATURATOR_ENABLED`` (default off). Shares the single global
@@ -104,14 +104,15 @@ def _published_bot_dirs() -> "list[Path]":
         return []
 
 
-def _saturator_bots(session_id: int, limit: int = 5) -> "list[Path]":
+def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
     """Pick this session's bot set: FOCUS bot first (rotating by session id so
-    successive sessions deep-dive different bots), then the newest others.
+    successive sessions deep-dive different bots), then the newest other.
 
-    A 5-bot set (~100K tokens of policy source) is the deliberate context
-    sweet spot: large enough that every additional tool turn re-reads a big
-    cached prefix (the dominant consumption term), small enough to stay well
-    inside the model context window across 40+ turns of growing analysis."""
+    The dispatch guard caps canonical_candidates read dirs at exactly 2, but
+    files WITHIN each dir are unlimited — so the prompt mandates a full read
+    of every file in both dirs (~90-110K tokens of base context). Consumption
+    is dominated by per-turn cache re-reads as the analysis compounds, so turn
+    count matters more than base size anyway."""
     dirs = _published_bot_dirs()
     if not dirs:
         return []
@@ -121,33 +122,35 @@ def _saturator_bots(session_id: int, limit: int = 5) -> "list[Path]":
 
 
 _SATURATOR_PROMPT = """\
-You are a senior heads-up no-limit poker strategy researcher running a DEEP,
-multi-bot comparative study. Depth and evidence density are the whole point:
-work methodically across MANY Read+reason turns (expect 40+ tool turns; do not
-rush to conclusions), re-reading code before every citation.
+You are a senior heads-up no-limit poker strategy researcher running a DEEP
+two-bot comparative study — a duel audit between a FOCUS bot and its opponent.
+Depth and evidence density are the whole point: work methodically across MANY
+Read+reason turns (expect 40+ tool turns; do not rush to conclusions),
+re-reading code before every citation.
 
-You are given several published bot directories. The first is the FOCUS bot;
-the others are OPPONENTS.
+You are given two published bot directories. The first is the FOCUS bot; the
+second is the OPPONENT.
 
-Phase 1 — per-bot mapping (one bot at a time; full Read of policy.py plus
-national_runtime_manifest.json for EACH bot): map every decision branch —
-preflop open/3bet/fold ranges, postflop line construction (cbet, double-barrel,
+Phase 1 — full source mapping (Read EVERY file in BOTH directories in full:
+policy.py, precompute.py, national_bot.py, national_runtime_manifest.json,
+policy_epoch_receipt.json): map every decision branch of each bot — preflop
+open/3bet/fold ranges, postflop line construction (cbet, double-barrel,
 check-raise, river polarisation), stack-depth adjustments, opponent-model
 coupling, precompute usage. Record a style fingerprint per bot (aggression
 frequency, sizing scheme, bluffing texture, adaptivity).
 
-Phase 2 — pairwise duels (FOCUS bot vs each opponent): identify the decisive
-strategic asymmetries. Which FOCUS-bot lines are exploitable by THIS opponent
-specifically (predictable sizing, uncapped ranges, over-folding runouts)?
+Phase 2 — the duel: identify the decisive strategic asymmetries between the
+two bots. Which FOCUS-bot lines are exploitable by THIS opponent specifically
+(predictable sizing, uncapped ranges, over-folding runouts), and vice versa?
 Quote exact code for every claim — RE-READ the relevant section before citing
 it; never cite from memory.
 
 Phase 3 — scenario walkthroughs: walk through 8-10 concrete hands (specific
-hole cards + boards across streets) for the 2-3 most instructive matchups.
-Trace BOTH bots' decisions step by step through their code (re-read each
-function as you trace it). Identify suboptimal play and the principled fix.
+hole cards + boards across streets). Trace BOTH bots' decisions step by step
+through their code (re-read each function as you trace it). Identify
+suboptimal play and the principled fix.
 
-Phase 4 — synthesis: (a) evidence-grounded ranking of all bots with
+Phase 4 — synthesis: (a) evidence-grounded verdict on the matchup with
 citations; (b) 6-10 localized refinements to the FOCUS bot's policy.py
 (function/line, weakness, proposed change, EV reasoning, risk).
 

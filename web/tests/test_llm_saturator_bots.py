@@ -49,12 +49,13 @@ def test_saturator_bots_rotates_focus_and_caps_set_size(monkeypatch):
     dirs = [Path(f"/bots/national_cloud_v{v}") for v in (173, 105, 88, 83, 79, 29, 27)]
     monkeypatch.setattr(llm_saturator, "_published_bot_dirs", lambda: dirs)
 
-    s0 = llm_saturator._saturator_bots(0, limit=5)
+    # The dispatch guard caps canonical_candidates read dirs at exactly 2.
+    s0 = llm_saturator._saturator_bots(0)
     assert s0[0].name == "national_cloud_v173"  # focus = newest
-    assert len(s0) == 5
-    assert len({d.name for d in s0}) == 5  # no duplicates
+    assert len(s0) == 2
+    assert len({d.name for d in s0}) == 2  # no duplicates
 
-    s1 = llm_saturator._saturator_bots(1, limit=5)
+    s1 = llm_saturator._saturator_bots(1)
     assert s1[0].name == "national_cloud_v105"  # focus rotates
     # focus is not repeated in the others
     assert s1[0].name not in [d.name for d in s1[1:]]
@@ -62,7 +63,7 @@ def test_saturator_bots_rotates_focus_and_caps_set_size(monkeypatch):
 
 def test_saturator_bots_empty_pool(monkeypatch):
     monkeypatch.setattr(llm_saturator, "_published_bot_dirs", lambda: [])
-    assert llm_saturator._saturator_bots(7, limit=5) == []
+    assert llm_saturator._saturator_bots(7) == []
 
 
 def test_usage_tokens_tolerates_dict_and_object():
