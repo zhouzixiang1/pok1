@@ -4169,7 +4169,9 @@ def test_oversized_scout_is_repaired_before_critics_and_packet_reproof(tmp_path)
         evidence_mode="frozen_strength_snapshot",
     )
     assert any(
-        item.startswith("proposal_worker_binding_cannot_fit_minimum_prompt:")
+        # Compact charset-safe form since 2026-08-15: code + dot-separated budget
+        # metrics (no JSON payload — long hints used to crash the repair render).
+        item.startswith("proposal_worker_binding_cannot_fit_minimum_prompt")
         for item in hints
     )
 
@@ -4184,7 +4186,9 @@ def test_oversized_scout_is_repaired_before_critics_and_packet_reproof(tmp_path)
     )
     assert parsed is None
     assert any(
-        item.startswith("proposal_worker_binding_cannot_fit_minimum_prompt:")
+        # Compact charset-safe form since 2026-08-15: code + dot-separated budget
+        # metrics (no JSON payload — long hints used to crash the repair render).
+        item.startswith("proposal_worker_binding_cannot_fit_minimum_prompt")
         for item in packet_errors
     )
 

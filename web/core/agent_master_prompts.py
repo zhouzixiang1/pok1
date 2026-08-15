@@ -45,6 +45,26 @@ PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER = (
 )
 
 
+def _sanitize_projection_hint(item: str) -> str:
+    """Coerce one repair projection hint into the provider-prompt charset.
+
+    Valid hints (<=160 chars of ``[a-z0-9_:.-]``) pass through untouched.
+    Anything else — e.g. a hint that carried a structured JSON payload — is
+    reduced to its stable leading code plus a digest suffix, still bounded and
+    charset-safe. Sanitizing instead of raising is load-bearing: a ValueError
+    here aborts the render before any provider call and the failure is
+    reclassified as ``master_llm_unavailable`` infrastructure, burning the
+    bounded infra-retry budget on a guaranteed-to-repeat local crash.
+    """
+    text = str(item).strip()
+    if len(text) <= 160 and re.fullmatch(r"[a-z0-9_:.-]+", text) is not None:
+        return text
+    head = re.split(r"[{\n\"]", text.lower(), 1)[0]
+    head = re.sub(r"[^a-z0-9_:.-]", "_", head).strip("_")[:140]
+    suffix = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+    return f"{head}:{suffix}"[:160]
+
+
 def _render_master_proposal_provider_prompt(inputs):
     from llm_query import LLMRenderedMaterial
 
@@ -107,13 +127,12 @@ def _render_master_proposal_provider_prompt(inputs):
     if not isinstance(raw_projection_hints, (list, tuple)):
         raise ValueError("Master proposal projection hints must be a list")
     projection_hints = tuple(dict.fromkeys(
-        str(item).strip() for item in raw_projection_hints if str(item).strip()
+        _sanitize_projection_hint(item)
+        for item in raw_projection_hints
+        if str(item).strip()
     ))
-    if len(projection_hints) > 32 or any(
-        len(item) > 160 or re.fullmatch(r"[a-z0-9_:.-]+", item) is None
-        for item in projection_hints
-    ):
-        raise ValueError("Master proposal projection hints are invalid")
+    if len(projection_hints) > 32:
+        projection_hints = projection_hints[:32]
     allowed_primaries = _v._canonical_proposal_primaries(
         inputs["allowed_primaries"]
     )

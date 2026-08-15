@@ -1114,12 +1114,19 @@ def _proposal_worker_bindability_error(proposal: dict) -> str | None:
     compilation = _selected_proposal_compilation_contract(proposal)
     if int(compilation["max_provider_chars"]) >= WORKER_PROMPT_MIN_CHARS:
         return None
-    return _proposal_binding_error(
-        "proposal_worker_binding_cannot_fit_minimum_prompt",
-        {
-            **compilation,
-            "minimum_provider_chars": WORKER_PROMPT_MIN_CHARS,
-        },
+    # The hint travels verbatim into the schema-repair prompt's
+    # projection_hints, whose provider renderer only admits <=160 chars of
+    # [a-z0-9_:.-]. The full compilation JSON used to leak here and made every
+    # repair render raise, misclassifying a schema repair as
+    # master_llm_unavailable and burning the whole infra retry budget. Keep the
+    # binding-budget numbers (the actionable part) in a charset-safe form.
+    binding = int(compilation["reserved_selected_contract_chars"])
+    budget = int(compilation["max_provider_chars"])
+    minimum = int(WORKER_PROMPT_MIN_CHARS)
+    return (
+        "proposal_worker_binding_cannot_fit_minimum_prompt."
+        f"binding_chars.{binding}.provider_budget_chars.{budget}."
+        f"minimum_provider_chars.{minimum}.shrink_binding_by.{minimum - budget}"
     )
 
 

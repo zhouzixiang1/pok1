@@ -105,18 +105,29 @@ def _published_bot_dirs() -> "list[Path]":
 
 
 def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
-    """Pick this session's bot set: FOCUS bot first (rotating by session id so
-    successive sessions deep-dive different bots), then the newest other.
+    """Pick this session's bot set: FOCUS bot first, then the newest other.
 
     The dispatch guard caps canonical_candidates read dirs at exactly 2, but
     files WITHIN each dir are unlimited — so the prompt mandates a full read
     of every file in both dirs (~90-110K tokens of base context). Consumption
     is dominated by per-turn cache re-reads as the analysis compounds, so turn
-    count matters more than base size anyway."""
+    count matters more than base size anyway.
+
+    The focus pool is biased to the newest 4 published bots plus the v1
+    bootstrap (the long-standing rank-1 selection parent): planning consumes
+    findings via focus_v/opponent_v matching the next generation's source_v,
+    which is almost always one of those — a uniform rotation over the whole
+    published pool would spend most sessions on bots planning never reads
+    back."""
     dirs = _published_bot_dirs()
     if not dirs:
         return []
-    focus = dirs[session_id % len(dirs)]
+    focus_pool = dirs[:4]
+    versions = [_bot_version(d) for d in dirs]
+    v1_index = next((i for i, v in enumerate(versions) if v == 1), None)
+    if v1_index is not None and dirs[v1_index] not in focus_pool:
+        focus_pool.append(dirs[v1_index])
+    focus = focus_pool[session_id % len(focus_pool)]
     others = [d for d in dirs if d != focus][: max(0, limit - 1)]
     return [focus] + others
 
@@ -124,16 +135,18 @@ def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
 _SATURATOR_PROMPT = """\
 You are a senior heads-up no-limit poker strategy researcher running a DEEP
 two-bot comparative study — a duel audit between a FOCUS bot and its opponent.
-Depth and evidence density are the whole point: work methodically across MANY
-Read+reason turns (expect 40+ tool turns; do not rush to conclusions),
-re-reading code before every citation.
+Depth and evidence density are the whole point: this is a LONG session —
+expect 60+ tool turns and do not converge early; depth beats speed here.
+Re-read code before every citation; never cite from memory.
 
 You are given two published bot directories. The first is the FOCUS bot; the
 second is the OPPONENT.
 
-Phase 1 — full source mapping (Read EVERY file in BOTH directories in full:
-policy.py, precompute.py, national_bot.py, national_runtime_manifest.json,
-policy_epoch_receipt.json): map every decision branch of each bot — preflop
+Phase 1 — full source mapping, FRONT-LOADED: before ANY comparative analysis,
+Read EVERY file in BOTH directories completely, start to finish (policy.py,
+precompute.py, national_bot.py, national_runtime_manifest.json,
+policy_epoch_receipt.json). Read whole files, not excerpts. Only after both
+bots are fully in context, map every decision branch of each bot — preflop
 open/3bet/fold ranges, postflop line construction (cbet, double-barrel,
 check-raise, river polarisation), stack-depth adjustments, opponent-model
 coupling, precompute usage. Record a style fingerprint per bot (aggression
@@ -145,10 +158,15 @@ two bots. Which FOCUS-bot lines are exploitable by THIS opponent specifically
 Quote exact code for every claim — RE-READ the relevant section before citing
 it; never cite from memory.
 
-Phase 3 — scenario walkthroughs: walk through 8-10 concrete hands (specific
-hole cards + boards across streets). Trace BOTH bots' decisions step by step
-through their code (re-read each function as you trace it). Identify
-suboptimal play and the principled fix.
+Phase 3 — scenario walkthroughs: walk through 16 concrete hands (specific
+hole cards + boards across streets; include deep-stack, short-stack, and both
+button/blind rotations). Trace BOTH bots' decisions step by step through
+their code (re-read each function as you trace it). Identify suboptimal play
+and the principled fix.
+
+Phase 3b — verification pass: before writing the synthesis, re-Read every
+function you are about to cite in the final report and confirm each citation
+still matches the code. Discard or correct any claim you cannot re-confirm.
 
 Phase 4 — synthesis: (a) evidence-grounded verdict on the matchup with
 citations; (b) 6-10 localized refinements to the FOCUS bot's policy.py
