@@ -247,6 +247,50 @@ def _usage_tokens(usage) -> int:
     )
 
 
+#: Bounded excerpt of a duel report consumed by generation planning. The
+#: Phase-4 synthesis (verdict + localized refinements with function/line,
+#: EV reasoning, risk) is the highest-value part; without a marker the tail
+#: (final synthesis) is used.
+_FINDINGS_MAX_CHARS = 6000
+
+
+def _extract_findings_text(output: str) -> str:
+    text = str(output or "")
+    idx = text.find("Phase 4")
+    if idx >= 0:
+        text = text[idx:]
+    return text[:_FINDINGS_MAX_CHARS].strip()
+
+
+def _bot_version(bot_dir: Path | None) -> int | None:
+    if bot_dir is None:
+        return None
+    try:
+        return int(bot_dir.name.rsplit("_v", 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _append_findings_record(record: dict) -> None:
+    """Persist one duel-findings record (the consumption half of the loop).
+
+    ``generation_scheduler`` reads these records at prepare time and renders
+    a bounded advisory block into the (otherwise empty) master-context
+    ``match_analysis`` slot, so every deep duel session's Phase-4 output is
+    consumed by the next generation's Master planning instead of decaying in
+    ``session_*.txt``. Each record carries its own digests for traceability.
+    """
+    import hashlib
+    import json as _json
+
+    from evolution_infra import RESULTS_DIR, locked_file
+
+    path = Path(RESULTS_DIR) / "saturator" / "findings.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with locked_file(path, "a", encoding="utf-8") as f:
+        f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+
+
 async def _one_saturator_session(session_id: int) -> dict:
     """Run one deep multi-turn analysis session. Returns a small result summary."""
     from llm_query import run_claude_query, render_llm_prompt
@@ -294,6 +338,28 @@ async def _one_saturator_session(session_id: int) -> dict:
             session_id, out_len, tokens, time.time() - t0,
             focus.name if focus else "none", len(bots),
         )
+        if out_len and focus is not None:
+            # Consumption loop: persist the bounded Phase-4 findings so the
+            # next generation's Master planning can target proven weaknesses.
+            try:
+                import hashlib
+
+                _append_findings_record({
+                    "schema_version": 1,
+                    "ts": time.time(),
+                    "focus_v": _bot_version(focus),
+                    "opponent_v": _bot_version(bots[1]) if len(bots) > 1 else None,
+                    "focus_bot": focus.name,
+                    "opponent_bot": bots[1].name if len(bots) > 1 else None,
+                    "session_file": str(log_file),
+                    "report_sha256": hashlib.sha256(
+                        (output or "").encode("utf-8")
+                    ).hexdigest(),
+                    "tokens": tokens,
+                    "findings_text": _extract_findings_text(output),
+                })
+            except Exception as e:
+                log.warning("saturator findings append failed: %s", e)
         return {
             "session": session_id, "chars": out_len,
             "tokens": tokens, "ok": True,

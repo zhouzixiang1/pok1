@@ -355,11 +355,23 @@ def _staging_publication_tag_message(
     strategy_tag: str,
     candidate_hash: str,
 ) -> str:
-    """Native-tier tag annotation (single publication tier)."""
+    """Native-tier tag annotation (single publication tier).
+
+    The metadata key MUST be ``staging-candidate-hash:`` — the completion-tag
+    validator (``bot_artifact.validate_completion_tag`` /
+    ``evolution_infra_git_publication``) collects only ``official-``/``staging-``
+    prefixed keys and expects exactly ``staging-candidate-hash``. The former
+    bare ``candidate-hash:`` key (pre-2026-08-15) failed
+    ``completion_tag_metadata_mismatch:staging-candidate-hash`` on EVERY
+    publication since bc668676 — v173 and v185 both stranded at ``publishing``
+    this way (v185 passed all gates incl. precommit 5W-3L and had already
+    created its commit+tag). Legacy tags carrying the bare key still validate
+    via the alias in ``bot_artifact``.
+    """
 
     return (
         f"National bot v{version}: {strategy_tag}\n\n"
-        f"candidate-hash: {candidate_hash}\n"
+        f"staging-candidate-hash: {candidate_hash}\n"
         f"publication-tier: native"
     )
 

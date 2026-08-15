@@ -185,12 +185,12 @@ def _proposal_schema_repair_guidance(
         )
     if any("proposal_snapshot_evidence_too_many" in item for item in hints):
         add(
-            "You used more than 3 snapshot references; the maximum is 3. "
-            "Keep only the strongest 1–3 exact validated snapshot JSON pointers."
+            "You used more than 2 snapshot references; the maximum is 2. "
+            "Keep only the strongest 1–2 exact validated snapshot JSON pointers."
         )
     elif any("proposal_snapshot" in item for item in hints):
         add(
-            "Copy one exact validated snapshot JSON pointer (maximum 3)."
+            "Copy one exact validated snapshot JSON pointer (maximum 2)."
             if require_snapshot_evidence
             else "This mode has no strength snapshot; emit no snapshot reference."
         )

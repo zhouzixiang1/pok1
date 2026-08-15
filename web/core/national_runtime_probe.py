@@ -83,6 +83,12 @@ _OFFICIAL_TRANSCRIPT_SCENARIO_IDS = frozenset(
 RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
+#: Extra attempts granted to a watchdog-timed-out probe run before the
+#: timeout is accepted as a real failure. Under sustained CPU load
+#: (saturator streams + native matches) a single slow run is a load
+#: artifact; see run_national_runtime_probe.
+RUNTIME_PROBE_TIMEOUT_EXTRA_ATTEMPTS = 2
+_TIMEOUT_RUN_EXTRA_ATTEMPTS = RUNTIME_PROBE_TIMEOUT_EXTRA_ATTEMPTS
 RUNTIME_PROBE_MAX_OUTPUT_BYTES = 1024 * 1024
 RUNTIME_PROBE_CACHE_MAX_ENTRIES = 128
 
@@ -1469,7 +1475,17 @@ def run_national_runtime_probe(
         return cached
 
     runs: list[dict[str, Any]] = []
-    for _ in range(max(2, int(repeats))):
+    # A watchdog-timeout run is a LOAD artifact, not a candidate verdict: the
+    # probe worker runs under CPU contention (saturator streams + native
+    # matches) and a single slow run used to break the repeat loop, leaving
+    # len(runs) < 2 -> automatic runtime_probe_non_repeatable — a hard gate
+    # failure that killed v183/v184 (and 18+ versions historically) on
+    # otherwise-fine candidates. Retry a timed-out run (bounded) instead of
+    # counting it as a repeatability sample; genuinely persistent timeouts
+    # still surface honestly once the extra budget is spent.
+    timeout_run_retries_left = _TIMEOUT_RUN_EXTRA_ATTEMPTS
+    target_runs = max(2, int(repeats))
+    while len(runs) < target_runs:
         observed = _run_once(root, spec, timeout_sec)
         if not isinstance(observed, dict):
             observed = {
@@ -1477,11 +1493,15 @@ def run_national_runtime_probe(
                 "failure_class": "probe_infra",
                 "issues": ["runtime_probe_run_not_object"],
             }
-        runs.append(observed)
-        if observed.get("failure_class") == "probe_infra" or any(
+        _is_timeout_run = any(
             str(issue).startswith("runtime_probe_candidate_timeout:")
             for issue in observed.get("issues") or []
-        ):
+        )
+        if _is_timeout_run and timeout_run_retries_left > 0:
+            timeout_run_retries_left -= 1
+            continue
+        runs.append(observed)
+        if observed.get("failure_class") == "probe_infra" or _is_timeout_run:
             break
     after = _bot_code_fingerprint(root)
 

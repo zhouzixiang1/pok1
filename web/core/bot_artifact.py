@@ -803,8 +803,22 @@ def validate_completion_tag(
             if separator and (
                 normalized.startswith("official-")
                 or normalized.startswith("staging-")
+                or normalized == "candidate-hash"
             ):
                 metadata_values.setdefault(normalized, []).append(value.strip())
+        # Legacy alias: publications before 2026-08-15 wrote the bare key
+        # ``candidate-hash:`` (writer bug — see
+        # publication_transaction._staging_publication_tag_message), so their
+        # completion tags (v173, v185) carry no ``staging-candidate-hash``
+        # line. Map the bare key onto the staged name so historical tags
+        # still validate against the exact expected hash; the value itself
+        # remains an exact-match requirement, so this weakens nothing.
+        if "staging-candidate-hash" not in metadata_values and (
+            "candidate-hash" in metadata_values
+        ):
+            metadata_values["staging-candidate-hash"] = metadata_values[
+                "candidate-hash"
+            ]
     for key, expected in expected_metadata.items():
         if metadata_values.get(key, []) != [str(expected)]:
             issues.append(f"completion_tag_metadata_mismatch:{key}")

@@ -847,6 +847,89 @@ def _h2h_freeze_force(slot_id) -> bool:
     return slot_id is None
 
 
+def _adversarial_findings_block(source_v) -> str:
+    """Bounded advisory digest of recent saturator duel findings.
+
+    Reads the tail of ``results/saturator/findings.jsonl`` (written by
+    ``llm_saturator`` after every completed duel session) and renders the
+    latest records about the CURRENT source bot — as focus or as opponent —
+    into a bounded, explicitly-advisory block. This fills the master-context
+    ``match_analysis`` slot (empty in the normal path since the combined
+    analyst output serves both stagnation_info and performance_verification),
+    so the deep adversarial analyses are CONSUMED by Master planning instead
+    of decaying in session logs. The text is part of the master-context
+    payload and therefore bound by ``context_digest`` automatically; it is
+    advisory only (never statistical authority) and every block cites its
+    report digest for traceability.
+    """
+    import json as _json
+
+    try:
+        from evolution_infra import RESULTS_DIR
+
+        path = Path(RESULTS_DIR) / "saturator" / "findings.jsonl"
+        if not path.is_file():
+            return ""
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 400_000))
+            tail = f.read().decode("utf-8", errors="replace")
+        focus_records = []
+        opponent_records = []
+        for line in tail.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = _json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(d, dict):
+                continue
+            try:
+                focus_v = int(d.get("focus_v") or -1)
+            except (TypeError, ValueError):
+                continue
+            opp_v = d.get("opponent_v")
+            try:
+                opp_v = int(opp_v) if opp_v is not None else None
+            except (TypeError, ValueError):
+                opp_v = None
+            if focus_v == int(source_v):
+                focus_records.append(d)
+            elif opp_v == int(source_v):
+                opponent_records.append(d)
+        # Newest last in the file; newest-first in the block. Focus records
+        # (deep dives on the source bot) outrank opponent-side mentions.
+        selected = list(reversed(focus_records))[:2] + list(
+            reversed(opponent_records)
+        )[:1]
+        if not selected:
+            return ""
+        parts = [
+            "ADVISORY — machine-generated adversarial duel analyses of "
+            "published bot code (offline LLM study; hypotheses to verify, "
+            "NOT statistical authority):"
+        ]
+        total = 0
+        for d in selected:
+            block = (
+                f"[duel focus={d.get('focus_bot')} vs "
+                f"{d.get('opponent_bot')} ts={d.get('ts')} "
+                f"report_sha256={str(d.get('report_sha256') or '')[:16]}]\n"
+                + str(d.get("findings_text") or "")
+            )
+            block = block[:3200]
+            parts.append(block)
+            total += len(block)
+            if total > 6400:
+                break
+        return "\n\n".join(parts)[:6600]
+    except Exception:
+        return ""
+
+
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt.
 
@@ -1638,7 +1721,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
 
     # Unpack results, treating exceptions as failures
     combined = combined_result if not isinstance(combined_result, BaseException) else None
-    match_analysis = ""
+    # Consumption loop: fill the (otherwise always-empty) master-context
+    # match_analysis slot with the bounded advisory digest of recent
+    # adversarial duel findings about the current source bot.
+    match_analysis = _adversarial_findings_block(source_v)
 
     if isinstance(combined_result, BaseException):
         log.warning("Combined analysis failed: %s", combined_result)
