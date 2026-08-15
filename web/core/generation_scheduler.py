@@ -1721,10 +1721,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
 
     # Unpack results, treating exceptions as failures
     combined = combined_result if not isinstance(combined_result, BaseException) else None
-    # Consumption loop: fill the (otherwise always-empty) master-context
-    # match_analysis slot with the bounded advisory digest of recent
-    # adversarial duel findings about the current source bot.
-    match_analysis = _adversarial_findings_block(source_v)
+    match_analysis = ""
 
     if isinstance(combined_result, BaseException):
         log.warning("Combined analysis failed: %s", combined_result)
@@ -1853,7 +1850,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         stagnation_text = ("STAGNATION_DETECTED (is_stagnant=true): You MUST call run_literature_probe BEFORE run_master "
                            "(governance-gated; if it returns skipped:true, proceed to run_master).\n" + stagnation_text)
     perf_text = stagnation_text  # Combined result serves as both
-    match_text = match_analysis or ""
+    # Consumption loop: fill the (otherwise always-empty) master-context
+    # match_analysis slot with the bounded advisory digest of recent
+    # adversarial duel findings about the current source bot. This runs AFTER
+    # parent selection (source_v is only bound there — referencing it earlier
+    # crashed every prepare with UnboundLocalError, 2026-08-15 21:37-22:27).
+    match_text = match_analysis or _adversarial_findings_block(source_v)
 
     # --- Replay Spotlight Analysis ---
     # Text and citations were derived while the evidence snapshot was created
