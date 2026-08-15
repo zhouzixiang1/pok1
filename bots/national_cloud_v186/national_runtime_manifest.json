@@ -1,0 +1,18 @@
+{
+  "contract_id": "national-tcp-policy-runtime-v1",
+  "decision_context_schema_version": 1,
+  "entrypoint": "national_bot.py",
+  "epoch": "national_tcp_policy_v1",
+  "files": {
+    "national_bot.py": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+    "policy.py": "fa02e05053ad600e93e25491ed5fe317637c4bcae423ad2c38c40dec2f55693a",
+    "precompute.py": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627"
+  },
+  "policy_decision_schema_version": 1,
+  "policy_entrypoint": "policy.py",
+  "precompute_entrypoint": "precompute.py",
+  "protocol": "official-national-raw-tcp-v1",
+  "runtime_schema_version": 1,
+  "schema_version": 1,
+  "stream_schema_version": 2
+}
