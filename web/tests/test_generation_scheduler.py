@@ -236,9 +236,11 @@ def _frozen_evidence(gs):
     weak_name = bot_name(weak_v)
     strong_name = bot_name(strong_v)
     mid_name = bot_name(mid_v)
-    # Three active bots so crossover parent selection is not disabled by the
-    # minimum-pool-size guard (_MIN_CROSSOVER_POOL_SIZE=3).  With only two
-    # bots (the bootstrap dead-loop case) crossover is intentionally disabled.
+    # Three active bots. Crossover is disabled in production until the pool
+    # reaches _MIN_CROSSOVER_POOL_SIZE (currently 12); the selection tests
+    # below monkeypatch the threshold down to 3 so the parent-picking logic
+    # itself stays exercised (the fixtures assert frozen-view-driven
+    # selection, not the pool-size policy — that has its own tests).
     active = (weak_name, mid_name, strong_name)
     ratings = {
         weak_name: Glicko2Player(r=1510, rd=80, sigma=0.06),
@@ -306,9 +308,14 @@ def _frozen_evidence(gs):
 
 def test_frozen_selection_view_drives_leader_and_crossover_without_live_reads(monkeypatch):
     import generation_scheduler as gs
+    import generation_scheduler_source_selection as gss
     import tool_helpers
 
     monkeypatch.setattr(gs, "_read_source_v_history", lambda: [])
+    # The production pool-size gate (12 bots) is a separate policy; these
+    # fixtures exercise the frozen-view parent-picking logic with the
+    # threshold lowered to match the 3-bot fixture pool.
+    monkeypatch.setattr(gss, "_MIN_CROSSOVER_POOL_SIZE", 3)
     view = gs._build_selection_view(_frozen_evidence(gs))
 
     def no_live(*_args, **_kwargs):
@@ -336,8 +343,10 @@ def test_frozen_selection_view_drives_leader_and_crossover_without_live_reads(mo
 def test_selection_never_reads_mutable_candidate_child_counts(monkeypatch):
     import candidate_store
     import generation_scheduler as gs
+    import generation_scheduler_source_selection as gss
 
     monkeypatch.setattr(gs, "_read_source_v_history", lambda: [])
+    monkeypatch.setattr(gss, "_MIN_CROSSOVER_POOL_SIZE", 3)
 
     def no_candidate_ledger_reads(*_args, **_kwargs):
         raise AssertionError("mutable candidate ledger must not enter selection")

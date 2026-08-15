@@ -434,6 +434,7 @@ async def run_master_impl(args):
             literature_probe_receipt_binding(_master_entry_ckpt)
         )
     _validated_literature_probe = None
+    _literature_payload_errors: list = []
     if isinstance(_master_entry_ckpt, dict):
         _probe = _master_entry_ckpt.get("literature_probe")
         if _probe is not None:
@@ -443,6 +444,22 @@ async def run_master_impl(args):
                 checkpoint=_master_entry_ckpt,
                 receipt_binding=_literature_binding,
             )
+            if _validated_literature_probe is None and isinstance(_probe, dict):
+                # The normalize helper discards the concrete payload errors
+                # when it returns None; recompute them so the terminal abandon
+                # event records WHY the receipt failed instead of an empty
+                # list (v180 abandoned with validation_errors: []).
+                try:
+                    _literature_payload_errors = (
+                        _tp._literature_probe_payload_errors(
+                            _probe,
+                            checkpoint=_master_entry_ckpt,
+                            receipt_binding=_literature_binding,
+                            require_origin_checkpoint=True,
+                        )
+                    )
+                except Exception:
+                    _literature_payload_errors = []
             canonical_research = (
                 str(_validated_literature_probe.get("inject_text") or "")
                 if isinstance(_validated_literature_probe, dict)
@@ -536,6 +553,9 @@ async def run_master_impl(args):
                 ui=ui,
                 payload={
                     "validation_errors": _literature_binding_errors,
+                    "literature_payload_errors": (
+                        _literature_payload_errors[:20]
+                    ),
                     "literature_probe_invalid": True,
                 },
                 directive=(

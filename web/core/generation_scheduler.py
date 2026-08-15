@@ -830,6 +830,23 @@ def _prepare_protocol_bootstrap_generation(
     )
 
 
+def _h2h_freeze_force(slot_id) -> bool:
+    """Only the PRIMARY lane force-refreshes the frozen evidence cycle.
+
+    The snapshot dir is per-VERSION (not per-lane), and up to max_ahead draft
+    slots can prepare the same version concurrently — every force freeze
+    rmtree+rebuilds it with a new created_at (=> new manifest_digest), which
+    invalidated the primary checkpoint's bound digests and killed every
+    generation at Master (v177/v179/v182, 2026-08-15: 33 re-freezes of v179
+    in one hour). Draft slots must REUSE a valid existing snapshot (they are
+    explicitly designed to run on stale evidence,
+    ``allow_stale_readiness=slot_id is not None``); ``force=False`` still
+    creates the snapshot when absent and validates integrity + spotlight_bot
+    when reusing.
+    """
+    return slot_id is None
+
+
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt.
 
@@ -1483,7 +1500,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         def _freeze_h2h_sync():
             snapshot = ensure_generation_h2h_snapshot(
                 _planned_next_v,
-                force=True,
+                force=_h2h_freeze_force(slot_id),
                 spotlight_bot=active_bot_name,
             )
             bundle = (

@@ -225,6 +225,12 @@ def _literature_checkpoint_identity(
     # changed this digest and falsely invalidated a valid probe receipt,
     # causing every generation to abandon at the Master stage.
     projection.pop("audit_attempt", None)
+    # Strip the infra-retry overlay for the same reason (2026-08-15 v174/v178/
+    # v180 diagnosis): a scout LLM dispatch error asks for a run_master retry
+    # by writing an `infra_failure` overlay into the checkpoint; that retry
+    # bookkeeping must not change this digest, or the retry it requests is
+    # killed 13s later by literature_checkpoint_semantic_identity_mismatch.
+    projection.pop("infra_failure", None)
     _audit_ctx = projection.get("audit_context")
     if isinstance(_audit_ctx, dict):
         _audit_ctx = {
