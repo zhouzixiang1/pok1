@@ -23,7 +23,12 @@ PRECOMMIT_PARENT_MAX_SCORE = 0.50
 # the boundary case where W/L alone is a coin-flip for an equal-strength bot, so
 # the chip magnitude (carries ~far more information than the binary signs) breaks
 # the tie.  A genuine loss (score < 0.50) is still hard-blocked regardless.
-PRECOMMIT_PARENT_TIE_CI_UPPER_MIN = 0.0
+# 2026-08-16 tightening: an exact W/L tie now passes only when the paired
+# net-chip bootstrap CI LOWER bound is positive (point estimate confidently
+# positive). The previous upper>0 escape let coin-flip ties through on the
+# strength of a wide CI's upper tail (v173 passed 6W-6L with a
+# negative-centered chip CI).
+PRECOMMIT_PARENT_TIE_CI_LOWER_MIN = 0.0
 PRECOMMIT_AGGREGATE_MIN_SAMPLES = 8
 PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN = 2
 # Strict-policy precommit has no telemetry-only opponent class.  Every ordinary
@@ -109,14 +114,12 @@ def precommit_outcome_blockers(
     publication — this guarantees each published bot is stronger than its
     direct parent and prevents strength regression through the lineage.
 
-    The sole exception is an EXACT tie (score == 0.50, e.g. 4W-4L-0D): at small
-    n an equal-strength candidate fails this coin-flip ~50% of the time, so the
-    tie is reclassified as "not a regression" and PASSES when the paired net-chip
-    bootstrap 95% CI upper bound (computed from ``matchup["net_chips"]``) exceeds
-    PRECOMMIT_PARENT_TIE_CI_UPPER_MIN.  Net chips carry magnitude information
-    that the binary W/L signs discard, so the CI breaks the tie with far more
-    statistical power than the raw score.  A genuine loss (score < 0.50) is
-    still hard-blocked regardless of chip magnitude.
+    The sole exception is an EXACT tie (score == 0.50): the tie is reclassified
+    as "not a regression" and PASSES only when the paired net-chip bootstrap
+    95% CI LOWER bound (computed from ``matchup["net_chips"]``) is positive —
+    a confidently positive chip edge, not merely a possibly-positive one
+    (PRECOMMIT_PARENT_TIE_CI_LOWER_MIN, tightened 2026-08-16). A genuine loss
+    (score < 0.50) is still hard-blocked regardless of chip magnitude.
 
     The aggregate gate keeps the established two-match loss-margin tolerance
     after at least eight samples.
@@ -145,14 +148,15 @@ def precommit_outcome_blockers(
             and summary["primary_match_score"] <= PRECOMMIT_PARENT_MAX_SCORE
         ):
             # An exact tie (score == 0.50) is a coin-flip at small n for an
-            # equal-strength candidate.  Reclassify it as "not a regression"
-            # and pass when the paired net-chip bootstrap 95% CI upper bound is
-            # positive (the chip magnitude carries far more information than
-            # the binary W/L signs).  A genuine loss (score < 0.50) stays a
-            # hard block regardless of chip magnitude.
+            # equal-strength candidate. Reclassify it as "not a regression"
+            # ONLY when the paired net-chip bootstrap 95% CI LOWER bound is
+            # positive — i.e. the candidate's chip edge over the parent is
+            # confidently positive, not merely possibly-positive (2026-08-16
+            # tightening; see PRECOMMIT_PARENT_TIE_CI_LOWER_MIN). A genuine
+            # loss (score < 0.50) stays a hard block regardless.
             score = summary["primary_match_score"]
             is_exact_tie = abs(score - PRECOMMIT_PARENT_MAX_SCORE) < 1e-9
-            tie_ci_upper: float | None = None
+            tie_ci_lower: float | None = None
             if is_exact_tie:
                 tie_chips = [
                     int(x) for x in (matchup.get("net_chips") or [])
@@ -160,16 +164,16 @@ def precommit_outcome_blockers(
                 if len(tie_chips) >= PRECOMMIT_PARENT_MIN_SAMPLES:
                     from eval_stats import paired_bootstrap_ci
 
-                    _tie_lo, tie_ci_upper = paired_bootstrap_ci(tie_chips)
+                    tie_ci_lower, _tie_hi = paired_bootstrap_ci(tie_chips)
             tie_not_regression = (
-                tie_ci_upper is not None
-                and tie_ci_upper > PRECOMMIT_PARENT_TIE_CI_UPPER_MIN
+                tie_ci_lower is not None
+                and tie_ci_lower > PRECOMMIT_PARENT_TIE_CI_LOWER_MIN
             )
             if not tie_not_regression:
                 ci_note = (
-                    f" net-chip CI upper={tie_ci_upper:.1f} <= "
-                    f"{PRECOMMIT_PARENT_TIE_CI_UPPER_MIN:.1f}; tie still a regression."
-                    if is_exact_tie and tie_ci_upper is not None
+                    f" net-chip CI lower={tie_ci_lower:.1f} <= "
+                    f"{PRECOMMIT_PARENT_TIE_CI_LOWER_MIN:.1f}; tie still a regression."
+                    if is_exact_tie and tie_ci_lower is not None
                     else (
                         " exact tie but no net-chip samples to break it."
                         if is_exact_tie
@@ -211,7 +215,7 @@ def precommit_outcome_blockers(
         "per_matchup": per_matchup,
         "parent_min_samples": PRECOMMIT_PARENT_MIN_SAMPLES,
         "parent_max_score": PRECOMMIT_PARENT_MAX_SCORE,
-        "parent_tie_ci_upper_min": PRECOMMIT_PARENT_TIE_CI_UPPER_MIN,
+        "parent_tie_ci_lower_min": PRECOMMIT_PARENT_TIE_CI_LOWER_MIN,
         "aggregate_min_samples": PRECOMMIT_AGGREGATE_MIN_SAMPLES,
         "aggregate_min_loss_margin": PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
         "gate_basis": "complete_70_hand_wld_plus_tie_chip_ci",

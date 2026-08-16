@@ -119,6 +119,9 @@ MAX_SYSTEM_EVENTS_LINES = 5000
 UNDER_EVAL_WEIGHT = 0.6
 DIVERSITY_WEIGHT = 0.4
 UNDER_EVAL_BASELINE = 90
+# Rating-resolution objective constants (see priority() below).
+TOP_RESOLUTION_K = 5
+TOP_RESOLUTION_WEIGHT = 0.8
 RATING_GAP_SCALE = 200
 DIVERSITY_COUNT_DECAY = 100
 
@@ -541,6 +544,20 @@ def pick_matches(active_bots, h2h, ratings, n_picks=None):
     coverage = {b: _opponent_coverage(b, active_bots, h2h) for b in active_bots}
     priority_bot = _load_priority_eval()
 
+    # Rating-resolution objective (2026-08-16 evolution fix batch): the
+    # leaderboard was statistically unresolved — the top bots' rating gaps
+    # were smaller than their combined rating deviation, and the legacy
+    # diversity term only chased gap SIZE, never pairwise uncertainty.
+    # Compute the conservative-rating top set once and prioritize pairs
+    # whose order is genuinely undecided.
+    _conservative = {
+        b: (ratings.get(b, Glicko2Player()).conservative_rating(), ratings.get(b, Glicko2Player()).rd)
+        for b in active_bots
+    }
+    _top_bots = set(
+        sorted(active_bots, key=lambda b: -_conservative[b][0])[:TOP_RESOLUTION_K]
+    )
+
     def priority(a, b):
         k = pair_key(a, b)
         h = h2h.get(k, {})
@@ -556,6 +573,15 @@ def pick_matches(active_bots, h2h, ratings, n_picks=None):
             if min_cov < 0.8:
                 new_pair_bonus = 0.3 * (1.0 - min_cov)
         score = UNDER_EVAL_WEIGHT * under_eval + DIVERSITY_WEIGHT * diversity * count_penalty + new_pair_bonus
+        # Resolve-unresolved-top-pairs: both bots in the conservative top-K
+        # whose pairwise order is still within combined noise. The weight
+        # grows with unresolvedness (uncertainty vs gap) and decays as the
+        # pair accumulates games toward the eval baseline.
+        if a in _top_bots and b in _top_bots:
+            combined_rd = (_conservative[a][1] ** 2 + _conservative[b][1] ** 2) ** 0.5
+            unresolvedness = max(0.0, combined_rd - rating_gap) / max(1.0, combined_rd)
+            resolution = max(0.0, 1.0 - count / UNDER_EVAL_BASELINE)
+            score += TOP_RESOLUTION_WEIGHT * unresolvedness * resolution
         # Strong boost for priority bot pairs — ensures newly committed bots get scheduled
         if priority_bot and (a == priority_bot or b == priority_bot):
             score += 2.0

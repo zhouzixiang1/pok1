@@ -1124,9 +1124,19 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract_without_ta
 
     # This is the smallest complete graph needed by the selected proposal;
     # the test is about Master/bootstrap contract equality, not file parsing.
+    # The migrated shared packet helper cites the three direction-specific
+    # ``_choose_intent_{direction}`` leaves, so all three must be indexed here.
     graph = {
-        "policy.py:get_baseline_decision": {"_choose_intent"},
+        "policy.py:get_baseline_decision": {
+            "_choose_intent",
+            "_choose_intent_mechanism",
+            "_choose_intent_counterfactual",
+            "_choose_intent_compute_memory",
+        },
         "policy.py:_choose_intent": set(),
+        "policy.py:_choose_intent_mechanism": set(),
+        "policy.py:_choose_intent_counterfactual": set(),
+        "policy.py:_choose_intent_compute_memory": set(),
     }
     monkeypatch.setattr(
         system_strict_bootstrap,
@@ -1154,8 +1164,8 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract_without_ta
             "files_allowed": ["policy.py"],
             "worker_prompt": (
                 padding
-                + "\n\nModify policy.py:_choose_intent for only the typed, "
-                "bounded selected mechanism.\n\n"
+                + "\n\nModify policy.py:_choose_intent_mechanism for only the "
+                "typed, bounded selected mechanism.\n\n"
                 + selected_block
             ),
         }],
@@ -1289,10 +1299,15 @@ def test_selected_proposal_quality_requires_executed_typed_check(tmp_path):
     }
     candidate_dir = tmp_path / "candidate"
     candidate_dir.mkdir()
+    # The migrated shared packet helper selects the direction-specific
+    # ``policy.py:_choose_intent_mechanism`` leaf, so the candidate fixture
+    # must define that exact symbol (it is the selected change target).
     (candidate_dir / "policy.py").write_text(
         "def get_baseline_decision(context):\n"
-        "    return _choose_intent(context)\n\n"
+        "    return _choose_intent_mechanism(context)\n\n"
         "def _choose_intent(context):\n"
+        "    return {'kind': 'raise', 'raise_to': 400}\n\n"
+        "def _choose_intent_mechanism(context):\n"
         "    return {'kind': 'raise', 'raise_to': 400}\n",
         encoding="utf-8",
     )

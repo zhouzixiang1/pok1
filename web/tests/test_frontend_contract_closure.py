@@ -89,7 +89,6 @@ def test_operator_token_is_memory_only_and_shared_across_mutations():
 def test_frontend_drops_stream_and_cycle_state_instead_of_merging_stale_authority():
     provider = (FRONTEND / "context" / "DataProvider.tsx").read_text(encoding="utf-8")
     evolution_api = (FRONTEND / "api" / "evolution.ts").read_text(encoding="utf-8")
-    logs = (FRONTEND / "pages" / "Logs.tsx").read_text(encoding="utf-8")
 
     assert 'addEventListener("epoch_blocked"' in provider
     assert "if (authorityBlocked) return" in provider
@@ -99,9 +98,11 @@ def test_frontend_drops_stream_and_cycle_state_instead_of_merging_stale_authorit
     # 2026-07-30 dead-code cleanup; the live Agents page consumes the stream
     # via useEvolutionSSE and never merged those stale cycle fields, so the
     # negative monitor assertions no longer apply to any file.
-    assert "!visibleGenerations.some" in logs
-    assert 'setLogContent("")' in logs
-    assert "if (!cancelled) setLogContent(res.content)" in logs
+    # The Logs page (and its SystemLogTab/WorkerFailuresTab components) was
+    # likewise removed with the 12 orphaned pages (5b4f1144): its
+    # cancellation-guarded log-content fetch contract
+    # (!visibleGenerations.some / setLogContent) had no live successor, and
+    # api.logContent / api.orchestratorLogs currently have no live consumer.
 
 
 def test_active_navigation_describes_read_only_contracts():
@@ -175,12 +176,13 @@ def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():
     api = (FRONTEND / "api" / "control.ts").read_text(encoding="utf-8")
     provider = (FRONTEND / "context" / "DataProvider.tsx").read_text(encoding="utf-8")
     overview = (FRONTEND / "pages" / "Overview.tsx").read_text(encoding="utf-8")
-    # The SSE liveness contract is now asserted on the live Agents page
-    # (AgentActivity.tsx), the sole research-SSE home since the 2026-07-30
-    # dead-code cleanup retired EvolutionMonitor.tsx.  AgentActivity surfaces
-    # the same fail-closed liveness cases via operator-visible statusText
-    # instead of the retired monitor's internal state tokens.
-    agents = (FRONTEND / "pages" / "AgentActivity.tsx").read_text(encoding="utf-8")
+    # The SSE liveness contract lives on the merged /generation page
+    # (Generation.tsx), the sole research-SSE home since the 2026-07-30 IA
+    # merge retired EvolutionMonitor.tsx and the 5b4f1144 orphan cleanup
+    # removed the standalone AgentActivity.tsx page.  The merged page
+    # surfaces the same fail-closed liveness cases via operator-visible
+    # statusText instead of the retired monitor's internal state tokens.
+    agents = (FRONTEND / "pages" / "Generation.tsx").read_text(encoding="utf-8")
     evolution_api = (FRONTEND / "api" / "evolution.ts").read_text(encoding="utf-8")
     tool_card = (FRONTEND / "components" / "evolution" / "ToolCard.tsx").read_text(encoding="utf-8")
 
@@ -193,9 +195,9 @@ def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():
     assert "process_identity" in api
     assert "配置意图：" in overview and "实际进程：" in overview
     assert "onDisconnect" in evolution_api
-    # Live Agents page fail-closed liveness: a run flag without an active task,
-    # and a dropped/interrupted stream, are surfaced as distinct states rather
-    # than greenwashed as "working".
+    # Live Agents page (merged /generation) fail-closed liveness: a run flag
+    # without an active task, and a dropped/interrupted stream, are surfaced
+    # as distinct states rather than greenwashed as "working".
     assert "runFlagWithoutTask" in agents
     assert "运行标志存在但任务未活动" in agents
     assert "streamInterrupted" in agents
@@ -226,25 +228,34 @@ def test_pipeline_component_validates_identity_and_does_not_greenwash_repair_or_
 
 
 def test_bot_page_consumes_backend_dual_identity_without_reindexing_or_tag_synthesis():
-    bots = (FRONTEND / "pages" / "BotManager.tsx").read_text(encoding="utf-8")
+    # BotManager.tsx was merged into Bots.tsx ("Bot 强度与回放") by the
+    # 2026-07-30 IA merge and removed with the orphaned pages (5b4f1144).
+    # The merged page keeps the same backend-owned dual-identity contract:
+    # identities come from the epoch projection's
+    # strict_published_bot_identities, are validated with the shared
+    # canonical-identity helper (the former validatedPublishedIdentity /
+    # displayIdentityByName, inlined as identityByName), and an invalid
+    # identity renders fail-closed copy instead of a synthesized label.
+    bots = (FRONTEND / "pages" / "Bots.tsx").read_text(encoding="utf-8")
 
     assert "displayOrdinalByName" not in bots
     assert ".map((bot, index) => [bot.name, index + 1] as const)" not in bots
-    assert "displayIdentityByName" in bots
-    assert "validatedPublishedIdentity" in bots
-    assert "sameCanonicalGenerationIdentity(bot, authority)" in bots
+    assert "strict_published_bot_identities" in bots
+    assert "identityByName" in bots
+    assert "canonicalGenerationIdentityIssues" in bots
+    assert "sameCanonicalGenerationIdentity(bot, identity)" in bots
     assert "第{identity.generation_ordinal}代" in bots
-    assert "tag: {completionTag}" in bots
+    assert "Bot 双身份不可用" in bots
     assert f"`{ACTIVE_TAG_PREFIX}${{bot.version}}`" not in bots
-    assert "identity?.canonical_tag" in bots
-    assert "排序和过滤不会重编号" in bots
+    # No client-side tag display/synthesis survives the merge: the orphaned
+    # BotManager's completion-tag rendering (tag: {completionTag}) was
+    # dropped, so the page has no completionTag / canonical_tag rendering to
+    # drift away from the backend-owned canonical identity.
+    assert "completionTag" not in bots
 
 
 def test_active_generation_views_render_backend_owned_dual_identity():
     control = (FRONTEND / "pages" / "ControlPanel.tsx").read_text(encoding="utf-8")
-    epoch = (
-        FRONTEND / "components" / "evolution" / "EpochAuthorityStatus.tsx"
-    ).read_text(encoding="utf-8")
     pipeline = (
         FRONTEND / "components" / "evolution" / "PipelineStatus.tsx"
     ).read_text(encoding="utf-8")
@@ -252,7 +263,11 @@ def test_active_generation_views_render_backend_owned_dual_identity():
         FRONTEND / "lib" / "canonicalGenerationIdentity.ts"
     ).read_text(encoding="utf-8")
 
-    for source in (control, epoch, pipeline):
+    # EpochAuthorityStatus.tsx was transitively dead (only the orphaned pages
+    # imported it) and was removed by 5b4f1144; its dual-identity contract
+    # lives on in the two live active-generation views (ControlPanel and
+    # PipelineStatus) plus the shared canonical label helper.
+    for source in (control, pipeline):
         assert "canonicalGenerationLabel" in source
         assert "双身份投影不可用" in source
     assert "version -" not in helper
@@ -300,11 +315,31 @@ def test_control_hook_pairs_stability_and_full_checkpoint_revision_before_green(
 
 
 def test_unpublished_ui_does_not_guess_version_reusability():
-    source = (FRONTEND / "components" / "evolution" / "EpochAuthorityStatus.tsx").read_text(encoding="utf-8")
-
-    assert "已提交但未发布" in source
-    assert "不能由此列表推断" in source
-    assert "不占版本号" not in source
+    # EpochAuthorityStatus.tsx (the sole renderer of the unpublished
+    # candidate/"debris" version list and its 已提交但未发布 disclaimer) was
+    # removed with the orphaned pages (5b4f1144).  No live view renders
+    # unpublished versions at all any more, so the contract is now purely
+    # negative across the whole live tree: no source may claim an
+    # unpublished/debris version frees or still occupies a number — only the
+    # backend version authority decides that — and the backend-owned
+    # unpublished_candidate_versions field stays a typed projection field
+    # (api/control.ts), never a rendered reusability claim.
+    live_sources = sorted(
+        path
+        for path in FRONTEND.rglob("*")
+        if path.suffix in {".ts", ".tsx"} and path.is_file()
+    )
+    assert live_sources
+    consumers = [
+        path
+        for path in live_sources
+        if "unpublished_candidate_versions" in path.read_text(encoding="utf-8")
+    ]
+    assert consumers == [FRONTEND / "api" / "control.ts"]
+    for path in live_sources:
+        source = path.read_text(encoding="utf-8")
+        assert "不占版本号" not in source, path
+        assert "仍可复用" not in source, path
 
 
 def test_dashboard_redesign_adds_structured_evolution_views():
@@ -372,54 +407,42 @@ def test_evolution_ui_primitives_and_handoff_eight_step_exist():
     )
     assert "def project_handoff_steps" in helpers
     assert '"completed_count"' in helpers or "completed_count" in helpers
-    # Every evolution page renders the standard header triad
-    # (EvolutionPageHeader + PhaseAProjectionStrip). Migrated pages consume
-    # them indirectly through EvolutionPageScaffold (which composes the triad
-    # internally); the remaining pages import the primitives directly.
-    scaffold_pages = {"Overview.tsx", "ControlPanel.tsx"}
+    # Every live page renders the standard header triad
+    # (EvolutionPageHeader + PhaseAProjectionStrip). Since the 2026-08
+    # redesign collapsed 15 pages into 5 (Overview, Generation, Bots,
+    # LlmMetrics, ControlPanel) and the 5b4f1144 orphan cleanup removed the
+    # 12 superseded page components, every remaining page consumes the triad
+    # through EvolutionPageScaffold (which composes it internally).
     for page_name in (
         "Overview.tsx",
-        "EvidenceGates.tsx",
-        "FailuresRecovery.tsx",
-        "BackgroundStrength.tsx",
-        "PipelineMap.tsx",
-        "AgentActivity.tsx",
-        "BotManager.tsx",
+        "Generation.tsx",
+        "Bots.tsx",
+        "LlmMetrics.tsx",
         "ControlPanel.tsx",
     ):
         page = (FRONTEND / "pages" / page_name).read_text(encoding="utf-8")
-        if page_name in scaffold_pages:
-            assert "EvolutionPageScaffold" in page, page_name
-        else:
-            assert "EvolutionPageHeader" in page, page_name
-            assert "PhaseAProjectionStrip" in page, page_name
-    for page_name in (
-        "EvidenceGates.tsx",
-        "FailuresRecovery.tsx",
-        "BackgroundStrength.tsx",
-    ):
-        page = (FRONTEND / "pages" / page_name).read_text(encoding="utf-8")
-        assert "EvolutionSurface" in page, page_name
+        assert "EvolutionPageScaffold" in page, page_name
         assert "EpochAuthorityStatus" not in page, page_name
-        assert 'from "../components/shared/Badge"' not in page
-        assert "CardHeader" not in page
+    # The merged /generation page carries the former evidence-gates /
+    # failures / background-strength surfaces: it uses the evolution ui
+    # primitives and none of the retired component imports.
+    generation = (FRONTEND / "pages" / "Generation.tsx").read_text(encoding="utf-8")
+    assert "EvolutionSurface" in generation
+    assert 'from "../components/shared/Badge"' not in generation
+    assert "CardHeader" not in generation
 
 
 def test_dashboard_redesign_domain_layer_does_not_mix_authority_shapes():
     agent_view = (FRONTEND / "domain" / "agentActivityView.ts").read_text(encoding="utf-8")
-    strength_view = (FRONTEND / "domain" / "strengthJobView.ts").read_text(encoding="utf-8")
-    evidence = (FRONTEND / "domain" / "evidenceAuthority.ts").read_text(encoding="utf-8")
     failures = (FRONTEND / "domain" / "failureRecoveryView.ts").read_text(encoding="utf-8")
 
+    # strengthJobView.ts and evidenceAuthority.ts were dead domain code (their
+    # only consumers were the orphaned BackgroundStrength / EvidenceGates
+    # pages) and were removed by a8dc899e; the live domain layer is
+    # agentActivityView + failureRecoveryView + operatorSituationView.
     assert "advisory" in agent_view
-    assert "EVIDENCE_TIER_LABELS" in evidence
-    for tier in ("compliance", "strength", "advisory", "diagnostic", "zero"):
-        assert f'"{tier}"' in evidence
     assert "isPipelineTimeoutLeaseStage" in agent_view
     assert "stageIsTimeoutLease" in agent_view
-    assert "configured_dead" in strength_view
-    assert "alive_stale_heartbeat" in strength_view
-    assert "strengthRejectionLabel" in strength_view
     for disposition in ("auto_retry", "awaiting_lease", "needs_repair", "authority_conflict", "operator_action", "historical", "terminal"):
         assert f'"{disposition}"' in failures
 

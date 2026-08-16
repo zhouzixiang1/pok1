@@ -384,6 +384,7 @@ async def _one_saturator_session(session_id: int) -> dict:
         }
     except Exception as e:
         log.warning("saturator session %d failed: %s", session_id, e)
+        _note_saturator_provider_failure(e)
         return {"session": session_id, "ok": False, "error": str(e)[:200]}
 
 
@@ -424,6 +425,31 @@ def _housekeep_session_files(
                 pass
     except Exception as e:
         log.warning("saturator housekeeping failed: %s", e)
+
+
+# Quota/availability backoff: during a GLM 5h quota window every launched
+# session fails within ~1s, and the fill loop relaunched thousands of
+# dead sessions per window (2026-08-16 23:06: sessions 3604-3615 in seconds).
+# The pipeline has its own durable availability pause; the saturator only
+# needs to stop burning attempts while the provider is closed.
+_QUOTA_PAUSE_SECONDS = 600.0
+_quota_pause_until: float = 0.0
+
+
+def _note_saturator_provider_failure(error: object) -> None:
+    """Pause saturator launches after a quota/availability-class failure."""
+    global _quota_pause_until
+    text = str(error or "").lower()
+    if "quota" in text or "429" in text or "unavailable" in text:
+        _quota_pause_until = max(_quota_pause_until, time.time() + _QUOTA_PAUSE_SECONDS)
+        log.warning(
+            "saturator pausing launches for %.0fs after provider "
+            "quota/availability failure", _QUOTA_PAUSE_SECONDS,
+        )
+
+
+def _saturator_provider_paused() -> bool:
+    return time.time() < _quota_pause_until
 
 
 def _pick_preemptable(
@@ -520,6 +546,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
             while (
                 len(in_flight) < soft_cap
                 and _pipeline_waiting == 0
+                and not _saturator_provider_paused()
                 and llm_semaphore_has_capacity(1)
                 and not (shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False))
             ):
@@ -530,7 +557,11 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 # tiny yield so we don't fire-and-forget faster than the
                 # semaphore can reflect the acquisition.
                 await asyncio.sleep(0.5)
-            if not in_flight:
+            if _saturator_provider_paused():
+                # Provider window closed: do not hot-loop failed launches;
+                # re-check every pause interval.
+                await asyncio.sleep(min(_QUOTA_PAUSE_SECONDS, 60.0))
+            elif not in_flight:
                 await asyncio.sleep(5.0)
             else:
                 # Wait for at least one to finish (or shutdown) before re-evaluating.

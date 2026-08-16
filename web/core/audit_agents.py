@@ -232,7 +232,7 @@ def _render_master_plan_audit_provider_prompt(inputs):
 
     expected = {
         "source_v", "next_v", "master_plan", "recent_commits",
-        "direction_audit", "h2h_snapshot_contract",
+        "direction_audit", "h2h_snapshot_contract", "recent_directions",
     }
     if not isinstance(inputs, dict) or set(inputs) != expected:
         raise ValueError("Master plan audit renderer input contract mismatch")
@@ -242,6 +242,7 @@ def _render_master_plan_audit_provider_prompt(inputs):
     if not isinstance(master_plan, dict):
         raise ValueError("Master plan audit input must be an object")
     recent_commits = str(inputs["recent_commits"])
+    recent_directions = str(inputs["recent_directions"])
     template = (
         Path(__file__).resolve().parent / "prompts" / "master_plan_audit.md"
     ).read_text(encoding="utf-8")
@@ -255,6 +256,10 @@ def _render_master_plan_audit_provider_prompt(inputs):
         "source_v": str(source_v),
         "next_v": str(next_v),
         "h2h_snapshot_contract": str(inputs["h2h_snapshot_contract"]),
+        "recent_directions": (
+            recent_directions
+            or "No recent direction ledger is available."
+        ),
         "branch_from_note": (
             f"This generation evolves FROM v{source_v}. The source ancestor is "
             "decided automatically by the system in prepare_generation; the Master "
@@ -289,8 +294,34 @@ def _render_master_plan_audit_provider_prompt(inputs):
             "h2h_snapshot_digest": hashlib.sha256(
                 str(inputs["h2h_snapshot_contract"]).encode("utf-8")
             ).hexdigest(),
+            "recent_directions_digest": hashlib.sha256(
+                recent_directions.encode("utf-8")
+            ).hexdigest(),
         },
     )
+
+
+def _recent_directions_for_audit() -> str:
+    """System-rendered cross-generation direction ledger for the plan audit.
+
+    2026-08-16 audit: novelty was scored against PUBLISHED commit bodies only,
+    so recycled directions across abandoned generations stamped "novel" every
+    time. This ledger covers published AND abandoned attempts (extracted from
+    strict master logs; see recent_directions.py)."""
+    try:
+        from recent_directions import published_versions, recent_change_symbols
+
+        rows = recent_change_symbols(10)
+        if not rows:
+            return ""
+        published = published_versions()
+        return "; ".join(
+            f"v{v} {sym}"
+            + (" published" if v in published else " not-published")
+            for v, sym in rows
+        )
+    except Exception:
+        return ""
 
 
 def _render_worker_cot_provider_prompt(inputs):
@@ -1109,6 +1140,7 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
                 "recent_commits": str(recent_commits),
                 "direction_audit": direction_audit_text,
                 "h2h_snapshot_contract": h2h_snapshot_contract,
+                "recent_directions": _recent_directions_for_audit(),
             },
         )
         output, _, _ = await run_claude_query(
@@ -1126,6 +1158,39 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
                 return safe_default
             log.info("Master plan audit: pass=%s, feedback=%s",
                      data.get("overall_pass"), data.get("feedback", "")[:100])
+            # Deterministic direction-scoped novelty override: the LLM audit
+            # compares against published commit bodies only, so a recycled
+            # direction across ABANDONED generations stamps "novel" every
+            # time (v174-v187: _bluff_allowed re-proposed 7 gens). The
+            # ledger is authoritative here.
+            try:
+                from recent_directions import recent_symbol_counts
+
+                _selected_symbol = str(
+                    ((master_plan.get("proposal_binding") or {}).get(
+                        "change_symbol"
+                    )) or ""
+                )
+                _counts = recent_symbol_counts(6)
+                _seen = _counts.get(_selected_symbol, 0)
+                if _selected_symbol and _seen >= 2:
+                    data = dict(data)
+                    data["direction_novelty"] = "repetitive"
+                    data["overall_pass"] = False
+                    data["retry_recommended"] = True
+                    data.setdefault("contradictions", [])
+                    data["contradictions"] = list(data["contradictions"]) + [
+                        f"change_symbol {_selected_symbol} already targeted "
+                        f"in {_seen} of the last 6 generation attempts "
+                        "(recent directions ledger)"
+                    ]
+                    log.warning(
+                        "Master plan audit override: repetitive direction "
+                        "%s (%d/6 recent attempts)",
+                        _selected_symbol, _seen,
+                    )
+            except Exception:
+                pass
             return data
 
     except asyncio.CancelledError:

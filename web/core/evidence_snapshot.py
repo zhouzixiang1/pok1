@@ -689,6 +689,11 @@ def build_h2h_prompt_summary(
     lines = [
         "Compact source-focused H2H summary from the stable snapshot:",
         f"- Adequate/confirmed matchup claims require games >= {confirmed_games}; otherwise label sparse/advisory.",
+        f"- Statistical evidence bar (load-bearing weakness claims): cite one "
+        f"matchup row with games >= 30 as the primary basis AND one aggregate "
+        f"row with games >= 200 as corroboration — aggregate rows live in "
+        f"bot_stats.json (per-bot games ~400+) and selection_snapshot.json. "
+        f"Claims citing only n<30 rows are rejected as noise fitting.",
         "- Quote row key, games, a_wins, b_wins, draws, and win_rate exactly when citing a matchup.",
         "- Prefer the canonical_citation text below; do not derive matchup records from live H2H or match_history.",
     ]
@@ -869,6 +874,75 @@ def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
         seen.add(low)
         deduped.append((alias, first, second))
     return deduped
+
+
+def statistical_evidence_floor_errors(
+    master_plan: Any,
+    next_v: int | str,
+    *,
+    min_primary_games: int = 30,
+    min_aggregate_games: int = 200,
+) -> list[str]:
+    """Two-tier statistical evidence bar on the plan's cited H2H rows.
+
+    2026-08-16 evolution audit: 12/12 selected plans acted on n=4-56 H2H
+    rows (8/12 on n<=15) — pure noise fitting. A load-bearing claim must
+    cite one matchup row with games >= 30 (primary) AND one row with
+    games >= 200 (aggregate corroboration; per-bot rows in bot_stats.json
+    and selection_snapshot rows carry 200-500 games). Rows whose cited
+    numbers already FAIL validate_h2h_citations_against_snapshot are not
+    re-litigated here — this check is sufficiency, that one is accuracy.
+    """
+    h2h = load_generation_h2h_snapshot(next_v)
+    if not h2h:
+        return []
+    text = _flatten_text(master_plan)
+    cited_games: list[int] = []
+    for key, row in h2h.items():
+        if not isinstance(row, dict):
+            continue
+        games = int(row.get("games", 0) or 0)
+        if games <= 0:
+            continue
+        for alias, _first, _second in _h2h_key_aliases(str(key)):
+            if not alias:
+                continue
+            if re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])",
+                text,
+                re.IGNORECASE,
+            ):
+                cited_games.append(games)
+                break
+    if not cited_games:
+        # No matchup citation at all: the accuracy validator or the proposal
+        # schema owns that failure mode; sufficiency has nothing to grade.
+        return []
+    has_primary = any(g >= min_primary_games for g in cited_games)
+    # Aggregate corroboration: H2H rows cap at ~58 games, so the >=200 tier
+    # is necessarily a bot_stats.json / selection_snapshot.json citation —
+    # detect the snapshot reference in the plan text.
+    has_aggregate = bool(
+        re.search(
+            r"snapshot:(?:bot_stats|selection_snapshot)\.json",
+            text,
+        )
+    )
+    if has_primary and has_aggregate:
+        return []
+    top = sorted(set(cited_games), reverse=True)[:4]
+    missing = []
+    if not has_primary:
+        missing.append(f"primary matchup row games >= {min_primary_games}")
+    if not has_aggregate:
+        missing.append(
+            "aggregate corroboration (snapshot:bot_stats.json or "
+            "snapshot:selection_snapshot.json reference)"
+        )
+    return [
+        "statistical evidence bar not met: cited matchup rows' games="
+        f"{top}; need {' AND '.join(missing)}"
+    ]
 
 
 def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str) -> list[str]:

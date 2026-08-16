@@ -925,11 +925,20 @@ def live_checkpoint_allocation_authority_errors(
         return list(dict.fromkeys(errors))
 
     live_floor = max(published, abandoned)
+    # v188 lesson (2026-08-16): `binding.published_high_water == target - 1`
+    # assumes consecutive publication numbering, but any ABANDONED version
+    # between the last publish and this one (v187) breaks it — the checkpoint
+    # legitimately records the pre-publish high-water (186) while target is
+    # 188, and the self-publication reconciliation exemption could then never
+    # open, stranding every post-abandon publication at `publishing`. The
+    # strict identity is proven by the cas-gate's intent/tag/workflow/proof
+    # checks; here it suffices that the binding predates this publication.
     publication_reconciliation = bool(
         allow_published_target_reconciliation
         and checkpoint.get("stage") == "publishing"
         and published == target
-        and binding.get("published_high_water") == target - 1
+        and isinstance(binding.get("published_high_water"), int)
+        and 0 < binding["published_high_water"] < target
         and abandoned < target
     )
     if target <= live_floor and not publication_reconciliation:

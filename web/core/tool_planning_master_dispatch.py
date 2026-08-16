@@ -1726,9 +1726,17 @@ async def run_master_impl(args):
                 try:
                     from evidence_snapshot import (
                         h2h_citation_repair_guidance,
+                        statistical_evidence_floor_errors,
                         validate_h2h_citations_against_snapshot,
                     )
                     _h2h_citation_errors = validate_h2h_citations_against_snapshot(data, next_v)
+                    # Two-tier statistical evidence bar (sufficiency), kept
+                    # separate from citation accuracy above: 2026-08-16 audit
+                    # found 12/12 selected plans acting on n=4-56 rows.
+                    _h2h_citation_errors = (
+                        statistical_evidence_floor_errors(data, next_v)
+                        + _h2h_citation_errors
+                    )
                     _h2h_repair_guidance = h2h_citation_repair_guidance(
                         next_v,
                         _h2h_citation_errors,

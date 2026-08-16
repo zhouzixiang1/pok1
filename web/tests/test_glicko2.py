@@ -298,6 +298,16 @@ def _frozen_selection_view(monkeypatch, gs, active, strength, ratings):
     """Build the same immutable evidence boundary used by formal selection."""
 
     monkeypatch.setattr(gs, "_read_source_v_history", lambda: [])
+    # Production disables crossover entirely until the active rating pool
+    # reaches _MIN_CROSSOVER_POOL_SIZE (currently 12) bots (crossover pool
+    # deadlock fix 6f417533).  These fixtures exercise the frozen-view
+    # parent-picking logic itself with small pools, so the threshold is
+    # lowered to the 3-bot fixture floor — the same pattern as
+    # tests/test_generation_scheduler.py; the pool-size policy has its own
+    # tests there.
+    import generation_scheduler_source_selection as gss
+
+    monkeypatch.setattr(gss, "_MIN_CROSSOVER_POOL_SIZE", 3)
     rows = tuple(
         {
             "name": name,

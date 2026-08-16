@@ -125,6 +125,22 @@ def _valid_proposal_packet(
                 "uncertainty=no_strength_claim; secondary=none"
             )
         proposal["direction"] = direction
+        # Direction-specific target (2026-08-16 within-ensemble symbol
+        # dedup): the three scouts must not ship the same change_symbol.
+        proposal["change_symbol"] = f"policy.py:_choose_intent_{direction}"
+        proposal["source_symbols"] = [
+            "policy.py:get_baseline_decision",
+            f"policy.py:_choose_intent_{direction}",
+        ]
+        proposal["reachable_chain"] = [
+            "policy.py:get_baseline_decision",
+            f"policy.py:_choose_intent_{direction}",
+        ]
+        proposal["evidence_refs"] = [
+            ref if not ref.startswith("source:policy.py:_choose_intent")
+            else f"source:policy.py:_choose_intent_{direction}"
+            for ref in proposal.get("evidence_refs", [])
+        ]
         proposal["structural_change"] = structural_change
         if index > 1:
             proposal["expected_diff"] = (
@@ -277,7 +293,8 @@ def _strict_prompt_plan() -> dict:
     plan["targeted_failure"] = BOUND_TARGETED_FAILURE
     plan["selected_proposal_id"] = PROPOSAL_ID
     plan["tasks"][0]["worker_prompt"] += (
-        " Modify the fixture-selected policy.py:_choose_intent AST body."
+        " Modify the fixture-selected policy.py:_choose_intent_mechanism"
+        " AST body."
     )
     return plan
 
@@ -316,8 +333,20 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
     fixture_bots = tmp_path / "_fixture_bots"
     baseline_policy = (
         "def get_baseline_decision(context):\n"
+        "    if context.get('m'):\n"
+        "        return _choose_intent_mechanism(context)\n"
+        "    if context.get('c'):\n"
+        "        return _choose_intent_counterfactual(context)\n"
+        "    if context.get('k'):\n"
+        "        return _choose_intent_compute_memory(context)\n"
         "    return _choose_intent(context)\n\n"
         "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_mechanism(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_counterfactual(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_compute_memory(context):\n"
         "    return {'kind': 'pass'}\n\n"
         "def iter_decisions(context, baseline=None, budget_ms=0):\n"
         "    return baseline\n"
@@ -1197,8 +1226,20 @@ async def test_post_abandon_singleton_successor_master_uses_durable_strict_journ
     target = tmp_path / bot_name(target_v)
     policy = (
         "def get_baseline_decision(context):\n"
+        "    if context.get('m'):\n"
+        "        return _choose_intent_mechanism(context)\n"
+        "    if context.get('c'):\n"
+        "        return _choose_intent_counterfactual(context)\n"
+        "    if context.get('k'):\n"
+        "        return _choose_intent_compute_memory(context)\n"
         "    return _choose_intent(context)\n\n"
         "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_mechanism(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_counterfactual(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_compute_memory(context):\n"
         "    return {'kind': 'pass'}\n\n"
         "def iter_decisions(context, baseline, budget_ms):\n"
         "    if False:\n"
@@ -1455,7 +1496,7 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
     structured_plan["measurement_plan"] = BOUND_PROPOSAL["measurement"]
     structured_plan["tasks"][0]["worker_prompt"] = (
         "Implement the selected valid structured runtime mechanism by changing "
-        "policy.py:_choose_intent and run only the declared checks."
+        "policy.py:_choose_intent_mechanism and run only the declared checks."
     )
     call_count = {"n": 0}
 

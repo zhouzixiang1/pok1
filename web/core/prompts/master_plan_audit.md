@@ -49,6 +49,14 @@ Analyze the Master plan systematically:
 
 ## Stable H2H Snapshot Contract
 {h2h_snapshot_contract}
+
+## Recent Directions Ledger (published AND abandoned attempts)
+{recent_directions}
+System-owned extract of the change symbols the most recent generation
+attempts actually targeted. Score direction novelty against BOTH this ledger
+and the completion commits: a plan whose change_symbol already appears here
+is NOT novel — mark direction_novelty "repetitive" unless the plan supplies
+materially new frozen evidence for that exact symbol.
 </data>
 
 <h2h_verbatim_rule>

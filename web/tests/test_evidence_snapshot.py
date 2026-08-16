@@ -6,6 +6,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from bot_namespace import bot_name
 
+# Shared migrated packet builder (direction-specific change_symbols, three
+# direction leaves in the source fixture, snapshot evidence bindings). The
+# former file-local copy predated the 2026-08-16 within-ensemble symbol
+# dedup and produced three proposals sharing one change_symbol, which the
+# packet backstop `proposal_packet_change_symbols_not_distinct` rejects.
+from tests.test_master_success_return import _valid_proposal_packet
+
 
 class _UI:
     def __init__(self):
@@ -23,165 +30,6 @@ class _UI:
     def log_io(self, *_args, **_kwargs):
         pass
 
-
-def _valid_proposal_packet(
-    agent_master,
-    selected_proposal,
-    log_dir,
-    *,
-    source_dir=None,
-):
-    import hashlib
-
-    from system_strict_bootstrap import record_llm_invocation_evidence
-
-    directions = ("mechanism", "counterfactual", "compute_memory")
-    structural_changes = (
-        selected_proposal["structural_change"],
-        "Add a bounded state accumulator before the same reachable decision consumer.",
-        "Add a deterministic paired-feature path into the same reachable decision consumer.",
-    )
-    snapshot_projection = json.dumps(
-        {"games": 36, "wins": 14, "losses": 20, "draws": 2},
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    snapshot_binding = {
-        "reference": f"snapshot:head_to_head.json#/{bot_name(1)} vs {bot_name(2)}",
-        "node_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
-        "resolved_projection": snapshot_projection,
-        "projection_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
-        "projection_truncated": False,
-    }
-    proposals = []
-    for index, (direction, structural_change) in enumerate(
-        zip(directions, structural_changes), start=1
-    ):
-        proposal = json.loads(json.dumps(selected_proposal))
-        proposal["execution_mode"] = "strategy_implementation"
-        proposal["snapshot_evidence"] = [snapshot_binding]
-        proposal.setdefault("evidence_refs", []).append(
-            snapshot_binding["reference"]
-        )
-        proposal["direction"] = direction
-        proposal["structural_change"] = structural_change
-        if index > 1:
-            proposal["expected_diff"] = (
-                f"Independent alternative {index} reaches the existing decision consumer."
-            )
-            proposal["falsifier"]["test_name"] = (
-                "incremental_opponent_model"
-                if index == 2
-                else "showdown_range_adaptation"
-            )
-            if index == 2:
-                proposal["mechanism_target"] = "opponent.rates"
-                proposal["structural_change"] += " Route only through opponent.rates."
-                proposal["expected_diff"] += " The consumer reads opponent.rates."
-                proposal["falsifier"].update({
-                    "state_learning_primary": "action_profile",
-                    "intervention_target": "opponent.rates",
-                    "control": "Hold the decision context and opponent action_profile at its prior.",
-                    "intervention": "Change only opponent.rates action_profile in that decision context.",
-                    "expected_observation": "The typed intent changes only with the opponent action_profile intervention.",
-                })
-            else:
-                proposal["mechanism_target"] = "opponent.showdown_range"
-                proposal["structural_change"] += (
-                    " Route only through opponent.showdown_range."
-                )
-                proposal["expected_diff"] += " The consumer reads opponent.showdown_range."
-                proposal["falsifier"].update({
-                    "state_learning_primary": "showdown_range",
-                    "intervention_target": "opponent.showdown_range",
-                    "control": "Hold showdown_range confidence at its prior in the paired context.",
-                    "intervention": "Change only opponent.showdown_range confidence in the paired context.",
-                    "expected_observation": "The typed intent changes only with the showdown_range confidence intervention.",
-                })
-        proposal["proposal_id"] = agent_master._proposal_identity(proposal)
-        proposals.append(proposal)
-    proposal_ids = [proposal["proposal_id"] for proposal in proposals]
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    def invocation(index, *, purpose, role, role_result):
-        return record_llm_invocation_evidence(
-            invocation_id=f"{index:032x}",
-            purpose=purpose,
-            role=role,
-            prompt_digest=hashlib.sha256(f"prompt:{index}".encode()).hexdigest(),
-            raw_output_digest=hashlib.sha256(f"output:{index}".encode()).hexdigest(),
-            result_digest=hashlib.sha256(f"result:{index}".encode()).hexdigest(),
-            role_result=role_result,
-            log_file=log_dir / f"invocation_{index}.txt",
-        )
-
-    proposal_invocations = {
-        proposal["proposal_id"]: invocation(
-            index,
-            purpose=f"master_proposal_scout:{proposal['direction']}",
-            role=f"MASTER PROPOSAL {proposal['direction']}",
-            role_result=proposal,
-        )
-        for index, proposal in enumerate(proposals, start=1)
-    }
-    reviews = []
-    proposal_id_set = set(proposal_ids)
-    for index, critic_id in enumerate(("falsification", "scope"), start=4):
-        raw_review = {
-            "ballots": [
-                {
-                    "proposal_id": proposal_id,
-                    "scores": {
-                        criterion: 5
-                        for criterion in agent_master._PROPOSAL_CRITIC_CRITERIA
-                    },
-                    "reject": False,
-                    "reason": "The proposal is traceable, reachable, bounded, and falsifiable.",
-                }
-                for proposal_id in proposal_ids
-            ]
-        }
-        review = agent_master._validated_proposal_critique(
-            json.dumps(raw_review), proposal_id_set
-        )
-        assert review is not None
-        review["critic_id"] = critic_id
-        review["invocation_evidence"] = invocation(
-            index,
-            purpose=f"master_proposal_critic:{critic_id}",
-            role=f"MASTER PROPOSAL CRITIC {critic_id}",
-            role_result={key: value for key, value in review.items() if key != "critic_id"},
-        )
-        reviews.append(review)
-    source_symbol_digests = (
-        agent_master._proposal_source_symbol_digests(proposals, source_dir)
-        if source_dir is not None
-        else {
-            proposal["proposal_id"]: {
-                symbol: hashlib.sha256(
-                    f"test-baseline:{symbol}".encode("utf-8")
-                ).hexdigest()
-                for symbol in proposal["source_symbols"]
-            }
-            for proposal in proposals
-        }
-    )
-    return {
-        "schema_version": "master-proposal-packet-v6",
-        "valid": True,
-        "authority": "ballots_rank_and_unanimous_reject_vetoes",
-        "context_digest": "c" * 64,
-        "source_code_digest": "d" * 64,
-        "evidence_mode": "frozen_strength_snapshot",
-        "proposal_count": 3,
-        "valid_critic_count": 2,
-        "critic_criteria": agent_master._PROPOSAL_CRITIC_CRITERIA,
-        "allowed_proposal_ids": proposal_ids,
-        "ordered_proposals": proposals,
-        "proposal_source_symbol_digests": source_symbol_digests,
-        "proposal_invocations": proposal_invocations,
-        "critic_reviews": reviews,
-    }
 
 
 def _patch_h2h_paths(
@@ -992,15 +840,32 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     })
     baseline = tmp_path / bot_name(20)
     target = tmp_path / bot_name(24)
+    # The migrated shared packet helper cites the three direction-specific
+    # ``_choose_intent_{direction}`` leaves, so the source fixture must define
+    # them plus their call edges from the policy ABI entrypoint.
+    baseline_policy = (
+        "def get_baseline_decision(context):\n"
+        "    if context.get('m'):\n"
+        "        return _choose_intent_mechanism(context)\n"
+        "    if context.get('c'):\n"
+        "        return _choose_intent_counterfactual(context)\n"
+        "    if context.get('k'):\n"
+        "        return _choose_intent_compute_memory(context)\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_mechanism(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_counterfactual(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_compute_memory(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def iter_decisions(context, baseline=None, budget_ms=0):\n"
+        "    return baseline\n"
+    )
     for root in (baseline, target):
         root.mkdir()
-        (root / "policy.py").write_text(
-            "def get_baseline_decision(context):\n"
-            "    return iter_decisions(context)\n\n"
-            "def iter_decisions(context):\n"
-            "    return context\n",
-            encoding="utf-8",
-        )
+        (root / "policy.py").write_text(baseline_policy, encoding="utf-8")
     monkeypatch.setattr(
         agent_master,
         "get_bot_dir",
@@ -1021,16 +886,16 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         ),
         "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
         "mechanism_target": "deadline",
-        "expected_diff": "Change policy.py:iter_decisions so the strategy decision path consumes the selected structural mechanism before the deadline.",
+        "expected_diff": "Change policy.py:_choose_intent so the strategy decision path consumes the selected structural mechanism before the deadline.",
         "target_files": ["policy.py"],
         "source_symbols": [
             "policy.py:get_baseline_decision",
-            "policy.py:iter_decisions",
+            "policy.py:_choose_intent",
         ],
-        "change_symbol": "policy.py:iter_decisions",
+        "change_symbol": "policy.py:_choose_intent",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
-            "policy.py:iter_decisions",
+            "policy.py:_choose_intent",
         ],
         "falsifier": {
             "test_name": "fast_policy_baseline",
@@ -1042,7 +907,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         },
         "evidence_refs": [
             "source:policy.py:get_baseline_decision",
-            "source:policy.py:iter_decisions",
+            "source:policy.py:_choose_intent",
         ],
         "risks": "Frozen evidence may be sparse, so the fallback and implementation remain bounded.",
     }
@@ -1052,8 +917,8 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
 
     worker_task = _strict_prompt_plan()["tasks"][0]
     worker_task["worker_prompt"] = (
-        "Change policy.py:iter_decisions in the target bot. Preserve the typed "
-        "runtime contract and execute all declared checks."
+        "Change policy.py:_choose_intent_mechanism in the target bot. Preserve "
+        "the typed runtime contract and execute all declared checks."
     )
     valid_plan = {
         "analysis": "use stable snapshot",

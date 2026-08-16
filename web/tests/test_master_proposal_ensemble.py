@@ -40,9 +40,24 @@ _V54_EXACT_PROSE_PREFIX = (
 
 def _write_source(root):
     root.mkdir(parents=True, exist_ok=True)
+    # Three direction-specific leaf symbols: the ensemble's within-ensemble
+    # change_symbol dedup (2026-08-16) requires scouts to target distinct
+    # symbols — v172/v186/v187 shipped identical-symbol triples in prod.
     (root / "policy.py").write_text(
         "def get_baseline_decision(context):\n"
+        "    if context.get('m'):\n"
+        "        return _choose_intent_mechanism(context)\n"
+        "    if context.get('c'):\n"
+        "        return _choose_intent_counterfactual(context)\n"
+        "    if context.get('k'):\n"
+        "        return _choose_intent_compute_memory(context)\n"
         "    return _choose_intent(context)\n\n"
+        "def _choose_intent_mechanism(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_counterfactual(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _choose_intent_compute_memory(context):\n"
+        "    return {'kind': 'pass'}\n\n"
         "def _choose_intent(context):\n"
         "    return {'kind': 'pass'}\n",
         encoding="utf-8",
@@ -58,6 +73,13 @@ def _write_strength_snapshot(root):
             "b_wins": 20,
             "draws": 2,
             "win_rate": 0.4167,
+        },
+    }), encoding="utf-8")
+    # Aggregate corroboration row: the two-tier statistical evidence bar
+    # (2026-08-16) requires primary games>=30 AND aggregate games>=200.
+    (root / "bot_stats.json").write_text(json.dumps({
+        bot_name(STRICT_SOURCE_V): {
+            "games": 250, "wins": 120, "losses": 125, "draws": 5,
         },
     }), encoding="utf-8")
 
@@ -91,12 +113,12 @@ def _proposal(
         "target_files": ["policy.py"],
         "source_symbols": [
             "policy.py:get_baseline_decision",
-            "policy.py:_choose_intent",
+            f"policy.py:_choose_intent_{direction}",
         ],
-        "change_symbol": "policy.py:_choose_intent",
+        "change_symbol": f"policy.py:_choose_intent_{direction}",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
-            "policy.py:_choose_intent",
+            f"policy.py:_choose_intent_{direction}",
         ],
         "falsifier": {
             "test_name": "fast_policy_baseline",
@@ -108,7 +130,7 @@ def _proposal(
         },
         "evidence_refs": [
             "source:policy.py:get_baseline_decision",
-            "source:policy.py:_choose_intent",
+            f"source:policy.py:_choose_intent_{direction}",
         ],
         "risks": "The mechanism may overfit sparse evidence and must remain bounded.",
     }
@@ -116,6 +138,9 @@ def _proposal(
         payload["evidence_refs"].append(
             "snapshot:head_to_head.json#/"
             f"{bot_name(STRICT_TARGET_V)} vs {bot_name(STRICT_TARGET_V + 1)}"
+        )
+        payload["evidence_refs"].append(
+            f"snapshot:bot_stats.json#/{bot_name(STRICT_SOURCE_V)}"
         )
     return "```json\n" + json.dumps(payload) + "\n```"
 
@@ -141,8 +166,8 @@ def _action_profile_proposal(
             "bounded live decision consumer."
         ),
         "expected_diff": (
-            f"{label} changes policy.py:_choose_intent so the paired typed intent "
-            "changes only when "
+            f"{label} changes policy.py:_choose_intent_{direction} so the "
+            "paired typed intent changes only when "
             "opponent.rates.fold_to_raise changes."
         ),
     })
@@ -221,7 +246,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
                 0.0,
                 {},
             )
-        direction = role_name.rsplit(" ", 1)[-1]
+        direction = (role_name.split("PROPOSAL ", 1)[1].split()[0] if "PROPOSAL " in role_name else role_name.rsplit(" ", 1)[-1])
         return _proposal(direction, snapshot=True), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
@@ -624,7 +649,15 @@ def test_strength_snapshot_node_is_digest_bound_with_resolved_projection(tmp_pat
     )
 
     assert proposal is not None
-    assert len(proposal["snapshot_evidence"]) == 1
+    assert len(proposal["snapshot_evidence"]) == 2
+    assert any(
+        b["reference"].startswith("snapshot:head_to_head.json#")
+        for b in proposal["snapshot_evidence"]
+    )
+    assert any(
+        b["reference"].startswith("snapshot:bot_stats.json#")
+        for b in proposal["snapshot_evidence"]
+    )
     binding = proposal["snapshot_evidence"][0]
     node = json.loads(
         (snapshot_dir / "head_to_head.json").read_text(encoding="utf-8")
@@ -1132,11 +1165,15 @@ def test_valid_and_tolerantly_normalized_proposals_have_no_projection_hints(tmp_
     payload = json.loads(
         _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
     )
-    payload["source_symbols"][1] = "policy.py:_choose_inten"
-    payload["reachable_chain"][1] = "policy.py:_choose_inten"
+    payload["source_symbols"][1] = "policy.py:_choose_intent_mechanis"
+    payload["reachable_chain"][1] = "policy.py:_choose_intent_mechanis"
     payload["evidence_refs"] = {
         "entry": "code:policy.py:get_baseline_decision [current entry]",
-        "consumer": "ref:policy.py:_choose_inten — fuzzy tolerated",
+        # Fuzzy spelling of the direction-specific leaf: the legacy shared
+        # ``_choose_inten`` prefix now resolves ambiguously to the retained
+        # ``_choose_intent`` helper (best difflib match) instead of the
+        # mechanism leaf, so it no longer fuzzy-tolerates into source_symbols.
+        "consumer": "ref:policy.py:_choose_intent_mechanis — fuzzy tolerated",
     }
     raw = json.dumps(payload)
 
@@ -1217,7 +1254,7 @@ async def test_critic_proposal_order_is_context_digest_deterministic(monkeypatch
             observed.append((role_name, ids))
             return _critic_output(agent_master, ids), 0.0, {}
         return _proposal(
-            role_name.rsplit(" ", 1)[-1], snapshot=True
+            (role_name.split("PROPOSAL ", 1)[1].split()[0] if "PROPOSAL " in role_name else role_name.rsplit(" ", 1)[-1]), snapshot=True
         ), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
@@ -1268,7 +1305,7 @@ async def test_two_critic_rejects_veto_one_proposal_and_parser_recomputes_ids(
                 {},
             )
         return _proposal(
-            role_name.rsplit(" ", 1)[-1],
+            (role_name.split("PROPOSAL ", 1)[1].split()[0] if "PROPOSAL " in role_name else role_name.rsplit(" ", 1)[-1]),
             snapshot=True,
         ), 0.0, {}
 
@@ -1319,7 +1356,7 @@ async def test_two_critic_rejects_of_all_three_fail_closed(monkeypatch, tmp_path
                 {},
             )
         return _proposal(
-            role_name.rsplit(" ", 1)[-1],
+            (role_name.split("PROPOSAL ", 1)[1].split()[0] if "PROPOSAL " in role_name else role_name.rsplit(" ", 1)[-1]),
             snapshot=True,
         ), 0.0, {}
 
@@ -2255,6 +2292,12 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
     final_plan["selected_proposal_id"] = selected["proposal_id"]
     final_plan["targeted_failure"] = selected["targeted_failure"]
     final_plan["measurement_plan"] = selected["measurement"]
+    # The shared prompt-plan fixture names only the legacy shared leaf; the
+    # ensemble packet now carries direction-specific change symbols, and the
+    # plan compiler requires the selected symbol in the writable task prompt.
+    final_plan["tasks"][0]["worker_prompt"] += (
+        f" Modify the fixture-selected {selected['change_symbol']} AST body."
+    )
     final_output = "```json\n" + json.dumps(final_plan) + "\n```\n"
     final_call = authority.new_call(
         advanced_checkpoint,
@@ -2626,6 +2669,12 @@ async def test_singleton_successor_partial_packet_replays_only_missing_scout(
     final_plan["selected_proposal_id"] = selected["proposal_id"]
     final_plan["targeted_failure"] = selected["targeted_failure"]
     final_plan["measurement_plan"] = selected["measurement"]
+    # Same binding as the strict partial-packet test: the packet's proposals
+    # carry direction-specific change symbols the shared prompt-plan fixture
+    # does not name, and the plan compiler enforces the selected symbol.
+    final_plan["tasks"][0]["worker_prompt"] += (
+        f" Modify the fixture-selected {selected['change_symbol']} AST body."
+    )
     final_output = "```json\n" + json.dumps(final_plan) + "\n```\n"
     final_checkpoint = {**resumed, "checkpoint_revision": 10}
     final_call = authority.new_call(
@@ -2778,7 +2827,7 @@ def test_proposal_id_is_stable_and_not_scout_identity(monkeypatch, tmp_path):
         snapshot_dir=tmp_path,
     )
     second = agent_master._validated_master_proposal(
-        _proposal("counterfactual", shared_claims=True),
+        _proposal("mechanism", shared_claims=True),
         "counterfactual",
         source_graph=graph,
         snapshot_dir=tmp_path,
@@ -2789,7 +2838,7 @@ def test_proposal_id_is_stable_and_not_scout_identity(monkeypatch, tmp_path):
     assert first["direction"] != second["direction"]
 
     risks_only = json.loads(
-        _proposal("counterfactual", shared_claims=True)
+        _proposal("mechanism", shared_claims=True)
         .split("```json\n", 1)[1]
         .rsplit("\n```", 1)[0]
     )
@@ -4072,7 +4121,8 @@ def test_final_binding_rejects_wrong_primary_and_missing_typed_check(tmp_path):
     })
     task = plan["tasks"][0]
     task["worker_prompt"] += (
-        " Modify the selected policy.py:_choose_intent AST body."
+        " Modify the selected "
+        f"{proposal['change_symbol']} AST body."
     )
     state_learning = task["runtime_contract"]["state_learning"]
     state_learning.update({

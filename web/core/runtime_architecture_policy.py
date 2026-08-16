@@ -705,6 +705,18 @@ def _budget_scaling_evidence(scaling: dict[str, Any]) -> dict[str, Any]:
         "bounded_work": scaling.get("bounded_work"),
         "scaled_or_exhausted": scaling.get("scaled_or_exhausted"),
         "strata": {"short": stratum("short"), "long": stratum("long")},
+        # Reproduction context: repair workers cannot execute code, so this
+        # text is their ONLY way to reason about the failing scenario (the
+        # v187 repair loop's last gap — the criteria reached the worker but
+        # the fixture did not).
+        "scenario": (
+            "probe scenario river_facing_large_bet, fixed worker seed "
+            "20260710; strata: short=hard 2.0s/refinement 1.7s, long=hard "
+            "8.0s/refinement 7.4s; pass needs long.trusted_steps>=8 AND "
+            "trusted_cpu_ms>=5.0 AND refinement_messages>=1 AND "
+            "(long steps > short steps, or both exhaust a finite batch at "
+            ">=8 steps) AND >=1 sanitized decision changed by refinement"
+        ),
     }
 
 

@@ -812,7 +812,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/frontend/src/lib/evolutionStreamController.ts",
                 "loseTransientStatusTaskAuthority",
             ),
-            _ref("web/frontend/src/pages/AgentActivity.tsx", "acceptTransientStatus"),
+            # IA-merge follow-up (5b4b1144) removed the orphaned AgentActivity
+            # page; the SSE liveness contract (acceptTransientStatus) now lives
+            # on the merged /generation page (Generation.tsx).
+            _ref("web/frontend/src/pages/Generation.tsx", "acceptTransientStatus"),
             _ref(
                 "web/frontend/scripts/static-build-receipt.mjs",
                 "verifyReceipt",
@@ -1412,6 +1415,13 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_handler_before_user_tool_use_binds_and_recovers_terminal_handoff",
             "web/tests/test_abandon_helper.py::"
             "test_completed_abandon_handoff_reproves_schema2_split_worker_reason",
+            # 526b42b9 renamed the former negative test
+            # test_completed_abandon_handoff_rejects_mismatched_outer_reason:
+            # a digest+causation-consistent strict-authority reason drift is now
+            # ADOPTED at the recovery fence (mirroring the write-time f3c66468
+            # fix), so the behavior is bound by this positive test instead.
+            "web/tests/test_abandon_helper.py::"
+            "test_completed_abandon_handoff_adopts_mismatched_strict_persisted_reason",
             "web/tests/test_abandon_helper.py::"
             "test_historical_completed_abandon_reproof_allows_clean_main_descendant",
             "web/tests/test_abandon_helper.py::"
@@ -1430,8 +1440,6 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_user_message_side_channel_fallback_result_is_ignored",
             "web/tests/test_abandon_helper.py::"
             "test_completed_abandon_handoff_rejects_missing_worker_inner_reason",
-            "web/tests/test_abandon_helper.py::"
-            "test_completed_abandon_handoff_rejects_mismatched_outer_reason",
             "web/tests/test_abandon_helper.py::"
             "test_completed_abandon_handoff_rejects_unbound_worker_inner_reason",
             "web/tests/test_abandon_helper.py::"

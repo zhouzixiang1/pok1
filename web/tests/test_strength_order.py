@@ -249,7 +249,12 @@ def test_equal_primary_strength_is_broken_by_70_hand_chip_amount(tmp_path):
     )
 
     assert rows[0]["name"] == BOT_A
-    assert rows[0]["selection_score"] == rows[1]["selection_score"]
+    # Since 2026-08-16 net chips are a weighted selection-score component
+    # (fold-heavy W/L winners no longer outrank chip earners), so equal-W/L
+    # bots with different chip means now differ slightly in the score itself;
+    # the chip tiebreaker in strength_order_key remains as the backstop.
+    assert rows[0]["selection_score"] > rows[1]["selection_score"]
+    assert rows[0]["rank_basis"].endswith("_plus_net_chips")
     assert rows[0]["secondary_net_chips_mean"] == 200.0
     assert rows[1]["secondary_net_chips_mean"] == -200.0
     assert rows[0]["strength_order_contract"] == [

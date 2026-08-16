@@ -230,7 +230,7 @@ def test_frontend_status_row_binds_live_task_owner_across_all_consumers():
         "isFreshEvolutionStatusEvent",
         "web/frontend/src/lib/evolutionStreamController.ts::"
         "transientStatusTaskMatches",
-        "web/frontend/src/pages/AgentActivity.tsx::acceptTransientStatus",
+        "web/frontend/src/pages/Generation.tsx::acceptTransientStatus",
     } <= owners
     wording = " ".join((
         row.prompt_statement,

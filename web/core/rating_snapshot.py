@@ -629,6 +629,17 @@ def _strength_note(
     return note
 
 
+# Net-chips selection component (2026-08-16 evolution fix batch): W/L-based
+# scores systematically overrate fold-heavy bots (they win many small pots
+# and bleed big ones — the audit found the top-3 rated bots were ALL lifetime
+# net-chip losers at -109..-374/match while the best chip performer ranked
+# 10th of 11). Chips are a magnitude signal, so they enter as a bounded
+# renormalized component rather than replacing W/L.
+CHIP_SCORE_SCALE_PER_MATCH = 2000.0
+CHIP_COMPONENT_WEIGHT = 0.25
+CHIP_RELIABILITY_MIN_SAMPLES = 100
+
+
 def _score_components(
     r: float,
     rd: float,
@@ -637,6 +648,8 @@ def _score_components(
     coverage: float,
     opponents_total: int,
     stats_wr: float | None,
+    net_chips_mean: float | None = None,
+    chip_samples: int = 0,
 ) -> tuple[float, str]:
     target_games = max(100, opponents_total * 10)
     h2h_reliability = 0.0
@@ -654,12 +667,24 @@ def _score_components(
     stats_weight = 1.0 - h2h_weight - rating_weight
     score = h2h_score * h2h_weight + conservative_score * rating_weight + stats_score * stats_weight
 
+    chip_weight = 0.0
+    if net_chips_mean is not None and chip_samples > 0:
+        chip_weight = CHIP_COMPONENT_WEIGHT * min(
+            1.0, chip_samples / CHIP_RELIABILITY_MIN_SAMPLES
+        )
+        chip_score = _clamp(
+            0.5 + float(net_chips_mean) / (2.0 * CHIP_SCORE_SCALE_PER_MATCH)
+        )
+        score = score * (1.0 - chip_weight) + chip_score * chip_weight
+
     if h2h_reliability >= 0.95:
         basis = "active_h2h_plus_conservative"
     elif h2h_reliability > 0.0:
         basis = "mixed_low_h2h_coverage"
     else:
         basis = "conservative_glicko_fallback"
+    if chip_weight > 0.0:
+        basis += "_plus_net_chips"
     return _clamp(score), basis
 
 
@@ -750,6 +775,7 @@ def build_strength_rows(
         h2h_opponents = int(coverage_meta["per_bot"].get(name, 0))
         h2h_coverage_ratio = h2h_opponents / opponents_total if opponents_total > 0 else 1.0
         stats_wr = bs.get("win_rate") if isinstance(bs, dict) else None
+        chip_summary = chip_metrics.get(name, {})
         score, basis = _score_components(
             r=r,
             rd=rd,
@@ -758,10 +784,11 @@ def build_strength_rows(
             coverage=h2h_coverage_ratio,
             opponents_total=opponents_total,
             stats_wr=stats_wr,
+            net_chips_mean=chip_summary.get("secondary_net_chips_mean"),
+            chip_samples=int(chip_summary.get("samples", 0) or 0),
         )
         strength_conf = _strength_confidence(h2h_coverage_ratio, total_games, rd, opponents_total)
         selection_score, selection_penalty = _selection_score(score, strength_conf)
-        chip_summary = chip_metrics.get(name, {})
         conservative = r - 2 * rd
         display_rd = round(rd, 1)
         row = {

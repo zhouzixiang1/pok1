@@ -258,7 +258,17 @@ def test_literature_probe_rejects_old_checkpoint_receipt_after_context_refresh(t
 
     assert data.get("cached") is not True
     assert data["error"] == "LITERATURE_PROBE_RECEIPT_INVALID"
-    assert data["next_tool"] == "abandon_generation"
+    # 2026-08-16 contract: the invalid-receipt path no longer emits a
+    # ``next_tool: abandon_generation`` directive — the direction_audited
+    # route guard blocks that MCP tool, so the directive looped forever.
+    # The handler now signals the canonical abandon itself and returns the
+    # terminal abandon result; the stale receipt is still rejected (not
+    # reused) and the checkpoint receipt bytes stay untouched.
+    assert data["abandon_signaled"] is True
+    assert data["literature_probe_invalid"] is True
+    assert data["abandon_reason"].startswith(
+        "master_literature_probe_receipt_invalid v300:"
+    )
     persisted = evolution_infra.read_pipeline_checkpoint()["literature_probe"]
     assert persisted == payload
 

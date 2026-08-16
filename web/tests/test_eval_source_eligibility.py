@@ -68,6 +68,18 @@ def _patch_prepare_upstream(monkeypatch, *, active_v, active_bots):
         lambda: {"status": "none"},
     )
 
+    # Pin the cross-generation source history: since the 2026-08-16
+    # source-lineage parser fix, _read_source_v_history reads the REAL repo
+    # tags/commit bodies, whose oscillation detector then fires on live data
+    # and reroutes source selection — tests must be hermetic here.
+    import generation_scheduler_source_selection
+
+    monkeypatch.setattr(
+        generation_scheduler_source_selection,
+        "_read_source_v_history",
+        lambda: [],
+    )
+
     next_v = int(active_v) + 1
     projection = {
         "initialized": True,
@@ -150,10 +162,14 @@ def _patch_prepare_upstream(monkeypatch, *, active_v, active_bots):
     monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *a, **k: None)
 
 
-def test_prepare_generation_raises_eval_source_ineligible_for_staging_source(
+def test_prepare_generation_skips_rating_ineligible_source_without_daemon_wait(
     monkeypatch,
 ):
-    """Primary lane: a staging (no-full-certificate) eval source fails closed."""
+    """Post-cert-removal contract (2026-08-08): with the two-tier
+    staging/certified split removed there is no "staging source" to fail on —
+    pool resolution SKIPS rating-ineligible specs entirely, so prepare returns
+    None early instead of raising the legacy staging signal or hanging on an
+    unreachable eval wait."""
     import bot_namespace
     import evolution_infra
     import generation_scheduler
@@ -163,14 +179,8 @@ def test_prepare_generation_raises_eval_source_ineligible_for_staging_source(
 
     _patch_prepare_upstream(monkeypatch, active_v=active_v, active_bots=pool)
 
-    resolved = {}
-
-    def fake_resolve(path_or_label, role=ROLE_RATING_POOL, **_kwargs):
-        # Record the call and return an ineligible staging spec for the active
-        # source label only.
-        resolved["label"] = path_or_label
-        resolved["role"] = role
-        return _ineligible_spec(path_or_label, tier="staging")
+    def fake_resolve(path_or_label, role=bot_namespace.ROLE_RATING_POOL, **_kwargs):
+        return _ineligible_spec(path_or_label, tier="native")
 
     monkeypatch.setattr(bot_namespace, "resolve_national_bot_spec", fake_resolve)
 
@@ -182,26 +192,14 @@ def test_prepare_generation_raises_eval_source_ineligible_for_staging_source(
 
     monkeypatch.setattr(evolution_infra, "wait_for_daemon_eval", fake_wait)
 
-    with pytest.raises(EvalSourceRatingIneligible) as exc_info:
-        asyncio.run(
-            generation_scheduler.prepare_generation(
-                None, ui=None, min_games=24, slot_id=None
-            )
+    result = asyncio.run(
+        generation_scheduler.prepare_generation(
+            None, ui=None, min_games=24, slot_id=None
         )
-
-    err = exc_info.value
-    assert err.bot_name == bot_name(active_v)
-    assert err.version == active_v
-    assert err.publication_tier == "staging"
-    assert err.issues == ("signed_full_official_certificate_required",)
-
-    # The precheck fired on the rating-pool role for the active source label.
-    assert resolved.get("role") == ROLE_RATING_POOL
-    assert resolved.get("label") == bot_name(active_v)
-
-    # Fail closed BEFORE touching the daemon: no blocking eval wait happened.
+    )
+    # Every pool bot is rating-ineligible: nothing to select, no eval wait.
+    assert result is None
     assert daemon_calls == []
-
 
 def test_draft_prepare_skips_eligibility_precheck(monkeypatch):
     """Draft lane (slot_id set) intentionally uses stale ratings and must not

@@ -42,6 +42,21 @@ from pathlib import Path
 
 import agent_master as _am  # for cross-refs
 
+_CHANGE_SYMBOL_IN_OUTPUT_RE = re.compile(
+    r'"change_symbol"\s*:\s*"(policy\.py:[A-Za-z_][A-Za-z0-9_]*)"'
+)
+
+
+def _extract_change_symbol_from_output(raw_output: object) -> str | None:
+    """Best-effort last change_symbol in a rejected raw proposal output.
+
+    Used to PIN a schema-retry to its original target: v187's schema retry
+    silently switched the scout's target from _bluff_allowed to
+    _refinement_prior_equity — the 'independent scout' output was
+    effectively authored under retry pressure."""
+    found = _CHANGE_SYMBOL_IN_OUTPUT_RE.findall(str(raw_output or ""))
+    return found[-1] if found else None
+
 _log = logging.getLogger("pok.master")
 
 
@@ -319,6 +334,7 @@ async def _run_master_proposal_ensemble(
     proposals = []
     proposal_invocations: dict[str, dict] = {}
     seen_proposal_ids: set[str] = set()
+    seen_change_symbols: dict[str, str] = {}
     proposal_provider_errors: list[tuple[str, BaseException]] = []
     invalid_proposal_specs: list[tuple[str, str, dict]] = []
     accepted_proposal_directions: dict[str, str] = {}
@@ -362,6 +378,11 @@ async def _run_master_proposal_ensemble(
         )
         if proposal is None:
             repair = {"kind": "schema"}
+            # Pin the schema retry to its original target family so repair
+            # pressure cannot silently redirect the direction (v187).
+            pinned_symbol = _extract_change_symbol_from_output(output)
+            if pinned_symbol:
+                repair["pinned_change_symbol"] = pinned_symbol
             repair["projection_hints"] = (
                 _am._master_proposal_projection_hints(
                     output,
@@ -374,6 +395,10 @@ async def _run_master_proposal_ensemble(
                 )
                 or ["proposal_contract_invalid"]
             )
+            if pinned_symbol:
+                repair["projection_hints"] = list(repair["projection_hints"]) + [
+                    f"schema_retry_keep_change_symbol.{pinned_symbol}"
+                ]
             _log.warning(
                 "Master proposal %s rejected (attempt 1): %s",
                 direction,
@@ -384,6 +409,7 @@ async def _run_master_proposal_ensemble(
             )
             continue
         proposal_id = proposal["proposal_id"]
+        proposal_symbol = str(proposal.get("change_symbol") or "")
         if proposal_id in seen_proposal_ids:
             if strict_authority_enabled:
                 from strict_authority_workflow import reject_duplicate_proposal
@@ -398,6 +424,36 @@ async def _run_master_proposal_ensemble(
                     "conflicting_direction": accepted_proposal_directions[
                         proposal_id
                     ],
+                    "avoid_change_symbols": [
+                        s for s in (proposal_symbol,) if s
+                    ],
+                },
+            ))
+            continue
+        # Within-ensemble duplicate target (v172/v186/v187: scout triples on
+        # the SAME symbol — one direction reworded three ways). Route to the
+        # distinctness repair so the retry must pick a different symbol.
+        if proposal_symbol and proposal_symbol in seen_change_symbols:
+            if strict_authority_enabled:
+                from strict_authority_workflow import reject_duplicate_proposal
+
+                reject_duplicate_proposal(result["strict_call"])
+            _log.warning(
+                "Master proposal %s rejected: change_symbol %s already "
+                "claimed by direction %s (ensemble must stay distinct)",
+                direction,
+                proposal_symbol,
+                seen_change_symbols[proposal_symbol],
+            )
+            invalid_proposal_specs.append((
+                direction,
+                _directive,
+                {
+                    "kind": "distinctness",
+                    "proposal_id": proposal_id,
+                    "change_symbol": proposal_symbol,
+                    "conflicting_direction": seen_change_symbols[proposal_symbol],
+                    "avoid_change_symbols": [proposal_symbol],
                 },
             ))
             continue
@@ -416,6 +472,8 @@ async def _run_master_proposal_ensemble(
             role_result=proposal,
         )
         seen_proposal_ids.add(proposal_id)
+        if proposal_symbol:
+            seen_change_symbols[proposal_symbol] = direction
         accepted_proposal_directions[proposal_id] = direction
         proposals.append(proposal)
     if proposal_provider_errors:
@@ -489,11 +547,57 @@ async def _run_master_proposal_ensemble(
                 )
                 continue
             proposal_id = proposal["proposal_id"]
+            proposal_symbol = str(proposal.get("change_symbol") or "")
             if proposal_id in seen_proposal_ids:
                 if strict_authority_enabled:
                     from strict_authority_workflow import reject_duplicate_proposal
 
                     reject_duplicate_proposal(result["strict_call"])
+                continue
+            # Retry pinning: a schema repair must keep its original target
+            # family (v187's retry silently switched symbols); a distinctness
+            # repair must avoid the symbol that caused the conflict.
+            pinned_symbol = (
+                str(repair.get("pinned_change_symbol") or "")
+                if isinstance(repair, dict) else ""
+            )
+            avoid_symbols = (
+                [str(s) for s in (repair.get("avoid_change_symbols") or [])]
+                if isinstance(repair, dict) else []
+            )
+            if pinned_symbol and proposal_symbol != pinned_symbol:
+                if strict_authority_enabled:
+                    from strict_authority_workflow import reject_duplicate_proposal
+
+                    reject_duplicate_proposal(result["strict_call"])
+                _log.warning(
+                    "Master proposal %s schema retry switched target "
+                    "%s -> %s; rejected (retry must keep its symbol)",
+                    direction, pinned_symbol, proposal_symbol or "?",
+                )
+                continue
+            if proposal_symbol and proposal_symbol in avoid_symbols:
+                if strict_authority_enabled:
+                    from strict_authority_workflow import reject_duplicate_proposal
+
+                    reject_duplicate_proposal(result["strict_call"])
+                _log.warning(
+                    "Master proposal %s distinctness retry reused the "
+                    "conflicting symbol %s; rejected",
+                    direction, proposal_symbol,
+                )
+                continue
+            if proposal_symbol and proposal_symbol in seen_change_symbols:
+                if strict_authority_enabled:
+                    from strict_authority_workflow import reject_duplicate_proposal
+
+                    reject_duplicate_proposal(result["strict_call"])
+                _log.warning(
+                    "Master proposal %s retry collided on change_symbol %s "
+                    "(claimed by direction %s); rejected",
+                    direction, proposal_symbol,
+                    seen_change_symbols[proposal_symbol],
+                )
                 continue
             if strict_authority_enabled:
                 from strict_authority_workflow import accept_role_result
@@ -510,6 +614,8 @@ async def _run_master_proposal_ensemble(
                 role_result=proposal,
             )
             seen_proposal_ids.add(proposal_id)
+            if proposal_symbol:
+                seen_change_symbols[proposal_symbol] = direction
             accepted_proposal_directions[proposal_id] = direction
             proposals.append(proposal)
         if retry_provider_errors:

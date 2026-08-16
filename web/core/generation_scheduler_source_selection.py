@@ -442,8 +442,19 @@ def _read_source_v_history():
         sources = []
         for version in versions:
             source_v = git_get_parent(version)
-            if source_v is not None and int(source_v) >= FIRST_STRICT_POLICY_VERSION:
-                sources.append(int(source_v))
+            if source_v is None:
+                continue
+            # v1's bootstrap body carries a non-numeric parent marker
+            # (``parent: national_cloud_v0``). One unparseable lineage entry
+            # must SKIP, not abort the whole history — the blanket except
+            # used to swallow the ValueError and return [] for everyone,
+            # blinding the loop/oscillation detectors from birth.
+            try:
+                source_v = int(source_v)
+            except (TypeError, ValueError):
+                continue
+            if source_v >= FIRST_STRICT_POLICY_VERSION:
+                sources.append(source_v)
         return sources
     except Exception:
         return []

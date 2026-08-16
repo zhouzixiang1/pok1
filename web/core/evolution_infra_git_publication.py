@@ -1610,7 +1610,16 @@ def verify_remote_bot_publication(
 
 
 def git_get_parent(version):
-    """从 tag/commit message 解析 parent。"""
+    """从 tag/commit message 解析 parent。
+
+    Native-tier publications write ``source: vN`` in the commit body
+    (publication_transaction.py); only legacy pre-v27 commits carry
+    ``parent: national_cloud_vN``. ``parse_bot_version`` intentionally
+    rejects bare ``vN``, so normalize it here before parsing — otherwise
+    every native-tier parent read returned a non-int string (or None) and
+    the source-loop/oscillation detectors saw an empty history (blind from
+    2026-08-10 until 2026-08-16).
+    """
     tag = bot_tag(version)
     tags = _ei._git("tag", "-l", tag, check=False)
     if tags:
@@ -1626,8 +1635,16 @@ def git_get_parent(version):
         commit_hash = log.split()[0]
         msg = _ei._git("show", "-s", "--format=%B", commit_hash, check=False)
     for line in (msg or "").split("\n"):
-        if line.strip().startswith("parent:"):
+        stripped = line.strip()
+        # Exact prefixes only: "parent2:" must never match.
+        if stripped.startswith("parent:") or stripped.startswith("source:"):
             parent = line.split(":", 1)[1].strip()
+            if re.fullmatch(r"v\d+", parent):
+                parent = parent[1:]
             parsed = parse_bot_version(parent)
-            return parsed if parsed is not None else parent
+            if parsed is not None:
+                return parsed
+            if parent.isdecimal():
+                return int(parent)
+            return parent
     return None

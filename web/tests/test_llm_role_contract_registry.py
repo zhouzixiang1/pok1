@@ -272,7 +272,7 @@ def _renderer_inputs(role_id, marker):
             "version": 145,
             "source_v": 143,
         },
-        "master_plan_audit": {"source_v": 143, "next_v": 145, "master_plan": {"analysis": marker}, "recent_commits": "none", "direction_audit": "none", "h2h_snapshot_contract": "snapshot"},
+        "master_plan_audit": {"source_v": 143, "next_v": 145, "master_plan": {"analysis": marker}, "recent_commits": "none", "direction_audit": "none", "h2h_snapshot_contract": "snapshot", "recent_directions": "v186 policy.py:_bluff_allowed"},
         "degeneration_diagnosis": {"source_v": 143, "recent_commits": marker, "strategy_changes": "change", "rating_curve": "flat"},
         "combined_analyst": {"source_v": 143, "frozen_bundle": {"marker": marker, "rendered_view": combined_values}},
         "official_platform_analysis": {"evidence": {"evidence_id": marker, "deterministic": {"passed": True}, "rounds": []}},
@@ -401,7 +401,11 @@ def test_all_subagent_roles_reach_provider_with_independent_receipts(monkeypatch
     monkeypatch.setattr(llm_query, "_emit_llm_event", lambda kind, severity, message, **fields: events.append((kind, fields)))
 
     expected_ids = {row[1] for row in CASES} | {"orchestrator"}
-    assert {item.role_id for item in llm_query.active_llm_role_contracts()} == expected_ids
+    # Runtime-registered background roles (llm_saturator appends its contract
+    # at import time, 2026-08-13) are legitimate additions; the static set
+    # must be a SUBSET of whatever is active.
+    active_ids = {item.role_id for item in llm_query.active_llm_role_contracts()}
+    assert expected_ids <= active_ids
 
     for role, role_id, tools, module_name, producer_name, producer_file, evidence_kind, renderer_name in CASES:
         marker = f"INDEPENDENT_RENDER_INPUT::{role_id}"
@@ -1329,6 +1333,9 @@ def test_active_tree_provider_scan_covers_aliases_attributes_subpackages_scripts
         # _run_one_cycle phase split; it still owns the only orchestrator-level
         # SDK dispatch (now via _orch.claude_query).
         ("web/core/orchestrator_cycle_phases.py", "_stream_response", "sdk"),
+        # Background fill workload shares the run_claude_query chokepoint
+        # (added 2026-08-13/14 with the LLM saturator).
+        ("web/core/llm_saturator.py", "_one_saturator_session", "run"),
     }
     assert found == expected_run_functions
 
@@ -1379,7 +1386,7 @@ def test_active_render_callers_cannot_reintroduce_caller_owned_full_prompts():
     # Nineteen active provider roles plus the strict gate authority's
     # descriptor-owned semantic replay helper. A new call site must be
     # registered and covered deliberately.
-    assert len(render_calls) == 20
+    assert len(render_calls) == 21  # +1 background LLM saturator session (2026-08-13)
 
 
 def test_durable_worker_effect_supplies_no_external_context_files():

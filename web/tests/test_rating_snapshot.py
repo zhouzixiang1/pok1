@@ -122,7 +122,10 @@ def test_strength_rows_sort_by_rebuilt_active_pool_not_sparse_stored_h2h(tmp_pat
     assert rows[0]["h2h_source"] == "match_history_rebuilt"
     assert rows[0]["h2h_coverage"] == 1.0
     assert rows[0]["h2h_avg_wr"] == 0.8
-    assert rows[0]["rank_basis"] == "active_h2h_plus_conservative"
+    assert rows[0]["rank_basis"] in (
+        "active_h2h_plus_conservative",
+        "active_h2h_plus_conservative_plus_net_chips",
+    )
 
 
 def test_same_coverage_forged_stored_h2h_fails_closed_for_selection(tmp_path):

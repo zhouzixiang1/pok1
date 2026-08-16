@@ -48,6 +48,34 @@ import agent_master_proposal_primaries as _pp
 _PROPOSAL_STRENGTH_SAMPLE_FLOOR = ">=30_complete_matches"
 _PROPOSAL_UNCERTAINTY_PROMPT_VALUE = "wilson_wld_interval"
 
+# Statistical evidence bar (2026-08-16 approved plan, two-tier): a load-bearing
+# weakness claim must cite (a) at least one snapshot row with games >= 30 as
+# its primary basis AND (b) at least one row with games >= 200 as aggregate
+# corroboration. Before this bar, 12/12 selected plans acted on n=4-56 H2H
+# rows (8/12 on n<=15) — pure noise fitting: at n=30 the 95% CI on a win rate
+# is still ~±0.18, which is exactly why aggregate corroboration is also
+# required rather than a higher single-row floor.
+_PROPOSAL_MIN_PRIMARY_GAMES = 30
+_PROPOSAL_MIN_AGGREGATE_GAMES = 200
+
+
+def _snapshot_evidence_two_tier_errors(
+    games_seen: "list[int]",
+) -> list[str]:
+    """Compact, charset-safe two-tier verdict for hints/repair feedback."""
+    best = max(games_seen) if games_seen else 0
+    if any(g >= _PROPOSAL_MIN_PRIMARY_GAMES for g in games_seen) and any(
+        g >= _PROPOSAL_MIN_AGGREGATE_GAMES for g in games_seen
+    ):
+        return []
+    return [
+        "proposal_cited_sample_too_small"
+        f".max_games_seen.{best}"
+        f".need_primary.{_PROPOSAL_MIN_PRIMARY_GAMES}"
+        f".and_aggregate.{_PROPOSAL_MIN_AGGREGATE_GAMES}"
+        ".aggregate_sources.bot_stats.selection_snapshot"
+    ]
+
 # Closed aliases whose natural-language spellings ("fold rate", "fold-rate",
 # "fold.rate") routinely appear in legitimate poker prose.  Bind these only at
 # an underscore separator (the Python identifier form, e.g. ``fold_rate``) or
@@ -738,7 +766,7 @@ def _snapshot_reference_evidence_binding(
     if len(canonical) < 20:
         return None
     projection = canonical[:1600]
-    return {
+    binding = {
         "reference": reference,
         "node_sha256": hashlib.sha256(
             canonical.encode("utf-8")
@@ -749,6 +777,15 @@ def _snapshot_reference_evidence_binding(
         ).hexdigest(),
         "projection_truncated": len(canonical) > 1600,
     }
+    # Structured sample-size scalars for the statistical evidence bar: the
+    # two-tier gate (primary row games>=30 + aggregate corroboration
+    # games>=200) reads these instead of regexing the projection prose.
+    if isinstance(node, dict):
+        for key in ("games", "a_wins", "b_wins", "draws"):
+            value_scalar = node.get(key)
+            if isinstance(value_scalar, int) and not isinstance(value_scalar, bool):
+                binding[key] = value_scalar
+    return binding
 
 
 def _proposal_substantive_contract(proposal: dict) -> dict:
@@ -1082,6 +1119,16 @@ def _validated_master_proposal(
         return None
     normalized["evidence_refs"] = evidence_refs
     normalized["snapshot_evidence"] = snapshot_evidence
+    if require_snapshot_evidence:
+        # Two-tier statistical evidence bar: primary row >= 30 games plus
+        # aggregate corroboration >= 200 games (see constants above).
+        games_seen = [
+            int(b["games"])
+            for b in snapshot_evidence
+            if isinstance(b, dict) and isinstance(b.get("games"), int)
+        ]
+        if _snapshot_evidence_two_tier_errors(games_seen):
+            return None
     if (
         evidence_mode == "frozen_strength_snapshot"
         and not _measurement_target_bound_to_snapshot(
@@ -1348,6 +1395,7 @@ def _master_proposal_projection_hints(
     referenced: set[str] = set()
     normalized_refs: set[str] = set()
     snapshot_ref_count = 0
+    snapshot_games_seen: list[int] = []
     if not isinstance(raw_refs, list) or not 1 <= len(raw_refs) <= 10:
         errors.append("proposal_evidence_refs_shape_invalid")
     else:
@@ -1393,6 +1441,8 @@ def _master_proposal_projection_hints(
                 )
                 if normalized_ref is not None:
                     snapshot_ref_count += 1
+                    if isinstance(binding.get("games"), int):
+                        snapshot_games_seen.append(int(binding["games"]))
             if normalized_ref is None or normalized_ref in normalized_refs:
                 errors.append("proposal_evidence_ref_invalid")
             else:
@@ -1403,6 +1453,8 @@ def _master_proposal_projection_hints(
             errors.append("proposal_snapshot_evidence_required")
         if snapshot_ref_count > 2:
             errors.append("proposal_snapshot_evidence_too_many")
+        if require_snapshot_evidence:
+            errors.extend(_snapshot_evidence_two_tier_errors(snapshot_games_seen))
     if len(str(data.get("risks") or "").strip()) < 20:
         errors.append("proposal_risks_invalid")
     budget_probe = _validated_master_proposal(

@@ -1130,12 +1130,44 @@ and never authorize a poker-runtime restart.
 ## Evidence authority
 
 One strength sample is one complete 70-hand raw native TCP match. Win/loss/draw
-is the sign of final net chips. Net magnitude is only a secondary tie-breaker.
+is the sign of final net chips. Net magnitude is a weighted selection-score
+component since 2026-08-16 (`CHIP_COMPONENT_WEIGHT=0.25` at full chip-sample
+reliability in `rating_snapshot.py::_score_components`, basis suffix
+`_plus_net_chips`) plus the historical tiebreaker — W/L-only scores
+systematically overrated fold-heavy bots. Precommit defaults to
+`PRECOMMIT_DEFAULT_N_GAMES=12` per opponent (the parent gate needs >=6
+samples vs the parent to be reachable), and an exact W/L tie passes only when
+the paired net-chip bootstrap CI LOWER bound is positive
+(`PRECOMMIT_PARENT_TIE_CI_LOWER_MIN`). The rating daemon adds a
+resolve-unresolved-top-pairs scheduling term (conservative-rating top-5
+pairs weighted by rating-deviation-vs-gap unresolvedness).
 Glicko/H2H/selection rows are published as one immutable content-addressed
 cycle, then copied into a generation evidence snapshot. Match-history cutoffs
 and deterministic replay-spotlight text/citations are frozen in that same
 snapshot with source replay hashes; Master and citation gates never reopen live
 replay files or a process-global spotlight manifest.
+
+### Statistical evidence bar (2026-08-16)
+
+A load-bearing weakness claim in a Master proposal must cite snapshot
+evidence satisfying a TWO-TIER bar: (a) at least one matchup row with
+`games >= 30` as the primary basis AND (b) at least one aggregate row with
+`games >= 200` as corroboration (per-bot rows in `bot_stats.json` and
+`selection_snapshot.json` rows carry 200-500 games; H2H rows cap at ~58).
+Enforced in `_validated_master_proposal` (hard reject +
+`proposal_cited_sample_too_small.<numbers>` hint) and mirrored by
+`statistical_evidence_floor_errors` at the plan audit (blocking). Rationale:
+12/12 selected plans (v168-v187) acted on n=4-56 rows — pure noise fitting.
+Related contracts: within-ensemble proposals must carry DISTINCT
+`change_symbol`s (packet-level backstop
+`proposal_packet_change_symbols_not_distinct`); a schema-repair retry is
+PINNED to its original change_symbol (`pinned_change_symbol` +
+`schema_retry_keep_change_symbol.<symbol>` hint — v187's retry silently
+switched targets); the shared cross-generation direction ledger lives in
+`recent_directions.py` (rendered advisory into master_context, and the plan
+audit overrides `direction_novelty` to "repetitive" when the selected symbol
+appears in >= 2 of the last 6 attempts). Source lineage is read from the
+`source: vN` commit-body line (native-tier authority; `parent:` is legacy).
 
 Official EXE results and Arena results have zero strength weight; in any case
 the official EXE certification system has been removed, so there are no longer

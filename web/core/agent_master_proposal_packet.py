@@ -119,6 +119,18 @@ def _parse_valid_proposal_packet_impl(
         or not set(map(str, allowed)).issubset(set(proposal_ids))
     ):
         errors.append("proposal_packet_id_set_mismatch")
+    # Cross-proposal change_symbol uniqueness (2026-08-16 evolution audit:
+    # v172/v186/v187 scout triples were near-identical — same symbol, three
+    # rewordings — which collapses the ensemble into one direction). The
+    # ensemble gatherer rejects duplicates first; this is the packet-level
+    # backstop for anything that slips through (e.g. journal replay).
+    change_symbols = [
+        str(item.get("change_symbol") or "")
+        for item in proposals
+        if isinstance(item, dict)
+    ]
+    if len(change_symbols) == len(proposals) and len(set(change_symbols)) != len(change_symbols):
+        errors.append("proposal_packet_change_symbols_not_distinct")
     required_proposal_fields = {
         "schema_version",
         "direction",
@@ -314,14 +326,25 @@ def _parse_valid_proposal_packet_impl(
                 f"proposal_snapshot_evidence_forbidden:{item.get('proposal_id', '')}"
             )
         snapshot_refs = []
+        required_binding_keys = {
+            "reference",
+            "node_sha256",
+            "resolved_projection",
+            "projection_sha256",
+            "projection_truncated",
+        }
+        # Optional statistical-evidence scalars (games/a_wins/b_wins/draws)
+        # ride along since the two-tier evidence bar (2026-08-16); the digest
+        # fields remain the binding authority.
+        allowed_binding_keys = required_binding_keys | {
+            "games", "a_wins", "b_wins", "draws",
+        }
         for binding in snapshot_evidence:
-            if not isinstance(binding, dict) or set(binding) != {
-                "reference",
-                "node_sha256",
-                "resolved_projection",
-                "projection_sha256",
-                "projection_truncated",
-            }:
+            if (
+                not isinstance(binding, dict)
+                or not required_binding_keys.issubset(binding)
+                or not allowed_binding_keys.issuperset(binding)
+            ):
                 errors.append(
                     f"proposal_snapshot_binding_invalid:{item.get('proposal_id', '')}"
                 )

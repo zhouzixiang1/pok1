@@ -82,12 +82,13 @@ _PRECOMMIT_SHUTDOWN = threading.Event()
 # ──────────────────────────────────────────────
 # Precommit eval tuning constants
 # ──────────────────────────────────────────────
-# Default n_games per opponent for precommit eval. 8 gives sufficient paired
-# net-chip observations for the bootstrap gate (the CI shrinks as 1/sqrt(n));
-# the exact-tie CI escape hatch (paired_bootstrap_ci upper>0) handles the
-# 4W-4L case. 8 (down from 12) reduces precommit wall-clock ~33% to free CPU
-# for LLM work. 16 is the hard ceiling.
-PRECOMMIT_DEFAULT_N_GAMES = 4
+# Default n_games per opponent for precommit eval. 12 per opponent makes the
+# existing parent gate reachable: strength_order.PRECOMMIT_PARENT_MIN_SAMPLES=6
+# requires >=6 samples vs THE parent, and at the previous default of 4 per
+# opponent that gate could never fire (v173 passed at 6W-6L aggregate over
+# two opponents; the "must beat parent" rule was structurally vacuous —
+# 2026-08-16 evolution audit). 16 is the hard ceiling.
+PRECOMMIT_DEFAULT_N_GAMES = 12
 PRECOMMIT_MIN_N_GAMES = 4
 PRECOMMIT_MAX_N_GAMES = 16
 

@@ -939,62 +939,18 @@ def _recent_directions_block(max_versions: int = 12) -> str:
     have been recycling a small set of policy.py symbols; naming the recycled
     symbols lets the proposal ensemble diversify. Advisory only: no ratings,
     no replays, no free-standing lesson store — the text is re-derived from
-    existing logs at every prepare and digest-bound via master_context."""
-    import re as _re
+    existing logs at every prepare and digest-bound via master_context.
 
+    Extraction lives in the shared ``recent_directions`` module so the plan
+    audit (direction-scoped novelty) and the ensemble (duplicate rejection)
+    read the same ledger."""
     try:
-        from evolution_infra import PROJECT_ROOT, RESULTS_DIR
+        from recent_directions import published_versions, recent_change_symbols
 
-        results = Path(RESULTS_DIR)
-        version_dirs = sorted(
-            (
-                d for d in results.iterdir()
-                if d.is_dir() and _re.fullmatch(r"v\d+", d.name)
-            ),
-            key=lambda d: int(d.name[1:]),
-            reverse=True,
-        )[:max_versions]
-        rows = []
-        for d in version_dirs:
-            v = int(d.name[1:])
-            log = d / "logs" / "master_io.txt"
-            if not log.is_file():
-                continue
-            try:
-                size = log.stat().st_size
-                with log.open("rb") as f:
-                    f.seek(max(0, size - 400_000))
-                    tail = f.read().decode("utf-8", errors="replace")
-            except OSError:
-                continue
-            symbols = _re.findall(
-                r'"change_symbol"\s*:\s*"(policy\.py:[A-Za-z_][A-Za-z0-9_]*)"',
-                tail,
-            )
-            if symbols:
-                # Last occurrence = the final selected plan.
-                rows.append((v, symbols[-1]))
+        rows = recent_change_symbols(max_versions)
         if not rows:
             return ""
-        published: set = set()
-        try:
-            import subprocess as _sp
-
-            out = _sp.run(
-                ["git", "tag", "--list", "national-cloud-bot-v*"],
-                cwd=str(PROJECT_ROOT),
-                capture_output=True,
-                text=True,
-                timeout=20,
-            ).stdout
-            for line in out.splitlines():
-                line = line.strip()
-                try:
-                    published.add(int(line.rsplit("-v", 1)[1]))
-                except (ValueError, IndexError):
-                    continue
-        except Exception:
-            pass
+        published = published_versions()
         listing = ", ".join(
             f"v{v} {sym}"
             + (" (published)" if v in published else " (not published)")
