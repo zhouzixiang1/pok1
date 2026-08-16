@@ -1581,6 +1581,93 @@ def test_publication_ref_proof_rejects_lightweight_missing_or_wrong_tree_tag(
         evolution_infra._validate_local_publication_refs(intent, commit)
 
 
+@pytest.mark.parametrize("intent_cert", ("", None))
+@pytest.mark.parametrize("spec_cert", (None, ""))
+def test_publication_reconciliation_allows_certless_none_vs_empty(
+    tmp_path,
+    monkeypatch,
+    intent_cert,
+    spec_cert,
+):
+    """Certificate-removal regression (v186, 2026-08-16): a cert-less
+    publication intent carries ''/None while the resolved bot spec carries
+    None — the raw != refused the post-publish baseline bind for EVERY
+    cert-less publication, stranding published bots at `publishing` until
+    manual recovery. All "no certificate" spellings must compare equal."""
+    import evolution_infra
+    import national_runtime_authority
+    import publication_transaction
+    from types import SimpleNamespace
+
+    bot_dir = tmp_path / bot_name(STRICT_TARGET_V + 1)
+    bot_dir.mkdir()
+    (bot_dir / ".completed").write_text("publication_id=pub\n", encoding="utf-8")
+    target_v = STRICT_TARGET_V + 1
+    intent = {
+        "version": target_v,
+        "workflow_run_id": f"generation:{target_v}:workflow-v1",
+        "completion_tag": bot_tag(target_v),
+        "publication_id": "pub",
+        "candidate_artifact_hash": "artifact",
+        "official_certificate_digest": intent_cert,
+    }
+    checkpoint = {
+        "stage": "publishing",
+        "next_v": target_v,
+        "workflow_run_id": intent["workflow_run_id"],
+        "publication_intent": intent,
+    }
+    monkeypatch.setattr(
+        publication_transaction,
+        "publication_intent_structure_errors",
+        lambda _intent: [],
+    )
+    monkeypatch.setattr(evolution_infra, "_git", lambda *_a, **_k: "a" * 40)
+    monkeypatch.setattr(
+        evolution_infra,
+        "_validate_local_publication_refs",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "_validate_existing_publication_commit",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: bot_dir)
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "build_pending_local_publication_proof",
+        lambda _path: {
+            "version": target_v,
+            "artifact_hash": "artifact",
+            "commit_oid": "a" * 40,
+            "tag": bot_tag(target_v),
+        },
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "resolve_national_bot_spec",
+        lambda *_a, **_k: SimpleNamespace(
+            eligible=True,
+            certificate_digest=spec_cert,
+        ),
+    )
+
+    assert evolution_infra._publication_checkpoint_reconciliation_allowed(
+        checkpoint,
+        {"published_high_water": target_v},
+    ) is True
+
+    # A REAL digest on one side still mismatches a cert-less other side.
+    mismatch = dict(intent)
+    mismatch["official_certificate_digest"] = "d" * 64
+    mismatched_ckpt = dict(checkpoint, publication_intent=mismatch)
+    assert evolution_infra._publication_checkpoint_reconciliation_allowed(
+        mismatched_ckpt,
+        {"published_high_water": target_v},
+    ) is False
+
+
 @pytest.mark.parametrize("sentinel", ("wrong", "symlink"))
 def test_publication_reconciliation_rejects_invalid_completed_sentinel(
     tmp_path,

@@ -264,10 +264,17 @@ def _publication_checkpoint_reconciliation_allowed(checkpoint, authority):
             role=_ei.ROLE_PARENT_SOURCE,
             repo_root=_ei.PROJECT_ROOT,
         )
+        # Certificate removal (2026-08-08) left the two "no certificate"
+        # spellings asymmetric: the resolved spec carries None while legacy
+        # publication intents carry the empty string. A raw != there refused
+        # the post-publish repo-baseline bind for EVERY cert-less publication
+        # (the v27/v29/v79/v83/v88/v105/v186 stuck-publishing deadlock class),
+        # stranding a published bot at `publishing` until manual recovery.
+        # Normalize both sides: absent/empty/None all mean "no certificate".
         if (
             not spec.eligible
-            or spec.certificate_digest
-            != intent.get("official_certificate_digest")
+            or (spec.certificate_digest or None)
+            != (intent.get("official_certificate_digest") or None)
         ):
             return False
         sentinel = bot_dir / ".completed"
