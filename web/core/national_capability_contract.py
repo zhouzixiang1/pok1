@@ -1540,11 +1540,38 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         "donk_line_reachability": "line" in context_fields,
         "delayed_probe_line_reachability": "line" in context_fields,
     }
+    # The generic advisory guidance starves the repair worker for checks
+    # whose pass/fail is later overwritten by the dynamic typed runtime probe
+    # (v187: five identical repair rounds because the behavioral criterion
+    # never reached the worker). State the exact dynamic criteria here.
+    advisory_guidance = {
+        "budget_scaled_refinement": (
+            "Dynamic criterion (probe scenario river_facing_large_bet, trusted "
+            "multifidelity 2s vs 8s strata, fixed seed): the LONG time_budget "
+            "must run >=8 trusted steps (>=5ms trusted CPU) with >=1 refinement "
+            "message, scale steps above the short budget (or both exhaust a "
+            "finite batch at >=8 steps), and the refinement must CHANGE >=1 "
+            "sanitized decision vs the short budget. Drive step/batch counts "
+            "from the decision_context time_budget parameter — never from "
+            "measured elapsed time. Static side: load and use the system "
+            "'deadline' helper."
+        ),
+        "incremental_refinement_protocol": (
+            "Run an incremental refinement loop inside decide() under the "
+            "system deadline helper: repeatedly improve the typed intent "
+            "while time_budget allows, so a larger budget yields more "
+            "refinement steps and (at the long budget) at least one changed "
+            "sanitized decision."
+        ),
+    }
     for check_id in ADVISORY_CHECKS:
         checks.append(_check(
             check_id,
             advisory_states[check_id],
-            guidance=f"Add reachable policy evidence for {check_id} when selected as the generation focus.",
+            guidance=advisory_guidance.get(
+                check_id,
+                f"Add reachable policy evidence for {check_id} when selected as the generation focus.",
+            ),
             summary="reachable context/entrypoint evidence" if advisory_states[check_id] else "not statically demonstrated",
             locations=["policy.py"],
             required=False,

@@ -446,6 +446,7 @@ def _runtime_probe_check(
     passed: bool,
     probe: dict[str, Any],
 ) -> dict[str, Any]:
+    repeatability = probe.get("repeatability") or {}
     return {
         "check_id": "typed_runtime_probe",
         "name": "typed_runtime_probe",
@@ -455,7 +456,13 @@ def _runtime_probe_check(
         "guidance": (
             "Keep policy.py on decision_context v1 and typed intents; the "
             "system runtime must reconstruct official transcripts, persist "
-            "terminal/showdown memory, and emit delimiter-free legal actions."
+            "terminal/showdown memory, and emit delimiter-free legal actions. "
+            "The probe re-runs the SAME seeded scenarios and requires "
+            "byte-identical semantic views across runs: any time-based "
+            "refinement must derive its step/batch counts from the provided "
+            "time_budget parameter (fixed per probe stratum), never from "
+            "measured elapsed time or wall-clock loops, or the repeat runs "
+            "will disagree (runtime_probe_non_repeatable)."
         ),
         "evidence": {
             "summary": (
@@ -467,6 +474,11 @@ def _runtime_probe_check(
             "probe_identity_digest": probe.get("probe_identity_digest"),
             "managed_isolation_digest": probe.get("managed_isolation_digest"),
             "issues": list(probe.get("issues") or [])[:20],
+            "repeat_count": repeatability.get("repeat_count"),
+            "differing_path_count": repeatability.get("differing_path_count"),
+            "differing_paths": list(
+                repeatability.get("differing_paths") or []
+            )[:12],
         },
     }
 
@@ -673,6 +685,29 @@ def _dynamic_probe_states(probe: dict[str, Any]) -> dict[str, bool]:
     }
 
 
+def _budget_scaling_evidence(scaling: dict[str, Any]) -> dict[str, Any]:
+    """Pack the dynamic probe's budget-scaling diagnostics for repair prompts.
+
+    The quality-repair worker prompt renders ONLY the check evidence; the
+    behavioral criterion (e.g. "long-budget refinement must change >=1
+    sanitized decision") must therefore travel in these fields or the worker
+    can only guess (v187: five identical repair rounds)."""
+    def stratum(side: str) -> dict[str, Any]:
+        row = scaling.get(side) or {}
+        return {
+            key: row.get(key)
+            for key in ("trusted_steps", "refinement_messages", "action_changes")
+        }
+
+    return {
+        "capability_issues": list(scaling.get("capability_issues") or [])[:8],
+        "changes_sanitized_decision": scaling.get("changes_sanitized_decision"),
+        "bounded_work": scaling.get("bounded_work"),
+        "scaled_or_exhausted": scaling.get("scaled_or_exhausted"),
+        "strata": {"short": stratum("short"), "long": stratum("long")},
+    }
+
+
 def _apply_typed_runtime_probe(
     capabilities: dict[str, Any],
     candidate: Path,
@@ -822,6 +857,16 @@ def _apply_typed_runtime_probe(
             "managed_isolation_digest": probe.get("managed_isolation_digest"),
             "dynamic_passed": dynamic_states[check_id],
         })
+        # Pack the dynamic probe's own diagnostics into the check evidence:
+        # the quality-repair worker prompt renders ONLY this evidence, and a
+        # generic summary starves it (v187: five repair rounds with the
+        # identical failure because the behavioral criterion — e.g. "long-
+        # budget refinement must change >=1 sanitized decision" — never
+        # reached the worker).
+        if check_id == "budget_scaled_refinement":
+            evidence.update(_budget_scaling_evidence(
+                probe.get("budget_scaled_refinement") or {}
+            ))
         item["evidence"] = evidence
     merged["checks"] = checks
     merged["checks_by_id"] = {

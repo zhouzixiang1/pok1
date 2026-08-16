@@ -47,6 +47,40 @@ from tool_helpers import _target_rel
 import tool_planning_quality_contracts as _qc  # for intra-companion + stay-behind refs
 
 
+def _bounded_evidence_extras(evidence: dict, limit: int = 6) -> str:
+    """Render the actionable diagnostics of a failing check's evidence.
+
+    The bare ``summary; required=guidance; locations`` line starves the
+    repair worker for dynamically-overwritten checks (typed_runtime_probe,
+    budget_scaled_refinement): their pass/fail and its CAUSE live in
+    ``evidence.issues`` / probe diagnostics, not in the generic summary.
+    v187 burned five repair rounds on the identical failure because none of
+    this reached the worker prompt."""
+    parts: list[str] = []
+    issues = [str(x) for x in evidence.get("issues") or [] if str(x).strip()]
+    if issues:
+        parts.append(f"issues={issues[:limit]}")
+    capability_issues = [
+        str(x) for x in evidence.get("capability_issues") or []
+        if str(x).strip()
+    ]
+    if capability_issues:
+        parts.append(f"capability_issues={capability_issues[:limit]}")
+    differing = evidence.get("differing_path_count")
+    if isinstance(differing, int) and differing > 0:
+        paths = [
+            str(x) for x in (evidence.get("differing_paths") or [])[:limit]
+        ]
+        parts.append(f"non_repeatable_paths[{differing}]={paths}")
+    strata = evidence.get("strata")
+    if isinstance(strata, dict) and strata:
+        parts.append(f"strata={strata}")
+    changes = evidence.get("changes_sanitized_decision")
+    if changes is False:
+        parts.append("changes_sanitized_decision=False")
+    return f"; {'; '.join(parts)}" if parts else ""
+
+
 def _is_precommit_rework_checkpoint(ckpt):
     if not isinstance(ckpt, dict):
         return False
@@ -1183,7 +1217,10 @@ def _architecture_contracts(quality, ckpt):
         locations = [str(item) for item in evidence.get("locations") or []]
         summary = str(evidence.get("summary") or "no detector summary")
         location_text = f"; locations={locations[:3]}" if locations else ""
-        evidence_lines.append(f"{check_id}: {summary}; required={guidance}{location_text}")
+        extras = _bounded_evidence_extras(evidence)
+        evidence_lines.append(
+            f"{check_id}: {summary}; required={guidance}{extras}{location_text}"
+        )
     for error in transition.get("runtime_contract_implementation_errors") or []:
         evidence_lines.append(f"runtime_contract_implementation: {error}")
 
@@ -1282,7 +1319,10 @@ def _architecture_contracts_from_capability_only(quality, ckpt):
         locations = [str(item) for item in evidence.get("locations") or []]
         summary = str(evidence.get("summary") or "no detector summary")
         location_text = f"; locations={locations[:3]}" if locations else ""
-        evidence_lines.append(f"{check_id}: {summary}; required={guidance}{location_text}")
+        extras = _bounded_evidence_extras(evidence)
+        evidence_lines.append(
+            f"{check_id}: {summary}; required={guidance}{extras}{location_text}"
+        )
     target_files = ["policy.py"]
     primary = target_files[0]
     precompute_owner = "precompute.py"

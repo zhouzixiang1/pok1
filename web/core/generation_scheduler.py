@@ -930,6 +930,93 @@ def _adversarial_findings_block(source_v) -> str:
         return ""
 
 
+def _recent_directions_block(max_versions: int = 12) -> str:
+    """Render the change symbols recent generations targeted (advisory).
+
+    Deterministic extract from the strict master logs of the most recent
+    generation attempts — published and abandoned alike (abandoned work
+    leaves no tag, so tag history alone is blind to it). Master proposals
+    have been recycling a small set of policy.py symbols; naming the recycled
+    symbols lets the proposal ensemble diversify. Advisory only: no ratings,
+    no replays, no free-standing lesson store — the text is re-derived from
+    existing logs at every prepare and digest-bound via master_context."""
+    import re as _re
+
+    try:
+        from evolution_infra import PROJECT_ROOT, RESULTS_DIR
+
+        results = Path(RESULTS_DIR)
+        version_dirs = sorted(
+            (
+                d for d in results.iterdir()
+                if d.is_dir() and _re.fullmatch(r"v\d+", d.name)
+            ),
+            key=lambda d: int(d.name[1:]),
+            reverse=True,
+        )[:max_versions]
+        rows = []
+        for d in version_dirs:
+            v = int(d.name[1:])
+            log = d / "logs" / "master_io.txt"
+            if not log.is_file():
+                continue
+            try:
+                size = log.stat().st_size
+                with log.open("rb") as f:
+                    f.seek(max(0, size - 400_000))
+                    tail = f.read().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            symbols = _re.findall(
+                r'"change_symbol"\s*:\s*"(policy\.py:[A-Za-z_][A-Za-z0-9_]*)"',
+                tail,
+            )
+            if symbols:
+                # Last occurrence = the final selected plan.
+                rows.append((v, symbols[-1]))
+        if not rows:
+            return ""
+        published: set = set()
+        try:
+            import subprocess as _sp
+
+            out = _sp.run(
+                ["git", "tag", "--list", "national-cloud-bot-v*"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            ).stdout
+            for line in out.splitlines():
+                line = line.strip()
+                try:
+                    published.add(int(line.rsplit("-v", 1)[1]))
+                except (ValueError, IndexError):
+                    continue
+        except Exception:
+            pass
+        listing = ", ".join(
+            f"v{v} {sym}"
+            + (" (published)" if v in published else " (not published)")
+            for v, sym in rows[:10]
+        )
+        return (
+            "RECENT DIRECTIONS (advisory, deterministic system extract; NOT "
+            "statistical authority): recent generations targeted these "
+            "policy.py change symbols (newest first): "
+            + listing
+            + ". Symbols appearing repeatedly across recent generations are "
+            "exhausted hypotheses — do NOT re-propose them without "
+            "materially new frozen evidence; prefer structurally different "
+            "areas (e.g. preflop range construction, bet-sizing ladders, "
+            "position/stack-depth adaptation, showdown-range modeling, "
+            "check-raise lines) unless a frozen evidence row proves an "
+            "unexploited edge in a recycled area."
+        )[:2600]
+    except Exception:
+        return ""
+
+
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt.
 
@@ -1855,7 +1942,19 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     # adversarial duel findings about the current source bot. This runs AFTER
     # parent selection (source_v is only bound there — referencing it earlier
     # crashed every prepare with UnboundLocalError, 2026-08-15 21:37-22:27).
-    match_text = match_analysis or _adversarial_findings_block(source_v)
+    # The recent-directions block is the same advisory pattern: it names the
+    # change symbols recent generations targeted so the proposal ensemble
+    # diversifies instead of recycling the same handful of policy.py symbols
+    # (v170-v187: 63% of proposals targeted opponent.terminal_response).
+    match_text = "\n\n".join(
+        part
+        for part in (
+            (match_analysis or ""),
+            _adversarial_findings_block(source_v),
+            _recent_directions_block(),
+        )
+        if part
+    )
 
     # --- Replay Spotlight Analysis ---
     # Text and citations were derived while the evidence snapshot was created
