@@ -192,6 +192,48 @@ async def lifespan(app: FastAPI):
         import logging as _sat_log
         _sat_log.getLogger("pok.saturator").warning(
             "LLM saturator launch failed: %s", _sat_exc)
+
+    # Memory heartbeat: the process historically grows to its MemoryMax
+    # ceiling over hours (2026-08-11 finding) with zero in-code
+    # observability, so every growth cycle was a black box. A periodic
+    # VmRSS/Threads line in the journal makes the trend and the pre-OOM
+    # phase greppable without tracemalloc overhead. Cancelled in the finally
+    # below alongside the saturator.
+    async def _memory_heartbeat(interval_sec: float = 600.0) -> None:
+        import logging as _mem_log
+
+        heartbeat_log = _mem_log.getLogger("pok.memory")
+        warn_mb = 1536
+        while not (
+            shutdown_mgr is not None
+            and getattr(shutdown_mgr, "is_shutting_down", False)
+        ):
+            try:
+                fields: dict[str, str] = {}
+                with open("/proc/self/status", encoding="ascii") as fh:
+                    for line in fh:
+                        if ":" in line:
+                            key, value = line.split(":", 1)
+                            fields[key.strip()] = value.strip()
+                rss_mb = int(fields.get("VmRSS", "0").split()[0]) // 1024
+                threads = int(fields.get("Threads", "0"))
+                log_at = (
+                    heartbeat_log.warning if rss_mb > warn_mb
+                    else heartbeat_log.info
+                )
+                log_at("memory heartbeat: rss_mb=%d threads=%d", rss_mb, threads)
+            except Exception:
+                pass
+            for _ in range(int(interval_sec)):
+                if (
+                    shutdown_mgr is not None
+                    and getattr(shutdown_mgr, "is_shutting_down", False)
+                ):
+                    break
+                await asyncio.sleep(1.0)
+
+    memory_task = asyncio.create_task(_memory_heartbeat())
+    app.state.memory_heartbeat_task = memory_task
     app.state.national_arena_manager = arena_manager
     app.state.national_arena_epoch_authority = epoch_launch_state
     arena_started = False
@@ -398,6 +440,13 @@ async def lifespan(app: FastAPI):
             _sat.cancel()
             try:
                 await asyncio.wait_for(_sat, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        _mem = getattr(app.state, "memory_heartbeat_task", None)
+        if _mem is not None and not _mem.done():
+            _mem.cancel()
+            try:
+                await asyncio.wait_for(_mem, timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         # ``AppState`` is process-local, so any live owner here was started by

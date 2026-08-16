@@ -47,37 +47,36 @@ from tool_helpers import _target_rel
 import tool_planning_quality_contracts as _qc  # for intra-companion + stay-behind refs
 
 
-def _bounded_evidence_extras(evidence: dict, limit: int = 6) -> str:
-    """Render the actionable diagnostics of a failing check's evidence.
+def _bounded_evidence_extras(evidence: dict, limit: int = 8) -> str:
+    """Render EVERY diagnostic field of a failing check's evidence.
 
     The bare ``summary; required=guidance; locations`` line starves the
     repair worker for dynamically-overwritten checks (typed_runtime_probe,
-    budget_scaled_refinement): their pass/fail and its CAUSE live in
-    ``evidence.issues`` / probe diagnostics, not in the generic summary.
-    v187 burned five repair rounds on the identical failure because none of
-    this reached the worker prompt."""
+    budget_scaled_refinement): their pass/fail and its CAUSE live in the
+    evidence's diagnostic fields, not the generic summary. v187 burned five
+    repair rounds on the identical failure because none of this reached the
+    worker prompt. Rendering is GENERIC over the evidence dict — enumerating
+    specific fields here would re-create the same silent-drop class the next
+    time a gate check grows a new diagnostic field."""
+    skip = {
+        "summary",
+        "locations",
+        "probe_identity_digest",
+        "managed_isolation_digest",
+    }
+    import json as _json
+
     parts: list[str] = []
-    issues = [str(x) for x in evidence.get("issues") or [] if str(x).strip()]
-    if issues:
-        parts.append(f"issues={issues[:limit]}")
-    capability_issues = [
-        str(x) for x in evidence.get("capability_issues") or []
-        if str(x).strip()
-    ]
-    if capability_issues:
-        parts.append(f"capability_issues={capability_issues[:limit]}")
-    differing = evidence.get("differing_path_count")
-    if isinstance(differing, int) and differing > 0:
-        paths = [
-            str(x) for x in (evidence.get("differing_paths") or [])[:limit]
-        ]
-        parts.append(f"non_repeatable_paths[{differing}]={paths}")
-    strata = evidence.get("strata")
-    if isinstance(strata, dict) and strata:
-        parts.append(f"strata={strata}")
-    changes = evidence.get("changes_sanitized_decision")
-    if changes is False:
-        parts.append("changes_sanitized_decision=False")
+    for key, value in (evidence or {}).items():
+        if key in skip or value in (None, "", [], {}):
+            continue
+        try:
+            text = _json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+        parts.append(f"{key}={text[:180]}")
+        if len(parts) >= limit:
+            break
     return f"; {'; '.join(parts)}" if parts else ""
 
 

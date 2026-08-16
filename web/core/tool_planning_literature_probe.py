@@ -200,21 +200,12 @@ def _literature_digest(value) -> str:
     ).hexdigest()
 
 
-def _literature_checkpoint_identity(
+def _literature_checkpoint_identity_fields(
     checkpoint: dict,
     *,
     origin_revision: int | None = None,
-) -> str:
-    """Digest the semantic checkpoint preimage across the receipt CAS write.
-
-    Strips transient bookkeeping that changes between Master retries
-    (audit_attempt bumps, audit_context.master_analysis evidence) so a normal
-    Master-retry does not invalidate a valid probe receipt. The genuine
-    research-requirement content is independently bound by the four
-    master_context_digest / direction_audit_digest / requirement_context[_digest]
-    fields checked separately in _literature_probe_payload_errors.
-    """
-
+) -> dict:
+    """Build the semantic checkpoint preimage (see _literature_checkpoint_identity)."""
     projection = deepcopy(checkpoint)
     projection.pop("literature_probe", None)
     for field in ("timestamp", "last_update_ts", "last_stage_change_ts"):
@@ -243,7 +234,57 @@ def _literature_checkpoint_identity(
         if origin_revision is not None
         else int(checkpoint["checkpoint_revision"])
     )
-    return _literature_digest(projection)
+    return projection
+
+
+def _literature_checkpoint_identity(
+    checkpoint: dict,
+    *,
+    origin_revision: int | None = None,
+) -> str:
+    """Digest the semantic checkpoint preimage across the receipt CAS write.
+
+    Strips transient bookkeeping that changes between Master retries
+    (audit_attempt bumps, audit_context.master_analysis evidence) so a normal
+    Master-retry does not invalidate a valid probe receipt. The genuine
+    research-requirement content is independently bound by the four
+    master_context_digest / direction_audit_digest / requirement_context[_digest]
+    fields checked separately in _literature_probe_payload_errors.
+    """
+    return _literature_digest(
+        _literature_checkpoint_identity_fields(
+            checkpoint, origin_revision=origin_revision
+        )
+    )
+
+
+def _describe_identity_drift(
+    checkpoint: dict,
+    *,
+    origin_revision: int | None = None,
+) -> str:
+    """Name the preimage keys that plausibly caused an identity mismatch.
+
+    The blacklist-of-transients approach above has needed three additions
+    (2026-08-10 audit_attempt, 2026-08-15 infra_failure) — each new mutable
+    checkpoint key is one generation-abandoning recurrence away. This turns
+    the next mismatch from a multi-hour black-box investigation into an
+    instant read: which top-level keys exist in the live preimage, and which
+    of them are NOT in the documented strip list."""
+    try:
+        fields = _literature_checkpoint_identity_fields(
+            checkpoint, origin_revision=origin_revision
+        )
+        stripped = {
+            "literature_probe", "timestamp", "last_update_ts",
+            "last_stage_change_ts", "audit_attempt", "infra_failure",
+        }
+        keys = sorted(k for k in fields if k not in stripped)
+        summary = {k: len(json.dumps(v, default=str)) for k, v in fields.items()}
+        heaviest = sorted(summary.items(), key=lambda kv: -kv[1])[:6]
+        return f"preimage_keys={keys} heaviest={heaviest}"
+    except Exception as exc:
+        return f"identity_drift_description_failed:{type(exc).__name__}"
 
 
 def _literature_checkpoint_binding(
@@ -824,7 +865,16 @@ def _literature_probe_payload_errors(
             checkpoint,
             origin_revision=origin_revision,
         ):
-            errors.append("literature_checkpoint_semantic_identity_mismatch")
+            # Self-describing mismatch: name the live preimage keys so the
+            # next un-stripped mutable checkpoint key is diagnosed in seconds
+            # instead of another multi-hour investigation (see
+            # _describe_identity_drift).
+            errors.append(
+                "literature_checkpoint_semantic_identity_mismatch:"
+                + _describe_identity_drift(
+                    checkpoint, origin_revision=origin_revision
+                )
+            )
 
     translation = producer.get("translation_gate")
     try:

@@ -10,6 +10,7 @@ opponent.terminal_response) because nothing told planning what recent
 generations had already targeted.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -25,23 +26,37 @@ import tool_planning_quality_repair_targets as repair_targets  # noqa: E402
 
 def test_bounded_evidence_extras_renders_diagnostics():
     extras = repair_targets._bounded_evidence_extras({
-        "issues": ["runtime_probe_non_repeatable", "x" * 300],
+        "summary": "managed typed runtime probe failed",
+        "locations": ["policy.py"],
+        "issues": ["runtime_probe_non_repeatable"],
         "capability_issues": ["refinement_never_changes_sanitized_decision"],
         "differing_path_count": 18,
         "differing_paths": ["/line_reachability/dimensions/donk/decision"],
         "strata": {"short": {"trusted_steps": 2}, "long": {"trusted_steps": 9}},
         "changes_sanitized_decision": False,
     })
-    assert "issues=['runtime_probe_non_repeatable'" in extras
-    assert "capability_issues=['refinement_never_changes_sanitized_decision']" in extras
-    assert "non_repeatable_paths[18]" in extras
+    assert "issues=" in extras and "runtime_probe_non_repeatable" in extras
+    assert "capability_issues=" in extras
+    assert "refinement_never_changes_sanitized_decision" in extras
+    assert "differing_path_count=18" in extras
     assert "strata=" in extras
-    assert "changes_sanitized_decision=False" in extras
-    # Bounded: the 300-char issue is included but the line stays sane.
-    assert len(extras) < 600
+    assert "changes_sanitized_decision=false" in extras
+    # Identifying digests and the summary are NOT re-rendered as extras.
+    assert "managed typed runtime probe failed" not in extras
 
     assert repair_targets._bounded_evidence_extras({}) == ""
     assert repair_targets._bounded_evidence_extras({"issues": []}) == ""
+
+
+def test_bounded_evidence_extras_renders_unknown_future_fields():
+    """Class-kill assertion: a future gate check that grows a NEW diagnostic
+    field must reach the repair worker without this renderer being touched
+    (the v187 failure class was exactly this silent drop)."""
+    extras = repair_targets._bounded_evidence_extras({
+        "future_probe_metric": {"edge_count": 7, "mode": "strict"},
+    })
+    assert "future_probe_metric=" in extras
+    assert "edge_count" in extras
 
 
 def test_runtime_probe_check_carries_repeatability_and_determinism_guidance():
@@ -134,3 +149,92 @@ def test_recent_directions_block_empty_without_logs(tmp_path, monkeypatch):
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", str(tmp_path / "none"))
     monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", str(tmp_path))
     assert gs._recent_directions_block() == ""
+
+
+def test_saturator_housekeep_prunes_sessions_and_stale_locks(tmp_path):
+    import time
+
+    import llm_saturator
+
+    now = time.time()
+    fresh = tmp_path / "session_00002.txt"
+    fresh.write_text("x", encoding="utf-8")
+    fresh_touch = tmp_path / "session_00001.txt"
+    fresh_touch.write_text("x", encoding="utf-8")
+    os.utime(fresh_touch, (now - 3600, now - 3600))
+    stale = tmp_path / "session_00000.txt"
+    stale.write_text("x", encoding="utf-8")
+    os.utime(stale, (now - 100000, now - 100000))
+
+    held_lock = tmp_path / "session_00002.txt.lock"
+    held_lock.write_text("", encoding="utf-8")  # fresh — a live session may hold it
+    stale_lock = tmp_path / "session_00000.txt.lock"
+    stale_lock.write_text("", encoding="utf-8")
+    os.utime(stale_lock, (now - 100000, now - 100000))
+
+    llm_saturator._housekeep_session_files(tmp_path, keep_sessions=2)
+
+    assert fresh.exists() and fresh_touch.exists()
+    assert not stale.exists()
+    assert held_lock.exists()  # never prune a possibly-held lock
+    assert not stale_lock.exists()
+
+
+def test_literature_identity_drift_is_self_describing():
+    import tool_planning_literature_probe as probe
+
+    checkpoint = {
+        "next_v": 2,
+        "source_v": 1,
+        "checkpoint_revision": 5,
+        "stage": "direction_audited",
+        "brand_new_mutable_key": {"unexpected": "future bookkeeping"},
+        "timestamp": "2026-08-16T00:00:00",
+    }
+    description = probe._describe_identity_drift(checkpoint, origin_revision=5)
+    assert "brand_new_mutable_key" in description
+    assert "preimage_keys=" in description
+    # The documented strip list itself never appears as residual key.
+    assert "timestamp" not in description.split("heaviest=")[0]
+
+
+def test_pipeline_priority_semaphore_counts_queue_pending():
+    """v187 class-kill: pipeline queue-wait must be visible so background
+    fill can yield/preempt. The wrapper counts pending demand exactly while
+    the acquire waits, and only then."""
+    import asyncio
+
+    import llm_concurrency as lc
+
+    async def scenario():
+        lc._note_pipeline_pending(0)
+        raw = asyncio.Semaphore(1)
+        wrapped = lc._PipelinePrioritySemaphore(raw)
+        await raw.acquire()  # pool fully held (e.g. by saturator sessions)
+        assert lc.pipeline_pending_count() == 0
+
+        async def queued_pipeline():
+            async with wrapped:
+                return "ran"
+
+        task = asyncio.ensure_future(queued_pipeline())
+        await asyncio.sleep(0.05)
+        assert lc.pipeline_pending_count() == 1  # waiting, not running
+        raw.release()
+        assert await task == "ran"
+        await asyncio.sleep(0.01)
+        assert lc.pipeline_pending_count() == 0  # cleared after acquire
+        assert raw._value == 1  # the wrapper released the permit back
+
+    asyncio.run(scenario())
+
+
+def test_saturator_preemption_pick_semantics():
+    import llm_saturator
+
+    # Transient pipeline queue churn must not cancel sessions...
+    assert llm_saturator._pick_preemptable({"t": 1.0}, 5.0) is None
+    # ...but sustained demand preempts the YOUNGEST (least invested).
+    tasks = {"old": 100.0, "young": 900.0}
+    assert llm_saturator._pick_preemptable(tasks, 45.0) == "young"
+    assert llm_saturator._pick_preemptable({}, 45.0) is None

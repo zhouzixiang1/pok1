@@ -26,6 +26,7 @@ all return the same shared semaphore, so existing imports keep resolving.
 
 import asyncio
 import os
+import time
 
 # Total concurrent in-flight LLM streams across ALL roles.
 GLOBAL_LLM_CONCURRENCY = int(os.environ.get("POK_GLOBAL_LLM_CONCURRENCY", "4"))
@@ -71,8 +72,17 @@ def get_llm_semaphore_for_role(role_name: str | None) -> asyncio.Semaphore:
     slots idle during temporally-separated pipeline phases (Master/Workers vs
     gates); a single pool lets every permit fill whichever role has work,
     roughly doubling real utilization for the same permit count.
+
+    Pipeline roles get the :class:`_PipelinePrioritySemaphore` wrapper (same
+    FIFO semaphore underneath) so their queue-wait is visible to the
+    background-fill preemption logic; background fill roles (SATURATOR) get
+    the raw semaphore — they are the preemptable class, never the preempting
+    one.
     """
-    return _get_shared_semaphore()
+    sem = _get_shared_semaphore()
+    if role_name and "SATURATOR" in str(role_name).upper():
+        return sem
+    return _PipelinePrioritySemaphore(sem)
 
 
 def get_active_stream_count() -> int:
@@ -103,8 +113,8 @@ def llm_semaphore_has_capacity(n: int = 1) -> bool:
     draft (or a filler draft) so the pool is kept saturated without
     over-launching. Reads ``semaphore._value`` — the same instantaneous read
     ``get_active_stream_count`` uses — so it is a *hint*, not a reservation:
-    a permit that was just released but not yet reacquired by a queued
-    acquirer momentarily reads free, and the launched draft's first LLM call
+    a permit that was just released but not yet reacquired by a queued acquirer
+    momentarily reads free, and the launched draft's first LLM call
     simply queues on the semaphore if the hint was optimistic (FIFO fairness
     is preserved). This is the desired behaviour: we *want* to keep a draft
     staged behind the semaphore so it starts the moment a permit frees, rather
@@ -116,3 +126,80 @@ def llm_semaphore_has_capacity(n: int = 1) -> bool:
     """
     sem = _get_shared_semaphore()
     return bool(sem and sem._value >= n)
+
+
+# --- Pipeline preemption over background fill work -------------------------
+#
+# The saturator keeps free permits filled, which is its purpose — but a
+# launched session then HOLDS its permit for ~25 min. A pipeline role that
+# dispatches while all permits are held by saturator sessions queues behind
+# them while its own dispatch timeout keeps running (v187, 2026-08-16:
+# two consecutive 1800s worker timeouts whose entire budget was consumed by
+# semaphore queue-wait behind three saturator sessions). Background fill
+# must therefore be preemptable BY pipeline demand:
+#   * pipeline roles acquire through _PipelinePrioritySemaphore, which
+#     counts queue-pending demand;
+#   * the saturator holds new launches while pipeline roles are pending and
+#     cancels its youngest in-flight session when demand persists.
+
+_pipeline_pending: int = 0
+_pipeline_first_pending_ts: "float | None" = None
+
+
+def _note_pipeline_pending(delta: int) -> None:
+    global _pipeline_pending, _pipeline_first_pending_ts
+    _pipeline_pending = max(0, _pipeline_pending + delta)
+    if _pipeline_pending > 0 and _pipeline_first_pending_ts is None:
+        _pipeline_first_pending_ts = time.time()
+    elif _pipeline_pending == 0:
+        _pipeline_first_pending_ts = None
+
+
+def pipeline_pending_count() -> int:
+    """Pipeline LLM roles currently queued waiting for a permit."""
+    return _pipeline_pending
+
+
+def pipeline_pending_age_sec() -> float:
+    """Seconds since the oldest continuous pipeline queue-demand began.
+
+    ``0.0`` when no pipeline role is waiting. Preemption consumers treat a
+    sustained nonzero age (e.g. >30s) as the signal that held background
+    permits, not queue churn, are blocking the pipeline."""
+    if _pipeline_first_pending_ts is None:
+        return 0.0
+    return time.time() - _pipeline_first_pending_ts
+
+
+class _PipelinePrioritySemaphore:
+    """async-with semaphore wrapper that counts queue-pending pipeline demand.
+
+    Delegates to the shared FIFO semaphore; the ONLY behavioral addition is
+    the pending counter around the acquire, scoped exactly to the wait (the
+    retry loop acquires per attempt, so backoff sleeps between attempts do
+    not count as demand)."""
+
+    def __init__(self, sem: asyncio.Semaphore) -> None:
+        self._sem = sem
+
+    async def __aenter__(self) -> "_PipelinePrioritySemaphore":
+        _note_pipeline_pending(1)
+        try:
+            await self._sem.acquire()
+        finally:
+            _note_pipeline_pending(-1)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self._sem.release()
+        return False
+
+    async def acquire(self) -> "_PipelinePrioritySemaphore":
+        return await self.__aenter__()
+
+    def release(self) -> None:
+        self._sem.release()
+
+    @property
+    def _value(self) -> int:
+        return self._sem._value

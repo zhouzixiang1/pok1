@@ -387,6 +387,64 @@ async def _one_saturator_session(session_id: int) -> dict:
         return {"session": session_id, "ok": False, "error": str(e)[:200]}
 
 
+def _housekeep_session_files(
+    log_dir: Path,
+    *,
+    keep_sessions: int = 400,
+    lock_max_age_sec: float = 4 * 3600.0,
+) -> None:
+    """Bound the saturator's on-disk footprint (unattended-operation hygiene).
+
+    Two growth sources, both observed in production: every session leaves a
+    ``session_NNN.txt.lock`` sidecar that the shared ``locked_file`` util
+    (semantic, not editable here) never removes (2,143 leaked locks in two
+    days), and session transcripts themselves accumulate write-only forever
+    (findings.jsonl is the consumed artifact; transcripts are raw logs).
+    Sessions cap at POK_LLM_SATURATOR_TOTAL_TIMEOUT (7200s), so a lock older
+    than 4h can never be held. Failures here must never kill the loop."""
+    import time as _time
+
+    try:
+        now = _time.time()
+        sessions = sorted(
+            (p for p in log_dir.glob("session_*.txt") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in sessions[keep_sessions:]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        for lock in log_dir.glob("session_*.txt.lock"):
+            try:
+                if now - lock.stat().st_mtime > lock_max_age_sec:
+                    lock.unlink()
+            except OSError:
+                pass
+    except Exception as e:
+        log.warning("saturator housekeeping failed: %s", e)
+
+
+def _pick_preemptable(
+    sessions: "dict[object, float]",
+    pending_age_sec: float,
+    *,
+    min_pending_age_sec: float = 30.0,
+    now: float | None = None,
+):
+    """Pick the youngest in-flight session to cancel for pipeline preemption.
+
+    Youngest = least invested (fewest tokens spent). Returns None when
+    pipeline demand has not persisted long enough (transient queue churn
+    must not cancel sessions) or when nothing is in flight."""
+    if pending_age_sec < min_pending_age_sec or not sessions:
+        return None
+    del now  # start timestamps are recorded at launch; comparison is by value
+    # Youngest = largest start timestamp = least invested.
+    return max(sessions, key=lambda t: sessions[t])
+
+
 async def run_llm_saturator(shutdown_mgr=None) -> None:
     """Background loop: keep free LLM permits filled with deep analysis sessions.
 
@@ -401,6 +459,8 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
     log.info("LLM saturator started — filling free LLM permits with deep analysis")
     session_id = 0
     in_flight: set = set()
+    started_at: "dict[object, float]" = {}
+    last_housekeep = 0.0
 
     async def _launch(sid: int):
         try:
@@ -412,6 +472,35 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
         while True:
             if shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False):
                 break
+            # Pipeline preemption (v187 lesson: a queued worker's dispatch
+            # timeout burned entirely on semaphore queue-wait behind three
+            # ~25-min saturator sessions). When pipeline demand persists,
+            # cancel the youngest session — its permit releases immediately
+            # and the FIFO semaphore grants it to the waiting pipeline role.
+            try:
+                from llm_concurrency import pipeline_pending_age_sec
+                _pending_age = pipeline_pending_age_sec()
+            except Exception:
+                _pending_age = 0.0
+            in_flight = {t for t in in_flight if not t.done()}
+            if in_flight and _pending_age > 30.0:
+                victim = _pick_preemptable(started_at, _pending_age)
+                if victim is not None:
+                    log.warning(
+                        "saturator preempting session %s after %.0fs of "
+                        "pipeline queue demand (in-flight=%d)",
+                        getattr(victim, "get_name", lambda: "?")(),
+                        _pending_age, len(in_flight),
+                    )
+                    victim.cancel()
+            started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
+            if time.time() - last_housekeep > 600:
+                last_housekeep = time.time()
+                from evolution_infra import RESULTS_DIR
+
+                _housekeep_session_files(
+                    Path(RESULTS_DIR) / "saturator"
+                )
             try:
                 from llm_concurrency import llm_semaphore_has_capacity
             except Exception:
@@ -419,15 +508,25 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
             # Clean finished tasks.
             in_flight = {t for t in in_flight if not t.done()}
             # Launch while there is capacity and we are under a soft cap.
+            # Never start a NEW background session while a pipeline role is
+            # queued for a permit — background fill yields at admission, not
+            # just at launch capacity.
             soft_cap = max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4")))
+            try:
+                from llm_concurrency import pipeline_pending_count
+                _pipeline_waiting = pipeline_pending_count()
+            except Exception:
+                _pipeline_waiting = 0
             while (
                 len(in_flight) < soft_cap
+                and _pipeline_waiting == 0
                 and llm_semaphore_has_capacity(1)
                 and not (shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False))
             ):
                 session_id += 1
                 t = asyncio.create_task(_launch(session_id))
                 in_flight.add(t)
+                started_at[t] = time.time()
                 # tiny yield so we don't fire-and-forget faster than the
                 # semaphore can reflect the acquisition.
                 await asyncio.sleep(0.5)

@@ -30,12 +30,12 @@ def test_shared_pool_all_roles_get_same_semaphore():
     sem_worker = llm_concurrency.get_llm_semaphore_for_role("worker")
     sem_direction = llm_concurrency.get_llm_semaphore_for_role("direction_audit")
     sem_none = llm_concurrency.get_llm_semaphore_for_role(None)
-    assert sem_review is sem_global
-    assert sem_critic is sem_global
-    assert sem_master is sem_global
-    assert sem_worker is sem_global
-    assert sem_direction is sem_global
-    assert sem_none is sem_global
+    # Since 2026-08-16 pipeline roles share the underlying FIFO pool through
+    # the _PipelinePrioritySemaphore wrapper (queue-pending visibility for
+    # background-fill preemption); only background fill (SATURATOR) gets the
+    # raw object. "Same pool" means same underlying semaphore.
+    for sem in (sem_review, sem_critic, sem_master, sem_worker, sem_direction, sem_none):
+        assert getattr(sem, "_sem", sem) is sem_global
 
 
 def test_legacy_aliases_return_shared_semaphore():
@@ -57,15 +57,11 @@ def test_semaphore_capacity_matches_config():
 def test_master_proposal_critic_uses_shared_pool():
     """All Master proposal roles (Scouts, Critics, final) use the shared pool."""
     shared = llm_concurrency.get_global_llm_semaphore()
-    assert (
-        llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL CRITIC falsification")
-        is shared
-    )
-    assert (
-        llm_concurrency.get_llm_semaphore_for_role("MASTER PROPOSAL mechanism")
-        is shared
-    )
-    assert (
-        llm_concurrency.get_llm_semaphore_for_role("STRATEGY CRITIC")
-        is shared
-    )
+
+    def _pool(role):
+        sem = llm_concurrency.get_llm_semaphore_for_role(role)
+        return getattr(sem, "_sem", sem)
+
+    assert _pool("MASTER PROPOSAL CRITIC falsification") is shared
+    assert _pool("MASTER PROPOSAL mechanism") is shared
+    assert _pool("STRATEGY CRITIC") is shared
