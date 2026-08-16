@@ -57,22 +57,88 @@ _PROPOSAL_UNCERTAINTY_PROMPT_VALUE = "wilson_wld_interval"
 # required rather than a higher single-row floor.
 _PROPOSAL_MIN_PRIMARY_GAMES = 30
 _PROPOSAL_MIN_AGGREGATE_GAMES = 200
+# Cold-start annealing (2026-08-17): the Phase-2 rating identity reset
+# archives ALL H2H/bot_stats payloads, so right after a reset no row anywhere
+# reaches the absolute tiers — v189-v194 burned five generations at master
+# while the daemon rebuilt from zero. While the pool's best citable row is
+# observably below an absolute tier, that tier anneals to the best available
+# evidence (never below these floors) and re-hardens automatically.
+_PROPOSAL_COLD_START_PRIMARY_FLOOR = 15
+
+
+def _snapshot_pool_max_games(snapshot_dir) -> int:
+    """Largest games count across the snapshot's citable strength rows."""
+    if snapshot_dir is None:
+        return 0
+    best = 0
+    for filename in _STRENGTH_SNAPSHOT_FILENAMES:
+        try:
+            data = json.loads(
+                (Path(snapshot_dir) / filename).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                games = node.get("games")
+                if (
+                    isinstance(games, int)
+                    and not isinstance(games, bool)
+                    and games > best
+                    and any(
+                        isinstance(node.get(k), int)
+                        for k in ("a_wins", "wins", "win_rate")
+                    )
+                ):
+                    best = games
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+    return best
+
+
+def _effective_evidence_tiers(snapshot_dir) -> tuple[int, int]:
+    """(primary, aggregate) thresholds after cold-start annealing.
+
+    ``pool_max <= 0`` (no readable snapshot) means UNKNOWN, not empty: the
+    absolute tiers apply — annealing only weakens the bar when the pool is
+    observably small, never when we merely failed to look."""
+    pool_max = _snapshot_pool_max_games(snapshot_dir)
+    if pool_max <= 0:
+        return _PROPOSAL_MIN_PRIMARY_GAMES, _PROPOSAL_MIN_AGGREGATE_GAMES
+    # The aggregate tier anneals to best-available with the SAME floor as
+    # the primary tier: a mid-range pool (e.g. max row 31) must stay
+    # satisfiable by citing its biggest row — an aggregate floor of 60 would
+    # recreate the cold-start deadlock for pools between 31 and 60.
+    primary = max(
+        _PROPOSAL_COLD_START_PRIMARY_FLOOR,
+        min(_PROPOSAL_MIN_PRIMARY_GAMES, pool_max),
+    )
+    aggregate = max(
+        _PROPOSAL_COLD_START_PRIMARY_FLOOR,
+        min(_PROPOSAL_MIN_AGGREGATE_GAMES, pool_max),
+    )
+    return primary, aggregate
 
 
 def _snapshot_evidence_two_tier_errors(
     games_seen: "list[int]",
+    snapshot_dir=None,
 ) -> list[str]:
     """Compact, charset-safe two-tier verdict for hints/repair feedback."""
     best = max(games_seen) if games_seen else 0
-    if any(g >= _PROPOSAL_MIN_PRIMARY_GAMES for g in games_seen) and any(
-        g >= _PROPOSAL_MIN_AGGREGATE_GAMES for g in games_seen
+    primary, aggregate = _effective_evidence_tiers(snapshot_dir)
+    if any(g >= primary for g in games_seen) and any(
+        g >= aggregate for g in games_seen
     ):
         return []
     return [
         "proposal_cited_sample_too_small"
         f".max_games_seen.{best}"
-        f".need_primary.{_PROPOSAL_MIN_PRIMARY_GAMES}"
-        f".and_aggregate.{_PROPOSAL_MIN_AGGREGATE_GAMES}"
+        f".need_primary.{primary}"
+        f".and_aggregate.{aggregate}"
         ".aggregate_sources.bot_stats.selection_snapshot"
     ]
 
@@ -1127,7 +1193,7 @@ def _validated_master_proposal(
             for b in snapshot_evidence
             if isinstance(b, dict) and isinstance(b.get("games"), int)
         ]
-        if _snapshot_evidence_two_tier_errors(games_seen):
+        if _snapshot_evidence_two_tier_errors(games_seen, snapshot_dir):
             return None
     if (
         evidence_mode == "frozen_strength_snapshot"
@@ -1454,7 +1520,11 @@ def _master_proposal_projection_hints(
         if snapshot_ref_count > 2:
             errors.append("proposal_snapshot_evidence_too_many")
         if require_snapshot_evidence:
-            errors.extend(_snapshot_evidence_two_tier_errors(snapshot_games_seen))
+            errors.extend(
+                _snapshot_evidence_two_tier_errors(
+                    snapshot_games_seen, snapshot_dir
+                )
+            )
     if len(str(data.get("risks") or "").strip()) < 20:
         errors.append("proposal_risks_invalid")
     budget_probe = _validated_master_proposal(

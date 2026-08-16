@@ -345,3 +345,65 @@ def test_saturator_quota_backoff_pauses_launches():
     # Benign errors do not pause.
     llm_saturator._note_saturator_provider_failure("timeout reading stream")
     assert llm_saturator._saturator_provider_paused() is False
+
+
+def test_evidence_tiers_anneal_during_cold_start(tmp_path):
+    """2026-08-17: the rating identity reset archives ALL H2H/bot_stats
+    payloads, so no row reaches 30/200 right after a reset — v189-v194
+    burned five generations at master. The tiers must anneal to the best
+    available evidence (floors 15/60), harden automatically, and treat an
+    UNREADABLE pool as unknown (absolute tiers), never as empty."""
+    import agent_master_validation as amv
+
+    snap = tmp_path / "rich"
+    snap.mkdir()
+    (snap / "head_to_head.json").write_text(
+        json.dumps({"a vs b": {"games": 250, "a_wins": 120, "b_wins": 130}}),
+        encoding="utf-8",
+    )
+    assert amv._effective_evidence_tiers(snap) == (30, 200)
+
+    cold = tmp_path / "cold"
+    cold.mkdir()
+    (cold / "head_to_head.json").write_text(
+        json.dumps({"a vs b": {"games": 31, "a_wins": 15, "b_wins": 16}}),
+        encoding="utf-8",
+    )
+    assert amv._effective_evidence_tiers(cold) == (30, 31)
+    # A 31-game row passes during cold start; a 26-game row still fails.
+    assert amv._snapshot_evidence_two_tier_errors([31, 31], cold) == []
+    assert amv._snapshot_evidence_two_tier_errors([26], cold)
+
+    frozen = tmp_path / "frozen"
+    frozen.mkdir()
+    (frozen / "head_to_head.json").write_text(
+        json.dumps({"a vs b": {"games": 12, "a_wins": 6, "b_wins": 6}}),
+        encoding="utf-8",
+    )
+    # Below the shared 15-game floor nothing passes: citing 12-game rows as
+    # load-bearing IS noise fitting — the generation waits for the pool.
+    assert amv._effective_evidence_tiers(frozen) == (15, 15)
+
+    # Unknown pool -> absolute tiers (no silent weakening on read failure).
+    assert amv._effective_evidence_tiers(None) == (30, 200)
+
+
+def test_audit_floor_anneals_for_cold_start(monkeypatch):
+    import evidence_snapshot as es
+
+    monkeypatch.setattr(
+        es, "load_generation_evaluation_snapshot",
+        lambda next_v: {
+            "available": True,
+            "h2h": {"a vs b": {"games": 31, "a_wins": 15, "b_wins": 16}},
+            "bot_stats": {"a": {"games": 31, "wins": 15}},
+        },
+    )
+    errs = es.statistical_evidence_floor_errors(
+        {
+            "worker_prompt": "a vs b games=31 weakness",
+            "evidence_refs": ["snapshot:bot_stats.json#/a"],
+        },
+        195,
+    )
+    assert errs == []

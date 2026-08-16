@@ -876,6 +876,35 @@ def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
     return deduped
 
 
+def _snapshot_pool_max_games_for(next_v: int | str) -> int:
+    """Largest games count across the generation snapshot's citable rows."""
+    best = 0
+    bundle = load_generation_evaluation_snapshot(next_v)
+    for role in ("h2h", "bot_stats", "selection"):
+        data = bundle.get(role) if isinstance(bundle, dict) else None
+        if not isinstance(data, dict):
+            continue
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                games = node.get("games")
+                if (
+                    isinstance(games, int)
+                    and not isinstance(games, bool)
+                    and games > best
+                    and any(
+                        isinstance(node.get(k), (int, float))
+                        for k in ("a_wins", "wins", "win_rate")
+                    )
+                ):
+                    best = games
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+    return best
+
+
 def statistical_evidence_floor_errors(
     master_plan: Any,
     next_v: int | str,
@@ -918,6 +947,14 @@ def statistical_evidence_floor_errors(
         # No matchup citation at all: the accuracy validator or the proposal
         # schema owns that failure mode; sufficiency has nothing to grade.
         return []
+    # Cold-start annealing (2026-08-17): after the rating identity reset no
+    # row reaches the absolute tiers, so the audit-side floor anneals to the
+    # pool's best available row exactly like the proposal validator's (see
+    # agent_master_validation). An unreadable pool (0) means UNKNOWN: the
+    # absolute floor applies unchanged.
+    pool_max = _snapshot_pool_max_games_for(next_v)
+    if pool_max > 0:
+        min_primary_games = max(15, min(min_primary_games, pool_max))
     has_primary = any(g >= min_primary_games for g in cited_games)
     # Aggregate corroboration: H2H rows cap at ~58 games, so the >=200 tier
     # is necessarily a bot_stats.json / selection_snapshot.json citation —
