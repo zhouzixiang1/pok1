@@ -414,8 +414,13 @@ fail retry during a multi-hour quota window.
 ### Global LLM concurrency (producer-consumer model)
 
 All sub-agent LLM calls are capped at a bounded number of **simultaneous
-in-flight streams** via a process-wide `asyncio.Semaphore` in
-`web/core/llm_concurrency.py` (the code default and any production override
+in-flight streams** via a process-wide semaphore in
+`web/core/llm_concurrency.py` (pipeline roles acquire through
+`_PipelinePrioritySemaphore`, which counts queue-pending demand; the
+background saturator never launches while pipeline roles are queued and
+cancels its youngest in-flight session when demand persists >30s — the
+v187 queue-starvation fix). A `vmrss` memory heartbeat logs every 600s
+(`pok.memory`), WARNING past 1.5 GiB. (the code default and any production override
 live in `POK_GLOBAL_LLM_CONCURRENCY`; see
 `deploy/tencent-cloud/env.runtime` for the current value and
 `web/core/llm_concurrency.py` for the code default). The semaphore is
@@ -1156,7 +1161,15 @@ evidence satisfying a TWO-TIER bar: (a) at least one matchup row with
 `selection_snapshot.json` rows carry 200-500 games; H2H rows cap at ~58).
 Enforced in `_validated_master_proposal` (hard reject +
 `proposal_cited_sample_too_small.<numbers>` hint) and mirrored by
-`statistical_evidence_floor_errors` at the plan audit (blocking). Rationale:
+`statistical_evidence_floor_errors` at the plan audit (blocking; grades the
+plan's own snapshot bindings — the same citation set the proposal gate
+grades). Cold-start annealing (2026-08-17): after a rating-identity reset no
+row reaches the absolutes, so while the pool's best citable row is
+observably below a tier, that tier anneals to best-available (shared floor
+15 games; below the floor nothing passes — citing sub-15 rows as
+load-bearing is noise fitting) and re-hardens automatically; an unreadable
+pool means UNKNOWN and the absolutes apply. The plan audit and the proposal
+gate share one citation set and one pool-max typing rule. Rationale:
 12/12 selected plans (v168-v187) acted on n=4-56 rows — pure noise fitting.
 Related contracts: within-ensemble proposals must carry DISTINCT
 `change_symbol`s (packet-level backstop

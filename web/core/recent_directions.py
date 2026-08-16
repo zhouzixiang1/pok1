@@ -69,6 +69,7 @@ def recent_change_symbols(
     max_versions: int = 12,
     *,
     results_dir: "str | Path | None" = None,
+    exclude_version: int | None = None,
 ) -> "list[tuple[int, str]]":
     """[(version, change_symbol), ...] newest-first for recent generations.
 
@@ -97,6 +98,12 @@ def recent_change_symbols(
         return []
     rows: "list[tuple[int, str]]" = []
     for d in version_dirs:
+        v = int(d.name[1:])
+        # exclude_version: the generation currently being planned/audited
+        # must not count itself — the audit's repetitive-veto otherwise
+        # blocks any symbol after ONE prior attempt (static audit finding 6).
+        if exclude_version is not None and v == int(exclude_version):
+            continue
         log = d / "logs" / "master_io.txt"
         if not log.is_file():
             continue
@@ -117,11 +124,12 @@ def recent_symbol_counts(
     max_versions: int = 6,
     *,
     results_dir: "str | Path | None" = None,
+    exclude_version: int | None = None,
 ) -> "dict[str, int]":
     """Recycling counts keyed by change symbol over the last N generations."""
     counts: "dict[str, int]" = {}
     for _v, symbol in recent_change_symbols(
-        max_versions, results_dir=results_dir
+        max_versions, results_dir=results_dir, exclude_version=exclude_version
     ):
         counts[symbol] = counts.get(symbol, 0) + 1
     return counts

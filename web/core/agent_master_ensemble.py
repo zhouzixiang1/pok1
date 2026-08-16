@@ -379,8 +379,22 @@ async def _run_master_proposal_ensemble(
         if proposal is None:
             repair = {"kind": "schema"}
             # Pin the schema retry to its original target family so repair
-            # pressure cannot silently redirect the direction (v187).
-            pinned_symbol = _extract_change_symbol_from_output(output)
+            # pressure cannot silently redirect the direction (v187). The pin
+            # must use the GRAPH-RESOLVED spelling: the raw output failed
+            # validation by definition, and pinning an unnormalized or
+            # nonexistent symbol makes every retry lose the != comparison
+            # (raw "bluff_allowed" resolves to "_bluff_allowed" — static
+            # audit finding 2, 2026-08-17). Unresolvable pins are dropped.
+            pinned_symbol = None
+            raw_symbol = _extract_change_symbol_from_output(output)
+            if raw_symbol and source_graph is not None:
+                resolved = _am._normalize_source_symbol(raw_symbol)
+                if resolved is not None and resolved not in source_graph:
+                    resolved = _am._fuzzy_resolve_symbol(
+                        resolved, source_graph, emit_event=False
+                    )
+                if resolved is not None and resolved in source_graph:
+                    pinned_symbol = resolved
             if pinned_symbol:
                 repair["pinned_change_symbol"] = pinned_symbol
             repair["projection_hints"] = (

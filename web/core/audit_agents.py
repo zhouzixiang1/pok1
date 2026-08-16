@@ -1171,7 +1171,7 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
                         "change_symbol"
                     )) or ""
                 )
-                _counts = recent_symbol_counts(6)
+                _counts = recent_symbol_counts(6, exclude_version=int(next_v))
                 _seen = _counts.get(_selected_symbol, 0)
                 if _selected_symbol and _seen >= 2:
                     data = dict(data)

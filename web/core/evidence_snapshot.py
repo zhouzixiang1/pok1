@@ -877,7 +877,12 @@ def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
 
 
 def _snapshot_pool_max_games_for(next_v: int | str) -> int:
-    """Largest games count across the generation snapshot's citable rows."""
+    """Largest games count across the generation snapshot's citable rows.
+
+    Typing rule matches agent_master_validation._snapshot_pool_max_games
+    (strength-signal keys must be ints) so the two tiers can never disagree
+    because one scanner accepted a float the other rejected.
+    """
     best = 0
     bundle = load_generation_evaluation_snapshot(next_v)
     for role in ("h2h", "bot_stats", "selection"):
@@ -894,8 +899,8 @@ def _snapshot_pool_max_games_for(next_v: int | str) -> int:
                     and not isinstance(games, bool)
                     and games > best
                     and any(
-                        isinstance(node.get(k), (int, float))
-                        for k in ("a_wins", "wins", "win_rate")
+                        isinstance(node.get(k), int)
+                        for k in ("a_wins", "wins")
                     )
                 ):
                     best = games
@@ -926,23 +931,43 @@ def statistical_evidence_floor_errors(
     if not h2h:
         return []
     text = _flatten_text(master_plan)
+    # Prefer the plan's OWN validated snapshot bindings as the citation set:
+    # the proposal gate grades those same bindings (any of the 7 strength
+    # files), so an H2H-alias-only derivation here made the audit demand an
+    # H2H row >= 30 in pools whose only >=30 rows live in bot_stats — every
+    # plan naming a matchup was then burned (static audit finding 1,
+    # 2026-08-17). Alias matching remains the fallback for plans whose
+    # bindings were stripped.
+    bindings = None
+    if isinstance(master_plan, dict):
+        binding = master_plan.get("proposal_binding")
+        if isinstance(binding, dict):
+            raw = binding.get("snapshot_evidence")
+            if isinstance(raw, list):
+                bindings = [b for b in raw if isinstance(b, dict)]
     cited_games: list[int] = []
-    for key, row in h2h.items():
-        if not isinstance(row, dict):
-            continue
-        games = int(row.get("games", 0) or 0)
-        if games <= 0:
-            continue
-        for alias, _first, _second in _h2h_key_aliases(str(key)):
-            if not alias:
-                continue
-            if re.search(
-                rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])",
-                text,
-                re.IGNORECASE,
-            ):
+    if bindings:
+        for binding_row in bindings:
+            games = binding_row.get("games")
+            if isinstance(games, int) and not isinstance(games, bool):
                 cited_games.append(games)
-                break
+    if not cited_games:
+        for key, row in h2h.items():
+            if not isinstance(row, dict):
+                continue
+            games = int(row.get("games", 0) or 0)
+            if games <= 0:
+                continue
+            for alias, _first, _second in _h2h_key_aliases(str(key)):
+                if not alias:
+                    continue
+                if re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])",
+                    text,
+                    re.IGNORECASE,
+                ):
+                    cited_games.append(games)
+                    break
     if not cited_games:
         # No matchup citation at all: the accuracy validator or the proposal
         # schema owns that failure mode; sufficiency has nothing to grade.

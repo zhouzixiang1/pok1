@@ -351,7 +351,7 @@ def test_evidence_tiers_anneal_during_cold_start(tmp_path):
     """2026-08-17: the rating identity reset archives ALL H2H/bot_stats
     payloads, so no row reaches 30/200 right after a reset — v189-v194
     burned five generations at master. The tiers must anneal to the best
-    available evidence (floors 15/60), harden automatically, and treat an
+    available evidence (shared floor 15), harden automatically, and treat an
     UNREADABLE pool as unknown (absolute tiers), never as empty."""
     import agent_master_validation as amv
 
