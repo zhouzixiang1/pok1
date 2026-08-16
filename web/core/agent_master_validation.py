@@ -108,19 +108,23 @@ def _effective_evidence_tiers(snapshot_dir) -> tuple[int, int]:
     pool_max = _snapshot_pool_max_games(snapshot_dir)
     if pool_max <= 0:
         return _PROPOSAL_MIN_PRIMARY_GAMES, _PROPOSAL_MIN_AGGREGATE_GAMES
-    # The aggregate tier anneals to best-available with the SAME floor as
-    # the primary tier: a mid-range pool (e.g. max row 31) must stay
-    # satisfiable by citing its biggest row — an aggregate floor of 60 would
-    # recreate the cold-start deadlock for pools between 31 and 60.
-    primary = max(
-        _PROPOSAL_COLD_START_PRIMARY_FLOOR,
-        min(_PROPOSAL_MIN_PRIMARY_GAMES, pool_max),
+    # Fractional tolerance: while the pool is below an absolute tier, that
+    # tier anneals to 75% of the pool max — the annealed bar must not demand
+    # citing THE single biggest row (it may be irrelevant to a direction, and
+    # the pool keeps growing between the scout prompt and validation: v196
+    # cited 44 while the pool max had reached 47). At or above the absolute,
+    # the absolute applies unchanged.
+    def _anneal(absolute: int) -> int:
+        if pool_max >= absolute:
+            return absolute
+        return max(
+            _PROPOSAL_COLD_START_PRIMARY_FLOOR,
+            (3 * pool_max) // 4,
+        )
+
+    return _anneal(_PROPOSAL_MIN_PRIMARY_GAMES), _anneal(
+        _PROPOSAL_MIN_AGGREGATE_GAMES
     )
-    aggregate = max(
-        _PROPOSAL_COLD_START_PRIMARY_FLOOR,
-        min(_PROPOSAL_MIN_AGGREGATE_GAMES, pool_max),
-    )
-    return primary, aggregate
 
 
 def _snapshot_evidence_two_tier_errors(

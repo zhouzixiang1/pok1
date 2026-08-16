@@ -978,8 +978,8 @@ def statistical_evidence_floor_errors(
     # agent_master_validation). An unreadable pool (0) means UNKNOWN: the
     # absolute floor applies unchanged.
     pool_max = _snapshot_pool_max_games_for(next_v)
-    if pool_max > 0:
-        min_primary_games = max(15, min(min_primary_games, pool_max))
+    if 0 < pool_max < min_primary_games:
+        min_primary_games = max(15, (3 * pool_max) // 4)
     has_primary = any(g >= min_primary_games for g in cited_games)
     # Aggregate corroboration: H2H rows cap at ~58 games, so the >=200 tier
     # is necessarily a bot_stats.json / selection_snapshot.json citation —

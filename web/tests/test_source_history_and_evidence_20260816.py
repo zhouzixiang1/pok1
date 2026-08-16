@@ -369,10 +369,13 @@ def test_evidence_tiers_anneal_during_cold_start(tmp_path):
         json.dumps({"a vs b": {"games": 31, "a_wins": 15, "b_wins": 16}}),
         encoding="utf-8",
     )
-    assert amv._effective_evidence_tiers(cold) == (30, 31)
-    # A 31-game row passes during cold start; a 26-game row still fails.
-    assert amv._snapshot_evidence_two_tier_errors([31, 31], cold) == []
-    assert amv._snapshot_evidence_two_tier_errors([26], cold)
+    assert amv._effective_evidence_tiers(cold) == (30, 23)
+    # Primary 31-row + a 24-game corroboration row passes during cold start
+    # (aggregate anneals to 75% of pool max — demanding the exact max was a
+    # relevance-blind moving target: v196 cited 44 with pool max 47).
+    assert amv._snapshot_evidence_two_tier_errors([31, 24], cold) == []
+    assert amv._snapshot_evidence_two_tier_errors([24, 24], cold)
+    assert amv._snapshot_evidence_two_tier_errors([18], cold)
 
     frozen = tmp_path / "frozen"
     frozen.mkdir()
