@@ -21,7 +21,9 @@ Git only (on this branch, through `origin/tencent-cloud-runtime`). Before
 edits, follow `docs/evolution-dual-checkout-sync-policy.md`. Feature/fix
 branches cut from this line are merged back into `origin/tencent-cloud-runtime`
 and deleted once the work lands (see the branch-management working rule in
-`AGENTS.md`); keep the branch tree clean.
+`AGENTS.md`); keep the branch tree clean. The FastAPI lifespan runs
+`disk_hygiene` beside the LLM saturator so non-authority runtime caches
+cannot fill a small VM (see `web/core/disk_hygiene.py`).
 
 Strict Master/Reviewer/Critic calls never share a flat role log. Each accepted
 call binds exactly one generation-scoped `strict_invocations/<invocation_id>`

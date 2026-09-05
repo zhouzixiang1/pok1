@@ -84,6 +84,32 @@ required, alternatively install `bwrap` with the setuid bit
 capability, but the sysctl approach is the simplest and matches the
 upstream `bwrap` deployment guidance for non-setuid installs.
 
+### Node.js (`--no-build` static receipt)
+
+`web/main.py --no-build` refuses to start unless `node` is on `PATH`: it
+runs the source-bound frontend static-receipt verifier. Install a real
+Node.js (this host uses NodeSource 20.x → `/usr/bin/node`). Do **not**
+point `PATH` at an IDE-bundled binary such as `~/.zcode/server`; that
+path disappears when the IDE cache is deleted and takes the evolution
+service down with it. `deploy/tencent-cloud/env.runtime` keeps a standard
+`PATH` that includes `/usr/bin`.
+
+### Disk hygiene (runtime artifact janitor)
+
+`web/core/disk_hygiene.py` runs from the FastAPI lifespan (beside the LLM
+saturator) and periodically reaps **non-authority** caches so a 40G cloud
+disk cannot return to ENOSPC. It does **not** truncate `events.jsonl`, the
+abandon ledger, ratings, match history, or `pipeline_state.json`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `POK_DISK_HYGIENE_ENABLED` | `1` | Start the janitor loop |
+| `POK_DISK_HYGIENE_INTERVAL_SEC` | `300` | Seconds between cycles (min 30) |
+| `POK_DISK_MIN_FREE_GB` | `4` | Below this, retention tightens |
+
+A cycle emits `pipeline.disk_hygiene_done` when it actually freed bytes or
+is in pressure mode. Watch `journalctl -u pok-evolution | grep 'disk hygiene'`.
+
 ## Dual-checkout layout
 
 ```

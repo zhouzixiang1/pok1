@@ -193,6 +193,19 @@ async def lifespan(app: FastAPI):
         _sat_log.getLogger("pok.saturator").warning(
             "LLM saturator launch failed: %s", _sat_exc)
 
+    # Disk janitor: independent of orchestrator health so ENOSPC cannot
+    # silently return. Cancels in the finally below with the saturator.
+    hygiene_task = None
+    try:
+        from disk_hygiene import run_disk_hygiene_loop
+
+        hygiene_task = asyncio.create_task(run_disk_hygiene_loop(shutdown_mgr))
+        app.state.disk_hygiene_task = hygiene_task
+    except Exception as _hyg_exc:
+        import logging as _hyg_log
+        _hyg_log.getLogger("pok.disk").warning(
+            "disk hygiene launch failed: %s", _hyg_exc)
+
     # Memory heartbeat: the process historically grows to its MemoryMax
     # ceiling over hours (2026-08-11 finding) with zero in-code
     # observability, so every growth cycle was a black box. A periodic
@@ -440,6 +453,13 @@ async def lifespan(app: FastAPI):
             _sat.cancel()
             try:
                 await asyncio.wait_for(_sat, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        _hyg = getattr(app.state, "disk_hygiene_task", None)
+        if _hyg is not None and not _hyg.done():
+            _hyg.cancel()
+            try:
+                await asyncio.wait_for(_hyg, timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         _mem = getattr(app.state, "memory_heartbeat_task", None)

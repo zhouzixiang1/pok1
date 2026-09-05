@@ -605,6 +605,14 @@ Active implementation is under `web/core/`. Major responsibilities include:
   and fail-closed durable checkpoint identity; UI, scheduler, and recovery must
   not recompute these from directory names or retired runtime files;
 - `generation_scheduler.py` — prepare and cleanup scheduling;
+- `disk_hygiene.py` — process-lifetime janitor that bounds **non-authority**
+  runtime artifacts (saturator sessions/findings, orphan `draft_candidates/`,
+  abandoned `results/vN` trees, stale consumer checkpoints, tmp files) so a
+  small VM cannot fill the root disk. It never truncates `events.jsonl`, the
+  abandon ledger, ratings, `match_history`, or the live primary checkpoint.
+  Started from the FastAPI lifespan beside the LLM saturator; retention
+  tightens when free space falls below `POK_DISK_MIN_FREE_GB` (see
+  `deploy/tencent-cloud/env.runtime`).
 - `evaluation_bundle.py`, `evidence_snapshot.py`, `rating_snapshot.py` — frozen
   evaluation publication and generation cutoffs;
 - `master_context_contract.py`, `plan_compiler.py`,
