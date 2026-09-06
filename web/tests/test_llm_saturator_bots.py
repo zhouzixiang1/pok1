@@ -194,3 +194,18 @@ def test_usage_tokens_tolerates_dict_and_object():
     ) == 1160
     assert llm_saturator._usage_tokens(None) == 0
     assert llm_saturator._usage_tokens("garbage") == 0
+
+
+def test_saturator_launch_failure_backs_off(monkeypatch):
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_fail_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_fail_streak", 0)
+    llm_saturator._note_saturator_launch_failure("bound to a different event loop")
+    assert llm_saturator._saturator_provider_paused() is True
+    assert llm_saturator._fail_streak == 1
+    remaining = llm_saturator._saturator_pause_remaining_sec()
+    assert 1.0 <= remaining <= 30.0
+    llm_saturator._note_saturator_launch_success()
+    monkeypatch.setattr(llm_saturator, "_fail_pause_until", 0.0)
+    assert llm_saturator._fail_streak == 0
+    assert llm_saturator._saturator_provider_paused() is False

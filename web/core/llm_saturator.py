@@ -23,8 +23,8 @@ than waiting 30s per slot.
 Gated by ``POK_LLM_SATURATOR_ENABLED`` (default off). Shares the single global
 LLM semaphore via ``run_claude_query`` (so it never over-subscribes beyond
 ``POK_GLOBAL_LLM_CONCURRENCY``). New packets also wait on RAM (``claude``
-child count and ``MemAvailable``) and yield at admission when a pipeline
-role is queued.
+child count and ``MemAvailable``). A queued pipeline role does not freeze
+fill of idle permits; preemption yields only when the pool is full.
 """
 
 from __future__ import annotations
@@ -413,7 +413,7 @@ async def _one_saturator_session(session_id: int) -> dict:
             "tokens": tokens, "ok": True,
         }
     except Exception as e:
-        log.warning("saturator session %d failed: %s", session_id, e)
+        _log_session_failure(session_id, e)
         _note_saturator_provider_failure(e)
         return {"session": session_id, "ok": False, "error": str(e)[:200]}
 
@@ -463,7 +463,24 @@ def _housekeep_session_files(
 # The pipeline has its own durable availability pause; the saturator only
 # needs to stop burning attempts while the provider is closed.
 _QUOTA_PAUSE_SECONDS = 600.0
+_FAIL_PAUSE_CAP_SECONDS = 30.0
 _quota_pause_until: float = 0.0
+_fail_pause_until: float = 0.0
+_fail_streak: int = 0
+_fail_log_at: float = 0.0
+_fail_unlogged: int = 0
+
+
+def _log_session_failure(session_id: int, error: object) -> None:
+    """Rate-limit the per-session warning so a tight fail loop cannot flood journald."""
+    global _fail_log_at, _fail_unlogged
+    now = time.time()
+    _fail_unlogged += 1
+    if now - _fail_log_at >= 15.0:
+        extra = f" (+{_fail_unlogged - 1} similar)" if _fail_unlogged > 1 else ""
+        log.warning("saturator session %d failed: %s%s", session_id, error, extra)
+        _fail_log_at = now
+        _fail_unlogged = 0
 
 
 def _note_saturator_provider_failure(error: object) -> None:
@@ -478,8 +495,32 @@ def _note_saturator_provider_failure(error: object) -> None:
         )
 
 
+def _note_saturator_launch_success() -> None:
+    global _fail_streak
+    _fail_streak = 0
+
+
+def _note_saturator_launch_failure(error: object | None = None) -> None:
+    """Backoff after any failed packet so a 0.5s refill cannot spin thousands of sessions.
+
+    v298 logged 2000+ ``different event loop`` failures after each cancelled
+    packet completed instantly and the fill loop treated that as a free slot.
+    """
+    global _fail_pause_until, _fail_streak
+    _fail_streak += 1
+    if error is not None:
+        _note_saturator_provider_failure(error)
+    delay = min(_FAIL_PAUSE_CAP_SECONDS, 2.0 * (2 ** min(_fail_streak - 1, 4)))
+    _fail_pause_until = max(_fail_pause_until, time.time() + delay)
+
+
+def _saturator_pause_remaining_sec() -> float:
+    until = max(_quota_pause_until, _fail_pause_until)
+    return max(0.0, until - time.time())
+
+
 def _saturator_provider_paused() -> bool:
-    return time.time() < _quota_pause_until
+    return _saturator_pause_remaining_sec() > 0.0
 
 
 def _claude_child_count() -> int:
@@ -647,9 +688,16 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
 
     async def _launch(sid: int):
         try:
-            await _one_saturator_session(sid)
+            result = await _one_saturator_session(sid)
         except Exception as e:
             log.warning("saturator task %d error: %s", sid, e)
+            _note_saturator_launch_failure(e)
+            return
+        if isinstance(result, dict) and result.get("ok"):
+            _note_saturator_launch_success()
+            return
+        err = result.get("error") if isinstance(result, dict) else None
+        _note_saturator_launch_failure(err)
 
     try:
         while True:
@@ -723,6 +771,11 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
             except Exception:
                 soft_cap = max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4")))
             while True:
+                in_flight = {t for t in in_flight if not t.done()}
+                started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
+                live_n = sum(1 for t in in_flight if _task_is_live(t))
+                if _saturator_provider_paused():
+                    break
                 ok, reason = saturator_may_launch(
                     in_flight=live_n, soft_cap=soft_cap
                 )
@@ -737,7 +790,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 live_n += 1
                 await asyncio.sleep(0.5)
             if _saturator_provider_paused():
-                await asyncio.sleep(min(_QUOTA_PAUSE_SECONDS, 60.0))
+                await asyncio.sleep(min(max(_saturator_pause_remaining_sec(), 0.5), 60.0))
             elif not in_flight:
                 await asyncio.sleep(5.0)
             else:

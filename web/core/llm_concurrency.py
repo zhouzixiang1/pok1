@@ -14,19 +14,34 @@ empty.  With a single shared pool, every permit is available to whichever role
 actually has work, which roughly doubles real-world utilization for the same
 permit count.
 
-FIFO ordering (``asyncio.Semaphore`` is deque-backed) prevents starvation: no
-role is permanently blocked, and the gate-stage roles (review/critic) compete
-on equal footing with producer roles.  The gate stages make far fewer LLM
-calls than Master/Workers, so starvation is not a practical risk.
+FIFO ordering prevents starvation: no role is permanently blocked, and the
+gate-stage roles (review/critic) compete on equal footing with producer roles.
+The gate stages make far fewer LLM calls than Master/Workers, so starvation
+is not a practical risk.
+
+The limiter is a :class:`CrossLoopSemaphore`, not ``asyncio.Semaphore``.
+Deterministic-route handlers (including ``run_crossover``) run on a private
+event loop via ``run_async_off_event_loop``, while the saturator stays on the
+ASGI loop.  CPython 3.12 ``asyncio.Semaphore`` only binds its loop on the
+*first contended wait*; uncontended acquires do not bind, so a later waiter
+on the private loop permanently binds the object and every ASGI acquire then
+raises ``bound to a different event loop`` (v298: saturator sessions 13+
+failed that way and occupancy stayed dark).  The native-precommit limiter
+already uses a loop-agnostic primitive for the same reason.
 
 The legacy partitioned getters (``get_consumer_llm_semaphore`` /
 ``get_producer_llm_semaphore``) are retained as backwards-compat aliases that
 all return the same shared semaphore, so existing imports keep resolving.
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
+import threading
 import time
+from collections import deque
+from dataclasses import dataclass, field
 
 # Total concurrent in-flight LLM streams across ALL roles.
 GLOBAL_LLM_CONCURRENCY = int(os.environ.get("POK_GLOBAL_LLM_CONCURRENCY", "4"))
@@ -37,35 +52,132 @@ PRODUCER_LLM_CONCURRENCY = max(1, GLOBAL_LLM_CONCURRENCY - _CONSUMER_LLM_CONCURR
 # Kept as a module-level constant for any code that still reads it.
 CONSUMER_LLM_CONCURRENCY = GLOBAL_LLM_CONCURRENCY
 
-_SHARED_LLM_SEMAPHORE: "asyncio.Semaphore | None" = None
+_SHARED_LLM_SEMAPHORE: "CrossLoopSemaphore | None" = None
 # Legacy single-pool alias (same object).
-_GLOBAL_LLM_SEMAPHORE: "asyncio.Semaphore | None" = None
+_GLOBAL_LLM_SEMAPHORE: "CrossLoopSemaphore | None" = None
 
 
-def _get_shared_semaphore() -> asyncio.Semaphore:
+@dataclass
+class _Waiter:
+    loop: asyncio.AbstractEventLoop
+    fut: asyncio.Future
+    dropped: bool = field(default=False)
+
+
+class CrossLoopSemaphore:
+    """FIFO permit pool usable from any asyncio event loop or thread.
+
+    Waiters park on a Future created on *their* running loop.  ``release``
+    wakes the oldest waiter with ``call_soon_threadsafe``, so ASGI saturator
+    tasks and private-loop pipeline roles share one cap without binding the
+    object to a single loop.
+    """
+
+    def __init__(self, value: int) -> None:
+        if int(value) < 0:
+            raise ValueError("semaphore initial value must be >= 0")
+        self._permits = int(value)
+        self._waiters: deque[_Waiter] = deque()
+        self._mutex = threading.RLock()
+
+    @property
+    def _value(self) -> int:
+        with self._mutex:
+            return self._permits
+
+    def locked(self) -> bool:
+        with self._mutex:
+            return self._permits <= 0
+
+    async def acquire(self) -> bool:
+        loop = asyncio.get_running_loop()
+        waiter: _Waiter | None = None
+        with self._mutex:
+            if self._permits > 0:
+                self._permits -= 1
+                return True
+            fut: asyncio.Future = loop.create_future()
+            waiter = _Waiter(loop=loop, fut=fut)
+            self._waiters.append(waiter)
+        assert waiter is not None
+        try:
+            await waiter.fut
+            return True
+        except asyncio.CancelledError:
+            self._cancel_waiter(waiter)
+            raise
+
+    def release(self) -> None:
+        with self._mutex:
+            self._wake_locked()
+
+    def _wake_locked(self) -> None:
+        while self._waiters:
+            waiter = self._waiters.popleft()
+            if waiter.fut.done():
+                continue
+            try:
+                waiter.loop.call_soon_threadsafe(self._deliver, waiter)
+            except RuntimeError:
+                waiter.dropped = True
+                continue
+            return
+        self._permits += 1
+
+    def _deliver(self, waiter: _Waiter) -> None:
+        with self._mutex:
+            if waiter.dropped or waiter.fut.done():
+                self._wake_locked()
+                return
+            waiter.fut.set_result(True)
+
+    def _cancel_waiter(self, waiter: _Waiter) -> None:
+        with self._mutex:
+            try:
+                self._waiters.remove(waiter)
+                return
+            except ValueError:
+                pass
+            if waiter.fut.done() and not waiter.fut.cancelled():
+                self._wake_locked()
+                return
+            waiter.dropped = True
+
+    async def __aenter__(self) -> "CrossLoopSemaphore":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self.release()
+        return False
+
+
+def _get_shared_semaphore() -> CrossLoopSemaphore:
     global _SHARED_LLM_SEMAPHORE, _GLOBAL_LLM_SEMAPHORE
     if _SHARED_LLM_SEMAPHORE is None:
-        _SHARED_LLM_SEMAPHORE = asyncio.Semaphore(GLOBAL_LLM_CONCURRENCY)
+        _SHARED_LLM_SEMAPHORE = CrossLoopSemaphore(GLOBAL_LLM_CONCURRENCY)
         _GLOBAL_LLM_SEMAPHORE = _SHARED_LLM_SEMAPHORE
     return _SHARED_LLM_SEMAPHORE
 
 
-def get_global_llm_semaphore() -> asyncio.Semaphore:
+def get_global_llm_semaphore() -> CrossLoopSemaphore:
     """Return the single shared LLM dispatch semaphore."""
     return _get_shared_semaphore()
 
 
-def get_consumer_llm_semaphore() -> asyncio.Semaphore:
+def get_consumer_llm_semaphore() -> CrossLoopSemaphore:
     """Legacy alias — returns the shared semaphore (no longer partitioned)."""
     return _get_shared_semaphore()
 
 
-def get_producer_llm_semaphore() -> asyncio.Semaphore:
+def get_producer_llm_semaphore() -> CrossLoopSemaphore:
     """Legacy alias — returns the shared semaphore (no longer partitioned)."""
     return _get_shared_semaphore()
 
 
-def get_llm_semaphore_for_role(role_name: str | None) -> asyncio.Semaphore:
+def get_llm_semaphore_for_role(
+    role_name: str | None,
+) -> "CrossLoopSemaphore | _PipelinePrioritySemaphore":
     """Return the shared semaphore for any role.
 
     All roles share one FIFO pool. The former producer/consumer partition left
@@ -131,16 +243,16 @@ def llm_semaphore_has_capacity(n: int = 1) -> bool:
 # --- Pipeline preemption over background fill work -------------------------
 #
 # The saturator keeps free permits filled, which is its purpose — but a
-# launched session then HOLDS its permit for ~25 min. A pipeline role that
-# dispatches while all permits are held by saturator sessions queues behind
-# them while its own dispatch timeout keeps running (v187, 2026-08-16:
+# launched session then HOLDS its permit for the packet duration. A pipeline
+# role that dispatches while all permits are held by saturator sessions queues
+# behind them while its own dispatch timeout keeps running (v187, 2026-08-16:
 # two consecutive 1800s worker timeouts whose entire budget was consumed by
 # semaphore queue-wait behind three saturator sessions). Background fill
 # must therefore be preemptable BY pipeline demand:
 #   * pipeline roles acquire through _PipelinePrioritySemaphore, which
 #     counts queue-pending demand;
-#   * the saturator holds new launches while pipeline roles are pending and
-#     cancels its youngest in-flight session when demand persists.
+#   * the saturator cancels its youngest in-flight session when the pool is
+#     full and demand persists.
 
 _pipeline_pending: int = 0
 _pipeline_first_pending_ts: "float | None" = None
@@ -179,7 +291,7 @@ class _PipelinePrioritySemaphore:
     retry loop acquires per attempt, so backoff sleeps between attempts do
     not count as demand)."""
 
-    def __init__(self, sem: asyncio.Semaphore) -> None:
+    def __init__(self, sem: "CrossLoopSemaphore | asyncio.Semaphore") -> None:
         self._sem = sem
 
     async def __aenter__(self) -> "_PipelinePrioritySemaphore":

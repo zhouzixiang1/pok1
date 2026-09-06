@@ -334,6 +334,7 @@ def test_saturator_quota_backoff_pauses_launches():
     import llm_saturator
 
     before = llm_saturator._quota_pause_until
+    fail_before = llm_saturator._fail_pause_until
     llm_saturator._note_saturator_provider_failure(
         "SATURATOR: LLM unavailable [quota_429]: provider quota window exhausted"
     )
@@ -342,6 +343,7 @@ def test_saturator_quota_backoff_pauses_launches():
         assert llm_saturator._quota_pause_until > _time.time()
     finally:
         llm_saturator._quota_pause_until = before
+        llm_saturator._fail_pause_until = fail_before
     # Benign errors do not pause.
     llm_saturator._note_saturator_provider_failure("timeout reading stream")
     assert llm_saturator._saturator_provider_paused() is False

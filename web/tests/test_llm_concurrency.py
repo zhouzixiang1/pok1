@@ -7,6 +7,8 @@ real utilization for the same permit count.
 """
 
 import asyncio
+import threading
+import time
 
 import pytest
 
@@ -65,3 +67,70 @@ def test_master_proposal_critic_uses_shared_pool():
     assert _pool("MASTER PROPOSAL CRITIC falsification") is shared
     assert _pool("MASTER PROPOSAL mechanism") is shared
     assert _pool("STRATEGY CRITIC") is shared
+
+
+def test_cross_loop_acquire_does_not_bind_to_one_event_loop():
+    """v298: saturator on ASGI + crossover on a private loop must share the cap.
+
+    asyncio.Semaphore only binds its loop on the first *contended* wait, so the
+    pipeline waiter permanently owns the object and ASGI acquire then raises
+    ``bound to a different event loop``. CrossLoopSemaphore must not.
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    sem = llm_concurrency.CrossLoopSemaphore(1)
+    started = threading.Event()
+    released = threading.Event()
+
+    def holder():
+        async def run():
+            await sem.acquire()
+            started.set()
+            assert released.wait(timeout=5)
+            sem.release()
+        asyncio.run(run())
+
+    def waiter():
+        async def run():
+            assert started.wait(timeout=5)
+            await sem.acquire()
+            sem.release()
+            return "ok"
+        return asyncio.run(run())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        h = pool.submit(holder)
+        w = pool.submit(waiter)
+        assert started.wait(timeout=5)
+        # Contended wait is in flight on a different loop than the holder.
+        time.sleep(0.05)
+        released.set()
+        done, _ = wait([h, w], timeout=5)
+        assert h in done and w in done
+        assert w.result() == "ok"
+        assert h.exception() is None
+    assert sem._value == 1
+
+
+def test_cancelled_waiter_does_not_leak_permit():
+    sem = llm_concurrency.CrossLoopSemaphore(1)
+
+    async def scenario():
+        await sem.acquire()
+
+        async def blocked():
+            await sem.acquire()
+
+        task = asyncio.create_task(blocked())
+        await asyncio.sleep(0.05)
+        assert sem._value == 0
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        sem.release()
+        assert sem._value == 1
+        await sem.acquire()
+        sem.release()
+        assert sem._value == 1
+
+    asyncio.run(scenario())

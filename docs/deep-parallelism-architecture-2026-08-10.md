@@ -19,7 +19,7 @@ The refactoring decouples LLM work from native work so neither blocks the other.
 
 | Dimension | Limiter | Behaviour |
 |-----------|---------|-----------|
-| **LLM stages** (master/worker/review/critic) | existing global `asyncio.Semaphore` (`POK_GLOBAL_LLM_CONCURRENCY=8`) | FIFO queue, natural backpressure |
+| **LLM stages** (master/worker/review/critic) | existing global `CrossLoopSemaphore` (`POK_GLOBAL_LLM_CONCURRENCY=8`) | FIFO queue, natural backpressure; loop-agnostic so saturator (ASGI) and `run_async_off_event_loop` handlers share one cap |
 | **draft creation + sealing** | new `llm_semaphore_has_capacity()` predicate | a draft is launched/sealed only when an LLM permit is likely free; `max_ahead` is a generous backstop (32), not the real cap |
 | **native precommit** (matches) | new independent `asyncio.Semaphore` (`POK_NATIVE_PRECOMMIT_CONCURRENCY=1`) | when exhausted, the candidate **pauses locally** (stays at `critic_checked`); it does NOT hold an LLM permit and does NOT block other drafts' LLM work |
 
