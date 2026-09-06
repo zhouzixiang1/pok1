@@ -88,6 +88,62 @@ def test_saturator_bots_empty_pool(monkeypatch):
     assert llm_saturator._saturator_bots(7) == []
 
 
+def test_saturator_job_rotation_splits_work():
+    names = [llm_saturator.saturator_job_for(i)["name"] for i in range(6)]
+    assert names == [
+        "matchup_packet",
+        "line_audit",
+        "function_trace",
+        "matchup_packet",
+        "line_audit",
+        "function_trace",
+    ]
+    assert llm_saturator.saturator_job_for(0)["bot_limit"] == 2
+    assert llm_saturator.saturator_job_for(1)["bot_limit"] == 1
+    for i in range(3):
+        prompt = str(llm_saturator.saturator_job_for(i)["prompt"])
+        assert "HARD STOP" in prompt
+        assert "18 Read" in prompt
+
+
+def test_pick_preemptable_many_batches_youngest():
+    tasks = {"old": 100.0, "mid": 500.0, "young": 900.0}
+    assert llm_saturator._pick_preemptable_many(tasks, 5.0, 3) == []
+    assert llm_saturator._pick_preemptable_many(tasks, 45.0, 2) == ["young", "mid"]
+    assert llm_saturator._pick_preemptable(tasks, 45.0) == "young"
+
+
+def test_saturator_may_launch_respects_ram_and_soft_cap(monkeypatch):
+    import llm_concurrency as lc
+
+    monkeypatch.setattr(llm_saturator, "_mem_available_mb", lambda: 2048)
+    monkeypatch.setattr(llm_saturator, "_saturator_provider_paused", lambda: False)
+    monkeypatch.setattr(lc, "_pipeline_pending", 0)
+    monkeypatch.setattr(lc, "_pipeline_first_pending_ts", None)
+    monkeypatch.setattr(lc, "_SHARED_LLM_SEMAPHORE", None)
+    monkeypatch.setattr(lc, "_GLOBAL_LLM_SEMAPHORE", None)
+
+    monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 4)
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=4)
+    assert ok is False
+    assert reason == "claude_children"
+
+    monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 1)
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=4, soft_cap=4)
+    assert ok is False
+    assert reason == "soft_cap"
+
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=1, soft_cap=4)
+    assert ok is True
+    assert reason == "ok"
+
+    monkeypatch.setattr(llm_saturator, "_mem_available_mb", lambda: 64)
+    monkeypatch.setattr(llm_saturator, "_min_free_mb", lambda: 512)
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=1, soft_cap=4)
+    assert ok is False
+    assert reason == "low_memory"
+
+
 def test_usage_tokens_tolerates_dict_and_object():
     assert llm_saturator._usage_tokens(
         {

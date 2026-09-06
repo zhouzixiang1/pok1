@@ -418,8 +418,13 @@ in-flight streams** via a process-wide semaphore in
 `web/core/llm_concurrency.py` (pipeline roles acquire through
 `_PipelinePrioritySemaphore`, which counts queue-pending demand; the
 background saturator never launches while pipeline roles are queued and
-cancels its youngest in-flight session when demand persists >30s — the
-v187 queue-starvation fix). A `vmrss` memory heartbeat logs every 600s
+batch-cancels its youngest in-flight **packets** when demand persists
+(default 45s, `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC`) — the v187
+queue-starvation fix). Saturator jobs are bounded (matchup / line-audit /
+function-trace) so occupancy produces finished packets instead of
+preempted 60-turn essays; launch also refuses when live `claude` children
+already match the permit cap, so cancel leftovers cannot oversubscribe
+RAM. A `vmrss` memory heartbeat logs every 600s
 (`pok.memory`), WARNING past 1.5 GiB. (the code default and any production override
 live in `POK_GLOBAL_LLM_CONCURRENCY`; see
 `deploy/tencent-cloud/env.runtime` for the current value and

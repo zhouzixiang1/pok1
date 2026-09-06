@@ -9,18 +9,22 @@ near zero.
 The saturator decouples raw LLM consumption from the pipeline. It is a
 long-running background task (started from the app lifespan, NOT the
 orchestrator) that, whenever the global LLM semaphore has a free permit,
-launches a deep multi-turn agent session — a two-bot comparative duel study
-(focus bot rotating per session), reading every file in both bots'
-directories across many tool turns with a compounding context. Consumption is
-dominated by per-turn cache re-reads of the growing context (the same term
-that makes long agentic coding sessions expensive), NOT by output generation
-speed — so session SHAPE (files read x turn count) is the consumption lever,
-independent of the model's output token rate.
+launches a **bounded packet** (not a 60-turn essay). Three job kinds rotate
+so more work finishes before the next Master burst, and so a preemption
+throws away a small packet instead of a half-hour duel. Consumption is
+still dominated by per-turn cache re-reads; the lever is *completed*
+packets, not unfinished depth.
+
+Launch is RAM-aware: extra ``claude`` children leftover from cancel (the
+semaphore can read 4 while 5–6 processes still live) block new sessions
+until they exit. Pipeline bursts batch-preempt the youngest packets rather
+than waiting 30s per slot.
 
 Gated by ``POK_LLM_SATURATOR_ENABLED`` (default off). Shares the single global
 LLM semaphore via ``run_claude_query`` (so it never over-subscribes beyond
-``POK_GLOBAL_LLM_CONCURRENCY``), and yields naturally to pipeline work because
-it only launches when ``llm_semaphore_has_capacity()`` is true.
+``POK_GLOBAL_LLM_CONCURRENCY``). New packets also wait on RAM (``claude``
+child count and ``MemAvailable``) and yield at admission when a pipeline
+role is queued.
 """
 
 from __future__ import annotations
@@ -132,49 +136,73 @@ def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
     return [focus] + others
 
 
-_SATURATOR_PROMPT = """\
-You are a senior heads-up no-limit poker strategy researcher running a DEEP
-two-bot comparative study — a duel audit between a FOCUS bot and its opponent.
-Depth and evidence density are the whole point: this is a LONG session —
-expect 60+ tool turns and do not converge early; depth beats speed here.
-Re-read code before every citation; never cite from memory.
-
-You are given two published bot directories. The first is the FOCUS bot; the
-second is the OPPONENT.
-
-Phase 1 — full source mapping, FRONT-LOADED: before ANY comparative analysis,
-Read EVERY file in BOTH directories completely, start to finish (policy.py,
-precompute.py, national_bot.py, national_runtime_manifest.json,
-policy_epoch_receipt.json). Read whole files, not excerpts. Only after both
-bots are fully in context, map every decision branch of each bot — preflop
-open/3bet/fold ranges, postflop line construction (cbet, double-barrel,
-check-raise, river polarisation), stack-depth adjustments, opponent-model
-coupling, precompute usage. Record a style fingerprint per bot (aggression
-frequency, sizing scheme, bluffing texture, adaptivity).
-
-Phase 2 — the duel: identify the decisive strategic asymmetries between the
-two bots. Which FOCUS-bot lines are exploitable by THIS opponent specifically
-(predictable sizing, uncapped ranges, over-folding runouts), and vice versa?
-Quote exact code for every claim — RE-READ the relevant section before citing
-it; never cite from memory.
-
-Phase 3 — scenario walkthroughs: walk through 16 concrete hands (specific
-hole cards + boards across streets; include deep-stack, short-stack, and both
-button/blind rotations). Trace BOTH bots' decisions step by step through
-their code (re-read each function as you trace it). Identify suboptimal play
-and the principled fix.
-
-Phase 3b — verification pass: before writing the synthesis, re-Read every
-function you are about to cite in the final report and confirm each citation
-still matches the code. Discard or correct any claim you cannot re-confirm.
-
-Phase 4 — synthesis: (a) evidence-grounded verdict on the matchup with
-citations; (b) 6-10 localized refinements to the FOCUS bot's policy.py
-(function/line, weakness, proposed change, EV reasoning, risk).
-
-The goal is a deep, evidence-grounded comparative strategy audit — work
-through it methodically over many Read+reason turns.
+_SATURATOR_HARD_STOP = """
+HARD STOP: after at most 18 Read tool calls, write the synthesis and end.
+Do not pad, do not start extra phases, do not promise a follow-up. A finished
+bounded packet is worth more than an unfinished 60-turn essay. Re-read code
+before every citation; never cite from memory.
 """
+
+_SATURATOR_PROMPT = """\
+You are a senior heads-up no-limit poker researcher running a BOUNDED
+two-bot matchup packet (FOCUS vs OPPONENT). This is one packet, not a
+marathon.
+
+Phase 1: Read policy.py in BOTH directories (whole file). Skim precompute.py
+only if policy.py imports it. Do not reread the same file without a new
+question.
+
+Phase 2: Name the three largest strategic asymmetries (preflop, flop c-bet,
+river). Quote exact functions. Which FOCUS lines does THIS opponent punish?
+
+Phase 3: Walk 6 concrete hands (specify holes + board; mix button/blind and
+deep/short). Trace both bots through code.
+
+Phase 4 — synthesis: verdict + 5 localized FOCUS policy.py refinements
+(function, weakness, change, EV, risk).
+""" + _SATURATOR_HARD_STOP
+
+_SATURATOR_LINE_AUDIT_PROMPT = """\
+You are auditing ONE published FOCUS bot (no opponent). Bounded packet.
+
+Phase 1: Read its policy.py fully. Map one street only — pick preflop if
+session depth is even, flop otherwise.
+
+Phase 2: List every function that can emit fold/pass/allin/raise for that
+street. Quote the legality / sizing / fallback path.
+
+Phase 3: Find 4 concrete bugs or EV leaks (too-tight fold, illegal-intent
+risk, unused opponent field, sizing that never hits a legal raise_to).
+
+Phase 4 — synthesis: 5 localized patches (function, leak, change, EV, risk).
+""" + _SATURATOR_HARD_STOP
+
+_SATURATOR_FUNCTION_TRACE_PROMPT = """\
+You are tracing the FOCUS bot's decision spine. Bounded packet.
+
+Phase 1: Read policy.py. Locate the ABI entry (the function that receives
+decision_context and returns fold/pass/allin/raise).
+
+Phase 2: Trace three named helpers that actually change the returned intent
+(typical names: a dispatcher, a raise builder, an opponent weight). For each:
+inputs, branch table, what happens on missing tracker fields.
+
+Phase 3: Show one hand where helper A and helper B disagree, and which one
+wins.
+
+Phase 4 — synthesis: 4 localized patches that make the spine consistent.
+""" + _SATURATOR_HARD_STOP
+
+
+def saturator_job_for(session_id: int) -> dict[str, object]:
+    """Rotate bounded packets so more work finishes per occupancy-hour."""
+    jobs = (
+        ("matchup_packet", _SATURATOR_PROMPT, 2),
+        ("line_audit", _SATURATOR_LINE_AUDIT_PROMPT, 1),
+        ("function_trace", _SATURATOR_FUNCTION_TRACE_PROMPT, 1),
+    )
+    name, prompt, bot_limit = jobs[int(session_id) % len(jobs)]
+    return {"name": name, "prompt": prompt, "bot_limit": int(bot_limit)}
 
 
 def _saturator_producer(renderer_inputs):
@@ -310,20 +338,22 @@ def _append_findings_record(record: dict) -> None:
 
 
 async def _one_saturator_session(session_id: int) -> dict:
-    """Run one deep multi-turn analysis session. Returns a small result summary."""
+    """Run one bounded packet. Returns a small result summary."""
     from llm_query import run_claude_query, render_llm_prompt
     from tool_helpers import ToolUI
     from evolution_infra import RESULTS_DIR
 
-    bots = _saturator_bots(session_id)
+    job = saturator_job_for(session_id)
+    bots = _saturator_bots(session_id, limit=int(job["bot_limit"]))
     focus = bots[0] if bots else None
-    prompt = _SATURATOR_PROMPT
+    prompt = str(job["prompt"])
     if bots:
         listing = "\n".join(f"  - {b.resolve()}" for b in bots)
         prompt = (
-            _SATURATOR_PROMPT
-            + f"\n\nFOCUS bot (deep-dive this one): {focus.resolve()}\n"
-            + f"Bot directories to analyze ({len(bots)}):\n{listing}\n"
+            prompt
+            + f"\n\nJob: {job['name']}\n"
+            + f"FOCUS bot: {focus.resolve()}\n"
+            + f"Bot directories ({len(bots)}):\n{listing}\n"
         )
     read_dirs = _saturator_read_dirs(bots)
     # No context_files (contract forbids them): the agent Reads policy.py etc.
@@ -352,8 +382,8 @@ async def _one_saturator_session(session_id: int) -> dict:
         out_len = len(output or "")
         tokens = _usage_tokens(usage)
         log.info(
-            "saturator session %d done: %d chars, %d tokens in %.0fs (focus=%s, bots=%d)",
-            session_id, out_len, tokens, time.time() - t0,
+            "saturator session %d job=%s done: %d chars, %d tokens in %.0fs (focus=%s, bots=%d)",
+            session_id, job["name"], out_len, tokens, time.time() - t0,
             focus.name if focus else "none", len(bots),
         )
         if out_len and focus is not None:
@@ -452,6 +482,91 @@ def _saturator_provider_paused() -> bool:
     return time.time() < _quota_pause_until
 
 
+def _claude_child_count() -> int:
+    """Live ``claude`` children of this process (RAM occupancy, not the semaphore)."""
+    try:
+        pid = os.getpid()
+        children_path = Path(f"/proc/{pid}/task/{pid}/children")
+        raw = children_path.read_text(encoding="utf-8") if children_path.is_file() else ""
+        count = 0
+        for token in raw.split():
+            try:
+                comm = Path(f"/proc/{token}/comm").read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if comm == "claude":
+                count += 1
+        return count
+    except OSError:
+        return 0
+
+
+def _mem_available_mb() -> int | None:
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _preempt_after_sec() -> float:
+    try:
+        return max(15.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_AFTER_SEC", "45")))
+    except (TypeError, ValueError):
+        return 45.0
+
+
+def _min_free_mb() -> int:
+    try:
+        return max(0, int(os.environ.get("POK_LLM_SATURATOR_MIN_FREE_MB", "512")))
+    except (TypeError, ValueError):
+        return 512
+
+
+def saturator_may_launch(*, in_flight: int, soft_cap: int) -> tuple[bool, str]:
+    """Admit a new packet only when permit, RAM, and pipeline queue all agree."""
+    if in_flight >= max(1, int(soft_cap)):
+        return False, "soft_cap"
+    if _saturator_provider_paused():
+        return False, "provider_paused"
+    try:
+        from llm_concurrency import (
+            GLOBAL_LLM_CONCURRENCY,
+            llm_semaphore_has_capacity,
+            pipeline_pending_count,
+        )
+    except Exception:
+        return True, "ok"
+    if pipeline_pending_count() > 0:
+        return False, "pipeline_pending"
+    if not llm_semaphore_has_capacity(1):
+        return False, "no_permit"
+    if _claude_child_count() >= int(GLOBAL_LLM_CONCURRENCY):
+        return False, "claude_children"
+    avail = _mem_available_mb()
+    min_free = _min_free_mb()
+    if avail is not None and min_free and avail < min_free:
+        return False, "low_memory"
+    return True, "ok"
+
+
+def _pick_preemptable_many(
+    sessions: "dict[object, float]",
+    pending_age_sec: float,
+    n: int,
+    *,
+    min_pending_age_sec: float = 30.0,
+) -> list:
+    """Youngest-first victims. Empty until pipeline demand has persisted."""
+    if pending_age_sec < min_pending_age_sec or not sessions or n <= 0:
+        return []
+    ordered = sorted(sessions, key=lambda task: sessions[task], reverse=True)
+    return ordered[: int(n)]
+
+
 def _pick_preemptable(
     sessions: "dict[object, float]",
     pending_age_sec: float,
@@ -464,25 +579,25 @@ def _pick_preemptable(
     Youngest = least invested (fewest tokens spent). Returns None when
     pipeline demand has not persisted long enough (transient queue churn
     must not cancel sessions) or when nothing is in flight."""
-    if pending_age_sec < min_pending_age_sec or not sessions:
-        return None
-    del now  # start timestamps are recorded at launch; comparison is by value
-    # Youngest = largest start timestamp = least invested.
-    return max(sessions, key=lambda t: sessions[t])
+    del now
+    picked = _pick_preemptable_many(
+        sessions, pending_age_sec, 1, min_pending_age_sec=min_pending_age_sec
+    )
+    return picked[0] if picked else None
 
 
 async def run_llm_saturator(shutdown_mgr=None) -> None:
-    """Background loop: keep free LLM permits filled with deep analysis sessions.
+    """Background loop: keep free LLM permits filled with bounded packets.
 
     Launches one session per free permit, back-to-back. Cooperative: only
-    launches when ``llm_semaphore_has_capacity()`` is true, so pipeline work
-    that holds permits is never starved by a saturator launch (the saturator
-    simply waits). Respects shutdown.
+    launches when ``saturator_may_launch`` is true (permit + RAM + no
+    queued pipeline role). Pipeline bursts cancel the youngest packets in
+    one shot so Scout-3 can start together instead of every 30s.
     """
     if not SATURATOR_ENABLED:
         log.info("LLM saturator disabled (POK_LLM_SATURATOR_ENABLED not set)")
         return
-    log.info("LLM saturator started — filling free LLM permits with deep analysis")
+    log.info("LLM saturator started — filling free LLM permits with bounded packets")
     session_id = 0
     in_flight: set = set()
     started_at: "dict[object, float]" = {}
@@ -498,27 +613,37 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
         while True:
             if shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False):
                 break
-            # Pipeline preemption (v187 lesson: a queued worker's dispatch
-            # timeout burned entirely on semaphore queue-wait behind three
-            # ~25-min saturator sessions). When pipeline demand persists,
-            # cancel the youngest session — its permit releases immediately
-            # and the FIFO semaphore grants it to the waiting pipeline role.
             try:
-                from llm_concurrency import pipeline_pending_age_sec
+                from llm_concurrency import pipeline_pending_age_sec, pipeline_pending_count
+
                 _pending_age = pipeline_pending_age_sec()
+                _pipeline_waiting = pipeline_pending_count()
             except Exception:
                 _pending_age = 0.0
+                _pipeline_waiting = 0
             in_flight = {t for t in in_flight if not t.done()}
-            if in_flight and _pending_age > 30.0:
-                victim = _pick_preemptable(started_at, _pending_age)
-                if victim is not None:
+            started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
+            # Batch-preempt: one Scout wave needs up to 3 permits at once.
+            if in_flight and _pipeline_waiting > 0:
+                victims = _pick_preemptable_many(
+                    started_at,
+                    _pending_age,
+                    _pipeline_waiting,
+                    min_pending_age_sec=_preempt_after_sec(),
+                )
+                for victim in victims:
                     log.warning(
                         "saturator preempting session %s after %.0fs of "
-                        "pipeline queue demand (in-flight=%d)",
+                        "pipeline queue demand (in-flight=%d waiting=%d)",
                         getattr(victim, "get_name", lambda: "?")(),
-                        _pending_age, len(in_flight),
+                        _pending_age,
+                        len(in_flight),
+                        _pipeline_waiting,
                     )
                     victim.cancel()
+                if victims:
+                    await asyncio.wait(set(victims), timeout=2.0)
+            in_flight = {t for t in in_flight if not t.done()}
             started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
             if time.time() - last_housekeep > 600:
                 last_housekeep = time.time()
@@ -528,45 +653,36 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                     Path(RESULTS_DIR) / "saturator"
                 )
             try:
-                from llm_concurrency import llm_semaphore_has_capacity
+                from llm_concurrency import GLOBAL_LLM_CONCURRENCY
+
+                soft_cap = min(
+                    max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4"))),
+                    int(GLOBAL_LLM_CONCURRENCY),
+                )
             except Exception:
-                llm_semaphore_has_capacity = lambda n=1: True
-            # Clean finished tasks.
-            in_flight = {t for t in in_flight if not t.done()}
-            # Launch while there is capacity and we are under a soft cap.
-            # Never start a NEW background session while a pipeline role is
-            # queued for a permit — background fill yields at admission, not
-            # just at launch capacity.
-            soft_cap = max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4")))
-            try:
-                from llm_concurrency import pipeline_pending_count
-                _pipeline_waiting = pipeline_pending_count()
-            except Exception:
-                _pipeline_waiting = 0
-            while (
-                len(in_flight) < soft_cap
-                and _pipeline_waiting == 0
-                and not _saturator_provider_paused()
-                and llm_semaphore_has_capacity(1)
-                and not (shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False))
-            ):
+                soft_cap = max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4")))
+            while True:
+                ok, reason = saturator_may_launch(
+                    in_flight=len(in_flight), soft_cap=soft_cap
+                )
+                if not ok:
+                    break
+                if shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False):
+                    break
                 session_id += 1
-                t = asyncio.create_task(_launch(session_id))
+                t = asyncio.create_task(_launch(session_id), name=f"saturator-{session_id}")
                 in_flight.add(t)
                 started_at[t] = time.time()
-                # tiny yield so we don't fire-and-forget faster than the
-                # semaphore can reflect the acquisition.
                 await asyncio.sleep(0.5)
             if _saturator_provider_paused():
-                # Provider window closed: do not hot-loop failed launches;
-                # re-check every pause interval.
                 await asyncio.sleep(min(_QUOTA_PAUSE_SECONDS, 60.0))
             elif not in_flight:
                 await asyncio.sleep(5.0)
             else:
-                # Wait for at least one to finish (or shutdown) before re-evaluating.
                 try:
-                    await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED, timeout=30.0)
+                    await asyncio.wait(
+                        in_flight, return_when=asyncio.FIRST_COMPLETED, timeout=15.0
+                    )
                 except asyncio.TimeoutError:
                     pass
     except asyncio.CancelledError:
@@ -578,4 +694,4 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
         log.info("LLM saturator stopped")
 
 
-__all__ = ["run_llm_saturator", "SATURATOR_ENABLED"]
+__all__ = ["run_llm_saturator", "SATURATOR_ENABLED", "saturator_job_for", "saturator_may_launch"]

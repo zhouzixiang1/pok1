@@ -94,6 +94,22 @@ path disappears when the IDE cache is deleted and takes the evolution
 service down with it. `deploy/tencent-cloud/env.runtime` keeps a standard
 `PATH` that includes `/usr/bin`.
 
+### LLM saturator (idle-permit fill)
+
+`web/core/llm_saturator.py` runs from the FastAPI lifespan and fills free
+LLM permits with **bounded packets** (matchup / line-audit / function-trace,
+hard-stop at 18 Read turns). It does not raise `POK_GLOBAL_LLM_CONCURRENCY`
+(this 3.6Gi host OOMs above 4 streams). Pipeline Scout waves batch-preempt
+the youngest packets; new launches refuse when live `claude` children already
+match the permit cap or `MemAvailable` is below the floor.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `POK_LLM_SATURATOR_ENABLED` | `1` | Fill idle LLM permits |
+| `POK_LLM_SATURATOR_MAX_INFLIGHT` | `4` | Packets while pipeline is idle |
+| `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC` | `45` | Queue age before batch-preempt |
+| `POK_LLM_SATURATOR_MIN_FREE_MB` | `512` | Refuse launches below this `MemAvailable` |
+
 ### Disk hygiene (runtime artifact janitor)
 
 `web/core/disk_hygiene.py` runs from the FastAPI lifespan (beside the LLM
