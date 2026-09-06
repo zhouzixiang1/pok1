@@ -143,6 +143,45 @@ def test_saturator_may_launch_respects_ram_and_soft_cap(monkeypatch):
     assert ok is False
     assert reason == "low_memory"
 
+    # A stuck pipeline waiter must not freeze fill of idle permits.
+    monkeypatch.setattr(llm_saturator, "_mem_available_mb", lambda: 2048)
+    monkeypatch.setattr(lc, "_pipeline_pending", 1)
+    monkeypatch.setattr(lc, "_pipeline_first_pending_ts", 1.0)
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=1, soft_cap=4)
+    assert ok is True
+    assert reason == "ok"
+
+
+def test_saturator_preempt_n_does_not_drain_on_one_waiter():
+    now = 1000.0
+    kwargs = dict(
+        waiting=1,
+        pending_age_sec=60.0,
+        has_capacity=False,
+        in_flight=4,
+        last_preempt_at=None,
+        now=now,
+        min_pending_age_sec=45.0,
+        cooldown_sec=90.0,
+    )
+    assert llm_saturator.saturator_preempt_n(**kwargs) == 1
+    # After a wave, cooldown blocks further drains.
+    kwargs["last_preempt_at"] = now
+    kwargs["now"] = now + 10.0
+    kwargs["in_flight"] = 3
+    assert llm_saturator.saturator_preempt_n(**kwargs) == 0
+    # Free permits: do not preempt.
+    kwargs["last_preempt_at"] = None
+    kwargs["has_capacity"] = True
+    kwargs["in_flight"] = 3
+    assert llm_saturator.saturator_preempt_n(**kwargs) == 0
+    # Three scouts blocked on a full pool: yield three in one wave.
+    kwargs["has_capacity"] = False
+    kwargs["waiting"] = 3
+    kwargs["in_flight"] = 4
+    kwargs["now"] = now
+    assert llm_saturator.saturator_preempt_n(**kwargs) == 3
+
 
 def test_usage_tokens_tolerates_dict_and_object():
     assert llm_saturator._usage_tokens(

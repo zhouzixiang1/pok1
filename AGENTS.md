@@ -417,14 +417,17 @@ All sub-agent LLM calls are capped at a bounded number of **simultaneous
 in-flight streams** via a process-wide semaphore in
 `web/core/llm_concurrency.py` (pipeline roles acquire through
 `_PipelinePrioritySemaphore`, which counts queue-pending demand; the
-background saturator never launches while pipeline roles are queued and
-batch-cancels its youngest in-flight **packets** when demand persists
-(default 45s, `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC`) — the v187
-queue-starvation fix). Saturator jobs are bounded (matchup / line-audit /
+background saturator still fills free permits even if a pipeline role is
+queued, and batch-cancels at most ``waiting`` in-flight **packets** when the pool is
+full and demand persists (default 45s, `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC`)
+then cools down (`POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC`) so one waiter
+cannot drain every session — the v187 queue-starvation fix plus the v298
+over-preempt hole. Saturator jobs are bounded (matchup / line-audit /
 function-trace) so occupancy produces finished packets instead of
 preempted 60-turn essays; launch also refuses when live `claude` children
 already match the permit cap, so cancel leftovers cannot oversubscribe
-RAM. A `vmrss` memory heartbeat logs every 600s
+RAM, but a queued pipeline role does **not** freeze launches into free
+permits. A `vmrss` memory heartbeat logs every 600s
 (`pok.memory`), WARNING past 1.5 GiB. (the code default and any production override
 live in `POK_GLOBAL_LLM_CONCURRENCY`; see
 `deploy/tencent-cloud/env.runtime` for the current value and

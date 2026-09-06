@@ -527,21 +527,21 @@ def _min_free_mb() -> int:
 
 
 def saturator_may_launch(*, in_flight: int, soft_cap: int) -> tuple[bool, str]:
-    """Admit a new packet only when permit, RAM, and pipeline queue all agree."""
+    """Admit a new packet when a permit and RAM exist.
+
+    A queued pipeline role must NOT freeze launches: v298 sat at
+    ``waiting=1`` with three idle permits for 11h because this gate used to
+    return ``pipeline_pending``. Fill every free permit; preemption yields
+    only when the pool is actually full.
+    """
     if in_flight >= max(1, int(soft_cap)):
         return False, "soft_cap"
     if _saturator_provider_paused():
         return False, "provider_paused"
     try:
-        from llm_concurrency import (
-            GLOBAL_LLM_CONCURRENCY,
-            llm_semaphore_has_capacity,
-            pipeline_pending_count,
-        )
+        from llm_concurrency import GLOBAL_LLM_CONCURRENCY, llm_semaphore_has_capacity
     except Exception:
         return True, "ok"
-    if pipeline_pending_count() > 0:
-        return False, "pipeline_pending"
     if not llm_semaphore_has_capacity(1):
         return False, "no_permit"
     if _claude_child_count() >= int(GLOBAL_LLM_CONCURRENCY):
@@ -551,6 +551,47 @@ def saturator_may_launch(*, in_flight: int, soft_cap: int) -> tuple[bool, str]:
     if avail is not None and min_free and avail < min_free:
         return False, "low_memory"
     return True, "ok"
+
+
+def _preempt_cooldown_sec() -> float:
+    try:
+        return max(15.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC", "90")))
+    except (TypeError, ValueError):
+        return 90.0
+
+
+def saturator_preempt_n(
+    *,
+    waiting: int,
+    pending_age_sec: float,
+    has_capacity: bool,
+    in_flight: int,
+    last_preempt_at: float | None,
+    now: float,
+    min_pending_age_sec: float = 45.0,
+    cooldown_sec: float = 90.0,
+) -> int:
+    """How many packets to cancel this tick so LLM occupancy stays high.
+
+    Yield only when the pipeline is blocked on a full pool. One waiter must
+    not drain every session across successive loops.
+    """
+    if waiting <= 0 or in_flight <= 0 or has_capacity:
+        return 0
+    if pending_age_sec < min_pending_age_sec:
+        return 0
+    if last_preempt_at is not None and (now - last_preempt_at) < cooldown_sec:
+        return 0
+    return min(int(waiting), int(in_flight))
+
+
+def _task_is_live(task) -> bool:
+    if task.done() or task.cancelled():
+        return False
+    cancelling = getattr(task, "cancelling", None)
+    if callable(cancelling) and cancelling():
+        return False
+    return True
 
 
 def _pick_preemptable_many(
@@ -589,10 +630,10 @@ def _pick_preemptable(
 async def run_llm_saturator(shutdown_mgr=None) -> None:
     """Background loop: keep free LLM permits filled with bounded packets.
 
-    Launches one session per free permit, back-to-back. Cooperative: only
-    launches when ``saturator_may_launch`` is true (permit + RAM + no
-    queued pipeline role). Pipeline bursts cancel the youngest packets in
-    one shot so Scout-3 can start together instead of every 30s.
+    Launch whenever a permit and RAM exist — a queued pipeline role does not
+    freeze fill (that hole idled v298 for 11h). Preempt only when the pool
+    is full, at most ``waiting`` packets, then cooldown so one waiter cannot
+    drain every session.
     """
     if not SATURATOR_ENABLED:
         log.info("LLM saturator disabled (POK_LLM_SATURATOR_ENABLED not set)")
@@ -602,6 +643,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
     in_flight: set = set()
     started_at: "dict[object, float]" = {}
     last_housekeep = 0.0
+    last_preempt_at: float | None = None
 
     async def _launch(sid: int):
         try:
@@ -614,37 +656,56 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
             if shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False):
                 break
             try:
-                from llm_concurrency import pipeline_pending_age_sec, pipeline_pending_count
+                from llm_concurrency import (
+                    llm_semaphore_has_capacity,
+                    pipeline_pending_age_sec,
+                    pipeline_pending_count,
+                )
 
                 _pending_age = pipeline_pending_age_sec()
                 _pipeline_waiting = pipeline_pending_count()
+                _has_capacity = bool(llm_semaphore_has_capacity(1))
             except Exception:
                 _pending_age = 0.0
                 _pipeline_waiting = 0
+                _has_capacity = True
             in_flight = {t for t in in_flight if not t.done()}
             started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
-            # Batch-preempt: one Scout wave needs up to 3 permits at once.
-            if in_flight and _pipeline_waiting > 0:
+            live_tasks = {t for t in in_flight if _task_is_live(t)}
+            n_preempt = saturator_preempt_n(
+                waiting=_pipeline_waiting,
+                pending_age_sec=_pending_age,
+                has_capacity=_has_capacity,
+                in_flight=len(live_tasks),
+                last_preempt_at=last_preempt_at,
+                now=time.time(),
+                min_pending_age_sec=_preempt_after_sec(),
+                cooldown_sec=_preempt_cooldown_sec(),
+            )
+            if n_preempt:
                 victims = _pick_preemptable_many(
-                    started_at,
+                    {t: started_at[t] for t in live_tasks if t in started_at},
                     _pending_age,
-                    _pipeline_waiting,
-                    min_pending_age_sec=_preempt_after_sec(),
+                    n_preempt,
+                    min_pending_age_sec=0.0,
                 )
                 for victim in victims:
                     log.warning(
                         "saturator preempting session %s after %.0fs of "
-                        "pipeline queue demand (in-flight=%d waiting=%d)",
+                        "pipeline queue demand (in-flight=%d waiting=%d n=%d)",
                         getattr(victim, "get_name", lambda: "?")(),
                         _pending_age,
-                        len(in_flight),
+                        len(live_tasks),
                         _pipeline_waiting,
+                        n_preempt,
                     )
                     victim.cancel()
+                last_preempt_at = time.time()
                 if victims:
                     await asyncio.wait(set(victims), timeout=2.0)
             in_flight = {t for t in in_flight if not t.done()}
             started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
+            live_n = sum(1 for t in in_flight if _task_is_live(t))
             if time.time() - last_housekeep > 600:
                 last_housekeep = time.time()
                 from evolution_infra import RESULTS_DIR
@@ -663,7 +724,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 soft_cap = max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4")))
             while True:
                 ok, reason = saturator_may_launch(
-                    in_flight=len(in_flight), soft_cap=soft_cap
+                    in_flight=live_n, soft_cap=soft_cap
                 )
                 if not ok:
                     break
@@ -673,6 +734,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 t = asyncio.create_task(_launch(session_id), name=f"saturator-{session_id}")
                 in_flight.add(t)
                 started_at[t] = time.time()
+                live_n += 1
                 await asyncio.sleep(0.5)
             if _saturator_provider_paused():
                 await asyncio.sleep(min(_QUOTA_PAUSE_SECONDS, 60.0))
@@ -694,4 +756,10 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
         log.info("LLM saturator stopped")
 
 
-__all__ = ["run_llm_saturator", "SATURATOR_ENABLED", "saturator_job_for", "saturator_may_launch"]
+__all__ = [
+    "run_llm_saturator",
+    "SATURATOR_ENABLED",
+    "saturator_job_for",
+    "saturator_may_launch",
+    "saturator_preempt_n",
+]
