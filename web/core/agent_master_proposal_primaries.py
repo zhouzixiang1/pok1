@@ -306,7 +306,10 @@ def _proposal_mechanism_target_errors(
                     + field
                     for field in unknown_fields
                 )
-                return match.group(0)
+                # The list already failed on its unknown leaf; blank the whole
+                # body so the downstream shared-leaf scan cannot re-flag the
+                # legal leaves inside the same list as separate errors.
+                return match.group(0).replace(body, " " * len(body), 1)
             masked_body = body
             for leaf, owners in _amv.STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.items():
                 if (

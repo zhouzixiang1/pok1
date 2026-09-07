@@ -4201,7 +4201,7 @@ def test_oversized_scout_is_repaired_before_critics_and_packet_reproof(tmp_path)
     assert agent_master._proposal_worker_bindability_error(
         normalized_without_budget
     ) is not None
-    assert agent_master._validated_master_proposal(
+    accepted = agent_master._validated_master_proposal(
         raw,
         "mechanism",
         source_graph=graph,
@@ -4209,7 +4209,9 @@ def test_oversized_scout_is_repaired_before_critics_and_packet_reproof(tmp_path)
         national_policy_only=True,
         require_snapshot_evidence=True,
         evidence_mode="frozen_strength_snapshot",
-    ) is None
+    )
+    assert accepted is not None
+    assert agent_master._proposal_worker_bindability_error(accepted) is None
     hints = agent_master._master_proposal_projection_hints(
         raw,
         source_graph=graph,

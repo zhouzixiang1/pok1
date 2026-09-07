@@ -335,6 +335,7 @@ async def _run_master_proposal_ensemble(
     proposal_invocations: dict[str, dict] = {}
     seen_proposal_ids: set[str] = set()
     seen_change_symbols: dict[str, str] = {}
+    retry_pinned_symbols: dict[str, str] = {}
     proposal_provider_errors: list[tuple[str, BaseException]] = []
     invalid_proposal_specs: list[tuple[str, str, dict]] = []
     accepted_proposal_directions: dict[str, str] = {}
@@ -395,8 +396,22 @@ async def _run_master_proposal_ensemble(
                     )
                 if resolved is not None and resolved in source_graph:
                     pinned_symbol = resolved
-            if pinned_symbol:
+            # A pin that another direction already claimed (accepted attempt-1
+            # proposal or an earlier invalid direction's pin) is a trap: the
+            # retry cannot both keep it and stay distinct.  Downgrade that pin
+            # to an avoid instruction so the retry picks a free symbol.
+            pin_collides = bool(
+                pinned_symbol
+                and (
+                    pinned_symbol in seen_change_symbols
+                    or pinned_symbol in set(retry_pinned_symbols.values())
+                )
+            )
+            if pinned_symbol and not pin_collides:
                 repair["pinned_change_symbol"] = pinned_symbol
+                retry_pinned_symbols[direction] = pinned_symbol
+            elif pinned_symbol:
+                repair["avoid_change_symbols"] = [pinned_symbol]
             repair["projection_hints"] = (
                 _am._master_proposal_projection_hints(
                     output,
@@ -411,7 +426,12 @@ async def _run_master_proposal_ensemble(
             )
             if pinned_symbol:
                 repair["projection_hints"] = list(repair["projection_hints"]) + [
-                    f"schema_retry_keep_change_symbol.{pinned_symbol}"
+                    (
+                        "schema_retry_avoid_claimed_symbol."
+                        if pin_collides
+                        else "schema_retry_keep_change_symbol."
+                    )
+                    + pinned_symbol
                 ]
             _log.warning(
                 "Master proposal %s rejected (attempt 1): %s",

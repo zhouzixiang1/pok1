@@ -57,6 +57,10 @@ _PROPOSAL_UNCERTAINTY_PROMPT_VALUE = "wilson_wld_interval"
 # required rather than a higher single-row floor.
 _PROPOSAL_MIN_PRIMARY_GAMES = 30
 _PROPOSAL_MIN_AGGREGATE_GAMES = 200
+# Scout citations above this are not rejected: the validator keeps the
+# strongest pointers (by bound ``games``) so a fourth H2H row cannot fail a
+# proposal that already carries a legal two-tier pair.
+_PROPOSAL_MAX_SNAPSHOT_REFS = 3
 # Cold-start annealing (2026-08-17): the Phase-2 rating identity reset
 # archives ALL H2H/bot_stats payloads, so right after a reset no row anywhere
 # reaches the absolute tiers — v189-v194 burned five generations at master
@@ -171,8 +175,11 @@ def _proposal_schema_repair_guidance(
 
     The final output contract already contains the complete schema.  Repeating
     a generic twelve-item tutorial on every retry increased the prompt while
-    hiding the deterministic reason that actually failed.  Keep at most four
-    canonical corrections, ordered by semantic risk.
+    hiding the deterministic reason that actually failed.  Keep at most six
+    canonical corrections, ordered by semantic risk.  Every hard gate that
+    emits a projection hint must have a branch here: a rejection reason that
+    never reaches the prompt text makes the single permitted repair blind
+    (2026-08-19: 85 generations lost to hints with no renderer branch).
     """
 
     hints = tuple(str(item) for item in projection_hints)
@@ -182,6 +189,62 @@ def _proposal_schema_repair_guidance(
         if text not in guidance:
             guidance.append(text)
 
+    for item in hints:
+        if item.startswith("schema_retry_keep_change_symbol."):
+            add(
+                "Keep change_symbol exactly "
+                + item.split(".", 1)[1]
+                + " (copy it verbatim into change_symbol and the final "
+                "reachable_chain entry); this repair must not switch its "
+                "target symbol."
+            )
+            break
+    for item in hints:
+        if item.startswith("schema_retry_avoid_claimed_symbol."):
+            add(
+                "change_symbol "
+                + item.split(".", 1)[1]
+                + " is already claimed by another direction in this "
+                "ensemble; choose a different existing file.py:symbol that "
+                "still fits this direction's lens."
+            )
+            break
+    for item in hints:
+        if item.startswith("proposal_cited_sample_too_small"):
+            match = re.search(
+                r"need_primary\.(\d+)\.and_aggregate\.(\d+)", item
+            )
+            primary_n = (
+                match.group(1) if match else str(_PROPOSAL_MIN_PRIMARY_GAMES)
+            )
+            aggregate_n = (
+                match.group(2) if match else str(_PROPOSAL_MIN_AGGREGATE_GAMES)
+            )
+            add(
+                "Cite stronger snapshot rows: at least one validated row "
+                f"with games>={primary_n} (the strongest head_to_head row) "
+                f"and one aggregate row with games>={aggregate_n} (a "
+                "snapshot:bot_stats.json#/<bot_name> row or "
+                "snapshot:selection_snapshot.json#/rows). Copy the exact "
+                "validated pointers from the snapshot pointer index."
+            )
+            break
+    for item in hints:
+        if item.startswith("proposal_worker_binding_cannot_fit_minimum_prompt"):
+            shrink = re.search(r"shrink_binding_by\.(\d+)", item)
+            add(
+                "The compiled worker prompt binding overflows its fixed "
+                "budget; shorten the prose fields (structural_change, "
+                "counterfactual, expected_diff, why_not_threshold_tuning, "
+                "risks)"
+                + (
+                    " by at least " + shrink.group(1) + " characters total"
+                    if shrink
+                    else ""
+                )
+                + " and keep at most the two strongest snapshot references."
+            )
+            break
     if any("proposal_json_object_required" in item for item in hints):
         add(
             "Emit the entire proposal as one JSON object only; no prose, "
@@ -227,10 +290,34 @@ def _proposal_schema_repair_guidance(
             + " State that all other decision_context fields are byte-identical."
         )
     if any("proposal_mechanism_root_scoped_unknown_leaf" in item for item in hints):
+        roots = tuple(
+            sorted({
+                STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+                for primary in allowed_primaries or ()
+                if primary in STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS
+            })
+        )
+        children_clause = ""
+        if len(roots) == 1:
+            leaves = sorted(
+                {
+                    alias.rsplit(".", 1)[1]
+                    for alias in STATE_LEARNING_INTERVENTION_TARGET_ALIASES.get(
+                        roots[0], ()
+                    )
+                    if alias.startswith(roots[0] + ".")
+                    and re.fullmatch(r"[a-z_][a-z0-9_]*", alias.rsplit(".", 1)[1])
+                }
+            )
+            if leaves:
+                children_clause = (
+                    f" Under {roots[0]} the only recognized child leaves "
+                    "are: " + ", ".join(leaves) + "."
+                )
         add(
             "Under the selected root, keep only that root's known child fields; "
-            "remove any unrecognized leaf and express the same fact through the "
-            "root's existing fields only."
+            "remove any unrecognized leaf and express the same fact through "
+            "the root's existing fields only." + children_clause
         )
     if any(
         "proposal_mechanism_target_missing" in item
@@ -283,8 +370,8 @@ def _proposal_schema_repair_guidance(
         )
     if any("proposal_snapshot_evidence_too_many" in item for item in hints):
         add(
-            "You used more than 2 snapshot references; the maximum is 2. "
-            "Keep only the strongest 1–2 exact validated snapshot JSON pointers."
+            "You used more than 3 snapshot references; the maximum is 3. "
+            "Keep only the strongest 1–3 exact validated snapshot JSON pointers."
         )
     elif any("proposal_snapshot" in item for item in hints):
         add(
@@ -319,7 +406,7 @@ def _proposal_schema_repair_guidance(
             "Re-emit one complete object and repair only the canonical projection "
             "errors below; preserve the assigned lens and evidence scope."
         )
-    return "\n".join(f"- {item}" for item in guidance[:4])
+    return "\n".join(f"- {item}" for item in guidance[:6])
 
 
 # Master prompt rendering (the three _render_*_provider_prompt functions, the
@@ -855,7 +942,65 @@ def _snapshot_reference_evidence_binding(
             value_scalar = node.get(key)
             if isinstance(value_scalar, int) and not isinstance(value_scalar, bool):
                 binding[key] = value_scalar
+    elif isinstance(node, list):
+        # Aggregate containers (e.g. selection_snapshot.json#/rows) publish
+        # per-bot rows in a list: the list itself carries no games scalar, so
+        # bind the strongest row's games as the container's sample size.  A
+        # list pointer the snapshot prompt advertises must be able to satisfy
+        # the two-tier bar, not just the per-bot dict pointers.
+        aggregate_games = 0
+        for element in node:
+            if not isinstance(element, dict):
+                continue
+            value = element.get("games")
+            if (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > aggregate_games
+            ):
+                aggregate_games = value
+        if aggregate_games > 0:
+            binding["games"] = aggregate_games
     return binding
+
+
+def _keep_strongest_snapshot_refs(
+    evidence_refs: list[str],
+    snapshot_evidence: list[dict],
+    *,
+    max_snapshot_refs: int = _PROPOSAL_MAX_SNAPSHOT_REFS,
+) -> tuple[list[str], list[dict]]:
+    """Keep source refs plus the strongest snapshot pointers, not a hard reject.
+
+    Citing four legal rows used to fail ``proposal_snapshot_evidence_too_many``
+    even when a two-tier pair was already present (35 of the v328-v333 Scout
+    rejects). Drop the weakest extras by bound ``games``.
+    """
+    snapshot_bindings = [
+        binding
+        for binding in snapshot_evidence
+        if isinstance(binding, dict) and binding.get("reference")
+    ]
+    if len(snapshot_bindings) <= max_snapshot_refs:
+        return evidence_refs, snapshot_evidence
+    ranked = sorted(
+        snapshot_bindings,
+        key=lambda binding: (
+            int(binding["games"])
+            if isinstance(binding.get("games"), int)
+            else 0
+        ),
+        reverse=True,
+    )
+    keep_refs = {binding["reference"] for binding in ranked[:max_snapshot_refs]}
+    kept_refs = [
+        ref
+        for ref in evidence_refs
+        if not str(ref).startswith("snapshot:") or ref in keep_refs
+    ]
+    by_ref = {binding["reference"]: binding for binding in snapshot_bindings}
+    kept_evidence = [by_ref[ref] for ref in kept_refs if ref in by_ref]
+    return kept_refs, kept_evidence
 
 
 def _proposal_substantive_contract(proposal: dict) -> dict:
@@ -1183,8 +1328,13 @@ def _validated_master_proposal(
         evidence_refs.append(normalized_ref)
     if source_ref_symbols != set(source_symbols):
         return None
-    if snapshot_ref_count > 3:
-        return None
+    if snapshot_ref_count > _PROPOSAL_MAX_SNAPSHOT_REFS:
+        evidence_refs, snapshot_evidence = _keep_strongest_snapshot_refs(
+            evidence_refs, snapshot_evidence
+        )
+        snapshot_ref_count = sum(
+            1 for ref in evidence_refs if str(ref).startswith("snapshot:")
+        )
     if require_snapshot_evidence and snapshot_ref_count < 1:
         return None
     normalized["evidence_refs"] = evidence_refs
@@ -1236,8 +1386,13 @@ def _validated_master_proposal(
     # Identity is a pure function of the proposal claims and verified evidence,
     # not scout identity, critic order, generation number, or wall clock.
     normalized["proposal_id"] = _proposal_identity(normalized)
-    if enforce_bindability and _proposal_worker_bindability_error(normalized):
-        return None
+    if enforce_bindability:
+        trimmed = _packet._trim_proposal_prose_to_worker_budget(normalized)
+        if _proposal_worker_bindability_error(trimmed):
+            return None
+        if trimmed is not normalized:
+            trimmed["proposal_id"] = _proposal_identity(trimmed)
+        return trimmed
     return normalized
 
 
@@ -1521,7 +1676,7 @@ def _master_proposal_projection_hints(
             errors.append("proposal_evidence_refs_incomplete")
         if require_snapshot_evidence and snapshot_ref_count < 1:
             errors.append("proposal_snapshot_evidence_required")
-        if snapshot_ref_count > 2:
+        if snapshot_ref_count > _PROPOSAL_MAX_SNAPSHOT_REFS:
             errors.append("proposal_snapshot_evidence_too_many")
         if require_snapshot_evidence:
             errors.extend(

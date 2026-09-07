@@ -1133,6 +1133,67 @@ def _selected_proposal_compilation_contract(proposal: dict) -> dict:
     }
 
 
+_PROSE_BINDING_KEYS = (
+    "targeted_failure",
+    "structural_change",
+    "counterfactual",
+    "expected_diff",
+    "why_not_threshold_tuning",
+    "risks",
+)
+_FALSIFIER_PROSE_KEYS = ("control", "intervention", "expected_observation")
+# Compact snapshot projections first; 3 x 1600-char nodes blew the 13k worker
+# cap even when the Scout claims themselves were legal (v328-v333).
+_SNAPSHOT_PROJECTION_BINDING_CHARS = 400
+
+
+def _trim_proposal_prose_to_worker_budget(proposal: dict) -> dict:
+    """Shorten reserved worker-binding prose until the compiled prompt fits.
+
+    Schema retry was the only overflow path; GLM often re-emitted the same
+    11k+ binding. Truncating system-owned binding fields (never
+    ``change_symbol``, snapshot pointers, or the measurement contract)
+    lets an otherwise valid proposal compile.
+    """
+    if not isinstance(proposal, dict):
+        return proposal
+    if _proposal_worker_bindability_error(proposal) is None:
+        return proposal
+    candidate = json.loads(json.dumps(proposal))
+    evidence = candidate.get("snapshot_evidence")
+    if isinstance(evidence, list):
+        for binding in evidence:
+            if not isinstance(binding, dict):
+                continue
+            projection = str(binding.get("resolved_projection") or "")
+            if len(projection) > _SNAPSHOT_PROJECTION_BINDING_CHARS:
+                compact = projection[:_SNAPSHOT_PROJECTION_BINDING_CHARS]
+                binding["resolved_projection"] = compact
+                binding["projection_sha256"] = hashlib.sha256(
+                    compact.encode("utf-8")
+                ).hexdigest()
+                binding["projection_truncated"] = True
+        if _proposal_worker_bindability_error(candidate) is None:
+            return candidate
+    for cap in (1200, 800, 500, 320, 200, 120, 80, 40):
+        keep = max(20, cap)
+        for key in _PROSE_BINDING_KEYS:
+            value = str(candidate.get(key) or "")
+            if len(value) > keep:
+                candidate[key] = value[:keep]
+        falsifier = candidate.get("falsifier")
+        if isinstance(falsifier, dict):
+            falsifier = dict(falsifier)
+            for key in _FALSIFIER_PROSE_KEYS:
+                value = str(falsifier.get(key) or "")
+                if len(value) > keep:
+                    falsifier[key] = value[:keep]
+            candidate["falsifier"] = falsifier
+        if _proposal_worker_bindability_error(candidate) is None:
+            return candidate
+    return candidate
+
+
 def _proposal_worker_bindability_error(proposal: dict) -> str | None:
     compilation = _selected_proposal_compilation_contract(proposal)
     if int(compilation["max_provider_chars"]) >= WORKER_PROMPT_MIN_CHARS:

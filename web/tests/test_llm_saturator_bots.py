@@ -172,7 +172,32 @@ def test_saturator_may_launch_respects_ram_and_soft_cap(monkeypatch):
     assert reason == "ok"
 
 
-def test_saturator_preempt_n_does_not_drain_on_one_waiter():
+def test_saturator_may_launch_holdoff_after_preempt(monkeypatch):
+    import llm_concurrency as lc
+
+    monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 0)
+    monkeypatch.setattr(llm_saturator, "_mem_available_mb", lambda: 2048)
+    monkeypatch.setattr(llm_saturator, "_min_free_mb", lambda: 512)
+    monkeypatch.setattr(llm_saturator, "_saturator_provider_paused", lambda: False)
+    monkeypatch.setattr(lc, "llm_semaphore_has_capacity", lambda _n: True)
+    monkeypatch.setattr(llm_saturator, "_preempt_holdoff_sec", lambda: 15.0)
+
+    ok, reason = llm_saturator.saturator_may_launch(
+        in_flight=1,
+        soft_cap=4,
+        last_preempt_at=1000.0,
+        now=1010.0,
+    )
+    assert ok is False
+    assert reason == "preempt_holdoff"
+    ok, reason = llm_saturator.saturator_may_launch(
+        in_flight=1,
+        soft_cap=4,
+        last_preempt_at=1000.0,
+        now=1020.0,
+    )
+    assert ok is True
+    assert reason == "ok"
     now = 1000.0
     kwargs = dict(
         waiting=1,
@@ -185,11 +210,15 @@ def test_saturator_preempt_n_does_not_drain_on_one_waiter():
         cooldown_sec=90.0,
     )
     assert llm_saturator.saturator_preempt_n(**kwargs) == 1
-    # After a wave, cooldown blocks further drains.
+    # After a wave, cooldown blocks further drains of a SINGLE waiter.
     kwargs["last_preempt_at"] = now
     kwargs["now"] = now + 10.0
     kwargs["in_flight"] = 3
     assert llm_saturator.saturator_preempt_n(**kwargs) == 0
+    # Leftover ensemble demand still yields during cooldown.
+    kwargs["waiting"] = 2
+    assert llm_saturator.saturator_preempt_n(**kwargs) == 2
+    kwargs["waiting"] = 1
     # Free permits: do not preempt.
     kwargs["last_preempt_at"] = None
     kwargs["has_capacity"] = True

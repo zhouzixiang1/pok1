@@ -102,15 +102,19 @@ hard-stop at 18 Read turns). It does not raise `POK_GLOBAL_LLM_CONCURRENCY`
 (this 3.6Gi host OOMs above 4 streams). Pipeline Scout waves batch-preempt
 the youngest packets; new launches refuse when live `claude` children already
 match the permit cap or `MemAvailable` is below the floor. A queued pipeline
-role does not freeze fill of idle permits. Preempt only when the pool is full,
-at most `waiting` packets, then cooldown.
+role does not freeze fill of idle permits. Preempt when the pool is full and
+demand has lasted `PREEMPT_AFTER_SEC`. Yield at most `waiting` packets;
+leftover ensemble demand (`waiting>=2`) still yields during cooldown. After
+a yield wave, `PREEMPT_HOLDOFF_SEC` blocks refill so pipeline waiters take
+the freed permits.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `POK_LLM_SATURATOR_ENABLED` | `1` | Fill idle LLM permits |
 | `POK_LLM_SATURATOR_MAX_INFLIGHT` | `4` | Packets while permits are free |
-| `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC` | `45` | Queue age before yielding |
-| `POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC` | `90` | Min seconds between preempt waves |
+| `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC` | `15` | Queue age before yielding |
+| `POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC` | `20` | Min seconds between single-waiter waves |
+| `POK_LLM_SATURATOR_PREEMPT_HOLDOFF_SEC` | `15` | After a yield, do not refill |
 | `POK_LLM_SATURATOR_MIN_FREE_MB` | `512` | Refuse launches below this `MemAvailable` |
 
 ### Disk hygiene (runtime artifact janitor)

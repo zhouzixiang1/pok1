@@ -1374,6 +1374,8 @@ def test_crossover_role_timeout_policy_has_extended_total(monkeypatch):
     monkeypatch.delenv("POK_LLM_CROSSOVER_FIRST_ACTIVITY_TIMEOUT", raising=False)
     monkeypatch.delenv("POK_LLM_CROSSOVER_IDLE_TIMEOUT", raising=False)
     monkeypatch.delenv("POK_LLM_CROSSOVER_TOTAL_TIMEOUT", raising=False)
+    monkeypatch.delenv("POK_LLM_CROSSOVER_STALL_TIMEOUT", raising=False)
+    monkeypatch.delenv("POK_LLM_DEFAULT_STALL_TIMEOUT", raising=False)
 
     default_policy = llm_query._role_timeout_policy("COMBINED ANALYST")
     crossover_policy = llm_query._role_timeout_policy("CROSSOVER v200x254")
@@ -1381,6 +1383,10 @@ def test_crossover_role_timeout_policy_has_extended_total(monkeypatch):
     assert crossover_policy["policy_key"] == "CROSSOVER"
     assert crossover_policy["total_timeout"] > default_policy["total_timeout"]
     assert crossover_policy["idle_timeout"] > 0
+    # GLM effort=max thinks 200-500s between messages; the generic [60,180]s
+    # stall clamp killed live crossover streams at 180s (v334/v335).
+    assert crossover_policy["stall_timeout"] == 360.0
+    assert crossover_policy["stall_timeout"] > 180.0
 
 
 def test_process_stream_hard_times_out_default_role_first_activity(monkeypatch, tmp_path):

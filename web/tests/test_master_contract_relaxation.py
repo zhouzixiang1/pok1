@@ -107,14 +107,87 @@ def test_guidance_target_files_invalid():
     assert guidance and "policy.py" in guidance
 
 
-def test_guidance_still_capped_at_four():
-    """More than four hints must not produce more than four lines."""
+def test_guidance_still_capped_at_six():
+    """More than six hints must not produce more than six lines."""
     many = tuple(
         f"proposal_reachable_chain:{i}" for i in range(10)
     )
     guidance = _proposal_schema_repair_guidance(many, require_snapshot_evidence=False)
     lines = [line for line in guidance.split("\n") if line.startswith("- ")]
-    assert len(lines) <= 4
+    assert len(lines) <= 6
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ②b guidance: the retry-pin / evidence-bar / binding-budget hint classes the
+# 2026-08-19 adversarial audit found had no renderer branch (85 lost
+# generations): each must now disclose its constraint in the prompt text.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_guidance_retry_pin_is_disclosed():
+    guidance = _proposal_schema_repair_guidance(
+        ("schema_retry_keep_change_symbol.policy.py:_bluff_allowed",),
+        **_GUIDANCE_KWARGS,
+    )
+    assert "policy.py:_bluff_allowed" in guidance
+    assert "must not switch" in guidance
+
+
+def test_guidance_retry_avoid_claimed_symbol_is_disclosed():
+    guidance = _proposal_schema_repair_guidance(
+        ("schema_retry_avoid_claimed_symbol.policy.py:_bluff_allowed",),
+        **_GUIDANCE_KWARGS,
+    )
+    assert "policy.py:_bluff_allowed" in guidance
+    assert "already claimed" in guidance
+
+
+def test_guidance_cited_sample_carries_thresholds():
+    guidance = _proposal_schema_repair_guidance(
+        (
+            "proposal_cited_sample_too_small.max_games_seen.30"
+            ".need_primary.30.and_aggregate.200"
+            ".aggregate_sources.bot_stats.selection_snapshot",
+        ),
+        **_GUIDANCE_KWARGS,
+    )
+    assert "games>=30" in guidance and "games>=200" in guidance
+    assert "bot_stats.json#/" in guidance
+    assert "selection_snapshot.json#/rows" in guidance
+
+
+def test_guidance_binding_overflow_carries_shrink_number():
+    guidance = _proposal_schema_repair_guidance(
+        (
+            "proposal_worker_binding_cannot_fit_minimum_prompt"
+            ".binding_chars.11209.provider_budget_chars.-259"
+            ".minimum_provider_chars.20.shrink_binding_by.279",
+        ),
+        **_GUIDANCE_KWARGS,
+    )
+    assert "279" in guidance
+    assert "structural_change" in guidance
+
+
+def test_guidance_snapshot_too_many_says_three():
+    guidance = _proposal_schema_repair_guidance(
+        ("proposal_snapshot_evidence_too_many",), **_GUIDANCE_KWARGS,
+    )
+    assert "maximum is 3" in guidance
+    assert "maximum is 2" not in guidance
+
+
+def test_guidance_root_children_are_enumerated():
+    guidance = _proposal_schema_repair_guidance(
+        (
+            "proposal_mechanism_root_scoped_unknown_leaf"
+            ":opponent.terminal_response:adaptation_weight",
+        ),
+        require_snapshot_evidence=False,
+        allowed_primaries=("terminal_response",),
+    )
+    assert "opponent.terminal_response" in guidance
+    assert "adaptation_weight" in guidance  # a recognized child now
+    assert "fold_to_raise" in guidance
 
 
 # ═══════════════════════════════════════════════════════════════════════════

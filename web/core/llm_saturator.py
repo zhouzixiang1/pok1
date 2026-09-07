@@ -741,9 +741,9 @@ def _mem_available_mb() -> int | None:
 
 def _preempt_after_sec() -> float:
     try:
-        return max(15.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_AFTER_SEC", "45")))
+        return max(15.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_AFTER_SEC", "15")))
     except (TypeError, ValueError):
-        return 45.0
+        return 15.0
 
 
 def _min_free_mb() -> int:
@@ -753,14 +753,26 @@ def _min_free_mb() -> int:
         return 512
 
 
-def saturator_may_launch(*, in_flight: int, soft_cap: int) -> tuple[bool, str]:
+def saturator_may_launch(
+    *,
+    in_flight: int,
+    soft_cap: int,
+    last_preempt_at: float | None = None,
+    now: float | None = None,
+) -> tuple[bool, str]:
     """Admit a new packet when a permit and RAM exist.
 
     A queued pipeline role must NOT freeze launches: v298 sat at
     ``waiting=1`` with three idle permits for 11h because this gate used to
     return ``pipeline_pending``. Fill every free permit; preemption yields
-    only when the pool is actually full.
+    only when the pool is actually full. Immediately after a yield wave,
+    hold off refill so the just-freed permits go to the FIFO pipeline
+    waiters instead of a new saturator acquire.
     """
+    if last_preempt_at is not None:
+        ts = time.time() if now is None else now
+        if (ts - last_preempt_at) < _preempt_holdoff_sec():
+            return False, "preempt_holdoff"
     if in_flight >= max(1, int(soft_cap)):
         return False, "soft_cap"
     if _saturator_provider_paused():
@@ -782,9 +794,16 @@ def saturator_may_launch(*, in_flight: int, soft_cap: int) -> tuple[bool, str]:
 
 def _preempt_cooldown_sec() -> float:
     try:
-        return max(15.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC", "90")))
+        return max(15.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC", "20")))
     except (TypeError, ValueError):
-        return 90.0
+        return 20.0
+
+
+def _preempt_holdoff_sec() -> float:
+    try:
+        return max(5.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_HOLDOFF_SEC", "15")))
+    except (TypeError, ValueError):
+        return 15.0
 
 
 def saturator_preempt_n(
@@ -795,20 +814,25 @@ def saturator_preempt_n(
     in_flight: int,
     last_preempt_at: float | None,
     now: float,
-    min_pending_age_sec: float = 45.0,
-    cooldown_sec: float = 90.0,
+    min_pending_age_sec: float = 15.0,
+    cooldown_sec: float = 20.0,
 ) -> int:
     """How many packets to cancel this tick so LLM occupancy stays high.
 
     Yield only when the pipeline is blocked on a full pool. One waiter must
-    not drain every session across successive loops.
+    not drain every session across successive loops; leftover ensemble
+    demand (waiting>=2) still yields during cooldown.
     """
     if waiting <= 0 or in_flight <= 0 or has_capacity:
         return 0
     if pending_age_sec < min_pending_age_sec:
         return 0
     if last_preempt_at is not None and (now - last_preempt_at) < cooldown_sec:
-        return 0
+        # One waiter already received a wave; do not drain the rest of the
+        # pool on that same waiter. Ensemble demand (Master's 2nd/3rd Scout)
+        # must still get slots instead of waiting another cooldown.
+        if int(waiting) <= 1:
+            return 0
     return min(int(waiting), int(in_flight))
 
 
@@ -859,8 +883,10 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
 
     Launch whenever a permit and RAM exist — a queued pipeline role does not
     freeze fill (that hole idled v298 for 11h). Preempt only when the pool
-    is full, at most ``waiting`` packets, then cooldown so one waiter cannot
-    drain every session.
+    is full, at most ``waiting`` packets. A leftover ensemble (waiting>=2)
+    still yields during cooldown. After a yield wave, skip same-tick refill
+    and hold off new acquires so FIFO pipeline waiters take the freed
+    permits.
     """
     if not SATURATOR_ENABLED:
         log.info("LLM saturator disabled (POK_LLM_SATURATOR_ENABLED not set)")
@@ -937,6 +963,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 last_preempt_at = time.time()
                 if victims:
                     await asyncio.wait(set(victims), timeout=2.0)
+            skip_refill = bool(n_preempt)
             in_flight = {t for t in in_flight if not t.done()}
             started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
             live_n = sum(1 for t in in_flight if _task_is_live(t))
@@ -960,10 +987,12 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 in_flight = {t for t in in_flight if not t.done()}
                 started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
                 live_n = sum(1 for t in in_flight if _task_is_live(t))
-                if _saturator_provider_paused():
+                if skip_refill or _saturator_provider_paused():
                     break
                 ok, reason = saturator_may_launch(
-                    in_flight=live_n, soft_cap=soft_cap
+                    in_flight=live_n,
+                    soft_cap=soft_cap,
+                    last_preempt_at=last_preempt_at,
                 )
                 if not ok:
                     break

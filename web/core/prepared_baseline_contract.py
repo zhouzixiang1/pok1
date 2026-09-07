@@ -181,10 +181,17 @@ def build_prepared_baseline_contract(
     parent_a_dir = Path(parent_a_dir)
     parent_b_dir = Path(parent_b_dir)
     prepared_dir = Path(prepared_dir)
+    # The preplan transition computed the parent's capabilities static-only
+    # (deterministic source anchor) and the candidate's with its probe.  The
+    # revalidation rebuild must reuse those exact capability objects: a
+    # from-scratch rebuild re-runs the parent probe and deterministically
+    # disagrees with the frozen snapshot on every crossover.
     snapshot_errors = validate_prepared_capability_snapshot(
         capability_snapshot,
         parent_bot_dir=parent_a_dir,
         prepared_bot_dir=prepared_dir,
+        parent_capabilities=preplan_transition.get("source_capabilities"),
+        prepared_capabilities=preplan_transition.get("candidate_capabilities"),
     )
     if snapshot_errors:
         raise ValueError(

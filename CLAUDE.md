@@ -45,7 +45,9 @@ auditor direction or stagnation H2H alert, never the `match_analysis` process
 appendix; saturator findings are pinned to the live `source_v`. Do not add a
 second commander LLM that mutates checkpoints or `web/core` contracts —
 process bugs are deterministic repairs plus the saturator abandon-attribution
-observation packet.
+observation packet. Scout packets that overflow the worker-binding budget
+are mechanically trimmed; saturator yield/holdoff must not starve Master or
+crossover.
 Checkpoint disappearance is terminal only with one unique canonical result
 from the current authorized owner tool, including `workflow_run_id`, and a
 current-head reproof of both complete journals, the transaction, ledger and

@@ -533,3 +533,115 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
         f"Planning baseline: bots/{bot_name(next_v)}/ (prepared_crossover_child)"
         in prompt
     )
+
+
+def test_prepared_baseline_contract_forwards_transition_capabilities(
+    tmp_path, monkeypatch,
+):
+    """Crossover capability asymmetry regression (2026-08-19).
+
+    The preplan transition anchors the parent's capabilities static-only
+    (deterministic source identity, b986b72b), while a from-scratch
+    revalidation rebuild re-derives them probe-merged.  That asymmetry made
+    every crossover fail ``prepared_capability_snapshot_current_state_mismatch``
+    deterministically (52 abandoned generations, zero crossovers ever
+    published).  The contract build must forward the transition's frozen
+    capability objects into the revalidation instead of re-deriving them.
+    """
+    import runtime_architecture_policy as architecture
+
+    parent_a = tmp_path / "national_v143"
+    parent_b = tmp_path / "national_v144"
+    child = tmp_path / "national_v145"
+    for root in (parent_a, parent_b, child):
+        root.mkdir()
+    (parent_a / "policy.py").write_text("ORIGIN = 'A'\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("ORIGIN = 'B'\n", encoding="utf-8")
+    (child / "policy.py").write_text("ORIGIN = 'B'\n", encoding="utf-8")
+
+    from runtime_architecture_policy import ACTIVE_EPOCH
+
+    def _epoch_compatible_caps(state):
+        caps = _capabilities(state)
+        # _epoch_compatible gates the parent side on the epoch marker plus the
+        # national_policy_module check; without them the parent state collapses
+        # to {} on both sides and the asymmetry cannot express itself.
+        caps["epoch"] = ACTIVE_EPOCH
+        return caps
+
+    parent_static = _epoch_compatible_caps(
+        {"national_policy_module": True, "wire": True, "precompute": False}
+    )
+    child_caps = _epoch_compatible_caps(
+        {"national_policy_module": True, "wire": True, "precompute": True}
+    )
+    # What a probe-merged live rebuild of the parent produces: the typed
+    # runtime probe appends its synthesized check to the static set.
+    parent_probe_merged = json.loads(json.dumps(parent_static))
+    probe_check = {
+        "check_id": "typed_runtime_probe",
+        "passed": True,
+        "guidance": "probe",
+        "evidence": {"locations": ["policy.py:typed_runtime_probe"]},
+    }
+    parent_probe_merged["checks"] = list(parent_probe_merged["checks"]) + [
+        probe_check
+    ]
+    parent_probe_merged["checks_by_id"] = dict(parent_probe_merged["checks_by_id"])
+    parent_probe_merged["checks_by_id"]["typed_runtime_probe"] = probe_check
+
+    monkeypatch.setattr(
+        architecture, "_lineage_capabilities", lambda _p: parent_probe_merged
+    )
+    monkeypatch.setattr(
+        architecture, "evaluate_national_capabilities", lambda _p: child_caps
+    )
+    monkeypatch.setattr(
+        architecture,
+        "_apply_typed_runtime_probe",
+        lambda capabilities, *_args, **_kwargs: (capabilities, {}, []),
+    )
+    capability_snapshot = architecture.build_prepared_capability_snapshot(
+        parent_a,
+        child,
+        parent_capabilities=parent_static,
+        prepared_capabilities=child_caps,
+    )
+
+    base_transition = _accepted_preplan_transition(**{
+        "policy": {"policy_digest": "d" * 64},
+    })
+
+    # Without the transition's capabilities the rebuild re-derives the parent
+    # probe-merged and deterministically disagrees with the frozen snapshot.
+    with pytest.raises(ValueError) as caught:
+        build_prepared_baseline_contract(
+            parent_a,
+            parent_b,
+            child,
+            source_v=143,
+            parent2_v=144,
+            next_v=145,
+            capability_snapshot=capability_snapshot,
+            preplan_transition=dict(base_transition),
+        )
+    assert "prepared_capability_snapshot_current_state_mismatch" in str(
+        caught.value
+    )
+
+    # Forwarding the preplan transition's capability objects validates.
+    contract = build_prepared_baseline_contract(
+        parent_a,
+        parent_b,
+        child,
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        capability_snapshot=capability_snapshot,
+        preplan_transition=dict(
+            base_transition,
+            source_capabilities=parent_static,
+            candidate_capabilities=child_caps,
+        ),
+    )
+    assert contract["prepared_bot"] == "national_v145"

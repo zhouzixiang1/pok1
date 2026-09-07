@@ -419,10 +419,14 @@ in-flight streams** via a process-wide semaphore in
 `_PipelinePrioritySemaphore`, which counts queue-pending demand; the
 background saturator still fills free permits even if a pipeline role is
 queued, and batch-cancels at most ``waiting`` in-flight **packets** when the pool is
-full and demand persists (default 45s, `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC`)
-then cools down (`POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC`) so one waiter
-cannot drain every session — the v187 queue-starvation fix plus the v298
-over-preempt hole. Saturator jobs are bounded (matchup / line-audit /
+full and demand persists (default 15s, `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC`).
+A leftover ensemble (`waiting>=2`) still yields during cooldown
+(`POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC`, default 20s); a single waiter
+cannot drain every session. After a yield wave, refill is held off
+(`POK_LLM_SATURATOR_PREEMPT_HOLDOFF_SEC`) so FIFO pipeline waiters take the
+freed permits instead of a same-tick saturator relaunch — the v187
+queue-starvation fix plus the v298 over-preempt hole plus the v328-v335
+Master/crossover starvation. Saturator jobs are bounded (matchup / line-audit /
 function-trace, plus abandon-attribution when a receipt exists) so occupancy
 produces 1-3 hypothesized `change_symbol` contracts plus last-abandon class
 instead of unread essays. The focus pool pins the live checkpoint `source_v`
@@ -1205,7 +1209,13 @@ Enforced in `_validated_master_proposal` (hard reject +
 `proposal_cited_sample_too_small.<numbers>` hint) and mirrored by
 `statistical_evidence_floor_errors` at the plan audit (blocking; grades the
 plan's own snapshot bindings — the same citation set the proposal gate
-grades). Cold-start annealing (2026-08-17): after a rating-identity reset no
+grades). The advertised aggregate pointer `snapshot:selection_snapshot.json#/rows`
+binds the strongest row's `games` so citing that container can satisfy the
+200-game tier (a list node has no games scalar of its own). More than three
+snapshot citations are not a hard reject: the validator keeps the strongest
+three by bound `games`. A compiled worker binding that overflows the 13k
+prompt cap is mechanically trimmed (snapshot projections then prose fields)
+instead of relying on the one schema retry. Cold-start annealing (2026-08-17): after a rating-identity reset no
 row reaches the absolutes, so while the pool's best citable row is
 observably below a tier, that tier anneals to best-available (shared floor
 15 games; below the floor nothing passes — citing sub-15 rows as
@@ -1218,7 +1228,12 @@ Related contracts: within-ensemble proposals must carry DISTINCT
 `proposal_packet_change_symbols_not_distinct`); a schema-repair retry is
 PINNED to its original change_symbol (`pinned_change_symbol` +
 `schema_retry_keep_change_symbol.<symbol>` hint — v187's retry silently
-switched targets); the shared cross-generation direction ledger lives in
+switched targets) unless that pin is already claimed by another direction
+in the same ensemble, in which case it becomes
+`schema_retry_avoid_claimed_symbol.<symbol>` so the retry can stay
+distinct. The repair prompt renders those pin/budget/sample hints (a
+missing renderer branch left 85 generations blind). The shared
+cross-generation direction ledger lives in
 `recent_directions.py` (rendered advisory into master_context, and the plan
 audit overrides `direction_novelty` to "repetitive" when the selected symbol
 appears in >= 2 of the last 6 attempts). Saturator packets persist 1-3

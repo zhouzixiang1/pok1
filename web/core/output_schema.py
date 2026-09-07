@@ -150,17 +150,34 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
         "opponent.rates.fold_to_allin",
         "action_profile",
     ),
+    # Child leaves must mirror the OpponentTracker snapshot the native
+    # runtime publishes per connection (national_bot template: terminal_response
+    # carries samples/confidence/adaptation_weight scalars and the
+    # facing_raise*/contexts sub-tables).  A closed set narrower than the real
+    # runtime fields rejects factually correct mechanism prose.
     "opponent.terminal_response": (
         "opponent.terminal_response",
+        "opponent.terminal_response.samples",
+        "opponent.terminal_response.confidence",
+        "opponent.terminal_response.adaptation_weight",
         "opponent.terminal_response.fold_to_raise",
         "opponent.terminal_response.fold_to_jam",
         "opponent.terminal_response.river_overcall",
+        "opponent.terminal_response.facing_raise",
+        "opponent.terminal_response.facing_allin",
+        "opponent.terminal_response.facing_raise_by_street",
+        "opponent.terminal_response.facing_allin_by_street",
         "terminal_response",
         "call_raise",
         "raise_over_raise",
     ),
     "opponent.showdown_range": (
         "opponent.showdown_range",
+        "opponent.showdown_range.samples",
+        "opponent.showdown_range.confidence",
+        "opponent.showdown_range.adaptation_weight",
+        "opponent.showdown_range.showdown_reach_rate",
+        "opponent.showdown_range.tightness",
         "showdown_range",
         "oppo_hands",
     ),

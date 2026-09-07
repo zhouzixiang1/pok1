@@ -93,8 +93,9 @@ _ROLE_TIMEOUT_DEFAULTS = {
     "CRITIC": (180.0, 360.0, 900.0),
     # Crossover synthesizes a whole child bot from two parents and routinely
     # exceeds the generic analysis/probe budget on GLM-backed Claude-compatible
-    # endpoints. Keep the idle ceiling, but give total wall-clock enough room so
-    # a live stream is not killed and restarted at ~15 minutes.
+    # endpoints. Exempt from the [60,180]s stall clamp (v334/v335 died at
+    # 180s of thinking silence). Keep the idle ceiling and a long total so a
+    # live stream is not killed and restarted at ~15 minutes.
     "CROSSOVER": (240.0, 420.0, 2400.0),
     # Workers already have an outer WORKER_TIMEOUT. Live v147 showed legitimate
     # Read/tool reasoning repeatedly crossing the generic 180s mid-loop stall
@@ -238,7 +239,13 @@ def _role_timeout_policy(role_name: str) -> dict:
     # slow tool/think deltas. 0 disables (falls back to idle_timeout).
     stall_default = (
         360.0
-        if key in {"MASTER_PROPOSAL", "MASTER_FINAL", "WORKER", "SATURATOR"}
+        if key in {
+            "MASTER_PROPOSAL",
+            "MASTER_FINAL",
+            "WORKER",
+            "SATURATOR",
+            "CROSSOVER",
+        }
         else 0.0
     )
     if idle > 0 and key not in {
@@ -246,6 +253,7 @@ def _role_timeout_policy(role_name: str) -> dict:
         "MASTER_PROPOSAL",
         "WORKER",
         "SATURATOR",
+        "CROSSOVER",
     }:
         stall_default = max(60.0, min(180.0, idle * 0.55))
     stall = _env(prefix + "STALL_TIMEOUT", stall_default)
