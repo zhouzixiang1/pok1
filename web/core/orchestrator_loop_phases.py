@@ -2232,6 +2232,7 @@ async def _run_draft_cycle(ui, shutdown_mgr, gen_count, *, slot_id="draft"):
 
         selected -> preparing -> prepared        (prepare_generation)
         prepared -> direction_audited            (run_direction_audit)
+        direction_audited -> (run_literature_probe when required, then)
         direction_audited -> master_planned      (run_master)
         master_planned -> workers_done           (execute_workers)
 

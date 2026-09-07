@@ -185,11 +185,15 @@ not turn startup/object expansion into a hidden timeout.
   reported as no evidence; daemon pair counters are scheduling telemetry and
   never substitute for a strength matrix.
 - When canonical stagnation or repetition requires research, the state machine
-  routes only to `run_literature_probe`; `run_master` refuses to run without an
+  routes only to `run_literature_probe` and the outer deterministic dispatcher
+  executes that tool (same class as review/critic, not the bootstrap-only
+  `run_master` special case). `run_master` refuses to run without an
   identity-bound receipt carrying the exact Master-context digest, Direction-Audit digest, and
   requirement-context digest. A governed skip, timeout, or provider failure
   counts as a receipt only for that exact context, so stale research cannot be
   replayed while infrastructure cannot cause an unbounded orchestration loop.
+  Ordinary generations still hand `run_master` to the Orchestrator SDK after
+  the probe receipt is bound.
 - On the initial `master_planned` worker pass, checkpoint tasks are the sole
   execution authority.  A non-empty caller task list must be structurally
   identical; `tasks=[]` loads a defensive copy.  The checkpoint and plan

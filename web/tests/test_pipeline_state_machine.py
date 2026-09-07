@@ -878,6 +878,77 @@ def test_route_policy_rejects_old_literature_receipt_after_context_change():
     assert route_policy(checkpoint)["next_tool"] == "run_literature_probe"
 
 
+def test_deterministic_recovery_dispatches_mandatory_literature_probe():
+    """Outer scheduler, not the Orchestrator SDK, owns the mandatory probe."""
+    from master_context_contract import build_master_context
+    import orchestrator
+    import orchestrator_stage_routing as osr
+    from tool_planning import run_literature_probe
+
+    checkpoint = _strict_checkpoint({
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+        "audit_context": {
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+            ),
+        },
+        "direction_audit": {"repetition_detected": False},
+    })
+    assert route_policy(checkpoint)["next_tool"] == "run_literature_probe"
+    resolved = osr._resolve_recovery_route(checkpoint)
+    assert resolved is not None
+    assert resolved["next_tool"] == "run_literature_probe"
+    assert "run_literature_probe" in orchestrator._DETERMINISTIC_RECOVERY_TOOLS
+    assert "run_literature_probe" in orchestrator._DETERMINISTIC_ROUTES_WITH_LLM
+    handler, args = osr._deterministic_route_handler_and_args(
+        "run_literature_probe", checkpoint, 300, 299, None
+    )
+    assert handler is run_literature_probe.handler
+    assert args == {
+        "source_v": 299,
+        "next_v": 300,
+        "h2h_weakness": "",
+        "stagnation_info": "",
+    }
+    assert osr._deterministic_route_requires_llm(
+        checkpoint, "run_literature_probe"
+    ) is True
+
+
+def test_literature_probe_receipt_returns_master_to_sdk_on_ordinary_gens():
+    from master_context_contract import build_master_context
+    import orchestrator_stage_routing as osr
+
+    checkpoint = _strict_checkpoint({
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+        "audit_context": {
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+            ),
+        },
+        "direction_audit": {"repetition_detected": False},
+    })
+    binding, errors = literature_probe_receipt_binding(checkpoint)
+    assert not errors
+    checkpoint["literature_probe"] = {
+        "next_v": 300,
+        "source_v": 299,
+        "reason": "governed_skip",
+        **binding,
+    }
+    assert route_policy(checkpoint)["next_tool"] == "run_master"
+    # run_master stays bootstrap-only on the deterministic dispatcher.
+    assert osr._resolve_recovery_route(checkpoint) is None
+
+
 @pytest.mark.parametrize(
     ("current_stage", "proposed_stage"),
     [

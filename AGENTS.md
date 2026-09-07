@@ -720,7 +720,8 @@ Generation order:
 
 1. prepare single-parent artifact or crossover baseline;
 2. direction audit;
-3. governed literature probe when required;
+3. governed literature probe when required (outer deterministic dispatcher
+   executes it; Orchestrator SDK is not the authority that remembers to call);
 4. Master selects one of three proposals after two anonymous ballots;
 5. Workers implement the compiled, checkpoint-owned contract;
 6. quality gates;

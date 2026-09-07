@@ -1566,9 +1566,10 @@ async def _try_deterministic_checkpoint_route(
         # ROOT dispatch site for every deterministic checkpoint route (recovery
         # crash-restart AND normal streaming, on BOTH the primary lane and the
         # draft lane via _draft_prepare_task -> _advance_deterministic_recovery).
-        # The handlers (prepare_next_gen / run_direction_audit / run_master /
-        # run_quality_gates / run_review / run_critic / run_precommit_eval /
-        # commit_bot / run_crossover / run_archivist / abandon_generation) are
+        # The handlers (prepare_next_gen / run_direction_audit /
+        # run_literature_probe / run_master / run_quality_gates / run_review /
+        # run_critic / run_precommit_eval / commit_bot / run_crossover /
+        # run_archivist / abandon_generation) are
         # async but perform heavy SYNCHRONOUS blocking I/O on the event loop:
         #   - the @tool wrapper's ensure_runtime_git_guard runs a ``git``
         #     subprocess (worktree status) at the top of every call;

@@ -189,6 +189,8 @@ CRITICAL_GENERATION_EXACT = frozenset({
     "web/core/tool_helpers.py",
     "web/core/tool_pipeline.py",
     "web/core/tool_planning.py",
+    "web/core/tool_planning_literature_probe.py",
+    "web/core/orchestrator_stage_routing.py",
     "web/core/tool_runtime_guard.py",
     "web/core/tools.py",
     "web/core/workflow_profiles.py",

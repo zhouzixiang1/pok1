@@ -192,6 +192,12 @@ _DETERMINISTIC_RECOVERY_TOOLS = frozenset({
     "run_precommit_eval",
     "commit_bot",
     "run_archivist",
+    # Same class as review/critic: route_policy already makes this the sole
+    # legal next_tool when research is mandatory. Do NOT fold it into the
+    # run_master/run_direction_audit bootstrap-only special case —
+    # literature_probe_required is false for protocol_bootstrap, so that
+    # path would never dispatch.
+    "run_literature_probe",
 })
 
 _DETERMINISTIC_ROUTES_WITH_LLM = frozenset({
@@ -202,6 +208,7 @@ _DETERMINISTIC_ROUTES_WITH_LLM = frozenset({
     "run_review",
     "run_critic",
     "run_archivist",
+    "run_literature_probe",
 })
 
 
@@ -298,6 +305,17 @@ def _deterministic_route_handler_and_args(next_tool, checkpoint, next_v, source_
         args = {"source_v": source_v, "next_v": next_v}
         from tool_planning import run_direction_audit
         return run_direction_audit.handler, args
+    if next_tool == "run_literature_probe":
+        # Empty weakness/stagnation strings: the tool binds scheduler-owned
+        # checkpoint fields and rejects a caller paraphrase that differs.
+        args = {
+            "source_v": source_v,
+            "next_v": next_v,
+            "h2h_weakness": "",
+            "stagnation_info": "",
+        }
+        from tool_planning import run_literature_probe
+        return run_literature_probe.handler, args
     if next_tool == "run_master":
         args = {"source_v": source_v, "next_v": next_v}
         from tool_planning import run_master
