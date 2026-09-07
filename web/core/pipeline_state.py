@@ -832,25 +832,29 @@ def literature_probe_receipt_present(checkpoint: dict | None) -> bool:
             "requirement_context",
             "requirement_context_digest",
         )
-    ) and _literature_receipt_identity_still_live(checkpoint, receipt)
+    ) and _literature_receipt_still_live(checkpoint, receipt)
 
 
-def _literature_receipt_identity_still_live(checkpoint: dict, receipt: dict) -> bool:
-    """Fail closed only when a producer binding's identity no longer matches.
+def _literature_receipt_still_live(checkpoint: dict, receipt: dict) -> bool:
+    """Fail closed when identity drifted or the bound weakness is process metadata.
 
-    Requirement-digest equality above already proved the research inputs are
-    the same. Identity used to be checked only at Master, so a HEAD-drift
-    repair at ``direction_audited`` (allowed: ``requires_contract_unchanged``
-    is False) turned a valid probe into ``master_literature_probe_receipt_invalid``.
-    Treating that as absent lets the deterministic router re-run the probe.
+    Identity used to be checked only at Master, so a HEAD-drift repair at
+    ``direction_audited`` turned a valid probe into
+    ``master_literature_probe_receipt_invalid``. A receipt whose weakness is
+    LAST ABANDON / saturator process text is the v326 class of bug: the
+    requirement digests still match, but the probe researched the wrong
+    slot. Treat both as absent so the deterministic router re-runs the probe.
     """
     try:
         from tool_planning_literature_probe import (
+            _looks_like_process_metadata,
             literature_probe_live_identity_matches_receipt,
         )
     except Exception:
         return True
     try:
+        if _looks_like_process_metadata(receipt.get("weakness")):
+            return False
         return literature_probe_live_identity_matches_receipt(checkpoint, receipt)
     except Exception:
         return False

@@ -733,7 +733,9 @@ Generation order:
    the literature identity hasher. If a legacy in-flight receipt still
    mismatches after that strip, `literature_probe_receipt_present` treats it
    as absent and the dispatcher re-runs the probe instead of abandoning at
-   Master;
+   Master. The same present-check rejects a receipt whose bound weakness is
+   LAST ABANDON / saturator process metadata, so a poisoned in-flight probe
+   is researched again rather than planned from;
 4. Master selects one of three proposals after two anonymous ballots;
 5. Workers implement the compiled, checkpoint-owned contract;
 6. quality gates;

@@ -194,3 +194,38 @@ def test_literature_receipt_present_replays_probe_after_legacy_head_drift():
     )
     assert literature_probe_receipt_present(ckpt) is True
 
+
+def test_literature_receipt_present_rejects_process_metadata_weakness():
+    from master_context_contract import build_master_context
+    from pipeline_state import (
+        literature_probe_receipt_binding,
+        literature_probe_receipt_present,
+    )
+
+    checkpoint = {
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+        "direction_audit": {"repetition_detected": True},
+        "audit_context": {
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+            ),
+        },
+    }
+    binding, errors = literature_probe_receipt_binding(checkpoint)
+    assert not errors
+    checkpoint["literature_probe"] = {
+        "next_v": 300,
+        "source_v": 299,
+        "reason": "completed",
+        "weakness": (
+            "LAST ABANDON RECEIPTS (system ledger; NOT statistical authority).\n"
+            "v325 stage=direction_audited reason=master_literature_probe_receipt_invalid"
+        ),
+        **binding,
+    }
+    assert literature_probe_receipt_present(checkpoint) is False
+
