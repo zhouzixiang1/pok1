@@ -443,10 +443,17 @@ def _literature_probe_payload_errors(
     checkpoint: dict | None,
     receipt_binding: dict | None,
     require_origin_checkpoint: bool,
+    allow_replace_existing_receipt: bool = False,
 ) -> list[str]:
 
     """Delegate to tool_planning_literature_probe."""
-    return _lp._literature_probe_payload_errors(data, checkpoint=checkpoint, receipt_binding=receipt_binding, require_origin_checkpoint=require_origin_checkpoint)
+    return _lp._literature_probe_payload_errors(
+        data,
+        checkpoint=checkpoint,
+        receipt_binding=receipt_binding,
+        require_origin_checkpoint=require_origin_checkpoint,
+        allow_replace_existing_receipt=allow_replace_existing_receipt,
+    )
 
 
 def _json_without_duplicate_keys(raw: bytes):

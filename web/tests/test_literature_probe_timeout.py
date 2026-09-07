@@ -646,3 +646,49 @@ def test_canonical_literature_weakness_prefers_poker_suggested_direction():
     )
     assert weakness == "value extraction leak"
 
+
+def test_literature_probe_replaces_same_requirement_poisoned_receipt(
+    tmp_path, monkeypatch
+):
+    import evolution_infra
+    from pipeline_state import literature_probe_receipt_binding
+    import research_governance
+
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *_args: None)
+    monkeypatch.setattr(
+        research_governance,
+        "should_trigger_web_retrieval",
+        lambda _v: False,
+    )
+    _write_mandatory_probe_checkpoint(tmp_path, monkeypatch)
+    checkpoint = evolution_infra.read_pipeline_checkpoint()
+    binding, errors = literature_probe_receipt_binding(checkpoint)
+    assert not errors
+    poisoned = {
+        "next_v": 243,
+        "source_v": 242,
+        "reason": "completed",
+        "weakness": (
+            "LAST ABANDON RECEIPTS (system ledger; NOT statistical authority)."
+        ),
+        "stagnation_info": "STAGNATION_DETECTED (is_stagnant=true)",
+        **binding,
+    }
+    assert evolution_infra.write_pipeline_checkpoint(
+        243, 242, "direction_audited", literature_probe=poisoned
+    )
+    result = asyncio.run(
+        tool_planning.run_literature_probe.handler(
+            {"source_v": 242, "next_v": 243}
+        )
+    )
+    data = json.loads(result["content"][0]["text"])
+    assert data.get("error") != "LITERATURE_PROBE_RECEIPT_INVALID"
+    assert data.get("abandon_signaled") is not True
+    assert data["reason"] == "governed_skip"
+    assert data["weakness"] == "value extraction leak"
+    persisted = evolution_infra.read_pipeline_checkpoint()["literature_probe"]
+    assert persisted["reason"] == "governed_skip"
+    assert persisted["weakness"] == "value extraction leak"
+
+

@@ -735,7 +735,11 @@ Generation order:
    as absent and the dispatcher re-runs the probe instead of abandoning at
    Master. The same present-check rejects a receipt whose bound weakness is
    LAST ABANDON / saturator process metadata, so a poisoned in-flight probe
-   is researched again rather than planned from;
+   is researched again rather than planned from. If the router already entered
+   `run_literature_probe` with such a same-requirement receipt still in the
+   checkpoint, the handler overwrites it with a fresh governed outcome instead
+   of `LITERATURE_PROBE_RECEIPT_INVALID` abandon (a requirement-digest change
+   still abandons);
 4. Master selects one of three proposals after two anonymous ballots;
 5. Workers implement the compiled, checkpoint-owned contract;
 6. quality gates;

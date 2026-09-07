@@ -368,6 +368,29 @@ def _literature_checkpoint_identity_matches(
     return stored == legacy
 
 
+def _literature_receipt_replaceable(checkpoint, receipt, receipt_binding) -> bool:
+    """True when a same-requirement receipt may be overwritten by a fresh probe.
+
+    Requirement-digest mismatch still fail-closed abandons (the live Master
+    context changed). Same-requirement cache misses are extractor/identity
+    migrations — notably a LAST ABANDON string bound as H2H weakness — and
+    must re-run instead of ``LITERATURE_PROBE_RECEIPT_INVALID``.
+    """
+    if not isinstance(receipt, dict) or not isinstance(receipt_binding, dict):
+        return False
+    if not isinstance(checkpoint, dict):
+        return False
+    for field in (
+        "master_context_digest",
+        "direction_audit_digest",
+        "requirement_context",
+        "requirement_context_digest",
+    ):
+        if receipt.get(field) != receipt_binding.get(field):
+            return False
+    return True
+
+
 def literature_probe_live_identity_matches_receipt(
     checkpoint: dict,
     receipt: dict,
@@ -809,6 +832,7 @@ def _literature_probe_payload_errors(
     checkpoint: dict | None,
     receipt_binding: dict | None,
     require_origin_checkpoint: bool,
+    allow_replace_existing_receipt: bool = False,
 ) -> list[str]:
     """Validate cache/checkpoint bytes without trusting any derived text field."""
 
@@ -989,7 +1013,10 @@ def _literature_probe_payload_errors(
         elif require_origin_checkpoint:
             if current_revision != origin_revision:
                 errors.append("literature_cache_checkpoint_revision_mismatch")
-            if checkpoint.get("literature_probe") is not None:
+            if (
+                checkpoint.get("literature_probe") is not None
+                and not allow_replace_existing_receipt
+            ):
                 errors.append("literature_cache_origin_already_has_receipt")
         elif current_revision < origin_revision + 1:
             errors.append("literature_checkpoint_receipt_revision_precedes_producer")
@@ -1380,6 +1407,7 @@ def _persist_literature_probe_result(
     payload: dict,
     *,
     receipt_binding: dict | None = None,
+    allow_replace_existing_receipt: bool = False,
 ) -> bool:
     """Persist only an outcome still owned by the mandatory probe route.
 
@@ -1413,6 +1441,7 @@ def _persist_literature_probe_result(
             checkpoint=ckpt,
             receipt_binding=expected_binding,
             require_origin_checkpoint=True,
+            allow_replace_existing_receipt=allow_replace_existing_receipt,
         ):
             return False
         workflow_run_id = str(ckpt.get("workflow_run_id") or "")
@@ -1438,12 +1467,14 @@ def _write_literature_probe_cache(
     *,
     checkpoint: dict | None = None,
     receipt_binding: dict | None = None,
+    allow_replace_existing_receipt: bool = False,
 ) -> dict:
     errors = _literature_probe_payload_errors(
         payload,
         checkpoint=checkpoint,
         receipt_binding=receipt_binding,
         require_origin_checkpoint=True,
+        allow_replace_existing_receipt=allow_replace_existing_receipt,
     )
     if errors:
         raise ValueError("invalid literature cache payload: " + ",".join(errors[:8]))
@@ -1601,47 +1632,74 @@ async def run_literature_probe(args):
         except Exception:
             pass
         return _tp._json_tool_result(checkpoint_probe)
-    if probe_checkpoint.get("literature_probe") is not None:
-        # Canonical abandon, mirroring the LITERATURE_PROBE_RECEIPT_INVALID
-        # fix in tool_planning_master_dispatch: the MCP abandon_generation
-        # tool is blocked by the direction_audited route guard (allowed_tools
-        # is run_literature_probe/run_master only), so a "call
-        # abandon_generation" directive loops forever. The ``master_`` reason
-        # prefix is in the direction_audited disposable allowlist, so
-        # _abandon_master_generation succeeds.
-        _receipt_invalid_errors = [
-            "checkpoint literature_probe is not a valid schema-v2 terminal "
-            "producer receipt"
-        ]
-        ui = _tp._get_ui()
-        return await _tp._abandon_master_generation(
-            next_v,
-            source_v,
-            error="LITERATURE_PROBE_RECEIPT_INVALID",
-            fail_count=0,
-            reason=(
-                "master_literature_probe_receipt_invalid v"
-                + str(next_v)
-                + ": "
-                + ";".join(_receipt_invalid_errors)[:700]
-            ).rstrip(),
-            event_type="pipeline.literature_probe_blocked_invalid_receipt",
-            event_message=(
-                f"Literature probe v{next_v} blocked: checkpoint literature probe "
-                f"receipt is invalid and cannot be repaired by replanning; "
-                f"canonically abandoning"
-            ),
-            ui=ui,
-            payload={
-                "validation_errors": _receipt_invalid_errors,
-                "literature_probe_invalid": True,
-            },
-            directive=(
-                "The checkpoint contains a literature outcome that is not an "
-                "exact schema-v2 terminal producer receipt. This generation was "
-                "canonically abandoned; use governed reprepare for a fresh receipt."
-            ),
-        )
+    replace_existing_receipt = False
+    existing_probe = probe_checkpoint.get("literature_probe")
+    if existing_probe is not None:
+        if _literature_receipt_replaceable(
+            probe_checkpoint, existing_probe, receipt_binding
+        ):
+            replace_existing_receipt = True
+            try:
+                _tp.log_system_event(
+                    "pipeline.literature_probe_replacing_stale_receipt",
+                    "warn",
+                    (
+                        f"literature_probe v{next_v}: replacing same-requirement "
+                        "stale receipt"
+                    ),
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "prior_reason": (
+                            existing_probe.get("reason")
+                            if isinstance(existing_probe, dict)
+                            else None
+                        ),
+                    },
+                )
+            except Exception:
+                pass
+        else:
+            # Canonical abandon, mirroring the LITERATURE_PROBE_RECEIPT_INVALID
+            # fix in tool_planning_master_dispatch: the MCP abandon_generation
+            # tool is blocked by the direction_audited route guard (allowed_tools
+            # is run_literature_probe/run_master only), so a "call
+            # abandon_generation" directive loops forever. The ``master_`` reason
+            # prefix is in the direction_audited disposable allowlist, so
+            # _abandon_master_generation succeeds.
+            _receipt_invalid_errors = [
+                "checkpoint literature_probe is not a valid schema-v2 terminal "
+                "producer receipt"
+            ]
+            ui = _tp._get_ui()
+            return await _tp._abandon_master_generation(
+                next_v,
+                source_v,
+                error="LITERATURE_PROBE_RECEIPT_INVALID",
+                fail_count=0,
+                reason=(
+                    "master_literature_probe_receipt_invalid v"
+                    + str(next_v)
+                    + ": "
+                    + ";".join(_receipt_invalid_errors)[:700]
+                ).rstrip(),
+                event_type="pipeline.literature_probe_blocked_invalid_receipt",
+                event_message=(
+                    f"Literature probe v{next_v} blocked: checkpoint literature probe "
+                    f"receipt is invalid and cannot be repaired by replanning; "
+                    f"canonically abandoning"
+                ),
+                ui=ui,
+                payload={
+                    "validation_errors": _receipt_invalid_errors,
+                    "literature_probe_invalid": True,
+                },
+                directive=(
+                    "The checkpoint contains a literature outcome that is not an "
+                    "exact schema-v2 terminal producer receipt. This generation was "
+                    "canonically abandoned; use governed reprepare for a fresh receipt."
+                ),
+            )
 
     cached_probe = _read_literature_probe_cache(
         next_v,
@@ -1668,6 +1726,7 @@ async def run_literature_probe(args):
             source_v,
             cached_probe,
             receipt_binding=receipt_binding,
+            allow_replace_existing_receipt=replace_existing_receipt,
         ):
             returned = deepcopy(cached_probe)
             returned["cached"] = True
@@ -1703,6 +1762,7 @@ async def run_literature_probe(args):
                     payload,
                     checkpoint=probe_checkpoint,
                     receipt_binding=receipt_binding,
+                    allow_replace_existing_receipt=replace_existing_receipt,
                 )
             except Exception:
                 pass
@@ -1711,6 +1771,7 @@ async def run_literature_probe(args):
                 source_v,
                 payload,
                 receipt_binding=receipt_binding,
+                allow_replace_existing_receipt=replace_existing_receipt,
             ):
                 return _tp._json_tool_result(
                     _literature_probe_stale_result(next_v, source_v)
@@ -1800,6 +1861,7 @@ async def run_literature_probe(args):
                 payload,
                 checkpoint=probe_checkpoint,
                 receipt_binding=receipt_binding,
+                allow_replace_existing_receipt=replace_existing_receipt,
             )
         except Exception:
             pass
@@ -1808,6 +1870,7 @@ async def run_literature_probe(args):
             source_v,
             payload,
             receipt_binding=receipt_binding,
+            allow_replace_existing_receipt=replace_existing_receipt,
         ):
             return _tp._json_tool_result(_literature_probe_stale_result(next_v, source_v))
         return _tp._json_tool_result(payload)
@@ -1854,6 +1917,7 @@ async def run_literature_probe(args):
                 payload,
                 checkpoint=probe_checkpoint,
                 receipt_binding=receipt_binding,
+                allow_replace_existing_receipt=replace_existing_receipt,
             )
         except Exception:
             pass
@@ -1862,6 +1926,7 @@ async def run_literature_probe(args):
             source_v,
             payload,
             receipt_binding=receipt_binding,
+            allow_replace_existing_receipt=replace_existing_receipt,
         ):
             return _tp._json_tool_result(_literature_probe_stale_result(next_v, source_v))
         return _tp._json_tool_result(payload)
@@ -1919,6 +1984,7 @@ async def run_literature_probe(args):
             _payload,
             checkpoint=probe_checkpoint,
             receipt_binding=receipt_binding,
+            allow_replace_existing_receipt=replace_existing_receipt,
         )
     except Exception:
         pass
@@ -1927,6 +1993,7 @@ async def run_literature_probe(args):
         source_v,
         _payload,
         receipt_binding=receipt_binding,
+        allow_replace_existing_receipt=replace_existing_receipt,
     ):
         return _tp._json_tool_result(_literature_probe_stale_result(next_v, source_v))
 
