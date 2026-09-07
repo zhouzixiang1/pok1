@@ -610,3 +610,39 @@ def test_direction_audit_rejects_late_weak_model_call_without_overwrite(tmp_path
     checkpoint = evolution_infra.read_pipeline_checkpoint()
     assert checkpoint["stage"] == "master_planned"
     assert checkpoint["direction_audit"] == {"repetition_detected": False, "confidence": "high"}
+
+
+def test_canonical_literature_weakness_ignores_process_match_analysis():
+    from tool_planning_literature_probe import _canonical_literature_weakness
+
+    weakness = _canonical_literature_weakness(
+        {
+            "stagnation_info": (
+                "STAGNATION_DETECTED (is_stagnant=true)\n"
+                "## H2H Regression Alert\nv11 loses river vs v1 at n>=30"
+            ),
+            "match_analysis": (
+                "LAST ABANDON RECEIPTS (system ledger; NOT statistical authority).\n"
+                "v325 stage=direction_audited reason=master_literature_probe_receipt_invalid"
+            ),
+            "performance_verification": "LAST ABANDON RECEIPTS (system ledger; NOT statistical authority).",
+        },
+        {"suggested_direction": None, "repetition_detected": True},
+    )
+    assert "LAST ABANDON" not in weakness
+    assert "H2H Regression Alert" in weakness
+    assert "v11 loses river" in weakness
+
+
+def test_canonical_literature_weakness_prefers_poker_suggested_direction():
+    from tool_planning_literature_probe import _canonical_literature_weakness
+
+    weakness = _canonical_literature_weakness(
+        {
+            "stagnation_info": "## H2H Regression Alert\nother leak",
+            "match_analysis": "LAST ABANDON RECEIPTS (system ledger; NOT statistical authority).",
+        },
+        {"suggested_direction": "value extraction leak"},
+    )
+    assert weakness == "value extraction leak"
+

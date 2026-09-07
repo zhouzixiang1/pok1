@@ -187,7 +187,13 @@ not turn startup/object expansion into a hidden timeout.
 - When canonical stagnation or repetition requires research, the state machine
   routes only to `run_literature_probe` and the outer deterministic dispatcher
   executes that tool (same class as review/critic, not the bootstrap-only
-  `run_master` special case). `run_master` refuses to run without an
+  `run_master` special case). The probe's H2H-weakness field is the auditor
+  `suggested_direction` or the stagnation H2H Regression Alert; it is never
+  the `match_analysis` process appendix (LAST ABANDON / saturator contracts).
+  Literature identity strips `repo_baseline` so an allowed HEAD-drift repair
+  at `direction_audited` does not invalidate a still-valid receipt; a leftover
+  pre-strip mismatch is treated as absent and the dispatcher re-runs the
+  probe. `run_master` refuses to run without an
   identity-bound receipt carrying the exact Master-context digest, Direction-Audit digest, and
   requirement-context digest. A governed skip, timeout, or provider failure
   counts as a receipt only for that exact context, so stale research cannot be

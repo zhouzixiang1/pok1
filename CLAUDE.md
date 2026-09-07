@@ -40,7 +40,12 @@ the exact frozen snapshot. They copy a system-verified current ABI-reachable
 chain, and the validator rejects dead-helper chains. Bootstrap persists
 field-level errors in the strict journal; normal evolution content-binds the
 same errors into its sole repair prompt/provenance. Blocked documentation reads
-are never prompt or evidence input.
+are never prompt or evidence input. The literature probe's H2H weakness is the
+auditor direction or stagnation H2H alert, never the `match_analysis` process
+appendix; saturator findings are pinned to the live `source_v`. Do not add a
+second commander LLM that mutates checkpoints or `web/core` contracts —
+process bugs are deterministic repairs plus the saturator abandon-attribution
+observation packet.
 Checkpoint disappearance is terminal only with one unique canonical result
 from the current authorized owner tool, including `workflow_run_id`, and a
 current-head reproof of both complete journals, the transaction, ledger and

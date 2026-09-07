@@ -832,7 +832,28 @@ def literature_probe_receipt_present(checkpoint: dict | None) -> bool:
             "requirement_context",
             "requirement_context_digest",
         )
-    )
+    ) and _literature_receipt_identity_still_live(checkpoint, receipt)
+
+
+def _literature_receipt_identity_still_live(checkpoint: dict, receipt: dict) -> bool:
+    """Fail closed only when a producer binding's identity no longer matches.
+
+    Requirement-digest equality above already proved the research inputs are
+    the same. Identity used to be checked only at Master, so a HEAD-drift
+    repair at ``direction_audited`` (allowed: ``requires_contract_unchanged``
+    is False) turned a valid probe into ``master_literature_probe_receipt_invalid``.
+    Treating that as absent lets the deterministic router re-run the probe.
+    """
+    try:
+        from tool_planning_literature_probe import (
+            literature_probe_live_identity_matches_receipt,
+        )
+    except Exception:
+        return True
+    try:
+        return literature_probe_live_identity_matches_receipt(checkpoint, receipt)
+    except Exception:
+        return False
 
 
 def _active_workflow_profile_info() -> tuple[str, str]:

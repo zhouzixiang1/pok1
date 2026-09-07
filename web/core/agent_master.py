@@ -418,7 +418,10 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     )
     if protocol_bootstrap_no_strength:
         stagnation_info = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
-    match_analysis_trimmed = _trim_to_budget(match_analysis_rendered, 10_000, tail=True)
+    # Keep the head: LAST ABANDON + SATURATOR CONTRACTS are prepended and are
+    # the load-bearing process metadata. tail=True used to drop them when the
+    # recent-directions appendix overflowed the 10k budget.
+    match_analysis_trimmed = _trim_to_budget(match_analysis_rendered, 10_000, tail=False)
     perf_trimmed = _trim_to_budget(perf_rendered, 4_000)
 
     if protocol_bootstrap_no_strength:

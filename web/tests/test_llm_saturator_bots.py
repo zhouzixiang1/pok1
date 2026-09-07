@@ -3,7 +3,8 @@
 The saturator must analyze only PUBLISHED bots (a version with an annotated
 completion tag) — an in-flight draft's candidate dir has no tag and must not
 be served as a reference bot. The FOCUS bot rotates by session id over a
-biased pool (newest 4 published bots + the v1 bootstrap), so findings land on
+biased pool (newest 4 published bots + the v1 bootstrap, with the live
+checkpoint source_v pinned first when published), so findings land on
 the versions planning actually consumes via focus_v/opponent_v matching.
 """
 
@@ -49,6 +50,7 @@ def test_published_bot_dirs_filters_by_tag_and_sorts_desc(monkeypatch, tmp_path)
 def test_saturator_bots_rotates_focus_within_biased_pool(monkeypatch):
     dirs = [Path(f"/bots/national_cloud_v{v}") for v in (173, 105, 88, 83, 79, 29, 27)]
     monkeypatch.setattr(llm_saturator, "_published_bot_dirs", lambda: dirs)
+    monkeypatch.setattr(llm_saturator, "_live_planning_source_v", lambda: None)
 
     # Focus pool = newest 4 only (no v1 published here).
     s0 = llm_saturator._saturator_bots(0)
@@ -72,6 +74,7 @@ def test_saturator_bots_includes_v1_bootstrap_in_focus_pool(monkeypatch):
     # selection parent (planning's most common source_v).
     dirs = [Path(f"/bots/national_cloud_v{v}") for v in (173, 105, 88, 83, 79, 27, 1)]
     monkeypatch.setattr(llm_saturator, "_published_bot_dirs", lambda: dirs)
+    monkeypatch.setattr(llm_saturator, "_live_planning_source_v", lambda: None)
 
     pool = dirs[:4] + [dirs[-1]]
     for i in range(len(pool)):
@@ -81,6 +84,20 @@ def test_saturator_bots_includes_v1_bootstrap_in_focus_pool(monkeypatch):
     s_v1 = llm_saturator._saturator_bots(4)
     assert s_v1[0].name == "national_cloud_v1"
     assert s_v1[1].name == "national_cloud_v173"
+
+
+def test_saturator_bots_pins_live_planning_source(monkeypatch):
+    dirs = [Path(f"/bots/national_cloud_v{v}") for v in (173, 105, 88, 83, 11, 1)]
+    monkeypatch.setattr(llm_saturator, "_published_bot_dirs", lambda: dirs)
+    monkeypatch.setattr(llm_saturator, "_live_planning_source_v", lambda: 11)
+
+    s0 = llm_saturator._saturator_bots(0)
+    assert s0[0].name == "national_cloud_v11"
+    assert s0[1].name == "national_cloud_v173"
+    # Later sessions still rotate through the newest published bots.
+    s1 = llm_saturator._saturator_bots(1)
+    assert s1[0].name == "national_cloud_v173"
+
 
 
 def test_saturator_bots_empty_pool(monkeypatch):

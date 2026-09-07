@@ -425,7 +425,10 @@ cannot drain every session — the v187 queue-starvation fix plus the v298
 over-preempt hole. Saturator jobs are bounded (matchup / line-audit /
 function-trace, plus abandon-attribution when a receipt exists) so occupancy
 produces 1-3 hypothesized `change_symbol` contracts plus last-abandon class
-instead of unread essays; launch also refuses when live `claude` children
+instead of unread essays. The focus pool pins the live checkpoint `source_v`
+(when that bot is published) ahead of "newest 4 + v1", because prepare only
+injects findings whose `focus_v`/`opponent_v` match the selected parent.
+Launch also refuses when live `claude` children
 already match the permit cap, so cancel leftovers cannot oversubscribe
 RAM, but a queued pipeline role does **not** freeze launches into free
 permits. A `vmrss` memory heartbeat logs every 600s
@@ -721,7 +724,16 @@ Generation order:
 1. prepare single-parent artifact or crossover baseline;
 2. direction audit;
 3. governed literature probe when required (outer deterministic dispatcher
-   executes it; Orchestrator SDK is not the authority that remembers to call);
+   executes it; Orchestrator SDK is not the authority that remembers to call).
+   The probe's "Current H2H weakness" is the auditor `suggested_direction` or
+   the stagnation H2H Regression Alert — never `match_analysis`, which holds
+   LAST ABANDON / saturator contracts / recent directions and is not
+   statistical authority. A HEAD-drift repair at `direction_audited` must not
+   invalidate a still-valid research receipt; `repo_baseline` is stripped from
+   the literature identity hasher. If a legacy in-flight receipt still
+   mismatches after that strip, `literature_probe_receipt_present` treats it
+   as absent and the dispatcher re-runs the probe instead of abandoning at
+   Master;
 4. Master selects one of three proposals after two anonymous ballots;
 5. Workers implement the compiled, checkpoint-owned contract;
 6. quality gates;
@@ -1207,11 +1219,21 @@ appears in >= 2 of the last 6 attempts). Saturator packets persist 1-3
 hypothesized `change_symbol` contracts (plus an abandon-attribution job when
 a ledger receipt exists) into `match_analysis`; Master must pick or
 explicitly reject each listed symbol, but those rows are **not**
-`snapshot:` statistical evidence and cannot satisfy the 30/200 bar. A
+`snapshot:` statistical evidence and cannot satisfy the 30/200 bar, and they
+must never be copied into the literature probe's H2H-weakness slot. A
 `prepared_baseline_contract` / `crossover_llm_exhausted` last-abandon
 receipt is a process failure, not a poker leak — do not answer it with a
 new `change_symbol`. Source lineage is read from the
 `source: vN` commit-body line (native-tier authority; `parent:` is legacy).
+
+Do not add a second Orchestrator LLM that can call `abandon` / `prepare` /
+`commit`, mutate CAS or checkpoints, or edit `web/core` contracts. The outer
+SDK Orchestrator already failed as a global commander (the literature probe
+was skipped until it was wired into the deterministic router). Production
+control-plane bugs are repaired by deterministic code; LLM observation of
+process failure is the saturator `abandon_attribution` packet
+(`hypothesized_symbol=none` for contract classes) injected into
+`match_analysis`. That packet never executes a repair.
 
 Official EXE results and Arena results have zero strength weight; in any case
 the official EXE certification system has been removed, so there are no longer

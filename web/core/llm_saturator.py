@@ -110,6 +110,29 @@ def _published_bot_dirs() -> "list[Path]":
         return []
 
 
+def _live_planning_source_v() -> int | None:
+    """Fail-closed live checkpoint ``source_v`` so findings match prepare.
+
+    ``_adversarial_findings_block`` only injects rows whose focus_v or
+    opponent_v equals the selected parent. A focus pool of "newest 4 + v1"
+    missed the live source (v326 planned from v11 while findings were all
+    186/173/188). Read failure must never break saturator launch.
+    """
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+
+        ckpt = read_pipeline_checkpoint()
+        if not isinstance(ckpt, dict):
+            return None
+        raw = ckpt.get("source_v")
+        if raw is None:
+            return None
+        version = int(raw)
+        return version if version >= 1 else None
+    except Exception:
+        return None
+
+
 def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
     """Pick this session's bot set: FOCUS bot first, then the newest other.
 
@@ -119,20 +142,25 @@ def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
     is dominated by per-turn cache re-reads as the analysis compounds, so turn
     count matters more than base size anyway.
 
-    The focus pool is biased to the newest 4 published bots plus the v1
-    bootstrap (the long-standing rank-1 selection parent): planning consumes
-    findings via focus_v/opponent_v matching the next generation's source_v,
-    which is almost always one of those — a uniform rotation over the whole
-    published pool would spend most sessions on bots planning never reads
-    back."""
+    The focus pool is the newest 4 published bots plus the v1 bootstrap, with
+    the live checkpoint ``source_v`` pinned at the front when that bot is
+    published. Prepare consumes findings via focus_v/opponent_v matching that
+    source; without the pin, sessions spent on 186/173/188 never reached a
+    v11-parent generation.
+    """
     dirs = _published_bot_dirs()
     if not dirs:
         return []
-    focus_pool = dirs[:4]
+    focus_pool = list(dirs[:4])
     versions = [_bot_version(d) for d in dirs]
     v1_index = next((i for i, v in enumerate(versions) if v == 1), None)
     if v1_index is not None and dirs[v1_index] not in focus_pool:
         focus_pool.append(dirs[v1_index])
+    live_source = _live_planning_source_v()
+    if live_source is not None:
+        live_dir = next((d for d in dirs if _bot_version(d) == live_source), None)
+        if live_dir is not None:
+            focus_pool = [live_dir] + [d for d in focus_pool if d != live_dir]
     focus = focus_pool[session_id % len(focus_pool)]
     others = [d for d in dirs if d != focus][: max(0, limit - 1)]
     return [focus] + others

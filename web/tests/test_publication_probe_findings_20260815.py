@@ -315,3 +315,16 @@ def test_master_prompt_requires_addressing_saturator_and_abandon():
     assert "LAST ABANDON RECEIPTS" in prompt
     assert "prepared_baseline_contract" in prompt
     assert "hypothesized_symbol" in prompt
+
+
+def test_selected_source_stagnation_prefix_names_the_mismatch():
+    import generation_scheduler as gs
+
+    note = gs._selected_source_stagnation_prefix(11, 188)
+    assert "SELECTED SOURCE" in note
+    assert "v11" in note
+    assert "v188" in note
+    assert "NOT a snapshot" in note
+    assert gs._selected_source_stagnation_prefix(11, 11) == ""
+    assert gs._selected_source_stagnation_prefix(None, 188) == ""
+

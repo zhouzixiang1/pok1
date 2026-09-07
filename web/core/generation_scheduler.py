@@ -923,6 +923,30 @@ def _adversarial_findings_block(source_v) -> str:
         return ""
 
 
+def _selected_source_stagnation_prefix(source_v, analyzed_v) -> str:
+    """Tell Master/probe when Combined Analyst diagnosed a different current.
+
+    Combined Analyst runs against the published high-water *before* parent
+    selection. When the selector branches to an older source, the stagnation
+    narrative is about the previous current and must not be read as a
+    snapshot of the selected parent.
+    """
+    try:
+        src = int(source_v)
+        analyzed = int(analyzed_v)
+    except (TypeError, ValueError):
+        return ""
+    if src == analyzed:
+        return ""
+    return (
+        f"SELECTED SOURCE for this generation is v{src} (the planning parent). "
+        f"The stagnation diagnosis below was computed against the previous "
+        f"published current v{analyzed} and is NOT a snapshot of v{src}. "
+        f"Load-bearing H2H claims must cite the frozen snapshot of v{src}; "
+        f"do not treat the narrative subject below as the selected parent.\n"
+    )
+
+
 def _last_abandon_block(*, max_n: int = 3) -> str:
     """Render the latest canonical abandon receipts into match_analysis.
 
@@ -1934,6 +1958,9 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
     if combined and combined.get("is_stagnant"):
         stagnation_text = ("STAGNATION_DETECTED (is_stagnant=true): You MUST call run_literature_probe BEFORE run_master "
                            "(governance-gated; if it returns skipped:true, proceed to run_master).\n" + stagnation_text)
+    source_note = _selected_source_stagnation_prefix(source_v, active_v)
+    if source_note:
+        stagnation_text = source_note + stagnation_text
     perf_text = stagnation_text  # Combined result serves as both
     # Consumption loop: fill the (otherwise always-empty) master-context
     # match_analysis slot with last-abandon class, saturator hypothesized

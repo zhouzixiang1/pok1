@@ -97,3 +97,100 @@ def test_literature_identity_still_binds_semantic_fields():
     changed2["audit_context"]["direction_audit"] = {"digest": "x"}
     c = _literature_checkpoint_identity(changed2, origin_revision=4)
     assert a != c
+
+
+def test_literature_identity_ignores_repo_baseline_head_drift_repair():
+    from tool_planning_literature_probe import (
+        _literature_checkpoint_identity,
+        _literature_checkpoint_identity_legacy,
+        _literature_checkpoint_identity_matches,
+    )
+
+    base = _minimal_probe_checkpoint()
+    base["repo_baseline"] = {"head": "a" * 40, "contract_hash": "x"}
+    a = _literature_checkpoint_identity(base, origin_revision=4)
+
+    drifted = _minimal_probe_checkpoint()
+    drifted["repo_baseline"] = {"head": "b" * 40, "contract_hash": "y"}
+    b = _literature_checkpoint_identity(drifted, origin_revision=4)
+    assert a == b
+
+    # Legacy receipts still validate against an *unchanged* checkpoint, so a
+    # deploy does not fail-closed a still-valid research binding.
+    legacy = _literature_checkpoint_identity_legacy(base, origin_revision=4)
+    assert _literature_checkpoint_identity_matches(legacy, base, origin_revision=4)
+    # After HEAD-drift repair the legacy hash diverges; the router must
+    # re-run the probe instead of treating the old hash as live.
+    assert not _literature_checkpoint_identity_matches(
+        legacy, drifted, origin_revision=4
+    )
+
+
+def test_literature_receipt_present_replays_probe_after_legacy_head_drift():
+    from master_context_contract import build_master_context
+    from pipeline_state import (
+        literature_probe_receipt_binding,
+        literature_probe_receipt_present,
+    )
+    from tool_planning_literature_probe import (
+        _LITERATURE_PROBE_CHECKPOINT_BINDING_SCHEMA,
+        _literature_checkpoint_identity,
+        _literature_checkpoint_identity_legacy,
+    )
+
+    master_context = build_master_context(
+        next_v=300,
+        source_v=299,
+        stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+    )
+    ckpt = {
+        "stage": "direction_audited",
+        "next_v": 300,
+        "source_v": 299,
+        "workflow_run_id": "generation:300:workflow-v1",
+        "checkpoint_revision": 5,
+        "repo_baseline": {"head": "b" * 40},
+        "direction_audit": {
+            "repetition_detected": True,
+            "suggested_direction": "river thin-value leak",
+        },
+        "audit_context": {"master_context": master_context},
+    }
+    binding, errors = literature_probe_receipt_binding(ckpt)
+    assert not errors
+
+    old = dict(ckpt)
+    old["repo_baseline"] = {"head": "a" * 40}
+    old["checkpoint_revision"] = 4
+    stored_legacy = _literature_checkpoint_identity_legacy(old, origin_revision=4)
+
+    def _receipt(identity: str) -> dict:
+        return {
+            "next_v": 300,
+            "source_v": 299,
+            "reason": "completed",
+            **binding,
+            "producer_receipt": {
+                "checkpoint_binding": {
+                    "schema": _LITERATURE_PROBE_CHECKPOINT_BINDING_SCHEMA,
+                    "checkpoint_identity": identity,
+                    "checkpoint_revision": 4,
+                    "workflow_run_id": "generation:300:workflow-v1",
+                    "stage": "direction_audited",
+                    "next_v": 300,
+                    "source_v": 299,
+                    "requirement_context_digest": binding[
+                        "requirement_context_digest"
+                    ],
+                }
+            },
+        }
+
+    ckpt["literature_probe"] = _receipt(stored_legacy)
+    assert literature_probe_receipt_present(ckpt) is False
+
+    ckpt["literature_probe"] = _receipt(
+        _literature_checkpoint_identity(old, origin_revision=4)
+    )
+    assert literature_probe_receipt_present(ckpt) is True
+

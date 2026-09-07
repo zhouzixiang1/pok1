@@ -200,28 +200,98 @@ def _literature_digest(value) -> str:
     ).hexdigest()
 
 
+_LITERATURE_IDENTITY_TRANSIENT_FIELDS = (
+    "literature_probe",
+    "timestamp",
+    "last_update_ts",
+    "last_stage_change_ts",
+    "audit_attempt",
+    "infra_failure",
+)
+
+# match_analysis holds LAST ABANDON / saturator contracts / recent directions.
+# Those strings are process metadata and must never become the probe's
+# "Current H2H weakness" (v326 researched the previous abandon receipt).
+_PROCESS_METADATA_MARKERS = (
+    "LAST ABANDON RECEIPTS",
+    "SATURATOR CONTRACTS",
+    "RECENT DIRECTIONS (advisory",
+    "NOT statistical authority",
+)
+_MAX_LITERATURE_WEAKNESS_CHARS = 4000
+
+
+def _looks_like_process_metadata(text: object) -> bool:
+    blob = str(text or "")
+    return any(marker in blob for marker in _PROCESS_METADATA_MARKERS)
+
+
+def _clip_literature_weakness(text: object) -> str:
+    raw = str(text or "").strip()
+    if len(raw) <= _MAX_LITERATURE_WEAKNESS_CHARS:
+        return raw
+    return raw[:_MAX_LITERATURE_WEAKNESS_CHARS].rstrip() + "\n...[TRIMMED]"
+
+
+def _h2h_alert_from_stagnation(stagnation: object) -> str:
+    text = str(stagnation or "")
+    idx = text.find("## H2H Regression Alert")
+    if idx < 0:
+        return ""
+    return text[idx:].strip()
+
+
+def _canonical_literature_weakness(master_context, direction_audit) -> str:
+    """Poker H2H weakness for the literature probe. Never process metadata.
+
+    Priority: auditor ``suggested_direction`` when it is a real poker
+    direction; else the H2H Regression Alert / stagnation diagnosis /
+    performance_verification. Never ``match_analysis``: that slot is the
+    Master process-metadata appendix.
+    """
+    context = master_context if isinstance(master_context, dict) else {}
+    audit = direction_audit if isinstance(direction_audit, dict) else {}
+    direction = str(audit.get("suggested_direction") or "").strip()
+    if direction and not _looks_like_process_metadata(direction):
+        return _clip_literature_weakness(direction)
+    stagnation = str(context.get("stagnation_info") or "")
+    alert = _h2h_alert_from_stagnation(stagnation)
+    if alert and not _looks_like_process_metadata(alert):
+        return _clip_literature_weakness(alert)
+    if stagnation.strip() and not _looks_like_process_metadata(stagnation):
+        return _clip_literature_weakness(stagnation)
+    perf = str(context.get("performance_verification") or "").strip()
+    if perf and not _looks_like_process_metadata(perf):
+        return _clip_literature_weakness(perf)
+    return ""
+
+
 def _literature_checkpoint_identity_fields(
     checkpoint: dict,
     *,
     origin_revision: int | None = None,
+    strip_repo_baseline: bool = True,
 ) -> dict:
     """Build the semantic checkpoint preimage (see _literature_checkpoint_identity)."""
     projection = deepcopy(checkpoint)
-    projection.pop("literature_probe", None)
-    for field in ("timestamp", "last_update_ts", "last_stage_change_ts"):
+    for field in _LITERATURE_IDENTITY_TRANSIENT_FIELDS:
         projection.pop(field, None)
     # Strip Master-retry transient bookkeeping (audit C/D literature-probe
     # diagnosis 2026-08-10): a normal Master attempt that gets 2/3 scouts
     # bumps audit_attempt and writes audit_context.master_analysis, which
     # changed this digest and falsely invalidated a valid probe receipt,
     # causing every generation to abandon at the Master stage.
-    projection.pop("audit_attempt", None)
     # Strip the infra-retry overlay for the same reason (2026-08-15 v174/v178/
     # v180 diagnosis): a scout LLM dispatch error asks for a run_master retry
     # by writing an `infra_failure` overlay into the checkpoint; that retry
     # bookkeeping must not change this digest, or the retry it requests is
     # killed 13s later by literature_checkpoint_semantic_identity_mismatch.
-    projection.pop("infra_failure", None)
+    # Strip repo_baseline (2026-09-07 v325): direction_audited allows HEAD-drift
+    # repair, which rewrites the captured HEAD without changing the research
+    # requirement. The requirement is independently bound by
+    # master_context_digest / direction_audit_digest / requirement_context.
+    if strip_repo_baseline:
+        projection.pop("repo_baseline", None)
     _audit_ctx = projection.get("audit_context")
     if isinstance(_audit_ctx, dict):
         _audit_ctx = {
@@ -245,16 +315,86 @@ def _literature_checkpoint_identity(
     """Digest the semantic checkpoint preimage across the receipt CAS write.
 
     Strips transient bookkeeping that changes between Master retries
-    (audit_attempt bumps, audit_context.master_analysis evidence) so a normal
-    Master-retry does not invalidate a valid probe receipt. The genuine
-    research-requirement content is independently bound by the four
-    master_context_digest / direction_audit_digest / requirement_context[_digest]
-    fields checked separately in _literature_probe_payload_errors.
+    (audit_attempt bumps, audit_context.master_analysis evidence, infra_failure)
+    and ``repo_baseline`` (allowed HEAD-drift repair at ``direction_audited``)
+    so a normal retry or a contract-allowed resume does not invalidate a valid
+    probe receipt. The genuine research-requirement content is independently
+    bound by the four master_context_digest / direction_audit_digest /
+    requirement_context[_digest] fields checked separately in
+    _literature_probe_payload_errors.
     """
     return _literature_digest(
         _literature_checkpoint_identity_fields(
-            checkpoint, origin_revision=origin_revision
+            checkpoint, origin_revision=origin_revision, strip_repo_baseline=True
         )
+    )
+
+
+def _literature_checkpoint_identity_legacy(
+    checkpoint: dict,
+    *,
+    origin_revision: int | None = None,
+) -> str:
+    """Pre-2026-09-07 hasher: ``repo_baseline`` still participated.
+
+    In-flight receipts written before the strip are admitted when the live
+    checkpoint has not drifted, so a deploy does not fail-closed a still-valid
+    research binding. After HEAD-drift repair the hashes diverge and the
+    deterministic router re-runs the probe instead of abandoning at Master.
+    """
+    return _literature_digest(
+        _literature_checkpoint_identity_fields(
+            checkpoint, origin_revision=origin_revision, strip_repo_baseline=False
+        )
+    )
+
+
+def _literature_checkpoint_identity_matches(
+    stored,
+    checkpoint: dict,
+    *,
+    origin_revision: int | None = None,
+) -> bool:
+    if not isinstance(stored, str):
+        return False
+    current = _literature_checkpoint_identity(
+        checkpoint, origin_revision=origin_revision
+    )
+    if stored == current:
+        return True
+    legacy = _literature_checkpoint_identity_legacy(
+        checkpoint, origin_revision=origin_revision
+    )
+    return stored == legacy
+
+
+def literature_probe_live_identity_matches_receipt(
+    checkpoint: dict,
+    receipt: dict,
+) -> bool:
+    """True when a bound receipt still matches live checkpoint identity.
+
+    Receipts without a producer ``checkpoint_binding`` (legacy skip stubs /
+    tests) are admitted by the requirement-digest checks alone. Production
+    completed receipts carry a binding; a HEAD-drift repair used to invalidate
+    them only at Master (canonical abandon). Returning False here lets
+    ``literature_probe_receipt_present`` treat the receipt as absent so the
+    deterministic router re-runs the probe.
+    """
+    if not isinstance(checkpoint, dict) or not isinstance(receipt, dict):
+        return False
+    producer = receipt.get("producer_receipt")
+    if not isinstance(producer, dict):
+        return True
+    binding = producer.get("checkpoint_binding")
+    if not isinstance(binding, dict):
+        return True
+    stored = binding.get("checkpoint_identity")
+    origin_revision = binding.get("checkpoint_revision")
+    if not isinstance(stored, str) or type(origin_revision) is not int:
+        return False
+    return _literature_checkpoint_identity_matches(
+        stored, checkpoint, origin_revision=origin_revision
     )
 
 
@@ -265,12 +405,13 @@ def _describe_identity_drift(
 ) -> str:
     """Name the preimage keys that plausibly caused an identity mismatch.
 
-    The blacklist-of-transients approach above has needed three additions
-    (2026-08-10 audit_attempt, 2026-08-15 infra_failure) — each new mutable
-    checkpoint key is one generation-abandoning recurrence away. This turns
-    the next mismatch from a multi-hour black-box investigation into an
-    instant read: which top-level keys exist in the live preimage, and which
-    of them are NOT in the documented strip list."""
+    The blacklist-of-transients approach above has needed four additions
+    (2026-08-10 audit_attempt, 2026-08-15 infra_failure, 2026-09-07
+    repo_baseline) — each new mutable checkpoint key is one
+    generation-abandoning recurrence away. This turns the next mismatch
+    from a multi-hour black-box investigation into an instant read: which
+    top-level keys exist in the live preimage, and which of them are NOT
+    in the documented strip list."""
     try:
         fields = _literature_checkpoint_identity_fields(
             checkpoint, origin_revision=origin_revision
@@ -278,6 +419,7 @@ def _describe_identity_drift(
         stripped = {
             "literature_probe", "timestamp", "last_update_ts",
             "last_stage_change_ts", "audit_attempt", "infra_failure",
+            "repo_baseline",
         }
         keys = sorted(k for k in fields if k not in stripped)
         summary = {k: len(json.dumps(v, default=str)) for k, v in fields.items()}
@@ -859,9 +1001,8 @@ def _literature_probe_payload_errors(
             )
         ):
             errors.append("literature_producer_checkpoint_identity_invalid")
-        elif type(origin_revision) is int and checkpoint_binding.get(
-            "checkpoint_identity"
-        ) != _literature_checkpoint_identity(
+        elif type(origin_revision) is int and not _literature_checkpoint_identity_matches(
+            checkpoint_binding.get("checkpoint_identity"),
             checkpoint,
             origin_revision=origin_revision,
         ):
@@ -1408,13 +1549,14 @@ async def run_literature_probe(args):
     master_context = (
         (probe_checkpoint.get("audit_context") or {}).get("master_context")
     )
-    canonical_stagnation = str(master_context.get("stagnation_info") or "")
+    canonical_stagnation = str(
+        (master_context or {}).get("stagnation_info") or ""
+        if isinstance(master_context, dict)
+        else ""
+    )
     direction_audit = probe_checkpoint.get("direction_audit") or {}
-    canonical_weakness = str(
-        direction_audit.get("suggested_direction")
-        or master_context.get("match_analysis")
-        or master_context.get("performance_verification")
-        or ""
+    canonical_weakness = _canonical_literature_weakness(
+        master_context, direction_audit
     )
     mismatched_fields = []
     if stagnation_info and stagnation_info != canonical_stagnation:

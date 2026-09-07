@@ -119,3 +119,15 @@ patch. These rows are advisory code/process hypotheses; they are **not**
 bar. The optional fourth job (`abandon_attribution`) is added only when a
 ledger receipt exists; tests that omit `abandon_reason` still see the
 original three-job rotation.
+
+The focus pool pins the live checkpoint `source_v` (when published) so
+prepare can actually select those rows. The literature probe reads poker
+weakness from the auditor / H2H Regression Alert, not from `match_analysis`.
+`repo_baseline` is stripped from the literature identity hasher because
+`direction_audited` allows HEAD-drift repair; a leftover pre-strip receipt
+is treated as absent so the deterministic router re-runs the probe instead
+of abandoning at Master.
+
+Do not add a second Orchestrator LLM as a "global commander". Control-plane
+bugs are repaired in code; saturator abandon-attribution is the LLM
+observation channel and never executes git or checkpoint mutations.
