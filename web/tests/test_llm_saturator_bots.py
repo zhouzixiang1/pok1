@@ -104,6 +104,9 @@ def test_saturator_job_rotation_splits_work():
         prompt = str(llm_saturator.saturator_job_for(i)["prompt"])
         assert "HARD STOP" in prompt
         assert "18 Read" in prompt
+        assert "hypothesized_symbol" in prompt
+        assert "Phase 4 — CONTRACTS" in prompt
+        assert "LAST ABANDON RECEIPT:" not in prompt
 
 
 def test_pick_preemptable_many_batches_youngest():
@@ -209,3 +212,93 @@ def test_saturator_launch_failure_backs_off(monkeypatch):
     monkeypatch.setattr(llm_saturator, "_fail_pause_until", 0.0)
     assert llm_saturator._fail_streak == 0
     assert llm_saturator._saturator_provider_paused() is False
+
+
+def test_extract_saturator_contracts_from_fenced_json():
+    output = """
+Phase 1 notes
+## Phase 4 — CONTRACTS
+```json
+[
+  {
+    "hypothesized_symbol": "policy.py:select_action",
+    "claim": "Button open never uses opponent.rates.",
+    "how_to_falsify": "Read select_action; if opponent.rates is referenced, reject.",
+    "confidence": "high"
+  }
+]
+```
+"""
+    contracts = llm_saturator.extract_saturator_contracts(output)
+    assert len(contracts) == 1
+    assert contracts[0]["hypothesized_symbol"] == "policy.py:select_action"
+    assert contracts[0]["confidence"] == "high"
+    assert "opponent.rates" in contracts[0]["claim"]
+
+
+def test_extract_saturator_contracts_rejects_empty_claim():
+    assert llm_saturator.extract_saturator_contracts(
+        '[{"hypothesized_symbol": "policy.py:x", "claim": "", "how_to_falsify": "x"}]'
+    ) == []
+    assert llm_saturator.extract_saturator_contracts("Phase 3 only, no json") == []
+    assert llm_saturator.extract_saturator_contracts("```json\nnot json\n```") == []
+
+
+def test_saturator_job_with_abandon_reason_adds_attribution():
+    job = llm_saturator.saturator_job_for(
+        3, abandon_reason="prepared_baseline_contract_digest_mismatch v316"
+    )
+    assert job["name"] == "abandon_attribution"
+    assert job["bot_limit"] == 1
+    prompt = str(job["prompt"])
+    assert "prepared_baseline_contract_digest_mismatch" in prompt
+    assert "hypothesized_symbol" in prompt
+    assert "MUST be \"none\"" in prompt or "MUST be none" in prompt or 'MUST be "none"' in prompt
+
+
+def test_render_findings_record_prefers_contracts():
+    text = llm_saturator.render_findings_record({
+        "job": "line_audit",
+        "focus_bot": "national_cloud_v79",
+        "opponent_bot": None,
+        "ts": 1,
+        "report_sha256": "ab" * 32,
+        "contracts": [{
+            "hypothesized_symbol": "policy.py:foo",
+            "claim": "fold too tight",
+            "how_to_falsify": "compare fold vs pass on BB vs limp",
+            "confidence": "medium",
+        }],
+        "findings_text": "IGNORED PROSE",
+    })
+    assert "policy.py:foo" in text
+    assert "fold too tight" in text
+    assert "IGNORED PROSE" not in text
+    assert "job=line_audit" in text
+
+
+def test_latest_abandon_reason_fail_closed(monkeypatch):
+    import evolution_infra
+
+    def boom():
+        raise RuntimeError("ledger unreadable")
+
+    monkeypatch.setattr(evolution_infra, "load_abandoned_version_receipts", boom)
+    assert llm_saturator._latest_abandon_reason_for_prompt() == ""
+
+
+def test_latest_abandon_reason_reads_last_row(monkeypatch):
+    import evolution_infra
+
+    monkeypatch.setattr(
+        evolution_infra,
+        "load_abandoned_version_receipts",
+        lambda: [
+            {"reason": "old"},
+            {"reason": "prepared_baseline_contract_digest_mismatch"},
+        ],
+    )
+    assert (
+        llm_saturator._latest_abandon_reason_for_prompt()
+        == "prepared_baseline_contract_digest_mismatch"
+    )

@@ -423,8 +423,9 @@ full and demand persists (default 45s, `POK_LLM_SATURATOR_PREEMPT_AFTER_SEC`)
 then cools down (`POK_LLM_SATURATOR_PREEMPT_COOLDOWN_SEC`) so one waiter
 cannot drain every session — the v187 queue-starvation fix plus the v298
 over-preempt hole. Saturator jobs are bounded (matchup / line-audit /
-function-trace) so occupancy produces finished packets instead of
-preempted 60-turn essays; launch also refuses when live `claude` children
+function-trace, plus abandon-attribution when a receipt exists) so occupancy
+produces 1-3 hypothesized `change_symbol` contracts plus last-abandon class
+instead of unread essays; launch also refuses when live `claude` children
 already match the permit cap, so cancel leftovers cannot oversubscribe
 RAM, but a queued pipeline role does **not** freeze launches into free
 permits. A `vmrss` memory heartbeat logs every 600s
@@ -1201,7 +1202,14 @@ PINNED to its original change_symbol (`pinned_change_symbol` +
 switched targets); the shared cross-generation direction ledger lives in
 `recent_directions.py` (rendered advisory into master_context, and the plan
 audit overrides `direction_novelty` to "repetitive" when the selected symbol
-appears in >= 2 of the last 6 attempts). Source lineage is read from the
+appears in >= 2 of the last 6 attempts). Saturator packets persist 1-3
+hypothesized `change_symbol` contracts (plus an abandon-attribution job when
+a ledger receipt exists) into `match_analysis`; Master must pick or
+explicitly reject each listed symbol, but those rows are **not**
+`snapshot:` statistical evidence and cannot satisfy the 30/200 bar. A
+`prepared_baseline_contract` / `crossover_llm_exhausted` last-abandon
+receipt is a process failure, not a poker leak — do not answer it with a
+new `change_symbol`. Source lineage is read from the
 `source: vN` commit-body line (native-tier authority; `parent:` is legacy).
 
 Official EXE results and Arena results have zero strength weight; in any case

@@ -848,24 +848,20 @@ def _h2h_freeze_force(slot_id) -> bool:
 
 
 def _adversarial_findings_block(source_v) -> str:
-    """Bounded advisory digest of recent saturator duel findings.
+    """Bounded advisory digest of recent saturator planning contracts.
 
-    Reads the tail of ``results/saturator/findings.jsonl`` (written by
-    ``llm_saturator`` after every completed duel session) and renders the
+    Reads the tail of ``results/saturator/findings.jsonl`` and renders the
     latest records about the CURRENT source bot — as focus or as opponent —
-    into a bounded, explicitly-advisory block. This fills the master-context
-    ``match_analysis`` slot (empty in the normal path since the combined
-    analyst output serves both stagnation_info and performance_verification),
-    so the deep adversarial analyses are CONSUMED by Master planning instead
-    of decaying in session logs. The text is part of the master-context
-    payload and therefore bound by ``context_digest`` automatically; it is
-    advisory only (never statistical authority) and every block cites its
-    report digest for traceability.
+    into a bounded, explicitly-advisory block. Schema-2 rows carry 1-3
+    hypothesized ``change_symbol`` contracts; schema-1 prose is still
+    rendered as fallback. Master must address or reject each listed symbol.
+    Not statistical authority.
     """
     import json as _json
 
     try:
         from evolution_infra import RESULTS_DIR
+        from llm_saturator import render_findings_record
 
         path = Path(RESULTS_DIR) / "saturator" / "findings.jsonl"
         if not path.is_file():
@@ -896,31 +892,28 @@ def _adversarial_findings_block(source_v) -> str:
                 opp_v = int(opp_v) if opp_v is not None else None
             except (TypeError, ValueError):
                 opp_v = None
+            if source_v is None:
+                continue
             if focus_v == int(source_v):
                 focus_records.append(d)
             elif opp_v == int(source_v):
                 opponent_records.append(d)
-        # Newest last in the file; newest-first in the block. Focus records
-        # (deep dives on the source bot) outrank opponent-side mentions.
         selected = list(reversed(focus_records))[:2] + list(
             reversed(opponent_records)
         )[:1]
         if not selected:
             return ""
         parts = [
-            "ADVISORY — machine-generated adversarial duel analyses of "
-            "published bot code (offline LLM study; hypotheses to verify, "
-            "NOT statistical authority):"
+            "SATURATOR CONTRACTS (advisory code-study hypotheses; NOT "
+            "statistical authority; NOT snapshot: evidence). Master MUST "
+            "pick one hypothesized_symbol that is in the current "
+            "source_symbols index, or explicitly reject each listed symbol "
+            "in the proposal rationale. Do not silently ignore. Do not cite "
+            "these as H2H/games evidence."
         ]
         total = 0
         for d in selected:
-            block = (
-                f"[duel focus={d.get('focus_bot')} vs "
-                f"{d.get('opponent_bot')} ts={d.get('ts')} "
-                f"report_sha256={str(d.get('report_sha256') or '')[:16]}]\n"
-                + str(d.get("findings_text") or "")
-            )
-            block = block[:3200]
+            block = render_findings_record(d)[:3200]
             parts.append(block)
             total += len(block)
             if total > 6400:
@@ -928,6 +921,55 @@ def _adversarial_findings_block(source_v) -> str:
         return "\n\n".join(parts)[:6600]
     except Exception:
         return ""
+
+
+def _last_abandon_block(*, max_n: int = 3) -> str:
+    """Render the latest canonical abandon receipts into match_analysis.
+
+    The ledger reason is the only durable signal when Master never ran
+    (no master_io.txt, so recent_directions is blind). Fail-closed to empty
+    so a corrupt ledger cannot block prepare.
+    """
+    try:
+        from evolution_infra import load_abandoned_version_receipts
+
+        rows = load_abandoned_version_receipts()
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    recent = list(rows[-max(1, int(max_n)):])
+    last = recent[-1]
+    reason = str(last.get("reason") or "")
+    lines = [
+        "LAST ABANDON RECEIPTS (system ledger; NOT statistical authority)."
+    ]
+    if "prepared_baseline_contract" in reason:
+        lines.append(
+            "Latest failure is a PREPARED BASELINE CONTRACT bind, not a "
+            "poker leak. Do not answer it with a new change_symbol. Change "
+            "parent2 / merge / capability snapshot so the contract validates."
+        )
+    elif "crossover_llm_exhausted" in reason:
+        lines.append(
+            "Latest failure exhausted crossover LLM. Pick a different parent "
+            "pair or a simpler merge; do not retry the same pair unchanged."
+        )
+    elif "master_analysis_failed" in reason or "master_exhausted" in reason:
+        lines.append(
+            "Latest failure is Master schema/evidence exhaustion. Keep "
+            "change_symbol in source_symbols and meet the snapshot citation "
+            "bar; do not switch symbol on a schema retry."
+        )
+    for row in reversed(recent):
+        envelope = row.get("checkpoint_envelope") or {}
+        parent2 = envelope.get("parent2_v") if isinstance(envelope, dict) else None
+        lines.append(
+            f"v{row.get('version')} stage={row.get('checkpoint_stage')} "
+            f"source={row.get('source_v')} parent2={parent2} "
+            f"reason={str(row.get('reason') or '')[:500]}"
+        )
+    return "\n".join(lines)[:2400]
 
 
 def _recent_directions_block(max_versions: int = 12) -> str:
@@ -1894,18 +1936,22 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                            "(governance-gated; if it returns skipped:true, proceed to run_master).\n" + stagnation_text)
     perf_text = stagnation_text  # Combined result serves as both
     # Consumption loop: fill the (otherwise always-empty) master-context
-    # match_analysis slot with the bounded advisory digest of recent
-    # adversarial duel findings about the current source bot. This runs AFTER
-    # parent selection (source_v is only bound there — referencing it earlier
-    # crashed every prepare with UnboundLocalError, 2026-08-15 21:37-22:27).
-    # The recent-directions block is the same advisory pattern: it names the
-    # change symbols recent generations targeted so the proposal ensemble
-    # diversifies instead of recycling the same handful of policy.py symbols
-    # (v170-v187: 63% of proposals targeted opponent.terminal_response).
+    # match_analysis slot with last-abandon class, saturator hypothesized
+    # change_symbol contracts about the current source bot, and recent
+    # directions. This runs AFTER parent selection (source_v is only bound
+    # there — referencing it earlier crashed every prepare with
+    # UnboundLocalError, 2026-08-15 21:37-22:27). Saturator contracts and
+    # abandon receipts are advisory process/code hypotheses, never
+    # snapshot: statistical authority. The recent-directions block names
+    # the change symbols recent generations targeted so the proposal
+    # ensemble diversifies instead of recycling the same handful of
+    # policy.py symbols (v170-v187: 63% of proposals targeted
+    # opponent.terminal_response).
     match_text = "\n\n".join(
         part
         for part in (
             (match_analysis or ""),
+            _last_abandon_block(),
             _adversarial_findings_block(source_v),
             _recent_directions_block(),
         )

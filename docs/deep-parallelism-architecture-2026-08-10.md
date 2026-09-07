@@ -104,3 +104,18 @@ POK_SLICE2B_CONSUMER_INFRA_RETRY_BUDGET=2 # infra-retry budget (unchanged)
 `utilization_pct`. The success metric is `utilization_pct` rising from ~3.4%
 toward ≥70%, and trailing tokens/hour (derivable from the JSONL `epoch_ts` +
 `total_tokens` windowed over 3600s) rising from ~242K toward ~20M.
+
+## Saturator planning contracts (2026-09-07)
+
+Occupancy of idle LLM permits is not the same as feeding publication.
+Saturator packets now emit a schema-2 JSON array of 1-3 objects
+(`hypothesized_symbol`, `claim`, `how_to_falsify`, `confidence`) into
+`results/saturator/findings.jsonl`. Prepare injects those contracts, plus
+the last canonical abandon receipts, into Master `match_analysis`. Master
+must address or reject each listed symbol. A `prepared_baseline_contract`
+or `crossover_llm_exhausted` abandon is a process failure, not a poker
+patch. These rows are advisory code/process hypotheses; they are **not**
+`snapshot:` statistical evidence and cannot satisfy the 30/200 citation
+bar. The optional fourth job (`abandon_attribution`) is added only when a
+ledger receipt exists; tests that omit `abandon_reason` still see the
+original three-job rotation.

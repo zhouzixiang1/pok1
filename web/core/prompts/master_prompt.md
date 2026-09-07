@@ -476,6 +476,10 @@ mechanism, call chain, control, or falsifier)
 {stagnation_info}
 
 ## Recent Match Analysis
+If SATURATOR CONTRACTS or LAST ABANDON RECEIPTS appear below, they are
+system-injected. Address or explicitly reject each hypothesized_symbol.
+A prepared_baseline_contract / crossover_llm_exhausted abandon is a process
+failure, not a poker leak — do not answer it with a new change_symbol.
 {match_analysis}
 
 ## Replay Spotlight

@@ -12,9 +12,10 @@
 3. P2 master guidance: the snapshot-evidence repair hint must state the real
    scout limit (2), not 3 (v184's 26-minute churn retried into the same
    rejection).
-4. Consumption loop: saturator duel sessions persist bounded Phase-4 findings;
-   the scheduler renders the latest source-relevant records into the
-   master-context ``match_analysis`` slot.
+4. Consumption loop: saturator packets persist schema-2 hypothesized
+   ``change_symbol`` contracts (schema-1 prose remains a fallback); the
+   scheduler renders source-relevant records plus last-abandon receipts
+   into the master-context ``match_analysis`` slot.
 """
 
 import sys
@@ -151,13 +152,22 @@ def test_probe_persistent_timeout_still_fails_honestly(monkeypatch):
 
 
 def test_snapshot_too_many_hint_states_real_limit():
+    """The repair guidance must state the validator's real limit (3).
+
+    Updated 2026-08-19: the guidance text was left at "maximum is 2" when the
+    hard gate was raised to 3 snapshot references (27ded3db), so the single
+    repair round actively told scouts to drop credit-bearing citations —
+    127 misleading rejections across v189..v273.  The hint threshold now
+    matches the hard gate."""
+
     from agent_master_validation import _proposal_schema_repair_guidance
 
     text = _proposal_schema_repair_guidance(
         ["proposal_snapshot_evidence_too_many"], require_snapshot_evidence=True
     )
-    assert "maximum is 2" in text
-    assert "maximum is 3" not in text
+    assert "maximum is 3" in text
+    assert "maximum is 2" not in text
+
 
 
 # --- 4. consumption loop ----------------------------------------------------
@@ -199,7 +209,7 @@ def test_adversarial_findings_block_selects_source_records(tmp_path, monkeypatch
             f.write(json.dumps(r) + "\n")
 
     block = gs._adversarial_findings_block(79)
-    assert block.startswith("ADVISORY")
+    assert block.startswith("SATURATOR CONTRACTS")
     assert "FOCUS_FINDING about v79" in block
     assert "OPP_FINDING targeting v79" in block
     assert "unrelated" not in block
@@ -214,3 +224,94 @@ def test_adversarial_findings_block_empty_when_nothing_relevant(tmp_path, monkey
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", str(tmp_path))
     assert gs._adversarial_findings_block(173) == ""
     assert gs._adversarial_findings_block(None) == ""
+
+
+def test_adversarial_findings_block_prefers_schema2_contracts(tmp_path, monkeypatch):
+    import json
+    import generation_scheduler as gs
+    import evolution_infra
+
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", str(tmp_path))
+    sat = tmp_path / "saturator"
+    sat.mkdir()
+    rec = {
+        "schema_version": 2,
+        "job": "line_audit",
+        "focus_v": 79,
+        "opponent_v": None,
+        "focus_bot": "national_cloud_v79",
+        "opponent_bot": None,
+        "ts": 4,
+        "report_sha256": "d" * 64,
+        "findings_text": "PROSE MUST NOT APPEAR",
+        "contracts": [{
+            "hypothesized_symbol": "policy.py:select_action",
+            "claim": "button open ignores opponent.rates",
+            "how_to_falsify": "read select_action",
+            "confidence": "high",
+        }],
+    }
+    (sat / "findings.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+    block = gs._adversarial_findings_block(79)
+    assert block.startswith("SATURATOR CONTRACTS")
+    assert "policy.py:select_action" in block
+    assert "button open ignores opponent.rates" in block
+    assert "PROSE MUST NOT APPEAR" not in block
+    assert "Master MUST" in block
+
+
+def test_last_abandon_block_instructs_baseline_contract(monkeypatch):
+    import generation_scheduler as gs
+    import evolution_infra
+
+    monkeypatch.setattr(
+        evolution_infra,
+        "load_abandoned_version_receipts",
+        lambda: [
+            {
+                "version": 315,
+                "checkpoint_stage": "selected",
+                "source_v": 185,
+                "reason": "crossover_llm_exhausted",
+                "checkpoint_envelope": {"parent2_v": 1},
+            },
+            {
+                "version": 316,
+                "checkpoint_stage": "selected",
+                "source_v": 185,
+                "reason": "prepared_baseline_contract_digest_mismatch",
+                "checkpoint_envelope": {"parent2_v": 27},
+            },
+        ],
+    )
+    block = gs._last_abandon_block()
+    assert block.startswith("LAST ABANDON RECEIPTS")
+    assert "PREPARED BASELINE CONTRACT" in block
+    assert "Do not answer it with a new change_symbol" in block
+    assert "v316" in block
+    assert "parent2=27" in block
+    assert "v315" in block
+
+
+def test_last_abandon_block_fail_closed(monkeypatch):
+    import generation_scheduler as gs
+    import evolution_infra
+
+    def boom():
+        raise RuntimeError("ledger unreadable")
+
+    monkeypatch.setattr(evolution_infra, "load_abandoned_version_receipts", boom)
+    assert gs._last_abandon_block() == ""
+
+
+def test_master_prompt_requires_addressing_saturator_and_abandon():
+    prompt = (
+        Path(__file__).resolve().parents[1]
+        / "core"
+        / "prompts"
+        / "master_prompt.md"
+    ).read_text(encoding="utf-8")
+    assert "SATURATOR CONTRACTS" in prompt
+    assert "LAST ABANDON RECEIPTS" in prompt
+    assert "prepared_baseline_contract" in prompt
+    assert "hypothesized_symbol" in prompt

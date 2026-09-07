@@ -9,11 +9,11 @@ near zero.
 The saturator decouples raw LLM consumption from the pipeline. It is a
 long-running background task (started from the app lifespan, NOT the
 orchestrator) that, whenever the global LLM semaphore has a free permit,
-launches a **bounded packet** (not a 60-turn essay). Three job kinds rotate
-so more work finishes before the next Master burst, and so a preemption
-throws away a small packet instead of a half-hour duel. Consumption is
-still dominated by per-turn cache re-reads; the lever is *completed*
-packets, not unfinished depth.
+launches a **bounded packet** (not a 60-turn essay). Three code-study jobs
+rotate with an optional abandon-attribution packet so occupancy produces
+structured ``change_symbol`` hypotheses (and last-abandon class) instead of
+unread 60-turn essays. Consumption is still dominated by per-turn cache
+re-reads; the lever is *completed* packets, not unfinished depth.
 
 Launch is RAM-aware: extra ``claude`` children leftover from cancel (the
 semaphore can read 4 while 5–6 processes still live) block new sessions
@@ -30,8 +30,10 @@ fill of idle permits; preemption yields only when the pool is full.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -137,10 +139,24 @@ def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
 
 
 _SATURATOR_HARD_STOP = """
-HARD STOP: after at most 18 Read tool calls, write the synthesis and end.
+HARD STOP: after at most 18 Read tool calls, write the Phase 4 JSON array and end.
 Do not pad, do not start extra phases, do not promise a follow-up. A finished
 bounded packet is worth more than an unfinished 60-turn essay. Re-read code
 before every citation; never cite from memory.
+"""
+
+_SATURATOR_CONTRACT_SPEC = """
+Phase 4 — CONTRACTS (required, last thing you write):
+Output a JSON array of 1-3 objects and then stop. No other Phase 4 prose.
+Each object:
+{
+  "hypothesized_symbol": "policy.py:ExistingIdent" or "none",
+  "claim": "one sentence, <=240 chars, a code-level leak or a process failure",
+  "how_to_falsify": "how a later reader refutes this from policy.py or a frozen replay, without snapshot: game counts",
+  "confidence": "low" | "medium" | "high"
+}
+hypothesized_symbol MUST name a function or class already in FOCUS policy.py, or "none".
+These are planning hypotheses, NOT statistical authority, NOT H2H or snapshot: evidence.
 """
 
 _SATURATOR_PROMPT = """\
@@ -157,10 +173,7 @@ river). Quote exact functions. Which FOCUS lines does THIS opponent punish?
 
 Phase 3: Walk 6 concrete hands (specify holes + board; mix button/blind and
 deep/short). Trace both bots through code.
-
-Phase 4 — synthesis: verdict + 5 localized FOCUS policy.py refinements
-(function, weakness, change, EV, risk).
-""" + _SATURATOR_HARD_STOP
+""" + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 _SATURATOR_LINE_AUDIT_PROMPT = """\
 You are auditing ONE published FOCUS bot (no opponent). Bounded packet.
@@ -173,9 +186,7 @@ street. Quote the legality / sizing / fallback path.
 
 Phase 3: Find 4 concrete bugs or EV leaks (too-tight fold, illegal-intent
 risk, unused opponent field, sizing that never hits a legal raise_to).
-
-Phase 4 — synthesis: 5 localized patches (function, leak, change, EV, risk).
-""" + _SATURATOR_HARD_STOP
+""" + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 _SATURATOR_FUNCTION_TRACE_PROMPT = """\
 You are tracing the FOCUS bot's decision spine. Bounded packet.
@@ -189,20 +200,161 @@ inputs, branch table, what happens on missing tracker fields.
 
 Phase 3: Show one hand where helper A and helper B disagree, and which one
 wins.
-
-Phase 4 — synthesis: 4 localized patches that make the spine consistent.
-""" + _SATURATOR_HARD_STOP
+""" + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 
-def saturator_job_for(session_id: int) -> dict[str, object]:
-    """Rotate bounded packets so more work finishes per occupancy-hour."""
-    jobs = (
+def _abandon_attribution_prompt(reason: str) -> str:
+    clipped = " ".join(str(reason or "").split())[:800]
+    return f"""\
+You are attributing the LAST canonical generation abandon so the next Master
+does not repeat it. The receipt below is system-authoritative; do not invent
+a different reason.
+
+LAST ABANDON RECEIPT:
+{clipped}
+
+FOCUS is the likely next source parent. Read its policy.py.
+
+Phase 1: Read policy.py once.
+
+Phase 2: Map the receipt to a failure class:
+  prepared_baseline_contract_* → merge/capability/digest/H2H bind, NOT a poker leak.
+  crossover_llm_exhausted → parent pair or merge, not a new change_symbol.
+  master_analysis_failed / master_exhausted → schema/evidence/symbol, not a new leak.
+  other → name the class in the claim.
+
+Phase 3: State what the NEXT generation must do differently (parent2, merge,
+evidence bar, or symbol). If the class is contractual, hypothesized_symbol
+MUST be "none".
+""" + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
+
+
+def saturator_job_for(
+    session_id: int,
+    *,
+    abandon_reason: str | None = None,
+) -> dict[str, object]:
+    """Rotate bounded packets so occupancy produces planning contracts.
+
+    Tests call this without ``abandon_reason`` and always see the three
+    code-study jobs. The live session injects the latest abandon receipt
+    when one exists, adding a fourth job that attributes the failure.
+    """
+    jobs: list[tuple[str, str, int]] = [
         ("matchup_packet", _SATURATOR_PROMPT, 2),
         ("line_audit", _SATURATOR_LINE_AUDIT_PROMPT, 1),
         ("function_trace", _SATURATOR_FUNCTION_TRACE_PROMPT, 1),
-    )
+    ]
+    if abandon_reason:
+        jobs.append(
+            ("abandon_attribution", _abandon_attribution_prompt(abandon_reason), 1)
+        )
     name, prompt, bot_limit = jobs[int(session_id) % len(jobs)]
     return {"name": name, "prompt": prompt, "bot_limit": int(bot_limit)}
+
+
+def _latest_abandon_reason_for_prompt() -> str:
+    """Best-effort last receipt reason for the abandon-attribution job.
+
+    Failures here must never break saturator launch: the ledger is
+    publication-authority and may be unreadable from this background task.
+    """
+    try:
+        from evolution_infra import load_abandoned_version_receipts
+
+        rows = load_abandoned_version_receipts()
+        if not rows:
+            return ""
+        return str(rows[-1].get("reason") or "").strip()
+    except Exception:
+        return ""
+
+
+def _normalize_saturator_contract(raw: object) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    symbol = str(raw.get("hypothesized_symbol") or "none").strip()[:120]
+    if not symbol:
+        symbol = "none"
+    claim = " ".join(str(raw.get("claim") or "").split())[:240]
+    falsify = " ".join(str(raw.get("how_to_falsify") or "").split())[:400]
+    conf = str(raw.get("confidence") or "low").strip().lower()
+    if conf not in {"low", "medium", "high"}:
+        conf = "low"
+    if not claim or not falsify:
+        return None
+    return {
+        "hypothesized_symbol": symbol,
+        "claim": claim,
+        "how_to_falsify": falsify,
+        "confidence": conf,
+    }
+
+
+def _extract_json_payload(text: str):
+    blob = str(text or "")
+    candidates: list[str] = []
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", blob, re.IGNORECASE)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+    for opener in ("[", "{"):
+        idx = blob.find(opener)
+        if idx >= 0:
+            candidates.append(blob[idx:])
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        try:
+            obj, _end = decoder.raw_decode(candidate)
+        except Exception:
+            continue
+        return obj
+    return None
+
+
+def extract_saturator_contracts(output: str) -> list[dict[str, str]]:
+    """Parse 1-3 planning contracts from a saturator packet.
+
+    Missing or malformed JSON yields an empty list; the caller still stores
+    the Phase-4 excerpt so old prose packets remain renderable.
+    """
+    payload = _extract_json_payload(_extract_findings_text(output) or "")
+    if payload is None:
+        payload = _extract_json_payload(output or "")
+    if isinstance(payload, dict):
+        items = [payload]
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        return []
+    contracts: list[dict[str, str]] = []
+    for item in items[:3]:
+        normalized = _normalize_saturator_contract(item)
+        if normalized is not None:
+            contracts.append(normalized)
+    return contracts
+
+
+def render_findings_record(record: dict) -> str:
+    """Render one findings.jsonl row for Master match_analysis."""
+    header = (
+        f"[job={record.get('job') or 'unknown'} focus={record.get('focus_bot')} vs "
+        f"{record.get('opponent_bot')} ts={record.get('ts')} "
+        f"report_sha256={str(record.get('report_sha256') or '')[:16]}]"
+    )
+    contracts = record.get("contracts")
+    if isinstance(contracts, list) and contracts:
+        lines = [header]
+        for index, item in enumerate(contracts[:3], 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"{index}. {item.get('hypothesized_symbol')} | "
+                f"confidence={item.get('confidence')}\n"
+                f"   claim: {item.get('claim')}\n"
+                f"   falsify: {item.get('how_to_falsify')}"
+            )
+        return "\n".join(lines)
+    return header + "\n" + str(record.get("findings_text") or "")
 
 
 def _saturator_producer(renderer_inputs):
@@ -321,10 +473,11 @@ def _append_findings_record(record: dict) -> None:
     """Persist one duel-findings record (the consumption half of the loop).
 
     ``generation_scheduler`` reads these records at prepare time and renders
-    a bounded advisory block into the (otherwise empty) master-context
-    ``match_analysis`` slot, so every deep duel session's Phase-4 output is
-    consumed by the next generation's Master planning instead of decaying in
-    ``session_*.txt``. Each record carries its own digests for traceability.
+    a bounded advisory block of hypothesized ``change_symbol`` contracts
+    (schema-2) or Phase-4 prose (schema-1 fallback) into the
+    ``match_analysis`` slot, together with last-abandon receipts. Master
+    must address or reject listed symbols; none of this is snapshot
+    statistical authority.
     """
     import hashlib
     import json as _json
@@ -343,7 +496,10 @@ async def _one_saturator_session(session_id: int) -> dict:
     from tool_helpers import ToolUI
     from evolution_infra import RESULTS_DIR
 
-    job = saturator_job_for(session_id)
+    job = saturator_job_for(
+        session_id,
+        abandon_reason=_latest_abandon_reason_for_prompt() or None,
+    )
     bots = _saturator_bots(session_id, limit=int(job["bot_limit"]))
     focus = bots[0] if bots else None
     prompt = str(job["prompt"])
@@ -393,7 +549,8 @@ async def _one_saturator_session(session_id: int) -> dict:
                 import hashlib
 
                 _append_findings_record({
-                    "schema_version": 1,
+                    "schema_version": 2,
+                    "job": job["name"],
                     "ts": time.time(),
                     "focus_v": _bot_version(focus),
                     "opponent_v": _bot_version(bots[1]) if len(bots) > 1 else None,
@@ -404,6 +561,7 @@ async def _one_saturator_session(session_id: int) -> dict:
                         (output or "").encode("utf-8")
                     ).hexdigest(),
                     "tokens": tokens,
+                    "contracts": extract_saturator_contracts(output),
                     "findings_text": _extract_findings_text(output),
                 })
             except Exception as e:
@@ -815,4 +973,6 @@ __all__ = [
     "saturator_job_for",
     "saturator_may_launch",
     "saturator_preempt_n",
+    "extract_saturator_contracts",
+    "render_findings_record",
 ]
