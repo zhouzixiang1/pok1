@@ -300,19 +300,21 @@ user file (`setting_sources=["project"]` in `llm_query.py`) and reads
 `web/core/llm_query.py::_llm_thinking_options` and applied to every direct
 sub-agent dispatch:
 
-- `thinking = {"type": "enabled", "budget_tokens": <budget>}` — GLM-5.3-Flash
-  only accepts `enabled` (`disabled` is remapped in `_llm_thinking_options`;
-  the raw API may still think, or the Coding Plan maps it to low effort).
-  `budget_tokens` is still sent for SDK/CLI compatibility and is at most a
-  **soft target**; official 5.3 depth is `effort` / `reasoning_effort`, not
-  the budget. Keep a large budget so `effort=max` is not clipped. The legacy
-  `{"type": "adaptive"}` mode is **known to hang on GLM**: it emits 16k–19k+
-  thinking tokens without ever producing visible output. Do NOT use
-  `adaptive`.
+- On GLM-5.3-Flash the CLI dispatch is **`effort=max` only**. Do **not**
+  send `thinking.budget_tokens`: the Agent SDK maps
+  `{"type": "enabled", "budget_tokens": N}` to `--max-thinking-tokens N`,
+  which is a *fixed* thinking budget and delays first visible text until
+  the thinking block ends. Interactive Claude Code `/effort max` does not
+  set `MAX_THINKING_TOKENS`. `disabled`/`adaptive` are remapped to this
+  same effort-only path (`disabled` would otherwise 400 or drop to low
+  effort). The GLM-5.2-era `{"type": "adaptive"}` CLI mode is **known to
+  hang** (16k–19k+ thinking, no visible text) — do not send it.
+  `POK_LLM_THINKING_BUDGET` is ignored on GLM-5.3* so a leftover 64000
+  cannot re-enable `--max-thinking-tokens`.
 - `effort = "max"` — GLM's strongest reasoning depth and the official coding
   default. Confirmed NOT a death-loop: thinking tokens grow linearly and GLM
-  eventually emits visible text. It can still be **slow** on Master prompts,
-  which is why role timeouts are kept generous (see below). The earlier
+  eventually emits visible text. Scout wall-clock is still dominated by
+  prompt size and constraint solving, not by a missing budget. The earlier
   "infinite loop" diagnosis was a misattribution — the stream was killed
   mid-reasoning before it could converge (historical diagnostic snapshot in
   `docs/llm-utilization-investigation-2026-07-27.md`).
@@ -322,7 +324,7 @@ The committed thinking budget and effort live in
 `enabled`/`adaptive`/`disabled`, `POK_LLM_THINKING_BUDGET`, `POK_LLM_EFFORT`),
 all read from `_llm_thinking_options` in `web/core/llm_query.py`.
 
-Because GLM with `effort=max` + a large budget has variable output speed,
+Because GLM with `effort=max` has variable output speed,
 role timeouts are kept generous via env overrides in
 `deploy/tencent-cloud/env.runtime`: see each role's `*_TOTAL_TIMEOUT` /
 `*_STALL_TIMEOUT` / `*_IDLE_TIMEOUT` / `*_FIRST_ACTIVITY_TIMEOUT` (the

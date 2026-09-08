@@ -773,7 +773,9 @@ _ROLE_TIMEOUT_DEFAULTS = _ro._ROLE_TIMEOUT_DEFAULTS
 # --- Extended-thinking configuration ---------------------------------------
 # Implementation lives in llm_role_observability._llm_thinking_options.
 # GLM-5.3-Flash: thinking.type only ``enabled``; depth is effort=max;
-# budget_tokens is SDK/CLI compatibility (soft). Do NOT use adaptive.
+# do not pass a fixed budget_tokens unless POK_LLM_THINKING_BUDGET > 0
+# (--max-thinking-tokens delays first visible text). Do NOT use adaptive
+# on GLM-5.2.
 def _llm_thinking_options() -> dict:
     return _ro._llm_thinking_options()
 
@@ -1685,7 +1687,9 @@ async def run_claude_query(
         # Thinking config for metrics (filled before dispatch; semaphore_wait
         # is populated after acquire).
         "thinking_mode": os.environ.get("POK_LLM_THINKING_MODE", "enabled"),
-        "thinking_budget": int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000")),
+        "thinking_budget": (
+            (options_kwargs.get("thinking") or {}).get("budget_tokens")
+        ),
         "effort": os.environ.get("POK_LLM_EFFORT", "max"),
         "global_concurrency": int(os.environ.get("POK_GLOBAL_LLM_CONCURRENCY", "2")),
         "semaphore_wait_sec": None,  # populated after acquire

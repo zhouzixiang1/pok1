@@ -1987,15 +1987,28 @@ def test_thinking_disabled_stays_disabled_off_glm53(monkeypatch):
     assert options == {"thinking": {"type": "disabled"}}
 
 
-def test_glm53_flash_remaps_disabled_and_adaptive_to_enabled(monkeypatch):
+def test_glm53_flash_omits_fixed_thinking_budget(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_MODEL", "glm-5.3-flash")
+    monkeypatch.setenv("POK_LLM_EFFORT", "max")
+    monkeypatch.setenv("POK_LLM_THINKING_MODE", "enabled")
+    monkeypatch.delenv("POK_LLM_THINKING_BUDGET", raising=False)
+    options = llm_query._llm_thinking_options()
+    assert options == {"effort": "max"}
+    assert "thinking" not in options
+    # A leftover 64000 in env.runtime must not restore --max-thinking-tokens.
     monkeypatch.setenv("POK_LLM_THINKING_BUDGET", "64000")
+    assert llm_query._llm_thinking_options() == {"effort": "max"}
+    monkeypatch.setenv("POK_LLM_THINKING_BUDGET", "0")
+    assert llm_query._llm_thinking_options() == {"effort": "max"}
+
+
+def test_glm53_flash_remaps_disabled_and_adaptive_to_effort_only(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "glm-5.3-flash")
+    monkeypatch.delenv("POK_LLM_THINKING_BUDGET", raising=False)
     monkeypatch.setenv("POK_LLM_EFFORT", "max")
     monkeypatch.setenv("POK_LLM_THINKING_MODE", "disabled")
     disabled = llm_query._llm_thinking_options()
-    assert disabled["thinking"]["type"] == "enabled"
-    assert disabled["thinking"]["budget_tokens"] == 64000
-    assert disabled["effort"] == "max"
+    assert disabled == {"effort": "max"}
     monkeypatch.setenv("POK_LLM_THINKING_MODE", "adaptive")
     adaptive = llm_query._llm_thinking_options()
-    assert adaptive["thinking"]["type"] == "enabled"
+    assert adaptive == {"effort": "max"}

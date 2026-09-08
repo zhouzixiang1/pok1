@@ -125,10 +125,16 @@ _ROLE_TIMEOUT_DEFAULTS = {
 #     thinking (Coding Plan). ``adaptive`` remains forbidden on this
 #     endpoint (historical GLM hang: 16k-19k+ thinking, no visible text).
 #   * Depth is ``effort`` / ``reasoning_effort`` (``low`` / ``high`` /
-#     ``max``). ``budget_tokens`` is still sent for SDK/CLI compatibility
-#     and is at most a soft target; it is not the 5.3 depth knob.
-#   * ``effort=max`` is the official coding default and the production
-#     depth. Keep a large budget (64000) so max effort is not clipped.
+#     ``max``). The SDK maps ``thinking.type=enabled`` + ``budget_tokens``
+#     to CLI ``--max-thinking-tokens`` (a *fixed* thinking budget). That
+#     is the GLM-5.2-era path and delays first visible text until the
+#     thinking block finishes. Interactive Claude Code with ``/effort max``
+#     does **not** set ``MAX_THINKING_TOKENS``. On GLM-5.3* the default is
+#     therefore effort-only (no fixed budget). `POK_LLM_THINKING_BUDGET` is
+#     ignored on this family so a leftover 64000 cannot restore the flag.
+#   * Never send ``thinking.type=adaptive`` to GLM-5.2: it hung (16k-19k+
+#     thinking, no visible text). GLM-5.3 remaps adaptive/disabled to the
+#     effort-only enabled path instead of that CLI mode.
 #
 # All three are environment-overridable via POK_LLM_THINKING_MODE,
 # POK_LLM_THINKING_BUDGET, and POK_LLM_EFFORT.
@@ -145,9 +151,24 @@ def _provider_requires_enabled_thinking(model_id: str) -> bool:
     return model_id.startswith("glm-5.3")
 
 
+def _parse_thinking_budget() -> int | None:
+    """Return a fixed CLI thinking budget, or None if the env var is unset.
+
+    ``0`` / ``omit`` / ``none`` mean "do not pass ``--max-thinking-tokens``".
+    """
+    raw = os.environ.get("POK_LLM_THINKING_BUDGET")
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text in {"", "omit", "none"}:
+        return 0
+    return int(text)
+
+
 def _llm_thinking_options() -> dict:
     mode = os.environ.get("POK_LLM_THINKING_MODE", "enabled").strip().lower()
     model_id = _resolved_provider_model_id()
+    effort = os.environ.get("POK_LLM_EFFORT", "max").strip().lower()
     if _provider_requires_enabled_thinking(model_id) and mode in {
         "disabled",
         "adaptive",
@@ -156,12 +177,26 @@ def _llm_thinking_options() -> dict:
     if mode == "disabled":
         return {"thinking": {"type": "disabled"}}
     if mode == "adaptive":
-        return {"thinking": {"type": "adaptive"}}
-    budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000"))
-    options: dict = {"thinking": {"type": "enabled", "budget_tokens": budget}}
-    effort = os.environ.get("POK_LLM_EFFORT", "max").strip().lower()
+        options: dict = {"thinking": {"type": "adaptive"}}
+        if effort:
+            options["effort"] = effort
+        return options
+    budget = _parse_thinking_budget()
+    options = {}
     if effort:
         options["effort"] = effort
+    # GLM-5.3*: never pass a fixed budget. The SDK maps
+    # thinking.type=enabled + budget_tokens to CLI --max-thinking-tokens,
+    # which is not how interactive /effort max works and holds first visible
+    # text until the thinking block ends. Depth stays effort=max.
+    # Ignore POK_LLM_THINKING_BUDGET on this family so a leftover 64000 in
+    # env.runtime cannot re-enable the slow path.
+    if _provider_requires_enabled_thinking(model_id):
+        return options
+    if budget is None:
+        budget = 64000
+    if budget > 0:
+        options["thinking"] = {"type": "enabled", "budget_tokens": budget}
     return options
 
 
