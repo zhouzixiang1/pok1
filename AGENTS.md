@@ -289,26 +289,32 @@ ownership it cannot prove.
 
 The cloud runtime drives every Master/Reviewer/Critic/Worker role through
 `claude_agent_sdk` (the installed `claude-agent-sdk` version — check with
-`pip show claude-agent-sdk`) against **GLM** (currently GLM-5.2) via the
+`pip show claude-agent-sdk`) against **GLM** (currently GLM-5.3-Flash) via the
 Anthropic-compatible endpoint configured in
 `deploy/tencent-cloud/env.runtime` (`ANTHROPIC_BASE_URL`,
 `ANTHROPIC_MODEL`); all of Haiku/Sonnet/Opus route to that single model id
-(currently `glm-5.2`). Extended thinking is configured in
+(currently `glm-5.3-flash`). Interactive Claude Code may also set the same
+id in `~/.claude/settings.json`; the evolution service does **not** load that
+user file (`setting_sources=["project"]` in `llm_query.py`) and reads
+`env.runtime` instead. Extended thinking is configured in
 `web/core/llm_query.py::_llm_thinking_options` and applied to every direct
 sub-agent dispatch:
 
-- `thinking = {"type": "enabled", "budget_tokens": <budget>}` — GLM treats the
-  budget as a **soft target** (not a hard cap), so a large budget gives the
-  model full freedom to reason as deeply as it needs and still converge. The
-  legacy `{"type": "adaptive"}` mode is **known to hang on GLM**: it emits
-  16k–19k+ thinking tokens without ever producing visible output. Do NOT use
+- `thinking = {"type": "enabled", "budget_tokens": <budget>}` — GLM-5.3-Flash
+  only accepts `enabled` (`disabled` is remapped in `_llm_thinking_options`;
+  the raw API may still think, or the Coding Plan maps it to low effort).
+  `budget_tokens` is still sent for SDK/CLI compatibility and is at most a
+  **soft target**; official 5.3 depth is `effort` / `reasoning_effort`, not
+  the budget. Keep a large budget so `effort=max` is not clipped. The legacy
+  `{"type": "adaptive"}` mode is **known to hang on GLM**: it emits 16k–19k+
+  thinking tokens without ever producing visible output. Do NOT use
   `adaptive`.
-- `effort = "max"` — GLM's strongest reasoning depth. Confirmed NOT a
-  death-loop: thinking tokens grow linearly and GLM eventually emits visible
-  text. It is simply **slow**, which is why role timeouts are kept generous
-  (see below). The earlier "infinite loop" diagnosis was a misattribution —
-  the stream was killed mid-reasoning before it could converge
-  (historical diagnostic snapshot in
+- `effort = "max"` — GLM's strongest reasoning depth and the official coding
+  default. Confirmed NOT a death-loop: thinking tokens grow linearly and GLM
+  eventually emits visible text. It can still be **slow** on Master prompts,
+  which is why role timeouts are kept generous (see below). The earlier
+  "infinite loop" diagnosis was a misattribution — the stream was killed
+  mid-reasoning before it could converge (historical diagnostic snapshot in
   `docs/llm-utilization-investigation-2026-07-27.md`).
 
 The committed thinking budget and effort live in
@@ -358,7 +364,7 @@ loop; fixed after bc668676). Regression:
 
 ### GLM 429 quota exhaustion and recovery-window waiting
 
-GLM-5.2 enforces a **5-hour rolling usage cap**. When exhausted, the
+GLM enforces a **5-hour rolling usage cap**. When exhausted, the
 provider returns an HTTP 429 with a Chinese body such as
 `Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 <reset_time> 重置。]`.
 This is **quota exhaustion**, distinct from a transient 529 overload:

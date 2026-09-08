@@ -1967,3 +1967,35 @@ def test_saturator_deep_research_role_has_uncapped_stall_policy(monkeypatch):
     tuned = llm_query._role_timeout_policy("SATURATOR STRATEGY RESEARCH")
     assert tuned["stall_timeout"] == 600.0
     assert tuned["policy_key"] == "SATURATOR"
+
+
+def test_thinking_options_default_enabled_max_effort(monkeypatch):
+    monkeypatch.delenv("POK_LLM_THINKING_MODE", raising=False)
+    monkeypatch.delenv("POK_LLM_THINKING_BUDGET", raising=False)
+    monkeypatch.delenv("POK_LLM_EFFORT", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.delenv("POK_LLM_MODEL", raising=False)
+    options = llm_query._llm_thinking_options()
+    assert options["thinking"] == {"type": "enabled", "budget_tokens": 64000}
+    assert options["effort"] == "max"
+
+
+def test_thinking_disabled_stays_disabled_off_glm53(monkeypatch):
+    monkeypatch.setenv("POK_LLM_THINKING_MODE", "disabled")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "glm-5.2")
+    options = llm_query._llm_thinking_options()
+    assert options == {"thinking": {"type": "disabled"}}
+
+
+def test_glm53_flash_remaps_disabled_and_adaptive_to_enabled(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "glm-5.3-flash")
+    monkeypatch.setenv("POK_LLM_THINKING_BUDGET", "64000")
+    monkeypatch.setenv("POK_LLM_EFFORT", "max")
+    monkeypatch.setenv("POK_LLM_THINKING_MODE", "disabled")
+    disabled = llm_query._llm_thinking_options()
+    assert disabled["thinking"]["type"] == "enabled"
+    assert disabled["thinking"]["budget_tokens"] == 64000
+    assert disabled["effort"] == "max"
+    monkeypatch.setenv("POK_LLM_THINKING_MODE", "adaptive")
+    adaptive = llm_query._llm_thinking_options()
+    assert adaptive["thinking"]["type"] == "enabled"

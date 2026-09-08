@@ -771,24 +771,9 @@ _ROLE_TIMEOUT_DEFAULTS = _ro._ROLE_TIMEOUT_DEFAULTS
 
 
 # --- Extended-thinking configuration ---------------------------------------
-# GLM-5.2 via the Anthropic-compatible endpoint:
-#
-#   * ``thinking.type=adaptive`` — KNOWN BUG: GLM emits 16k-19k+ thinking
-#     tokens without ever producing visible output, exhausting the timeout
-#     ceiling. Do NOT use ``adaptive``.
-#   * ``thinking.type=enabled`` + ``budget_tokens`` — reliable: reason then
-#     answer. GLM treats budget as a SOFT TARGET (not a hard cap), so the model
-#     may exceed it when deep reasoning is warranted. A large budget (64000)
-#     gives GLM full freedom to reason deeply.
-#   * ``effort=max`` — GLM's strongest reasoning depth. Confirmed NOT a
-#     death-loop: thinking tokens grow linearly and the model eventually emits
-#     visible text. It is simply SLOW, requiring role timeouts of 1800-3600s
-#     (see _ROLE_TIMEOUT_DEFAULTS and deploy/tencent-cloud/env.runtime). The
-#     earlier "infinite loop" diagnosis was a misattribution caused by killing
-#     the stream at 900s while GLM was still productively reasoning.
-#
-# All three are environment-overridable via POK_LLM_THINKING_MODE,
-# POK_LLM_THINKING_BUDGET, and POK_LLM_EFFORT.
+# Implementation lives in llm_role_observability._llm_thinking_options.
+# GLM-5.3-Flash: thinking.type only ``enabled``; depth is effort=max;
+# budget_tokens is SDK/CLI compatibility (soft). Do NOT use adaptive.
 def _llm_thinking_options() -> dict:
     return _ro._llm_thinking_options()
 

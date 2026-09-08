@@ -143,7 +143,7 @@ async def _cycle_phase_a_setup(ui, log_file, one_gen, dry_run, max_turns,
         hooks=_hooks,
         max_turns=max_turns,
         # CRITICAL: use the centralized _llm_thinking_options() (POK_LLM_THINKING_MODE),
-        # NOT a hardcoded {"type": "adaptive"}.  GLM-5.2 + adaptive is a KNOWN
+        # NOT a hardcoded {"type": "adaptive"}.  GLM + adaptive is a KNOWN
         # DEATH-LOOP: it emits 16k-19k+ thinking tokens without ever producing
         # visible output, wedging the orchestrator's own provider stream for
         # 50+ minutes per cycle (observed 2026-08-05: PID 3943696 ran 52 min on
@@ -1051,7 +1051,7 @@ async def _cycle_phase_b_stream_session(ctx, ui, log_file, gen_ctx,
         # Per-cycle wall-clock cap for the orchestrator's own provider stream.
         # The provider stream can open fresh sessions within one generation
         # (deterministic routes), so this caps a SINGLE session, not the whole
-        # generation.  3600s (1h) is generous for GLM-5.2 variable output speed
+        # generation.  3600s (1h) is generous for GLM variable output speed
         # (a single Scout can take 15-20min under peak load) while ensuring a
         # stuck Master-replan loop at ``direction_audited`` (where the
         # ``audit_attempt`` counter may not increment correctly and the

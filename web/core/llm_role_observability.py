@@ -118,41 +118,45 @@ _ROLE_TIMEOUT_DEFAULTS = {
 
 
 # --- Extended-thinking configuration ---------------------------------------
-# GLM-5.2 via the Anthropic-compatible endpoint:
+# GLM-5.3-Flash via the Anthropic-compatible endpoint:
 #
-#   * ``thinking.type=adaptive`` — KNOWN BUG: GLM emits 16k-19k+ thinking
-#     tokens without ever producing visible output, exhausting the timeout
-#     ceiling. Do NOT use ``adaptive``.
-#   * ``thinking.type=enabled`` + ``budget_tokens`` — reliable: reason then
-#     answer. GLM treats budget as a SOFT TARGET (not a hard cap), so the model
-#     may exceed it when deep reasoning is warranted. A large budget (64000)
-#     gives GLM full freedom to reason deeply.
-#   * ``effort=max`` — GLM's strongest reasoning depth. Confirmed NOT a
-#     death-loop: thinking tokens grow linearly and the model eventually emits
-#     visible text. It is simply SLOW, requiring role timeouts of 1800-3600s
-#     (see _ROLE_TIMEOUT_DEFAULTS and deploy/tencent-cloud/env.runtime). The
-#     earlier "infinite loop" diagnosis was a misattribution caused by killing
-#     the stream at 900s while GLM was still productively reasoning.
+#   * ``thinking.type`` only supports ``enabled``. ``disabled`` is either
+#     HTTP 400 (capability docs) or silently converted to low-effort
+#     thinking (Coding Plan). ``adaptive`` remains forbidden on this
+#     endpoint (historical GLM hang: 16k-19k+ thinking, no visible text).
+#   * Depth is ``effort`` / ``reasoning_effort`` (``low`` / ``high`` /
+#     ``max``). ``budget_tokens`` is still sent for SDK/CLI compatibility
+#     and is at most a soft target; it is not the 5.3 depth knob.
+#   * ``effort=max`` is the official coding default and the production
+#     depth. Keep a large budget (64000) so max effort is not clipped.
 #
 # All three are environment-overridable via POK_LLM_THINKING_MODE,
 # POK_LLM_THINKING_BUDGET, and POK_LLM_EFFORT.
+def _resolved_provider_model_id() -> str:
+    raw = (
+        os.environ.get("ANTHROPIC_MODEL")
+        or os.environ.get("POK_LLM_MODEL")
+        or ""
+    ).strip()
+    return raw.split("[", 1)[0].strip().lower()
+
+
+def _provider_requires_enabled_thinking(model_id: str) -> bool:
+    return model_id.startswith("glm-5.3")
+
+
 def _llm_thinking_options() -> dict:
     mode = os.environ.get("POK_LLM_THINKING_MODE", "enabled").strip().lower()
+    model_id = _resolved_provider_model_id()
+    if _provider_requires_enabled_thinking(model_id) and mode in {
+        "disabled",
+        "adaptive",
+    }:
+        mode = "enabled"
     if mode == "disabled":
         return {"thinking": {"type": "disabled"}}
     if mode == "adaptive":
         return {"thinking": {"type": "adaptive"}}
-    # default / "enabled": deep reasoning with strong effort. GLM-5.2 treats
-    # budget_tokens as a soft target (not a hard cap), so a large budget (default
-    # 64000) lets the model reason as deeply as it needs and still converge.
-    # effort=max selects GLM's strongest reasoning depth, producing the highest
-    # quality strategy output. Both are now the defaults after confirming that:
-    # (1) GLM does NOT enter a death-loop at effort=max — thinking tokens grow
-    # linearly and the model eventually emits visible text; it is simply slow,
-    # requiring higher role timeouts (see _ROLE_TIMEOUT_DEFAULTS / env.runtime).
-    # (2) The earlier "infinite loop" diagnosis was a misattribution: the
-    # stream was killed by insufficient timeouts (900s) while GLM was still
-    # productively reasoning at 27k-66k thinking tokens.
     budget = int(os.environ.get("POK_LLM_THINKING_BUDGET", "64000"))
     options: dict = {"thinking": {"type": "enabled", "budget_tokens": budget}}
     effort = os.environ.get("POK_LLM_EFFORT", "max").strip().lower()

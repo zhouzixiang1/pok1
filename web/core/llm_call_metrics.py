@@ -14,7 +14,7 @@ Schema (inspired by LangSmith, Helicone, OpenTelemetry GenAI conventions):
       "call_id": "a1b2c3d4...",                     # unique per run_claude_query call
       "attempt": 0,                                 # signature retry attempt (0-based)
       "role": "MASTER PROPOSAL mechanism",          # role name
-      "model": "glm-5.2",                           # resolved model id
+      "model": "glm-5.3-flash",                     # resolved model id
 
       # --- Timing (seconds) ---
       "total_elapsed_sec": 312.5,                   # wall-clock for this attempt

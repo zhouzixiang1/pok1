@@ -345,17 +345,21 @@ still catching truly hung streams.
 
 ### `effort=max` and thinking budget
 
-`effort=max` is the strongest reasoning depth. It is **NOT a death-loop**:
-thinking tokens grow linearly and the model eventually emits visible text. The
-earlier "infinite loop" diagnosis was a misattribution — a stream that was
-killed mid-reasoning was actually still making progress. The full tuning
-history and the mid-reasoning kill diagnosis are recorded in
+`effort=max` is the strongest reasoning depth (GLM-5.3-Flash official coding
+default). It is **NOT a death-loop**: thinking tokens grow linearly and the
+model eventually emits visible text. GLM-5.3-Flash cannot disable thinking;
+`thinking.type` stays `enabled`, and depth is `POK_LLM_EFFORT` rather than
+`budget_tokens`. The earlier "infinite loop" diagnosis was a misattribution —
+a stream that was killed mid-reasoning was actually still making progress.
+The full tuning history and the mid-reasoning kill diagnosis are recorded in
 [`docs/llm-utilization-investigation-2026-07-27.md`](../../docs/llm-utilization-investigation-2026-07-27.md).
 
 Configuration keys live in `env.runtime` (all env-overridable):
 - `POK_LLM_THINKING_MODE` (`enabled`; `adaptive` is known to hang on the
-  Anthropic-compatible endpoint — see the investigation doc)
-- `POK_LLM_THINKING_BUDGET` (treated as a soft target, not a hard cap)
+  Anthropic-compatible endpoint — see the investigation doc; `disabled` is
+  remapped to `enabled` on GLM-5.3*)
+- `POK_LLM_THINKING_BUDGET` (SDK/CLI compatibility; at most a soft target on
+  5.3-Flash — keep large so `effort=max` is not clipped)
 - `POK_LLM_EFFORT` (`max`)
 
 ### Global LLM concurrency (Phase B)
