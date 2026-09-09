@@ -956,8 +956,11 @@ async def _cycle_phase_b_stream_session(ctx, ui, log_file, gen_ctx,
                             # Parse a provider-declared quota reset.  The next
                             # attempt is a fresh stream over the same validated
                             # checkpoint; opaque provider history is not retained.
-                            is_429 = "429" in error_text or ("已达到" in error_text and "使用上限" in error_text)
-                            if is_429:
+                            # Only a GLM 1308 usage-cap body (with an explicit
+                            # reset timestamp) may arm rate_limiter. Bare 429
+                            # and GLM 1302 frequency limits must not.
+                            from llm_availability import glm_quota_exhaustion_evidence
+                            if glm_quota_exhaustion_evidence(error_text):
                                 from rate_limiter import rate_limiter
                                 rate_limiter.parse_429(error_text)
                             else:

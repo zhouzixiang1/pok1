@@ -11,6 +11,8 @@ from llm_availability import (
     BILLING_CYCLE_LIMIT,
     INVALID_AUTH,
     QUOTA_429,
+    QUOTA_RESET_AUTHORITY_FALLBACK,
+    QUOTA_RESET_AUTHORITY_PROVIDER,
     SERVICE_UNAVAILABLE,
     TRANSPORT_UNAVAILABLE,
     LLMAvailabilityBlocked,
@@ -168,7 +170,19 @@ def test_actual_stream_sequence_raises_typed_billing_block_before_generic_tail(
     ("evidence", "statuses", "exception", "expected"),
     [
         ("authentication_error: invalid API key", [401], None, INVALID_AUTH),
-        ("Request rejected (429): quota exceeded", [429], None, QUOTA_429),
+        ("Request rejected (429): quota exceeded", [429], None, SERVICE_UNAVAILABLE),
+        (
+            "API Error: Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]",
+            [429],
+            None,
+            SERVICE_UNAVAILABLE,
+        ),
+        (
+            "API Error: Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 2026-09-10 03:21:30 重置。]",
+            [429],
+            None,
+            QUOTA_429,
+        ),
         ("API error 529: overloaded", [529], None, SERVICE_UNAVAILABLE),
         ("HTTP/1.1 503 Service Unavailable", [503], None, SERVICE_UNAVAILABLE),
         ("", [], ConnectionError("connection reset by peer"), TRANSPORT_UNAVAILABLE),
@@ -312,24 +326,53 @@ def test_normal_discussion_is_not_a_provider_error_envelope(text):
         "Error: model overloaded, please retry",
         "rate limit reached",
         "该模型当前访问量过大，请稍后重试",
+        "API Error: Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]",
     ],
 )
 def test_terse_provider_errors_are_provider_error_envelopes(text):
     assert looks_like_provider_error_envelope(text) is True
 
 
-def test_429_bare_sets_conservative_fallback_for_automatic_resume():
+def test_glm_1302_frequency_limit_is_not_five_hour_quota():
+    trace = LLMAvailabilityTrace()
+    trace.observe_text(
+        "API Error: Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率][202609092220253c10b89d84b84d02]"
+    )
+    trace.observe_result(_error_result(status=429, errors=["Request rejected (429)"]))
+    blocked = trace.blocked(role="MASTER (Try 1)")
+    assert blocked is not None
+    assert blocked.issue.category == SERVICE_UNAVAILABLE
+    assert blocked.issue.http_status == 429
+    assert blocked.issue.provider_reset_at is None
+    assert blocked.issue.quota_reset_authority is None
+    assert blocked.issue.retry_policy == "bounded_backoff"
+    assert blocked.issue.requires_manual_resume is False
+
+
+def test_glm_1308_quota_uses_provider_reset_timestamp():
+    trace = LLMAvailabilityTrace()
+    trace.observe_text(
+        "API Error: Request rejected (429) · [1308][已达到 5 小时的使用上限。"
+        "您的限额将在 2026-09-10 03:21:30 重置。][abc]"
+    )
+    trace.observe_result(_error_result(status=429))
+    blocked = trace.blocked(role="worker")
+    assert blocked is not None
+    assert blocked.issue.category == QUOTA_429
+    assert blocked.issue.quota_reset_authority == QUOTA_RESET_AUTHORITY_PROVIDER
+    assert blocked.issue.provider_reset_at == "2026-09-10 03:21:30"
+    assert blocked.issue.retry_policy == "resume_after_quota_reset"
+
+
+def test_status_only_429_uses_short_backoff_not_quota_fallback():
     bare = LLMAvailabilityTrace()
     bare.observe_result(_error_result(status=429, errors=["quota exceeded"]))
     bare_block = bare.blocked(role="worker")
     assert bare_block is not None
-    assert bare_block.issue.category == QUOTA_429
-    # A bare 429 now gets a conservative 5h fallback reset time instead of
-    # requiring manual operator intervention. This prevents the pipeline from
-    # staying dead for hours after the quota window already resets.
-    assert bare_block.issue.requires_manual_resume is False
-    assert bare_block.issue.provider_reset_at is not None
-    assert bare_block.issue.retry_policy == "resume_after_quota_reset"
+    assert bare_block.issue.category == SERVICE_UNAVAILABLE
+    assert bare_block.issue.provider_reset_at is None
+    assert bare_block.issue.quota_reset_authority is None
+    assert bare_block.issue.retry_policy == "bounded_backoff"
 
     reset = LLMAvailabilityTrace()
     reset.observe_text(
@@ -341,6 +384,7 @@ def test_429_bare_sets_conservative_fallback_for_automatic_resume():
     assert reset_block.issue.category == QUOTA_429
     assert reset_block.issue.requires_manual_resume is False
     assert reset_block.issue.provider_reset_at == "2026-07-13T18:30:00+08:00"
+    assert reset_block.issue.quota_reset_authority == QUOTA_RESET_AUTHORITY_PROVIDER
 
 
 def test_429_accepts_common_provider_resets_at_wording():
@@ -354,6 +398,19 @@ def test_429_accepts_common_provider_resets_at_wording():
     assert blocked is not None
     assert blocked.issue.provider_reset_at == "2026-07-13T18:30:00.500+08:00"
     assert blocked.issue.requires_manual_resume is False
+    assert blocked.issue.quota_reset_authority == QUOTA_RESET_AUTHORITY_PROVIDER
+
+
+def test_glm_1308_without_timestamp_uses_quota_window_fallback():
+    issue = classify_llm_availability(
+        ["API Error: Request rejected (429) · [1308][已达到 5 小时的使用上限。]"],
+        statuses=[429],
+    )
+    assert issue is not None
+    assert issue.category == QUOTA_429
+    assert issue.quota_reset_authority == QUOTA_RESET_AUTHORITY_FALLBACK
+    assert issue.provider_reset_at is not None
+    assert issue.retry_policy == "resume_after_quota_reset"
 
 
 def test_successful_model_text_discussing_quota_is_not_a_stream_failure(
@@ -417,5 +474,6 @@ def test_pause_projection_is_pure_stable_json_contract():
         "persistent_pause": True,
         "evidence_digest": issue.evidence_digest,
         "provider_reset_at": None,
+        "quota_reset_authority": None,
     }
     json.dumps(state, sort_keys=True)

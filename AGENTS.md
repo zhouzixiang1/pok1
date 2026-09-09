@@ -364,33 +364,36 @@ from `STAGE_ORDER`, written nowhere), so requiring them blocked every
 loop; fixed after bc668676). Regression:
 `tests/test_publication_transaction.py::test_staging_intent_from_verified_stage_passes_structure_validation`.
 
-### GLM 429 quota exhaustion and recovery-window waiting
+### GLM 429: 1308 配额 vs 1302 频率限制
 
-GLM enforces a **5-hour rolling usage cap**. When exhausted, the
-provider returns an HTTP 429 with a Chinese body such as
-`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 <reset_time> 重置。]`.
-This is **quota exhaustion**, distinct from a transient 529 overload:
-the only correct response is to **wait for the reset window**, not to
-exponentially backoff.
+GLM 把两种完全不同的失败都标成 HTTP 429：
 
-The system handles this through the singleton `rate_limiter`
-(`web/core/rate_limiter.py`):
+- **`[1308]` 五小时用量上限** — `Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 <reset_time> 重置。]`。这才是配额耗尽：必须等到供应商给出的重置时间，不能靠指数退避硬打。
+- **`[1302]` 账户速率限制** — `Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]`。这是并发/频率过高。正确反应是短退避并让 `api_concurrency` 降并发，**不得**当成 5 小时配额暂停。2026-09-09 的误判把 1302 睡了 18060s，供应商侧请求其实一直正常。
+
+分类器（`llm_availability.classify_llm_availability`）按这个顺序处理，多层冗余：
+
+1. **错误码** — `[1302]` / `控制请求频率` / `您的账户已达到速率限制` → `service_unavailable`（120s 冷却）。
+2. **配额正文** — `[1308]` 或（`已达到` 且 `使用上限`，且不是 1302）→ `quota_429`。有 `限额将在 … 重置` 时 `quota_reset_authority=provider_timestamp`；1308 没有时间戳时才允许 `quota_window_fallback`（`now + 5h + 60s`，`POK_QUOTA_FALLBACK_WINDOW_SEC`）。
+3. **裸 429** — 仅有 HTTP 429 / `Request rejected (429)` / `too many requests`、没有 1308 正文 → 同样走 `service_unavailable`，**禁止**发明 5 小时等待。
+4. **持久化权威** — 配额暂停必须带 `quota_reset_authority`。缺该字段的历史记录（含把 1302 写成配额的那次）在 `_reconcile_llm_pause` / `persist_llm_pause` 里以 `untrusted_quota_pause_without_reset_authority` 清掉，重启后不会继续睡满 5 小时。
+5. **`rate_limiter`** — `parse_429` 仍然只在正文里解析到 `限额将在 … 重置` 时才阻塞；`_is_quota_exceeded()` 不再把裸 `Request rejected (429)` 当成配额。`_is_rate_limited()` 覆盖 1302 和裸 429，供 `api_concurrency` 降并发。
+
+The system handles true 1308 exhaustion through the singleton `rate_limiter`
+(`web/core/rate_limiter.py`) plus the durable availability pause:
 
 1. **Detection**: When a sub-agent LLM call (Master/Worker/Reviewer/Critic,
    all routed through `run_claude_query`) raises a `ClaudeSDKError` whose
-   text matches the GLM 429 pattern, `_is_quota_exceeded()` detects it and
-   `rate_limiter.parse_429()` extracts the reset timestamp from the Chinese
-   body. Detection is wired at **both** `ClaudeSDKError` sites in
-   `llm_query.py`: the signature-retry loop fallthrough (inner handler) and
-   the `run_claude_query` outer handler. A bare 429 without an explicit
-   reset timestamp does **not** set the `rate_limiter` block —
-   `parse_429` returns `False`.
-2. **Durable availability pause (P0-2)**: Independently,
-   `llm_availability.classify_llm_availability` maps bare 429 to
-   `resume_after_quota_reset` with a conservative fallback
-   `provider_reset_at = now + 5h + 60s` (env `POK_QUOTA_FALLBACK_WINDOW_SEC`)
-   so `_reconcile_llm_pause` auto-resumes when the window elapses instead of
-   parking on `requires_manual_resume`.
+   text matches the GLM **1308** quota pattern, `_is_quota_exceeded()`
+   detects it and `rate_limiter.parse_429()` extracts the reset timestamp
+   from the Chinese body. Detection is wired at **both** `ClaudeSDKError`
+   sites in `llm_query.py`. A bare 429 or GLM 1302 frequency limit does
+   **not** set the `rate_limiter` block — `parse_429` returns `False`
+   unless the body contains `限额将在 … 重置`.
+2. **Durable availability pause**: Independently,
+   `classify_llm_availability` persists a `quota_429` pause only for a
+   confirmed 1308/usage-cap body (see the redundancy list above). GLM 1302
+   and bare 429 persist as `service_unavailable` with a 120s cooldown.
 3. **Pipeline pause**: Once `rate_limiter` has a future reset time,
    `rate_limiter.is_blocked()` returns `True`. The orchestrator loop checks
    this at the top of every cycle (in the orchestrator loop-phase module —
@@ -403,9 +406,9 @@ The system handles this through the singleton `rate_limiter`
    cannot bypass the pause.
 4. **Crash recovery**: The rate-limiter reset timestamp is persisted to
    `web/core/results/rate_limit_state.json`; the availability pause has its
-   own durable store. A service restart re-loads active blocks until the
-   reset time, so a restart during a quota window cannot accidentally burn
-   more calls.
+   own durable store. A service restart re-loads **trusted** quota blocks
+   until the reset time, and drops untrusted pre-fix 429 pauses that lack
+   `quota_reset_authority`.
 5. **Operator visibility**: A `pipeline.llm_quota_exceeded_detected` event
    is emitted with the role and reset time, and the UI status shows
    `⏳ 配额等待中 → <reset_time>`. The orchestrator log shows
@@ -414,10 +417,9 @@ The system handles this through the singleton `rate_limiter`
    30s, so the service can be stopped cleanly during a quota wait.
 
 The `api_concurrency` adaptive backoff (which halves the global LLM
-concurrency cap per 429) still fires as an immediate first reaction, but
-the `rate_limiter` block is the authoritative pause that prevents the
-Master ensemble from burning its 3 role-attempt budget on a guaranteed-to-
-fail retry during a multi-hour quota window.
+concurrency cap per 429/529) still fires as the first reaction to
+frequency pressure. The `rate_limiter` 5-hour block is only for confirmed
+1308 quota exhaustion.
 
 ### Global LLM concurrency (producer-consumer model)
 

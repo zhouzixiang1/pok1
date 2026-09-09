@@ -380,41 +380,44 @@ Raise it only after quota headroom is re-measured, then restart the runtime so
 the env is reloaded. The full Tier A.1 / Phase B tuning history is in
 [`docs/llm-utilization-investigation-2026-07-27.md`](../../docs/llm-utilization-investigation-2026-07-27.md).
 
-### GLM 429 quota exhaustion and recovery-window waiting
+### GLM 429: 1308 quota vs 1302 frequency limit
 
-The current model enforces a **5-hour rolling usage cap**. When exhausted, the
-provider returns HTTP 429 with a Chinese body containing the reset timestamp:
-`Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 <reset_time> 重置。]`.
+GLM returns HTTP 429 for two different failures:
 
-The system handles this through the singleton `rate_limiter`
-(`web/core/rate_limiter.py`):
+- **`[1308]` five-hour usage cap** —
+  `Request rejected (429) · [1308][已达到 5 小时的使用上限。您的限额将在 <reset_time> 重置。]`.
+  Wait for the provider reset; do not retry through the window.
+- **`[1302]` account rate limit** —
+  `Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]`.
+  Short backoff + `api_concurrency` reduction. **Never** a 5-hour quota
+  pause (that misclassification parked the pipeline on 2026-09-09 while
+  interactive requests still succeeded).
 
-1. **Detection** — When any sub-agent LLM call raises a `ClaudeSDKError`
-   whose text matches the GLM 429 pattern, `rate_limiter.parse_429()`
-   extracts the reset timestamp from the Chinese body. Detection is wired
-   at both `ClaudeSDKError` sites in `web/core/llm_query.py` (the
-   signature-retry loop fallthrough and the `run_claude_query` outer
-   handler). A bare 429 without an explicit reset timestamp does **not**
-   set the `rate_limiter` block.
-2. **Durable availability pause (P0-2)** — Independently,
-   `llm_availability.classify_llm_availability` treats bare 429 as
-   `resume_after_quota_reset` with a conservative fallback
-   `provider_reset_at = now + 5h + 60s` (`POK_QUOTA_FALLBACK_WINDOW_SEC`),
-   so `_reconcile_llm_pause` can auto-resume when the window elapses
-   instead of parking on `requires_manual_resume`.
-3. **Pipeline pause** — `rate_limiter.is_blocked()` (timestamped 429) or
-   the durable availability pause blocks the evolution pipeline until the
-   quota window ends. Every `run_claude_query` entry checks before
-   dispatching.
-4. **Crash recovery** — The rate-limiter reset timestamp is persisted to
-   `web/core/results/rate_limit_state.json`; the availability pause has
-   its own durable store. A service restart re-applies active blocks.
-5. **Operator visibility** — A `pipeline.llm_quota_exceeded_detected`
-   event is emitted with the role and reset time. The UI status shows
-   `⏳ 配额等待中 → <reset_time>`.
+Classifier redundancy (`web/core/llm_availability.py`):
 
-The `api_concurrency` adaptive backoff (which halves global LLM concurrency
-per 429) still fires as an immediate first reaction.
+1. **Error code** — `[1302]` / `控制请求频率` → `service_unavailable` (120s).
+2. **Quota body** — `[1308]` or (`已达到` and `使用上限`, not 1302) →
+   `quota_429`. Explicit `限额将在 … 重置` sets
+   `quota_reset_authority=provider_timestamp`; 1308 without a timestamp
+   may use `quota_window_fallback` (`POK_QUOTA_FALLBACK_WINDOW_SEC`).
+3. **Bare 429** — HTTP 429 / `Request rejected (429)` without 1308 →
+   `service_unavailable`, never an invented 5-hour wait.
+4. **Persisted authority** — quota pauses without `quota_reset_authority`
+   are dropped on reconcile/persist as
+   `untrusted_quota_pause_without_reset_authority` (clears the 1302
+   mis-pause on restart).
+5. **`rate_limiter.parse_429`** still arms only when the body contains
+   `限额将在 … 重置`. `_is_quota_exceeded()` no longer treats a bare
+   `Request rejected (429)` as quota.
+
+The 1308 path still uses `rate_limiter` plus the durable availability pause:
+`parse_429` extracts `限额将在 … 重置`; the orchestrator waits until that
+instant; crash recovery reloads only pauses with a trusted
+`quota_reset_authority`. A `pipeline.llm_quota_exceeded_detected` event
+and the UI `⏳ 配额等待中` row are 1308-only.
+
+`api_concurrency` still halves global LLM concurrency on 429/529 as the
+first reaction to frequency pressure.
 
 ### Phase E deploy (operator → runtime)
 

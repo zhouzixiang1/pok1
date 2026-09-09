@@ -1173,12 +1173,10 @@ async def _run_stream_with_signature_retry_attempts(
                     record_llm_outcome(success=False, rate_limited=True)
             except Exception:
                 pass
-            # GLM 429 配额耗尽检测：解析重置时间戳到全局 rate_limiter。
+            # GLM 1308 配额耗尽检测：解析重置时间戳到全局 rate_limiter。
             # rate_limiter.parse_429 只在 GLM 返回明确的 "限额将在 ... 重置"
-            # 时间戳时设置阻塞；无重置证据的裸 429 返回 False，不阻塞（保持
-            # 现有有限重试行为）。一旦 rate_limiter 被设置，orchestrator_loop
-            # 的 is_blocked() 检查会暂停整个 pipeline 直到恢复窗口，所有后续
-            # run_claude_query 入口也会等待。这是 "等待恢复窗口" 语义的核心。
+            # 时间戳时设置阻塞。1302 频率限制和裸 429 由可用性分类器走短退避，
+            # 不得武装 5 小时配额暂停。
             try:
                 if _lq._is_quota_exceeded(str(e)):
                     from rate_limiter import rate_limiter

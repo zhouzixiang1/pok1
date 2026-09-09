@@ -153,7 +153,15 @@ class TestIsQuotaExceeded:
 
     def test_429_pattern(self):
         from llm_query import _is_quota_exceeded
-        assert _is_quota_exceeded("Request rejected (429)")
+        assert not _is_quota_exceeded("Request rejected (429)")
+
+    def test_1302_is_not_quota(self):
+        from llm_query import _is_quota_exceeded
+        error = (
+            "API Error: Request rejected (429) · [1302]"
+            "[您的账户已达到速率限制，请您控制请求频率]"
+        )
+        assert not _is_quota_exceeded(error)
 
     def test_chinese_pattern(self):
         from llm_query import _is_quota_exceeded
@@ -175,10 +183,20 @@ class TestIsQuotaExceeded:
 
 
 class TestIsRateLimited:
-    def test_does_not_match_429(self):
-        """429 is handled exclusively by _is_quota_exceeded, NOT _is_rate_limited."""
+    def test_bare_429_and_1302_are_rate_limited(self):
         from llm_query import _is_rate_limited
-        assert not _is_rate_limited("Request rejected (429)")
+        assert _is_rate_limited("Request rejected (429)")
+        assert _is_rate_limited(
+            "API Error: Request rejected (429) · [1302]"
+            "[您的账户已达到速率限制，请您控制请求频率]"
+        )
+
+    def test_1308_quota_is_not_rate_limited(self):
+        from llm_query import _is_rate_limited
+        assert not _is_rate_limited(
+            "API Error: Request rejected (429) · [1308]"
+            "[已达到 5 小时的使用上限。您的限额将在 2026-06-07 16:20:12 重置。]"
+        )
 
     def test_still_detects_529(self):
         from llm_query import _is_rate_limited

@@ -38,7 +38,12 @@ from claude_agent_sdk import (
     ClaudeSDKError,
 )
 from bot_namespace import ACTIVE_BOT_PREFIX
-from llm_availability import LLMAvailabilityBlocked, LLMAvailabilityTrace
+from llm_availability import (
+    LLMAvailabilityBlocked,
+    LLMAvailabilityTrace,
+    glm_frequency_limit_evidence,
+    glm_quota_exhaustion_evidence,
+)
 from llm_failure import is_shutdown_cancel_error, is_success_error_result
 import llm_role_observability as _ro  # role-IO logging/observability helpers
 
@@ -949,30 +954,33 @@ def extract_result_error(message) -> str:
 def _is_rate_limited(output: str) -> bool:
     # Long responses are never rate-limit errors — avoid false positives
     # when LLM discusses "rate limit" or "overloaded" in normal output.
-    # NOTE: 429 "Request rejected" is handled separately by _is_quota_exceeded()
-    # to avoid triggering the 529 exponential-backoff retry loop.
+    # GLM 1308 quota exhaustion is handled by _is_quota_exceeded(); GLM 1302
+    # frequency limits and other bare 429s belong here so api_concurrency
+    # can back off instead of inventing a five-hour quota pause.
     if len(output) > 2000:
+        return False
+    if glm_quota_exhaustion_evidence(output):
         return False
     return (
         "overloaded" in output.lower()
         or "该模型当前访问量过大" in output
         or "rate limit" in output.lower()
+        or glm_frequency_limit_evidence(output)
+        or "Request rejected (429)" in output
         or re.search(r'(?:status["\s:=]+529|HTTP/\d\.?\d?\s+529|error.*529)', output, re.IGNORECASE) is not None
     )
 
 
 def _is_quota_exceeded(output: str) -> bool:
-    """Detect 429 quota exhaustion (distinct from 529 overloaded).
+    """Detect GLM 1308 quota exhaustion (distinct from 1302 frequency 429).
 
     Matches the GLM API error pattern:
         "Request rejected (429) · [1308][已达到 5 小时的使用上限...]"
+    A bare ``Request rejected (429)`` or 1302 rate-limit body is not quota.
     """
     if len(output) > 2000:
         return False
-    return (
-        "Request rejected (429)" in output
-        or ("已达到" in output and "使用上限" in output)
-    )
+    return glm_quota_exhaustion_evidence(output)
 
 
 def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:

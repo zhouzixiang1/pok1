@@ -30,6 +30,15 @@ QUOTA_429 = "quota_429"
 SERVICE_UNAVAILABLE = "service_unavailable"
 TRANSPORT_UNAVAILABLE = "transport_unavailable"
 
+# Durable quota pauses must declare how ``provider_reset_at`` was obtained.
+# A missing value is untrusted (the 2026-09-09 GLM 1302 incident invented a
+# 5-hour wait from a frequency-limit 429) and is dropped on reconcile.
+QUOTA_RESET_AUTHORITY_PROVIDER = "provider_timestamp"
+QUOTA_RESET_AUTHORITY_FALLBACK = "quota_window_fallback"
+_TRUSTED_QUOTA_RESET_AUTHORITIES = frozenset(
+    {QUOTA_RESET_AUTHORITY_PROVIDER, QUOTA_RESET_AUTHORITY_FALLBACK}
+)
+
 _HTTP_STATUS_RE = re.compile(
     r"(?:http(?:/\d(?:\.\d)?)?\s*|status(?:\s+code)?[\s:=]*|api\s+error[\s:=]*)"
     r"(?P<status>401|403|429|503|529)\b",
@@ -43,15 +52,19 @@ _PROVIDER_RESET_RE = re.compile(
     re.IGNORECASE,
 )
 
-# When a 429 arrives without a provider-owned reset timestamp, the system
-# cannot know the exact window end. GLM documents a 5-hour rolling cap, so
-# the conservative fallback is the full documented window + 60s skew margin.
-# This lets _reconcile_llm_pause auto-resume instead of requiring manual
-# operator intervention that leaves the pipeline dead for hours after the
-# quota window already resets.
+# GLM 1308 (5-hour usage cap) may omit a parseable reset timestamp. Only that
+# quota-shaped body may invent a wait, and only for the documented window +
+# 60s skew. GLM 1302 frequency limits must never take this path.
 _QUOTA_FALLBACK_WINDOW_SEC = int(
     os.environ.get("POK_QUOTA_FALLBACK_WINDOW_SEC", str(5 * 3600 + 60))
 )
+
+_GLM_FREQUENCY_MARKERS = (
+    "[1302]",
+    "控制请求频率",
+    "您的账户已达到速率限制",
+)
+_GLM_QUOTA_CODE = "[1308]"
 
 _TRANSPORT_ERRNOS = frozenset(
     value
@@ -71,6 +84,33 @@ _TRANSPORT_ERRNOS = frozenset(
 )
 
 
+def glm_frequency_limit_evidence(text: object) -> bool:
+    """True for GLM 1302 / account rate-limit bodies, never the 5-hour cap."""
+
+    value = str(text or "")
+    return any(marker in value for marker in _GLM_FREQUENCY_MARKERS)
+
+
+def glm_quota_exhaustion_evidence(text: object) -> bool:
+    """True for GLM 1308 / 5-hour usage-cap bodies.
+
+    Frequency-limit 1302 text also contains 429 and sometimes 已达到, so it is
+    excluded first. A 5-hour pause requires this shape (or an explicit
+    provider reset timestamp plus a 429 envelope in the classifier).
+    """
+
+    value = str(text or "")
+    if glm_frequency_limit_evidence(value):
+        return False
+    if _GLM_QUOTA_CODE in value:
+        return True
+    if "已达到" in value and "使用上限" in value:
+        return True
+    if "5 小时的使用上限" in value or "5小时的使用上限" in value:
+        return True
+    return False
+
+
 @dataclass(frozen=True)
 class LLMAvailabilityIssue:
     """A classified provider-availability failure."""
@@ -82,6 +122,7 @@ class LLMAvailabilityIssue:
     requires_manual_resume: bool
     evidence_digest: str
     provider_reset_at: Optional[str] = None
+    quota_reset_authority: Optional[str] = None
 
     @property
     def persistent_pause(self) -> bool:
@@ -98,6 +139,7 @@ class LLMAvailabilityIssue:
             "persistent_pause": self.persistent_pause,
             "evidence_digest": self.evidence_digest,
             "provider_reset_at": self.provider_reset_at,
+            "quota_reset_authority": self.quota_reset_authority,
         }
 
 
@@ -220,6 +262,11 @@ def looks_like_provider_error_envelope(text: str) -> bool:
         )
         or re.match(r"^request rejected \(429\)", value, re.IGNORECASE)
         or re.match(
+            r"^api\s+error\s*[:=]?\s*request rejected \(429\)",
+            value,
+            re.IGNORECASE,
+        )
+        or re.match(
             r"^(?:error\s*:\s*)?(?:(?:model|service|provider)\s+)?"
             r"(?:is\s+)?overloaded(?:\s*[,;:.!-]?\s*(?:please\s+retry|try\s+again))?[.!]?$",
             value,
@@ -231,6 +278,7 @@ def looks_like_provider_error_envelope(text: str) -> bool:
             re.IGNORECASE,
         )
         or (value.startswith("已达到") and "使用上限" in value)
+        or value.startswith("您的账户已达到速率限制")
         or value.startswith("该模型当前访问量过大")
         or (value.startswith("所有供应商") and "熔断" in value)
     )
@@ -280,14 +328,15 @@ def _issue(
     if category in {BILLING_CYCLE_LIMIT, INVALID_AUTH}:
         retry_policy = "manual_resume"
         manual = True
+        quota_reset_authority = None
     elif category == QUOTA_429:
-        # A bare 429 without a provider timestamp used to require manual
-        # operator intervention, leaving the pipeline dead for hours after
-        # the quota window already resets. GLM enforces a documented 5-hour
-        # rolling cap; a conservative fallback of the full window lets
-        # _reconcile_llm_pause auto-resume without burning guaranteed-to-fail
-        # retries against a still-exhausted quota.
-        if provider_reset_at is None:
+        # Invent a 5-hour wait only for a confirmed GLM 1308/usage-cap body
+        # that omitted a parseable reset timestamp. Never invent one for a
+        # bare 429 or GLM 1302 frequency limit.
+        if provider_reset_at is not None:
+            quota_reset_authority = QUOTA_RESET_AUTHORITY_PROVIDER
+        else:
+            quota_reset_authority = QUOTA_RESET_AUTHORITY_FALLBACK
             fallback_dt = datetime.now(timezone.utc) + timedelta(
                 seconds=_QUOTA_FALLBACK_WINDOW_SEC
             )
@@ -297,6 +346,7 @@ def _issue(
     else:
         retry_policy = "bounded_backoff"
         manual = False
+        quota_reset_authority = None
     return LLMAvailabilityIssue(
         category=category,
         summary=summary,
@@ -305,6 +355,7 @@ def _issue(
         requires_manual_resume=manual,
         evidence_digest=_digest(category, statuses, evidence),
         provider_reset_at=provider_reset_at,
+        quota_reset_authority=quota_reset_authority,
     )
 
 
@@ -316,10 +367,12 @@ def classify_llm_availability(
 ) -> LLMAvailabilityIssue | None:
     """Classify accumulated stream/exception evidence using a fixed priority.
 
-    Priority is billing-cycle exhaustion, invalid authentication, 429 quota,
-    529/503 service availability, then transport.  An uninformative trailing
-    exception such as ``error result: success`` contributes evidence but cannot
-    replace a higher-priority diagnosis observed earlier in the stream.
+    Priority is billing-cycle exhaustion, invalid authentication, GLM 1302
+    frequency limit (short backoff), GLM 1308 quota, remaining 429 as short
+    backoff, 529/503 service availability, then transport.  An uninformative
+    trailing exception such as ``error result: success`` contributes evidence
+    but cannot replace a higher-priority diagnosis observed earlier in the
+    stream.
     """
 
     parts = list(evidence or ())
@@ -381,22 +434,45 @@ def classify_llm_availability(
             bounded,
         )
 
-    quota = (
+    if glm_frequency_limit_evidence(joined):
+        return _issue(
+            SERVICE_UNAVAILABLE,
+            "provider rate limit; reduce request frequency",
+            status_tuple,
+            bounded,
+        )
+
+    explicit_reset = _provider_reset_evidence(bounded)
+    quota_body = glm_quota_exhaustion_evidence(joined)
+    quota_envelope = (
         429 in all_statuses
         or "request rejected (429)" in lower
-        or "too many requests" in lower
-        or "quota exceeded" in lower
-        or ("已达到" in joined and "使用上限" in joined)
-        or re.search(
-            r"(?:\berror\b|\bfailed\b|\brejected\b|\bquota\b).{0,48}\b429\b"
-            r"|\b429\b.{0,48}(?:\berror\b|\bfailed\b|\brejected\b|\bquota\b)",
-            lower,
-        ) is not None
     )
-    if quota:
+    if quota_body or (explicit_reset is not None and quota_envelope):
         return _issue(
             QUOTA_429,
             "provider quota window is exhausted",
+            status_tuple,
+            bounded,
+        )
+
+    # Remaining 429s (bare status, "too many requests", Request rejected
+    # without 1308) are frequency/concurrency pressure: short backoff, never
+    # a five-hour quota pause.
+    generic_429 = (
+        429 in all_statuses
+        or "request rejected (429)" in lower
+        or "too many requests" in lower
+        or re.search(
+            r"(?:\berror\b|\bfailed\b|\brejected\b).{0,48}\b429\b"
+            r"|\b429\b.{0,48}(?:\berror\b|\bfailed\b|\brejected\b)",
+            lower,
+        ) is not None
+    )
+    if generic_429:
+        return _issue(
+            SERVICE_UNAVAILABLE,
+            "provider rejected the request (429); retry with backoff",
             status_tuple,
             bounded,
         )
@@ -606,12 +682,16 @@ __all__ = [
     "BILLING_CYCLE_LIMIT",
     "INVALID_AUTH",
     "QUOTA_429",
+    "QUOTA_RESET_AUTHORITY_FALLBACK",
+    "QUOTA_RESET_AUTHORITY_PROVIDER",
     "SERVICE_UNAVAILABLE",
     "TRANSPORT_UNAVAILABLE",
     "LLMAvailabilityIssue",
     "LLMAvailabilityBlocked",
     "LLMAvailabilityTrace",
     "gather_llm_fail_fast",
+    "glm_frequency_limit_evidence",
+    "glm_quota_exhaustion_evidence",
     "looks_like_provider_error_envelope",
     "classify_llm_availability",
     "build_llm_pause_state",

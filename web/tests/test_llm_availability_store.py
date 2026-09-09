@@ -9,6 +9,8 @@ import evolution_infra
 from llm_availability import (
     BILLING_CYCLE_LIMIT,
     QUOTA_429,
+    QUOTA_RESET_AUTHORITY_FALLBACK,
+    QUOTA_RESET_AUTHORITY_PROVIDER,
     SERVICE_UNAVAILABLE,
     classify_llm_availability,
 )
@@ -44,9 +46,11 @@ def _service_issue():
 
 
 def _quota_issue(reset_at: str | None = None):
-    evidence = "API error 429: quota exceeded"
+    evidence = "API Error: Request rejected (429) · [1308][已达到 5 小时的使用上限。"
     if reset_at:
-        evidence += f"; quota reset at {reset_at}"
+        evidence += f"]; quota reset at {reset_at}"
+    else:
+        evidence += "]"
     issue = classify_llm_availability([evidence], statuses=[429])
     assert issue is not None
     assert issue.category == QUOTA_429
@@ -115,37 +119,37 @@ def test_transient_pause_auto_resumes_only_after_system_cooldown(isolated_store)
     assert audit["resume_source"] == "bounded_cooldown_elapsed"
 
 
-def test_bare_429_auto_resumes_after_conservative_fallback_window(
+def test_status_only_429_persists_as_short_service_cooldown(isolated_store):
+    """A bare HTTP 429 without GLM 1308 must not become a 5-hour quota pause."""
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    issue = classify_llm_availability(
+        ["Request rejected (429)"],
+        statuses=[429],
+    )
+    assert issue is not None
+    assert issue.category == SERVICE_UNAVAILABLE
+    assert issue.quota_reset_authority is None
+    state = store.persist_llm_pause(issue, now=now)
+    assert state["category"] == SERVICE_UNAVAILABLE
+    assert state["requires_manual_resume"] is False
+    assert store.pause_wait_seconds(state, now=now) == pytest.approx(120.0)
+    assert store.active_llm_pause(now=now + timedelta(seconds=119))["active"] is True
+    assert store.active_llm_pause(now=now + timedelta(seconds=120)) is None
+
+
+def test_1308_without_timestamp_auto_resumes_after_quota_fallback_window(
     isolated_store,
 ):
-    """A bare 429 without a provider timestamp auto-resumes after a conservative
-    fallback window (5h + 60s), rather than leaving the pipeline dead for hours.
-
-    Previously a bare 429 required manual operator intervention, but GLM enforces
-    a documented 5-hour rolling cap, so commit 61b97a40 (P0-2) replaced the
-    manual-resume dead-end with ``resume_after_quota_reset`` + a conservative
-    fallback window (POK_QUOTA_FALLBACK_WINDOW_SEC) so ``_reconcile_llm_pause``
-    auto-resumes once the window elapses instead of parking indefinitely on
-    ``requires_manual_resume``.  The fallback is conservative (the full window,
-    not a guessed short value) so it never burns guaranteed-to-fail retries
-    against a still-exhausted quota.
-
-    Note: the fallback reset timestamp is computed from real wall-clock time at
-    classification (the quota window is wall-clock, not test-frozen), so this
-    test asserts the structural contract (auto-resume, not manual; a fallback
-    reset is set; the policy is resume_after_quota_reset).  The explicit-reset
-    auto-resume timing is covered by
-    ``test_429_auto_resumes_at_explicit_provider_reset_only``.
-    """
+    """Confirmed GLM 1308 without a parseable reset still uses the 5h fallback."""
     issue = _quota_issue()
     state = store.persist_llm_pause(issue)
 
-    # The bare-429 fallback is auto-resume (NOT manual), with a conservative
-    # fallback reset timestamp set.
     assert issue.requires_manual_resume is False
     assert issue.retry_policy == "resume_after_quota_reset"
+    assert issue.quota_reset_authority == QUOTA_RESET_AUTHORITY_FALLBACK
     assert issue.provider_reset_at is not None
     assert state["requires_manual_resume"] is False
+    assert state["quota_reset_authority"] == QUOTA_RESET_AUTHORITY_FALLBACK
     assert state["provider_reset_at"] is not None
     assert state["auto_resume_at"] == state["provider_reset_at"]
 
@@ -157,6 +161,7 @@ def test_429_auto_resumes_at_explicit_provider_reset_only(isolated_store):
 
     assert issue.requires_manual_resume is False
     assert state["provider_reset_at"] == "2026-07-13T10:10:00+00:00"
+    assert state["quota_reset_authority"] == QUOTA_RESET_AUTHORITY_PROVIDER
     assert state["auto_resume_at"] == state["provider_reset_at"]
     assert store.pause_wait_seconds(state, now=now) == pytest.approx(600.0)
     assert store.active_llm_pause(
@@ -166,7 +171,43 @@ def test_429_auto_resumes_at_explicit_provider_reset_only(isolated_store):
     assert store.load_llm_pause()["resume_source"] == "provider_quota_reset_elapsed"
 
 
-def test_legacy_429_fixed_cooldown_record_is_migrated_to_manual_fail_closed(
+def test_legacy_guessed_quota_pause_without_reset_authority_is_dropped(
+    isolated_store,
+):
+    """Pre-fix records invented a 5h wait from any 429, including GLM 1302.
+
+    Those pauses have a provider_reset_at but no quota_reset_authority. They
+    must not keep the pipeline dark after deploy; reconcile drops them.
+    """
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    guessed = {
+        "schema_version": store.SCHEMA_VERSION,
+        "active": True,
+        "source": "llm_availability",
+        "category": QUOTA_429,
+        "summary": "provider quota window is exhausted",
+        "http_status": 429,
+        "retry_policy": "resume_after_quota_reset",
+        "requires_manual_resume": False,
+        "persistent_pause": True,
+        "evidence_digest": "a" * 64,
+        "role": "MASTER (Try 1)",
+        "first_observed_at": now.isoformat(),
+        "last_observed_at": now.isoformat(),
+        "occurrences": 3,
+        "provider_reset_at": (now + timedelta(hours=5, seconds=60)).isoformat(),
+        "auto_resume_at": (now + timedelta(hours=5, seconds=60)).isoformat(),
+    }
+    store.pause_path().parent.mkdir(parents=True, exist_ok=True)
+    store.pause_path().write_text(json.dumps(guessed), encoding="utf-8")
+
+    assert store.active_llm_pause(now=now) is None
+    audit = store.load_llm_pause()
+    assert audit["active"] is False
+    assert audit["resume_source"] == "untrusted_quota_pause_without_reset_authority"
+
+
+def test_legacy_429_fixed_cooldown_record_is_dropped_as_untrusted(
     isolated_store,
 ):
     now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
@@ -190,10 +231,10 @@ def test_legacy_429_fixed_cooldown_record_is_migrated_to_manual_fail_closed(
     store.pause_path().parent.mkdir(parents=True, exist_ok=True)
     store.pause_path().write_text(json.dumps(legacy), encoding="utf-8")
 
-    active = store.active_llm_pause(now=now + timedelta(hours=1))
-    assert active["active"] is True
-    assert active["requires_manual_resume"] is True
-    assert active["auto_resume_at"] is None
+    assert store.active_llm_pause(now=now + timedelta(hours=1)) is None
+    assert store.load_llm_pause()["resume_source"] == (
+        "untrusted_quota_pause_without_reset_authority"
+    )
 
 
 def test_weaker_transient_evidence_cannot_replace_manual_pause(isolated_store):

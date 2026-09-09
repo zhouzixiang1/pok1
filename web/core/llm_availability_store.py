@@ -28,6 +28,8 @@ from llm_availability import (
     LLMAvailabilityBlocked,
     LLMAvailabilityIssue,
     QUOTA_429,
+    QUOTA_RESET_AUTHORITY_FALLBACK,
+    QUOTA_RESET_AUTHORITY_PROVIDER,
     SERVICE_UNAVAILABLE,
     TRANSPORT_UNAVAILABLE,
 )
@@ -42,6 +44,9 @@ _AUTO_COOLDOWN_SECONDS = {
     SERVICE_UNAVAILABLE: 120,
     TRANSPORT_UNAVAILABLE: 60,
 }
+_TRUSTED_QUOTA_RESET_AUTHORITIES = frozenset(
+    {QUOTA_RESET_AUTHORITY_PROVIDER, QUOTA_RESET_AUTHORITY_FALLBACK}
+)
 _CATEGORY_PRIORITY = {
     TRANSPORT_UNAVAILABLE: 1,
     SERVICE_UNAVAILABLE: 2,
@@ -219,21 +224,47 @@ def persist_llm_pause(
     timestamp = _utc_now(now)
     category = str(incoming["category"])
     digest = str(incoming["evidence_digest"])
-    provider_reset = (
-        _trusted_quota_reset(incoming.get("provider_reset_at"), now=timestamp)
-        if category == QUOTA_429
-        else None
-    )
+    authority = str(incoming.get("quota_reset_authority") or "").strip()
+    provider_reset = None
     manual = bool(incoming["requires_manual_resume"])
     if category == QUOTA_429:
-        # A bare 429 has no safe automatic retry time. Only a validated reset
-        # timestamp carried by provider-owned evidence can clear this pause.
-        manual = provider_reset is None
+        # Two trusted sources: an explicit provider timestamp, or a fallback
+        # invented only for a confirmed 1308/usage-cap body. Anything else
+        # (bare 429, GLM 1302) must not become a multi-hour auto-wait.
+        if authority == QUOTA_RESET_AUTHORITY_PROVIDER:
+            provider_reset = _trusted_quota_reset(
+                incoming.get("provider_reset_at"), now=timestamp
+            )
+            manual = provider_reset is None
+        elif authority == QUOTA_RESET_AUTHORITY_FALLBACK:
+            provider_reset = _trusted_quota_reset(
+                incoming.get("provider_reset_at"), now=timestamp
+            )
+            # Classifier always stamps the fallback instant. Missing/stale
+            # values fail closed rather than inventing a second wait here.
+            manual = provider_reset is None
+        else:
+            provider_reset = None
+            manual = True
     cooldown = None if manual else int(_AUTO_COOLDOWN_SECONDS.get(category, 120))
 
     with _PauseLock():
         path = pause_path()
         current = _read_unlocked(path)
+        if (
+            current
+            and current.get("active")
+            and str(current.get("category") or "") == QUOTA_429
+            and str(current.get("quota_reset_authority") or "").strip()
+            not in _TRUSTED_QUOTA_RESET_AUTHORITIES
+        ):
+            current = dict(current)
+            current["active"] = False
+            current["resumed_at"] = _iso(timestamp)
+            current["resume_source"] = "untrusted_quota_pause_without_reset_authority"
+            current["resume_evidence_digest"] = None
+            _write_unlocked(path, current)
+            current = None
         if current and current.get("active"):
             old_priority = _CATEGORY_PRIORITY.get(str(current.get("category")), 0)
             new_priority = _CATEGORY_PRIORITY.get(category, 0)
@@ -298,6 +329,7 @@ def persist_llm_pause(
             "last_observed_at": _iso(timestamp),
             "occurrences": occurrences,
             "auto_resume_at": auto_resume_at,
+            "quota_reset_authority": authority or None,
         }
         _write_unlocked(path, state)
         return state
@@ -321,23 +353,32 @@ def _reconcile_llm_pause(
 
         manual = bool(current.get("requires_manual_resume"))
         reset = None
-        if str(current.get("category") or "") == QUOTA_429:
-            reset = _parse_time(current.get("provider_reset_at"))
-            # Schema-1 records created by the old fixed-five-minute policy have
-            # no provider_reset_at. Treat them as manual instead of honoring
-            # their guessed auto_resume_at.
-            manual = reset is None
-            if manual and (
-                current.get("requires_manual_resume") is not True
-                or current.get("auto_resume_at") is not None
-            ):
-                current = dict(current)
-                current["requires_manual_resume"] = True
-                current["retry_policy"] = "manual_resume_without_provider_reset"
-                current["auto_resume_at"] = None
-                _write_unlocked(path, current)
         resume_source = None
-        if manual:
+        if str(current.get("category") or "") == QUOTA_429:
+            authority = str(current.get("quota_reset_authority") or "").strip()
+            if authority not in _TRUSTED_QUOTA_RESET_AUTHORITIES:
+                # Pre-fix records invented a 5-hour wait from any 429
+                # (including GLM 1302 frequency limits). They are not a
+                # provider-owned quota window; drop them on reconcile.
+                resume_source = "untrusted_quota_pause_without_reset_authority"
+            else:
+                reset = _parse_time(current.get("provider_reset_at"))
+                # Schema-1 records created by the old fixed-five-minute policy have
+                # no provider_reset_at. Treat them as manual instead of honoring
+                # their guessed auto_resume_at.
+                manual = reset is None
+                if manual and (
+                    current.get("requires_manual_resume") is not True
+                    or current.get("auto_resume_at") is not None
+                ):
+                    current = dict(current)
+                    current["requires_manual_resume"] = True
+                    current["retry_policy"] = "manual_resume_without_provider_reset"
+                    current["auto_resume_at"] = None
+                    _write_unlocked(path, current)
+        if resume_source is not None:
+            pass
+        elif manual:
             if supplied and supplied == str(current.get("evidence_digest") or ""):
                 resume_source = "operator_evidence_digest"
             elif supplied:
@@ -435,6 +476,11 @@ def blocked_from_pause_state(
         provider_reset_at=(
             str(state.get("provider_reset_at"))
             if state.get("provider_reset_at")
+            else None
+        ),
+        quota_reset_authority=(
+            str(state["quota_reset_authority"])
+            if state.get("quota_reset_authority")
             else None
         ),
     )
