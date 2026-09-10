@@ -117,6 +117,7 @@ def test_candidate_with_precompute_does_not_regress_it(monkeypatch, tmp_path):
     )
 
     assert transition["ok"] is True
+    assert transition["failure_class"] == runtime_architecture_policy.FAILURE_CLASS_NONE
     regression_ids = [item["check_id"] for item in transition["regressions"]]
     assert "precompute_runtime_influence" not in regression_ids
 
@@ -132,6 +133,7 @@ def test_candidate_that_drops_precompute_still_regresses(monkeypatch, tmp_path):
     )
 
     assert transition["ok"] is False
+    assert transition["failure_class"] == runtime_architecture_policy.FAILURE_CLASS_CANDIDATE
     regression_ids = [item["check_id"] for item in transition["regressions"]]
     assert "precompute_runtime_influence" in regression_ids
 
@@ -280,6 +282,7 @@ def test_preplan_probe_driven_regression_is_advisory(monkeypatch, tmp_path):
     )
 
     assert transition["ok"] is True
+    assert transition["failure_class"] == runtime_architecture_policy.FAILURE_CLASS_NONE
     regression_ids = [item["check_id"] for item in transition["regressions"]]
     assert _PROBE_DRIVEN_CHECK not in regression_ids
     advisory_ids = [item["check_id"] for item in transition["preplan_probe_advisory"]]
@@ -443,5 +446,6 @@ def test_preplan_probe_infra_failure_is_advisory(monkeypatch, tmp_path):
     assert transition["outcome"] != "infrastructure_failure"
     assert transition["ok"] is True
     assert transition["conclusive"] is True
+    assert transition["failure_class"] == runtime_architecture_policy.FAILURE_CLASS_NONE
     advisory_ids = [item["reason"] for item in transition["preplan_probe_advisory"]]
     assert "infrastructure_failure_deferred_at_preplan" in advisory_ids

@@ -765,7 +765,14 @@ Generation order:
 11. archivist/cleanup.
 
 Crossover is preparation only and never skips planning or gates. Every prepared
-artifact has a complete manifest/hash. Worker writes are lease-isolated,
+artifact has a complete manifest/hash. A passed preplan architecture transition
+emits `failure_class="none"` (same sentinel as the typed runtime probe). The
+prepared-baseline binder requires that exact token — an empty string is not
+"passed", and tests must not hand-write a dialect the producer does not emit.
+H2H citation accuracy binds numbers to one matchup alias and stops at the next
+pairing or a `snapshot:` / `bot_stats.json` / `selection_snapshot.json`
+pointer, so aggregate corroboration games cannot be misread as the matchup
+row. Worker writes are lease-isolated,
 snapshotted, and atomic. Publication cross-checks working bytes, staged Git
 blobs, and immutable tag tree.
 

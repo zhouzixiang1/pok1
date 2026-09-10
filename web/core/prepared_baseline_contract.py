@@ -17,7 +17,10 @@ from typing import Any
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
 from national_runtime_probe import _bot_code_fingerprint
-from runtime_architecture_policy import validate_prepared_capability_snapshot
+from runtime_architecture_policy import (
+    FAILURE_CLASS_NONE,
+    validate_prepared_capability_snapshot,
+)
 
 
 PREPARED_BASELINE_CONTRACT_SCHEMA_VERSION = 2
@@ -205,7 +208,7 @@ def build_prepared_baseline_contract(
         raise ValueError("prepared baseline transition must be conclusive")
     if preplan_transition.get("outcome") != "passed":
         raise ValueError("prepared baseline transition outcome must be passed")
-    if preplan_transition.get("failure_class") != "none":
+    if preplan_transition.get("failure_class") != FAILURE_CLASS_NONE:
         raise ValueError("prepared baseline transition failure_class must be none")
     blocking_fields = (
         "policy_identity_errors",

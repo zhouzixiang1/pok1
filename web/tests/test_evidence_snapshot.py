@@ -532,6 +532,54 @@ def test_h2h_citation_validation_rejects_abbreviated_wl_sample(monkeypatch, tmp_
     assert "v59 vs v73 cited b_wins=4" in joined
 
 
+def test_h2h_citation_does_not_bind_aggregate_games_onto_matchup(
+    monkeypatch, tmp_path,
+):
+    """bot_stats/selection games=N after a pairing name is not the H2H row.
+
+    v411 cited the matchup correctly (games=49) then a bot_stats aggregate
+    (games=551); a 360-character window treated 551 as the matchup citation.
+    """
+    import evidence_snapshot
+
+    key = f"{bot_name(173)} vs {bot_name(27)}"
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        key: {
+            "games": 50,
+            "a_wins": 20,
+            "b_wins": 30,
+            "draws": 0,
+            "win_rate": 0.4,
+        }
+    })
+    evidence_snapshot.ensure_generation_h2h_snapshot(411)
+
+    ok_plan = {
+        "analysis": (
+            f"{key}: games=50, a_wins=20, b_wins=30, draws=0. "
+            f"Corroboration snapshot:bot_stats.json#/{bot_name(173)} "
+            "games=551, wins=300."
+        ),
+    }
+    assert evidence_snapshot.validate_h2h_citations_against_snapshot(
+        ok_plan, 411
+    ) == []
+
+    wrong_matchup = {
+        "analysis": (
+            f"{key}: games=551, a_wins=20, b_wins=30, draws=0. "
+            f"snapshot:bot_stats.json#/{bot_name(173)} games=551."
+        ),
+    }
+    errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
+        wrong_matchup, 411
+    )
+    joined = "; ".join(errors)
+    assert "cited games=551" in joined
+    assert "snapshot has games=50" in joined
+
+
+
 def test_h2h_citation_validation_accepts_reversed_abbreviated_wl(monkeypatch, tmp_path):
     import evidence_snapshot
 

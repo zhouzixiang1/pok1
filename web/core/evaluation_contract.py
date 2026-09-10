@@ -37,7 +37,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 42
+CONTRACT_VERSION = 43
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -146,6 +146,7 @@ PREPARE_STAGE_EXACT = frozenset().union(
         "web/core/agent_review.py",  # owns crossover implementation helpers
         "web/core/crossover_projection.py",
         "web/core/crossover_synthesis.py",
+        "web/core/prepared_baseline_contract.py",
         "web/core/audit_agents.py",
         "web/core/generation_scheduler.py",
         "web/core/llm_failure.py",

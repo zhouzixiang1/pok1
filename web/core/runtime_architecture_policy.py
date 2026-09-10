@@ -53,6 +53,13 @@ from output_schema import (
 ACTIVE_EPOCH = "national_tcp_policy_v1"
 RUNTIME_ARCHITECTURE_POLICY_VERSION = "5.3.0"
 RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 15
+# Passed architecture transitions use the same explicit sentinel as the typed
+# runtime probe. An empty string is not "passed": prepared_baseline_contract
+# historically required "none" while this producer emitted "", so every
+# successful crossover died at bind (2026-09-10, 56 abandons since v189).
+FAILURE_CLASS_NONE = "none"
+FAILURE_CLASS_INFRASTRUCTURE = "infrastructure"
+FAILURE_CLASS_CANDIDATE = "candidate"
 RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 3
 PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION = 3
 ARCHITECTURE_TRANSITION_PHASE_FINAL = "final"
@@ -1521,7 +1528,13 @@ def evaluate_architecture_transition(
         "ok": ok,
         "conclusive": not infrastructure_failures,
         "outcome": "passed" if ok else "infrastructure_failure" if infrastructure_failures else "failed",
-        "failure_class": "" if ok else "infrastructure" if infrastructure_failures else "candidate",
+        "failure_class": (
+            FAILURE_CLASS_NONE
+            if ok
+            else FAILURE_CLASS_INFRASTRUCTURE
+            if infrastructure_failures
+            else FAILURE_CLASS_CANDIDATE
+        ),
         "evaluation_phase": evaluation_phase,
         "source_capabilities": source_cap,
         "candidate_capabilities": candidate_cap,
@@ -1702,6 +1715,9 @@ __all__ = [
     "ACTIVE_EPOCH",
     "ARCHITECTURE_TRANSITION_PHASE_FINAL",
     "ARCHITECTURE_TRANSITION_PHASE_PREPLAN",
+    "FAILURE_CLASS_CANDIDATE",
+    "FAILURE_CLASS_INFRASTRUCTURE",
+    "FAILURE_CLASS_NONE",
     "NATIVE_TEMPLATE_PROVIDED_CHECKS",
     "OFFICIAL_FULL_POLICY_ID",
     "OFFICIAL_ORACLE_DOC_DIGESTS",

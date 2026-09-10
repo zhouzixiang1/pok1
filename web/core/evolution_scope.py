@@ -148,6 +148,7 @@ CRITICAL_GENERATION_EXACT = frozenset({
     "web/core/daemon_management.py",
     "web/core/crossover_projection.py",
     "web/core/crossover_synthesis.py",
+    "web/core/prepared_baseline_contract.py",
     "web/core/direction_auditor.py",
     "web/core/evidence_snapshot.py",
     "web/core/evaluation_contract.py",

@@ -645,3 +645,43 @@ def test_prepared_baseline_contract_forwards_transition_capabilities(
         ),
     )
     assert contract["prepared_bot"] == "national_v145"
+
+
+def test_prepared_baseline_rejects_empty_failure_class_dialect(tmp_path, monkeypatch):
+    """Producer used to emit failure_class=\"\" on pass; binder required \"none\".
+
+    That dialect split abandoned every successful crossover at
+    prepared_baseline_contract_build_failed. Empty string remains untrusted.
+    """
+    parent_a = tmp_path / "national_v143"
+    parent_b = tmp_path / "national_v144"
+    child = tmp_path / "national_v145"
+    for root in (parent_a, parent_b, child):
+        root.mkdir()
+        (root / "policy.py").write_text("ORIGIN = 'B'\n", encoding="utf-8")
+    caps = _capabilities({"wire": True})
+    snapshot = _capability_snapshot(
+        monkeypatch,
+        parent_a,
+        child,
+        parent_capabilities=caps,
+        prepared_capabilities=caps,
+    )
+    transition = _accepted_preplan_transition(
+        failure_class="",
+        source_capabilities=caps,
+        candidate_capabilities=caps,
+        **{"policy": {"policy_digest": "d" * 64}},
+    )
+    with pytest.raises(ValueError, match="failure_class must be none"):
+        build_prepared_baseline_contract(
+            parent_a,
+            parent_b,
+            child,
+            source_v=143,
+            parent2_v=144,
+            next_v=145,
+            capability_snapshot=snapshot,
+            preplan_transition=transition,
+        )
+

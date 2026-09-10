@@ -851,6 +851,37 @@ def _h2h_key_re() -> re.Pattern:
         re.IGNORECASE,
     )
 _WL_RE = re.compile(r"(?<![\w.])(\d+)\s*W\s*(?:[/:\-]|,)?\s*(\d+)\s*L\b", re.IGNORECASE)
+_NEXT_PAIRING_RE = re.compile(
+    rf"(?:{re.escape(ACTIVE_BOT_PREFIX)}\d+|v\d+)\s+vs\s+"
+    rf"(?:{re.escape(ACTIVE_BOT_PREFIX)}\d+|v\d+)",
+    re.IGNORECASE,
+)
+_AGGREGATE_POINTER_RE = re.compile(
+    r"snapshot:|bot_stats\.json|selection_snapshot\.json",
+    re.IGNORECASE,
+)
+
+
+def _matchup_citation_window(text: str, start: int, alias: str) -> str:
+    """Numbers attached to one matchup alias, not later aggregate rows.
+
+    A raw 360-character window after the pairing name bound ``bot_stats``
+    ``games=551`` onto an H2H alias whose snapshot row was ``games=49``
+    (v411 / v412, 2026-09-10). Stop at the next pairing or a snapshot
+    pointer so matchup accuracy and aggregate corroboration stay distinct.
+    """
+
+    chunk = text[start:start + 360]
+    alias_len = len(alias)
+    rest = chunk[alias_len:]
+    next_pairing = _NEXT_PAIRING_RE.search(rest)
+    if next_pairing:
+        chunk = chunk[: alias_len + next_pairing.start()]
+        rest = chunk[alias_len:]
+    stop = _AGGREGATE_POINTER_RE.search(chunk)
+    if stop is not None and stop.start() >= alias_len:
+        chunk = chunk[: stop.start()]
+    return chunk
 
 
 def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
@@ -1027,7 +1058,7 @@ def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str)
                 if span in seen_spans:
                     continue
                 seen_spans.add(span)
-                window = text[span[0]:span[0] + 360]
+                window = _matchup_citation_window(text, span[0], alias)
                 cited = {
                     "games": _extract_int(r"\bgames?\s*[:=]\s*(\d+)", window),
                     "a_wins": _extract_int(r"\ba_wins\s*[:=]\s*(\d+)", window),
