@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from bot_namespace import bot_name
 from prepared_baseline_contract import (
     build_prepared_baseline_contract,
     prepared_baseline_prompt,
@@ -46,12 +47,16 @@ def _capability_snapshot(
     *,
     parent_capabilities,
     prepared_capabilities,
+    parent_bot_label=None,
 ):
     """Keep this contract unit test independent of the managed runtime probe.
 
     Production validation rebuilds the snapshot from live detector output.  The
     unit fixtures deliberately use a small synthetic check set, so provide the
     same detector outputs for both the initial build and the mandatory rebuild.
+    ``parent_bot_label`` mirrors the production run_crossover caller: frozen
+    parent snapshot directories carry 64-hex basenames, so the recorded
+    lineage label is the canonical ``bot_name(source_v)``.
     """
 
     import runtime_architecture_policy as architecture
@@ -76,6 +81,7 @@ def _capability_snapshot(
         prepared,
         parent_capabilities=parent_capabilities,
         prepared_capabilities=prepared_capabilities,
+        parent_bot_label=parent_bot_label,
     )
 
 
@@ -117,6 +123,7 @@ def test_prepared_baseline_binds_content_capabilities_and_component_diff(
         child,
         parent_capabilities=parent_caps,
         prepared_capabilities=child_caps,
+        parent_bot_label=bot_name(143),
     )
     transition = _accepted_preplan_transition(**{
         "policy": {"policy_digest": "d" * 64},
@@ -257,6 +264,7 @@ def test_prepared_baseline_contract_digest_rejects_tampering(tmp_path, monkeypat
         child,
         parent_capabilities=caps,
         prepared_capabilities=caps,
+        parent_bot_label=bot_name(143),
     )
     contract = build_prepared_baseline_contract(
         parent_a,
@@ -302,6 +310,7 @@ def test_prepared_baseline_builder_rejects_nonaccepted_transition(
         child,
         parent_capabilities=caps,
         prepared_capabilities=caps,
+        parent_bot_label=bot_name(143),
     )
 
     with pytest.raises(ValueError, match=error_fragment):
@@ -331,6 +340,7 @@ def test_prepared_baseline_builder_binds_expected_policy_digest(tmp_path, monkey
         child,
         parent_capabilities=caps,
         prepared_capabilities=caps,
+        parent_bot_label=bot_name(143),
     )
 
     with pytest.raises(ValueError, match="policy digest mismatch"):
@@ -397,6 +407,7 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
         child,
         parent_capabilities=caps,
         prepared_capabilities=caps,
+        parent_bot_label=bot_name(source_v),
     )
     contract = build_prepared_baseline_contract(
         parent_a,
@@ -606,6 +617,7 @@ def test_prepared_baseline_contract_forwards_transition_capabilities(
         child,
         parent_capabilities=parent_static,
         prepared_capabilities=child_caps,
+        parent_bot_label=bot_name(143),
     )
 
     base_transition = _accepted_preplan_transition(**{
@@ -645,6 +657,429 @@ def test_prepared_baseline_contract_forwards_transition_capabilities(
         ),
     )
     assert contract["prepared_bot"] == "national_v145"
+    # Schema v3 freezes the semantic parent identity and the exact capability
+    # objects bind-time revalidation must forward (digest-covered payload).
+    assert contract["schema_version"] == 3
+    assert contract["parent_a_bot"] == bot_name(143)
+    assert contract["parent_b_bot"] == bot_name(144)
+    assert contract["preplan_source_capabilities"] == parent_static
+    assert contract["preplan_candidate_capabilities"] == child_caps
+
+
+def _epoch_compatible_capabilities(state):
+    """Capability object shaped like a real accepted preplan-transition entry.
+
+    ``_epoch_compatible`` gates the parent side on the epoch marker plus the
+    ``national_policy_module`` check; without them the parent state collapses
+    to ``{}`` on both sides and the build/bind asymmetry cannot express itself.
+    """
+    from runtime_architecture_policy import ACTIVE_EPOCH
+
+    caps = _capabilities(state)
+    caps["epoch"] = ACTIVE_EPOCH
+    return caps
+
+
+def _probe_merged_capabilities(static_caps):
+    """What a live probe-merged parent rebuild produces: one extra check."""
+    merged = json.loads(json.dumps(static_caps))
+    probe_check = {
+        "check_id": "typed_runtime_probe",
+        "passed": True,
+        "guidance": "probe",
+        "evidence": {"locations": ["policy.py:typed_runtime_probe"]},
+    }
+    merged["checks"] = list(merged["checks"]) + [probe_check]
+    merged["checks_by_id"] = dict(merged["checks_by_id"])
+    merged["checks_by_id"]["typed_runtime_probe"] = probe_check
+    return merged
+
+
+def _production_split_fixtures(tmp_path, monkeypatch):
+    """Freeze both parents under 64-hex content-addressed snapshot dirs.
+
+    Production build resolves the crossover parents through
+    ``resolve_crossover_parent_snapshots`` -> ``WorkerArtifactStore.path_for``,
+    so the contract build sees 64-hex directory names whose bytes are identical
+    to the live ``bots/<semantic-name>`` directories.  The binder then
+    validates against ``get_bot_dir(source_v)`` semantic directories.
+    """
+    import hashlib
+    import shutil
+
+    from bot_namespace import bot_name
+    import runtime_architecture_policy as architecture
+
+    parent_a_live = tmp_path / bot_name(143)
+    parent_b_live = tmp_path / bot_name(144)
+    child_live = tmp_path / bot_name(145)
+    for root in (parent_a_live, parent_b_live, child_live):
+        root.mkdir()
+    (parent_a_live / "policy.py").write_text("ORIGIN = 'A'\n", encoding="utf-8")
+    (parent_b_live / "policy.py").write_text("ORIGIN = 'B'\n", encoding="utf-8")
+    (child_live / "policy.py").write_text("ORIGIN = 'B'\n", encoding="utf-8")
+
+    parent_a_frozen = tmp_path / hashlib.sha256(b"parent-a").hexdigest()
+    parent_b_frozen = tmp_path / hashlib.sha256(b"parent-b").hexdigest()
+    shutil.copytree(parent_a_live, parent_a_frozen)
+    shutil.copytree(parent_b_live, parent_b_frozen)
+
+    parent_static = _epoch_compatible_capabilities(
+        {"national_policy_module": True, "wire": True, "precompute": False}
+    )
+    child_caps = _epoch_compatible_capabilities(
+        {"national_policy_module": True, "wire": True, "precompute": True}
+    )
+    monkeypatch.setattr(
+        architecture,
+        "_lineage_capabilities",
+        lambda _path: _probe_merged_capabilities(parent_static),
+    )
+    monkeypatch.setattr(
+        architecture,
+        "evaluate_national_capabilities",
+        lambda _path: child_caps,
+    )
+    monkeypatch.setattr(
+        architecture,
+        "_apply_typed_runtime_probe",
+        lambda capabilities, *_args, **_kwargs: (capabilities, {}, []),
+    )
+    return {
+        "parent_a_live": parent_a_live,
+        "parent_b_live": parent_b_live,
+        "child_live": child_live,
+        "parent_a_frozen": parent_a_frozen,
+        "parent_b_frozen": parent_b_frozen,
+        "parent_static": parent_static,
+        "child_caps": child_caps,
+    }
+
+
+def _build_frozen_baseline_contract(tmp_path, monkeypatch):
+    """Build one valid schema-v3 contract from the production split fixtures.
+
+    Parent A/B are frozen under 64-hex content-addressed directories whose
+    bytes equal the live semantic directories; the snapshot and transition
+    carry the frozen capability objects exactly like run_crossover.
+    """
+    fixtures = _production_split_fixtures(tmp_path, monkeypatch)
+    capability_snapshot = build_prepared_capability_snapshot(
+        fixtures["parent_a_frozen"],
+        fixtures["child_live"],
+        parent_capabilities=fixtures["parent_static"],
+        prepared_capabilities=fixtures["child_caps"],
+        parent_bot_label=bot_name(143),
+    )
+    contract = build_prepared_baseline_contract(
+        fixtures["parent_a_frozen"],
+        fixtures["parent_b_frozen"],
+        fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        capability_snapshot=capability_snapshot,
+        preplan_transition=_accepted_preplan_transition(
+            source_capabilities=fixtures["parent_static"],
+            candidate_capabilities=fixtures["child_caps"],
+        ),
+    )
+    return contract, fixtures
+
+
+def test_bind_against_semantic_dirs_resolves_production_split(
+    tmp_path,
+    monkeypatch,
+):
+    """Production split v417/v420/v423/v424 (events 310903/311474/320848/321094).
+
+    Build freezes the parents under 64-hex content-addressed directories while
+    the Master-entry binder validates against ``get_bot_dir(source_v)``
+    semantic directories.  Before the semantic-name binding this produced the
+    exact production signature on every crossover (an equivalent construction
+    was reproduced against the pre-fix code, yielding the same three codes in
+    the same order):
+
+    - ``prepared_capability_snapshot_current_state_mismatch``
+    - ``prepared_baseline_contract_parent_a_bot_mismatch``
+    - ``prepared_baseline_contract_parent_b_bot_mismatch``
+
+    while every content hash compared clean, so four generations died at the
+    same gate with zero poker-relevant evidence.  The fix binds the contract's
+    parent identity to ``bot_name(source_v)``/``bot_name(parent2_v)`` and
+    forwards the frozen preplan capabilities at bind time, so the exact
+    production split must validate clean.
+    """
+    import runtime_architecture_policy as architecture
+
+    fixtures = _production_split_fixtures(tmp_path, monkeypatch)
+    capability_snapshot = architecture.build_prepared_capability_snapshot(
+        fixtures["parent_a_frozen"],
+        fixtures["child_live"],
+        parent_capabilities=fixtures["parent_static"],
+        prepared_capabilities=fixtures["child_caps"],
+        parent_bot_label=bot_name(143),
+    )
+    contract = build_prepared_baseline_contract(
+        fixtures["parent_a_frozen"],
+        fixtures["parent_b_frozen"],
+        fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        capability_snapshot=capability_snapshot,
+        preplan_transition=_accepted_preplan_transition(
+            source_capabilities=fixtures["parent_static"],
+            candidate_capabilities=fixtures["child_caps"],
+        ),
+    )
+    assert contract["schema_version"] == 3
+    assert contract["parent_a_bot"] == bot_name(143)
+    assert contract["parent_b_bot"] == bot_name(144)
+
+    errors = validate_prepared_baseline_contract(
+        contract,
+        parent_a_dir=fixtures["parent_a_live"],
+        parent_b_dir=fixtures["parent_b_live"],
+        prepared_dir=fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        verify_live_content=True,
+    )
+    assert errors == []
+    for code in (
+        "prepared_capability_snapshot_current_state_mismatch",
+        "prepared_baseline_contract_parent_a_bot_mismatch",
+        "prepared_baseline_contract_parent_b_bot_mismatch",
+    ):
+        assert code not in errors
+
+
+def test_bind_forwards_frozen_caps_and_fails_closed_without_them(
+    tmp_path,
+    monkeypatch,
+):
+    """Bind-time revalidation is the exact mirror of build-time forwarding.
+
+    A v3 contract carries the preplan transition's frozen capability objects,
+    so the bind rebuild reuses the deterministic static parent anchor and
+    validates clean.  A contract whose frozen caps were stripped (legacy v2
+    producer or tampering) re-derives live, re-runs the non-deterministic
+    probe, and fails closed with
+    ``prepared_capability_snapshot_current_state_mismatch`` — never silently
+    passing.  The failure event payload must also diagnose the split.
+    """
+    from bot_artifact import canonical_digest
+    from prepared_baseline_contract import (
+        _contract_payload,
+        prepared_baseline_contract_error_details,
+    )
+
+    fixtures = _production_split_fixtures(tmp_path, monkeypatch)
+    capability_snapshot = build_prepared_capability_snapshot(
+        fixtures["parent_a_frozen"],
+        fixtures["child_live"],
+        parent_capabilities=fixtures["parent_static"],
+        prepared_capabilities=fixtures["child_caps"],
+        parent_bot_label=bot_name(143),
+    )
+    contract = build_prepared_baseline_contract(
+        fixtures["parent_a_frozen"],
+        fixtures["parent_b_frozen"],
+        fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        capability_snapshot=capability_snapshot,
+        preplan_transition=_accepted_preplan_transition(
+            source_capabilities=fixtures["parent_static"],
+            candidate_capabilities=fixtures["child_caps"],
+        ),
+    )
+
+    def _bind(contract_under_test):
+        return validate_prepared_baseline_contract(
+            contract_under_test,
+            parent_a_dir=fixtures["parent_a_live"],
+            parent_b_dir=fixtures["parent_b_live"],
+            prepared_dir=fixtures["child_live"],
+            source_v=143,
+            parent2_v=144,
+            next_v=145,
+            verify_live_content=True,
+        )
+
+    # With the frozen caps present the bind validates even though a live
+    # probe-merged re-derivation would disagree with the static parent anchor.
+    assert _bind(contract) == []
+
+    # Strip the frozen caps and re-sign the digest: the only failure left is
+    # the fail-closed capability mismatch (no digest/schema/name noise), which
+    # proves bind-time forwarding is load-bearing and its absence fails shut.
+    stripped = dict(contract)
+    stripped.pop("preplan_source_capabilities")
+    stripped.pop("preplan_candidate_capabilities")
+    stripped["contract_digest"] = canonical_digest(
+        _contract_payload(stripped)
+    )
+    errors = _bind(stripped)
+    assert errors == ["prepared_capability_snapshot_current_state_mismatch"]
+    details = prepared_baseline_contract_error_details(
+        stripped,
+        errors,
+        parent_a_dir=fixtures["parent_a_live"],
+        parent_b_dir=fixtures["parent_b_live"],
+        prepared_dir=fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+    )
+    assert details["prepared_capability_snapshot_current_state_mismatch"][
+        "actual"
+    ].endswith("contract_frozen_caps=source=False/candidate=False")
+
+
+def test_v2_contract_fails_closed_on_schema_mismatch(tmp_path, monkeypatch):
+    """Legacy schema-v2 contracts fail closed at the bind gate.
+
+    No live v2 crossover checkpoint exists, so the v2->v3 bump must reject old
+    payloads with ``prepared_baseline_contract_schema_mismatch`` instead of
+    silently reinterpreting them under the new semantic-name/capability keys.
+    """
+    from bot_artifact import canonical_digest
+    from prepared_baseline_contract import _contract_payload
+
+    fixtures = _production_split_fixtures(tmp_path, monkeypatch)
+    capability_snapshot = build_prepared_capability_snapshot(
+        fixtures["parent_a_frozen"],
+        fixtures["child_live"],
+        parent_capabilities=fixtures["parent_static"],
+        prepared_capabilities=fixtures["child_caps"],
+        parent_bot_label=bot_name(143),
+    )
+    contract = build_prepared_baseline_contract(
+        fixtures["parent_a_frozen"],
+        fixtures["parent_b_frozen"],
+        fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        capability_snapshot=capability_snapshot,
+        preplan_transition=_accepted_preplan_transition(
+            source_capabilities=fixtures["parent_static"],
+            candidate_capabilities=fixtures["child_caps"],
+        ),
+    )
+
+    # A raw v2-labelled payload fails both schema and digest reproof.
+    downgraded = dict(contract, schema_version=2)
+    errors = validate_prepared_baseline_contract(
+        downgraded,
+        verify_live_content=False,
+    )
+    assert "prepared_baseline_contract_schema_mismatch" in errors
+    assert "prepared_baseline_contract_digest_mismatch" in errors
+
+    # Even with a recomputed digest (isolating the schema error alone) the
+    # v2 payload is rejected outright: fail closed, never reinterpreted.
+    re_signed = dict(contract, schema_version=2)
+    re_signed["contract_digest"] = canonical_digest(
+        _contract_payload(re_signed)
+    )
+    assert validate_prepared_baseline_contract(
+        re_signed,
+        verify_live_content=False,
+    ) == ["prepared_baseline_contract_schema_mismatch"]
+
+
+def test_child_byte_flip_still_fails_content_reverification(
+    tmp_path,
+    monkeypatch,
+):
+    """The semantic-name fix does not weaken live content re-verification.
+
+    Build binds frozen 64-hex parent directories; a single flipped byte in the
+    live prepared child must still fail the artifact hash, manifest, and code
+    fingerprint reproofs against the frozen boundary.
+    """
+    fixtures = _production_split_fixtures(tmp_path, monkeypatch)
+    capability_snapshot = build_prepared_capability_snapshot(
+        fixtures["parent_a_frozen"],
+        fixtures["child_live"],
+        parent_capabilities=fixtures["parent_static"],
+        prepared_capabilities=fixtures["child_caps"],
+        parent_bot_label=bot_name(143),
+    )
+    contract = build_prepared_baseline_contract(
+        fixtures["parent_a_frozen"],
+        fixtures["parent_b_frozen"],
+        fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        capability_snapshot=capability_snapshot,
+        preplan_transition=_accepted_preplan_transition(
+            source_capabilities=fixtures["parent_static"],
+            candidate_capabilities=fixtures["child_caps"],
+        ),
+    )
+
+    (fixtures["child_live"] / "policy.py").write_text(
+        "ORIGIN = 'X'\n", encoding="utf-8"
+    )
+    errors = validate_prepared_baseline_contract(
+        contract,
+        parent_a_dir=fixtures["parent_a_live"],
+        parent_b_dir=fixtures["parent_b_live"],
+        prepared_dir=fixtures["child_live"],
+        source_v=143,
+        parent2_v=144,
+        next_v=145,
+        verify_live_content=True,
+    )
+    assert "prepared_baseline_contract_prepared_artifact_hash_mismatch" in errors
+    assert (
+        "prepared_baseline_contract_prepared_artifact_manifest_mismatch"
+        in errors
+    )
+    assert "prepared_baseline_contract_code_fingerprint_mismatch" in errors
+    # Parents are byte-identical and semantically bound: no parent-side noise,
+    # and the capability anchor (frozen caps forwarded) is unaffected.  Both
+    # the nested artifact contract and the baseline-level reproofs fire.
+    assert errors == [
+        "prepared_artifact_contract_hash_mismatch",
+        "prepared_artifact_contract_manifest_mismatch",
+        "prepared_baseline_contract_prepared_artifact_hash_mismatch",
+        "prepared_baseline_contract_prepared_artifact_manifest_mismatch",
+        "prepared_baseline_contract_code_fingerprint_mismatch",
+    ]
+
+
+def test_v3_digest_covers_forwarded_preplan_capabilities(
+    tmp_path,
+    monkeypatch,
+):
+    """The new preplan capability keys are contract-digest-covered payload.
+
+    Mutating a frozen capability object without re-signing must trip
+    ``prepared_baseline_contract_digest_mismatch``: the forwarded objects are
+    authoritative contract content, not derivable context.
+    """
+    contract, _fixtures = _build_frozen_baseline_contract(
+        tmp_path, monkeypatch
+    )
+    contract["preplan_source_capabilities"]["checks"][0]["passed"] = not bool(
+        contract["preplan_source_capabilities"]["checks"][0]["passed"]
+    )
+    errors = validate_prepared_baseline_contract(
+        contract,
+        verify_live_content=False,
+    )
+    # Exact-list pin: the digest covers the forwarded capability objects, so a
+    # post-signing mutation trips the digest and nothing else (with
+    # verify_live_content disabled there is deliberately no other verifier).
+    assert errors == ["prepared_baseline_contract_digest_mismatch"]
 
 
 def test_prepared_baseline_rejects_empty_failure_class_dialect(tmp_path, monkeypatch):
@@ -666,6 +1101,7 @@ def test_prepared_baseline_rejects_empty_failure_class_dialect(tmp_path, monkeyp
         child,
         parent_capabilities=caps,
         prepared_capabilities=caps,
+        parent_bot_label=bot_name(143),
     )
     transition = _accepted_preplan_transition(
         failure_class="",

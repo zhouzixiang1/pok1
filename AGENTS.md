@@ -778,6 +778,12 @@ artifact has a complete manifest/hash. A passed preplan architecture transition
 emits `failure_class="none"` (same sentinel as the typed runtime probe). The
 prepared-baseline binder requires that exact token — an empty string is not
 "passed", and tests must not hand-write a dialect the producer does not emit.
+The prepared-baseline contract binds parents to their canonical semantic bot
+names (not frozen 64-hex snapshot directory basenames) and stores the preplan
+transition's frozen capability objects for exact bind-time forwarding, so the
+build and bind capability revalidations are symmetric; legacy v2 payloads and
+stripped capabilities fail closed (details in
+`docs/national-runtime-architecture-policy.md`).
 H2H citation accuracy binds numbers to one matchup alias and stops at the next
 pairing or a `snapshot:` / `bot_stats.json` / `selection_snapshot.json`
 pointer, so aggregate corroboration games cannot be misread as the matchup

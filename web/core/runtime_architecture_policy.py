@@ -991,12 +991,22 @@ def build_prepared_capability_snapshot(
     *,
     parent_capabilities: dict[str, Any] | None = None,
     prepared_capabilities: dict[str, Any] | None = None,
+    parent_bot_label: str | None = None,
 ) -> dict[str, Any]:
-    """Bind a real active-epoch parent and the prepared candidate."""
+    """Bind a real active-epoch parent and the prepared candidate.
+
+    ``parent_bot_label`` overrides the recorded ``parent_bot`` lineage label.
+    Crossover build resolves the parent through content-addressed frozen
+    snapshot directories whose 64-hex basename is not a semantic identity, so
+    the caller binds the canonical ``bot_name(source_v)`` label instead; the
+    default keeps deriving the label from the directory for backcompat.
+    """
 
     parent = Path(parent_bot_dir)
     return _build_prepared_capability_snapshot(
-        parent_bot=parent.name,
+        parent_bot=(
+            parent_bot_label if parent_bot_label is not None else parent.name
+        ),
         parent_capabilities=(
             parent_capabilities or _lineage_capabilities(parent)
         ),
@@ -1029,6 +1039,7 @@ def validate_prepared_capability_snapshot(
     prepared_bot_dir: str | Path | None = None,
     parent_capabilities: dict[str, Any] | None = None,
     prepared_capabilities: dict[str, Any] | None = None,
+    parent_bot_label: str | None = None,
 ) -> list[str]:
     if not isinstance(snapshot, dict):
         return ["prepared_capability_snapshot_missing_or_not_object"]
@@ -1087,6 +1098,7 @@ def validate_prepared_capability_snapshot(
                     prepared_bot_dir,
                     parent_capabilities=parent_capabilities,
                     prepared_capabilities=prepared_capabilities,
+                    parent_bot_label=parent_bot_label,
                 )
         except Exception as exc:
             errors.append(f"prepared_capability_snapshot_rebuild_error:{type(exc).__name__}")

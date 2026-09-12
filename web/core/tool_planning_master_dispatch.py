@@ -625,6 +625,32 @@ async def run_master_impl(args):
                 f"{type(exc).__name__}:{str(exc)[:200]}"
             )
         if baseline_errors:
+            try:
+                from prepared_baseline_contract import (
+                    prepared_baseline_contract_error_details,
+                )
+
+                baseline_error_details = (
+                    prepared_baseline_contract_error_details(
+                        prepared_baseline,
+                        baseline_errors,
+                        parent_a_dir=_tp.get_bot_dir(source_v),
+                        parent_b_dir=_tp.get_bot_dir(
+                            _master_entry_ckpt.get("parent2_v")
+                        ),
+                        prepared_dir=_tp.get_bot_dir(next_v),
+                        source_v=source_v,
+                        parent2_v=_master_entry_ckpt.get("parent2_v"),
+                        next_v=next_v,
+                    )
+                )
+            except Exception as _detail_exc:
+                baseline_error_details = {
+                    "error_details_unavailable": {
+                        "expected": "bounded diagnostic payload",
+                        "actual": type(_detail_exc).__name__,
+                    }
+                }
             _tp.log_system_event(
                 "pipeline.master_prepared_baseline_invalid",
                 "error",
@@ -634,6 +660,7 @@ async def run_master_impl(args):
                     "source_v": source_v,
                     "parent2_v": _master_entry_ckpt.get("parent2_v"),
                     "errors": baseline_errors[:20],
+                    "error_details": baseline_error_details,
                 },
             )
             # Canonical abandon, mirroring LITERATURE_PROBE_RECEIPT_INVALID:

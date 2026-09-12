@@ -1729,6 +1729,11 @@ async def run_crossover(args):
                     prepared_capabilities=prepared_transition.get(
                         "candidate_capabilities"
                     ),
+                    # parent_a_evidence_dir is the content-addressed frozen
+                    # snapshot directory (64-hex basename), which is not a
+                    # semantic identity.  Record the canonical lineage label
+                    # the binder re-derives from source_v at Master entry.
+                    parent_bot_label=bot_name(parent_a),
                 )
                 prepared_baseline_contract = build_prepared_baseline_contract(
                     parent_a_evidence_dir,

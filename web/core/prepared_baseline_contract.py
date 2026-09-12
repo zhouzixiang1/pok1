@@ -12,10 +12,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
+from bot_namespace import bot_name
 from national_runtime_probe import _bot_code_fingerprint
 from runtime_architecture_policy import (
     FAILURE_CLASS_NONE,
@@ -23,8 +25,14 @@ from runtime_architecture_policy import (
 )
 
 
-PREPARED_BASELINE_CONTRACT_SCHEMA_VERSION = 2
+PREPARED_BASELINE_CONTRACT_SCHEMA_VERSION = 3
 PREPARED_ARTIFACT_CONTRACT_SCHEMA_VERSION = 1
+_ERROR_DETAIL_VALUE_LIMIT = 96
+_HASH_FIELDS = {
+    "parent_a": "parent_a_artifact_hash",
+    "parent_b": "parent_b_artifact_hash",
+    "prepared": "prepared_artifact_hash",
+}
 _SAFE_FILE_RE = re.compile(r"^[A-Za-z0-9_.\-/]{1,180}$")
 
 
@@ -184,6 +192,13 @@ def build_prepared_baseline_contract(
     parent_a_dir = Path(parent_a_dir)
     parent_b_dir = Path(parent_b_dir)
     prepared_dir = Path(prepared_dir)
+    # The parent name fields bind the canonical semantic bot identity, never
+    # the directory basename: build resolves the parents through frozen
+    # content-addressed snapshot directories whose 64-hex basename is not an
+    # identity.  The binder validates against the live
+    # bots/<semantic-name> directories with the same bot_name() derivation.
+    parent_a_bot = bot_name(source_v)
+    parent_b_bot = bot_name(parent2_v)
     # The preplan transition computed the parent's capabilities static-only
     # (deterministic source anchor) and the candidate's with its probe.  The
     # revalidation rebuild must reuse those exact capability objects: a
@@ -195,6 +210,7 @@ def build_prepared_baseline_contract(
         prepared_bot_dir=prepared_dir,
         parent_capabilities=preplan_transition.get("source_capabilities"),
         prepared_capabilities=preplan_transition.get("candidate_capabilities"),
+        parent_bot_label=parent_a_bot,
     )
     if snapshot_errors:
         raise ValueError(
@@ -273,8 +289,8 @@ def build_prepared_baseline_contract(
         "next_v": int(next_v),
         "source_v": int(source_v),
         "parent2_v": int(parent2_v),
-        "parent_a_bot": parent_a_dir.name,
-        "parent_b_bot": parent_b_dir.name,
+        "parent_a_bot": parent_a_bot,
+        "parent_b_bot": parent_b_bot,
         "prepared_bot": prepared_dir.name,
         "parent_a_artifact_hash": hash_path(parent_a_dir),
         "parent_b_artifact_hash": hash_path(parent_b_dir),
@@ -291,6 +307,17 @@ def build_prepared_baseline_contract(
         "prepared_python_lines": _python_line_manifest(prepared_dir),
         "capability_snapshot": capability_snapshot,
         "preplan_transition": transition_receipt,
+        # Exact frozen capability objects from the accepted preplan
+        # transition.  Bind-time revalidation forwards these so the rebuild
+        # reuses the deterministic static parent anchor instead of re-running
+        # the non-deterministic typed runtime probe (schema v3).  Both keys are
+        # payload members, so the contract digest covers them.
+        "preplan_source_capabilities": deepcopy(
+            preplan_transition.get("source_capabilities")
+        ),
+        "preplan_candidate_capabilities": deepcopy(
+            preplan_transition.get("candidate_capabilities")
+        ),
         "compatibility_receipt": compatibility_receipt,
         "h2h_snapshot_identity": {
             key: str((h2h_snapshot_identity or {}).get(key) or "")
@@ -333,10 +360,19 @@ def validate_prepared_baseline_contract(
         if expected is not None and contract.get(field) != int(expected):
             errors.append(f"prepared_baseline_contract_{field}_mismatch")
 
+    # Mirror the build-time forwarding exactly: rebuild the frozen capability
+    # snapshot from the contract's frozen preplan capability objects.  A
+    # contract missing them (legacy v2 or tampered) re-derives live and fails
+    # closed with prepared_capability_snapshot_current_state_mismatch.
     snapshot_errors = validate_prepared_capability_snapshot(
         contract.get("capability_snapshot"),
         parent_bot_dir=parent_a_dir,
         prepared_bot_dir=prepared_dir,
+        parent_capabilities=contract.get("preplan_source_capabilities"),
+        prepared_capabilities=contract.get("preplan_candidate_capabilities"),
+        parent_bot_label=(
+            bot_name(source_v) if source_v is not None else None
+        ),
     )
     errors.extend(snapshot_errors)
     errors.extend(
@@ -360,27 +396,43 @@ def validate_prepared_baseline_contract(
     ):
         errors.append("prepared_baseline_contract_artifact_manifest_binding_mismatch")
 
+    # Parent name fields bind the canonical semantic bot identity, not the
+    # directory basename.  Build freezes the parents under content-addressed
+    # 64-hex snapshot directories, so a basename comparison can never hold;
+    # content equality stays verified through the hash checks below no matter
+    # which directory form (frozen or live) the caller presents.
+    expected_names = {
+        "parent_a_bot": bot_name(source_v) if source_v is not None else None,
+        "parent_b_bot": bot_name(parent2_v) if parent2_v is not None else None,
+    }
     for label, directory, name_field, hash_field in (
         ("parent_a", parent_a_dir, "parent_a_bot", "parent_a_artifact_hash"),
         ("parent_b", parent_b_dir, "parent_b_bot", "parent_b_artifact_hash"),
         ("prepared", prepared_dir, "prepared_bot", "prepared_artifact_hash"),
     ):
-        if directory is None:
+        expected_name = expected_names.get(name_field)
+        if expected_name is None:
+            # prepared_bot (and legacy parent callers without a version)
+            # keep binding the live directory basename, which is always the
+            # semantic bots/<name> directory.
+            expected_name = directory.name if directory is not None else None
+        if expected_name is None and directory is None:
+            continue
+        if contract.get(name_field) != expected_name:
+            errors.append(f"prepared_baseline_contract_{label}_bot_mismatch")
+        if directory is None or not verify_live_content:
             continue
         directory = Path(directory)
-        if contract.get(name_field) != directory.name:
-            errors.append(f"prepared_baseline_contract_{label}_bot_mismatch")
-        if verify_live_content:
-            try:
-                if contract.get(hash_field) != hash_path(directory):
-                    errors.append(
-                        f"prepared_baseline_contract_{label}_artifact_hash_mismatch"
-                    )
-            except Exception as exc:
+        try:
+            if contract.get(hash_field) != hash_path(directory):
                 errors.append(
-                    f"prepared_baseline_contract_{label}_artifact_hash_error:"
-                    f"{type(exc).__name__}"
+                    f"prepared_baseline_contract_{label}_artifact_hash_mismatch"
                 )
+        except Exception as exc:
+            errors.append(
+                f"prepared_baseline_contract_{label}_artifact_hash_error:"
+                f"{type(exc).__name__}"
+            )
     if prepared_dir is not None and verify_live_content:
         try:
             if contract.get("prepared_artifact_manifest") != artifact_manifest(
@@ -399,6 +451,158 @@ def validate_prepared_baseline_contract(
                 f"{type(exc).__name__}"
             )
     return errors
+
+
+def _detail_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    if len(text) > _ERROR_DETAIL_VALUE_LIMIT:
+        text = f"{text[:_ERROR_DETAIL_VALUE_LIMIT]}...len={len(text)}"
+    return text
+
+
+def _detail_digest(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    return text[:16] + f"...len={len(text)}"
+
+
+def prepared_baseline_contract_error_details(
+    contract: Any,
+    errors: list[str],
+    *,
+    parent_a_dir: str | Path | None = None,
+    parent_b_dir: str | Path | None = None,
+    prepared_dir: str | Path | None = None,
+    source_v: int | None = None,
+    parent2_v: int | None = None,
+    next_v: int | None = None,
+) -> dict[str, dict[str, str]]:
+    """Return bounded expected/actual pairs for one bind-failure diagnosis.
+
+    Attached to the ``pipeline.master_prepared_baseline_invalid`` system event
+    so the next incident is diagnosable from the event log alone.  This is
+    operations telemetry only: never prompt or evaluation evidence.  Every
+    value is truncated and live reads are wrapped, so the payload stays bounded
+    and this helper cannot raise into the abandon path.
+    """
+
+    details: dict[str, dict[str, str]] = {}
+    try:
+        if not isinstance(contract, dict):
+            return {"prepared_baseline_contract_missing_or_not_object": {
+                "expected": "digest-bound prepared baseline contract object",
+                "actual": type(contract).__name__,
+            }}
+        present = set(errors or [])
+        snapshot = (
+            contract.get("capability_snapshot")
+            if isinstance(contract.get("capability_snapshot"), dict)
+            else {}
+        )
+
+        def record(code: str, expected: Any, actual: Any) -> None:
+            if code in present and code not in details:
+                details[code] = {
+                    "expected": _detail_text(expected),
+                    "actual": _detail_text(actual),
+                }
+
+        record(
+            "prepared_baseline_contract_schema_mismatch",
+            f"schema_version={PREPARED_BASELINE_CONTRACT_SCHEMA_VERSION}",
+            f"schema_version={contract.get('schema_version')}",
+        )
+        record(
+            "prepared_baseline_contract_digest_mismatch",
+            _detail_digest(contract.get("contract_digest")),
+            _detail_digest(canonical_digest(_contract_payload(contract))),
+        )
+        for field, expected in (
+            ("source_v", source_v),
+            ("parent2_v", parent2_v),
+            ("next_v", next_v),
+        ):
+            record(
+                f"prepared_baseline_contract_{field}_mismatch",
+                f"{field}={expected}",
+                f"{field}={contract.get(field)}",
+            )
+        live_names = {
+            "parent_a_bot": (
+                bot_name(source_v)
+                if source_v is not None
+                else (Path(parent_a_dir).name if parent_a_dir else None)
+            ),
+            "parent_b_bot": (
+                bot_name(parent2_v)
+                if parent2_v is not None
+                else (Path(parent_b_dir).name if parent_b_dir else None)
+            ),
+            "prepared_bot": (
+                Path(prepared_dir).name if prepared_dir else None
+            ),
+        }
+        dirs = {
+            "parent_a_bot": parent_a_dir,
+            "parent_b_bot": parent_b_dir,
+            "prepared_bot": prepared_dir,
+        }
+        labels = {
+            "parent_a_bot": "parent_a",
+            "parent_b_bot": "parent_b",
+            "prepared_bot": "prepared",
+        }
+        for name_field, expected_name in live_names.items():
+            label = labels[name_field]
+            record(
+                f"prepared_baseline_contract_{label}_bot_mismatch",
+                f"expected_bot={expected_name}",
+                (
+                    f"contract_bot={contract.get(name_field)} "
+                    f"live_dir={Path(dirs[name_field]).name}"
+                    if dirs[name_field]
+                    else f"contract_bot={contract.get(name_field)}"
+                ),
+            )
+            hash_code = (
+                f"prepared_baseline_contract_{label}_artifact_hash_mismatch"
+            )
+            if hash_code in present and dirs[name_field] is not None:
+                live_hash = ""
+                try:
+                    live_hash = hash_path(Path(dirs[name_field]))
+                except Exception as exc:
+                    live_hash = f"unavailable:{type(exc).__name__}"
+                record(
+                    hash_code,
+                    "contract_hash="
+                    f"{_detail_digest(contract.get(_HASH_FIELDS[label]))}",
+                    f"live_hash={_detail_digest(live_hash)}",
+                )
+        record(
+            "prepared_capability_snapshot_current_state_mismatch",
+            (
+                "frozen parent_bot="
+                f"{(snapshot or {}).get('parent_bot')} "
+                "prepared_capability_digest="
+                f"{_detail_digest((snapshot or {}).get('prepared_capability_digest'))}"
+            ),
+            (
+                "live_parent_dir="
+                f"{Path(parent_a_dir).name if parent_a_dir else 'n/a'} "
+                "contract_frozen_caps="
+                f"source={contract.get('preplan_source_capabilities') is not None}"
+                f"/candidate="
+                f"{contract.get('preplan_candidate_capabilities') is not None}"
+            ),
+        )
+    except Exception as exc:
+        details["prepared_baseline_contract_error_details_error"] = {
+            "expected": "bounded diagnostic payload",
+            "actual": f"{type(exc).__name__}",
+        }
+    return details
 
 
 def prepared_baseline_prompt(contract: dict[str, Any]) -> str:

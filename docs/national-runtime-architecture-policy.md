@@ -154,6 +154,30 @@ not turn startup/object expansion into a hidden timeout.
   never resets the child to Parent A while retaining crossover lineage. Final
   quality also requires a post-Master artifact delta from this frozen baseline;
   the Parent-A crossover diff cannot hide a no-op Worker generation.
+- Prepared-baseline parent identity is bound to the canonical semantic bot
+  name, never a directory basename (schema v3, `bot_name(source_v)` /
+  `bot_name(parent2_v)`). Crossover build resolves the parents through frozen
+  content-addressed snapshot directories whose 64-hex basenames are not
+  identities, and the capability snapshot records the same semantic
+  `parent_bot` label, so the Master-entry binder validates the contract
+  against the live `bots/<semantic-name>` directories with identical names.
+  Content equality stays hash-verified against whichever directory form the
+  caller presents; live hash, manifest, and code-fingerprint reproofs are not
+  relaxed. When a parent version is supplied but its directory is absent, the
+  name comparison now fails closed instead of being skipped (no current caller
+  hits this; it is a deliberate tightening).
+- The contract stores the accepted preplan transition's exact frozen
+  capability objects (`preplan_source_capabilities` /
+  `preplan_candidate_capabilities`, digest-covered payload members), and
+  bind-time revalidation forwards them exactly like the build-time
+  revalidation: the rebuild reuses the deterministic static parent anchor
+  instead of re-running the non-deterministic typed runtime probe. The build
+  and bind sides are symmetric by construction. A v3 contract missing its
+  frozen capabilities (tampering) or a legacy schema-v2 payload fails closed
+  (`prepared_capability_snapshot_current_state_mismatch` /
+  `prepared_baseline_contract_schema_mismatch`); no live v2 crossover
+  checkpoint exists. Bind-failure events attach a bounded per-code
+  expected/actual diagnostic payload for the next incident.
 - Crossover provenance is also deterministic: an exact Parent-B module passes;
   a composed Python file may add only symbol-bound glue rooted in a Parent-B
   import/definition. The gate covers the complete artifact manifest, so a
