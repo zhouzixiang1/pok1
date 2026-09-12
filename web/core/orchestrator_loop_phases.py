@@ -625,341 +625,179 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 break
 
-            # Master-abandon signal drain (top-of-loop safety net).  A Master-
-            # exhaustion path may have signaled an abandon during a deterministic
-            # route (Phase 1, before _run_one_cycle) or during the previous
-            # cycle's tail.  Drain it here while the checkpoint is quiescent so
-            # the canonical abandon transaction does not race a concurrent
-            # ``checkpoint_revision`` bump (the v161/v106 livelock root cause).
-            # The primary drain is right after _run_one_cycle (below); this
-            # top-of-loop drain catches the deterministic-route + cross-cycle
-            # tails.  ``consume_pending`` is idempotent (returns None if nothing
-            # is pending), so double-draining is harmless.
             try:
-                from master_abandon_signal import consume_pending as _consume_master_abandon_top
-                _top_reason = _consume_master_abandon_top()
-            except Exception:
-                _top_reason = None
-            if _top_reason is not None:
-                _top_ok = False
+                # Master-abandon signal drain (top-of-loop safety net).  A Master-
+                # exhaustion path may have signaled an abandon during a deterministic
+                # route (Phase 1, before _run_one_cycle) or during the previous
+                # cycle's tail.  Drain it here while the checkpoint is quiescent so
+                # the canonical abandon transaction does not race a concurrent
+                # ``checkpoint_revision`` bump (the v161/v106 livelock root cause).
+                # The primary drain is right after _run_one_cycle (below); this
+                # top-of-loop drain catches the deterministic-route + cross-cycle
+                # tails.  ``consume_pending`` is idempotent (returns None if nothing
+                # is pending), so double-draining is harmless.
                 try:
-                    from evolution_core import read_pipeline_checkpoint
-                    from tool_bot_management import (
-                        _do_abandon_generation,
-                        expected_abandon_identity,
-                    )
-                    _top_ckpt = read_pipeline_checkpoint()
-                    if _top_ckpt:
-                        _top_result = await _do_abandon_generation(
-                            reason=_top_reason,
-                            _bypass_rate_limit=True,
-                            **expected_abandon_identity(_top_ckpt),
-                        )
-                        _top_ok = bool(isinstance(_top_result, dict) and _top_result.get("abandoned"))
+                    from master_abandon_signal import consume_pending as _consume_master_abandon_top
+                    _top_reason = _consume_master_abandon_top()
                 except Exception:
-                    pass
-                try:
-                    _orch.log_system_event(
-                        "orchestrator.master_abandon_finalized_top",
-                        "info" if _top_ok else "error",
-                        f"Master-abandon signal drained at loop top (ok={_top_ok})",
-                        {"reason": _top_reason, "finalized": _top_ok},
-                    )
-                except Exception:
-                    pass
-                continue
-
-            # Watchdog recovery: if background watchdog detected a stuck pipeline,
-            # clear state and force a fresh cycle from the checkpoint stage.
-            if _orch._watchdog_triggered:
-                _orch._watchdog_triggered = False
-                if ui:
-                    ui.log_history("[Watchdog] Restarting cycle from checkpoint stage.", "warn")
-                recovery = _orch._checkpoint_recovery_context("watchdog_recovery", ui)
-                # Restart watchdog for the new cycle
-                if _watchdog_task.done():
-                    _watchdog_task = _orch.asyncio.create_task(
-                        _orch._watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
-                    )
-
-            # 429 quota exhaustion check — block until reset, then dispatch a
-            # fresh provider stream from the validated checkpoint.
-            from rate_limiter import rate_limiter
-            if rate_limiter.is_blocked():
-                wait = rate_limiter.wait_seconds()
-                if ui:
-                    ui.log_history(
-                        f"⏳ API 配额耗尽，暂停进化。将在 {rate_limiter.reset_time_str()} 自动恢复 ({wait:.0f}s)",
-                        "warn",
-                    )
-                    ui.set_status(f"⏳ 配额等待中 → {rate_limiter.reset_time_str()}", is_working=False)
-                await rate_limiter.wait_until_reset(shutdown_mgr=shutdown_mgr)
-                continue
-
-            if recovery is None:
-                recovery = _orch._checkpoint_recovery_context("active_checkpoint", ui)
-
-            gen_count += 1
-            _orch.log_system_event("orchestrator.cycle_start", "info", f"Cycle {gen_count} starting",
-                             {"gen_count": gen_count})
-
-            if recovery and recovery.get("action") == "operator_action_required":
-                terminal_outcome = _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST
-                checkpoint = recovery.get("checkpoint") or {}
-                msg = (
-                    "Startup recovery is parked at the operator-only official "
-                    f"bootstrap boundary for v{checkpoint.get('next_v')}."
-                )
-                if ui:
-                    ui.log_history(f"[Orchestrator] {msg}", "warn")
-                    ui.set_status(
-                        "Stopped: operator action required",
-                        is_working=False,
-                    )
-                _orch.log.warning(msg)
-                _orch.log_system_event(
-                    "orchestrator.operator_action_required_stop",
-                    "warn",
-                    msg,
-                    {
-                        "next_v": checkpoint.get("next_v"),
-                        "source_v": checkpoint.get("source_v"),
-                        "stage": checkpoint.get("stage"),
-                    },
-                )
-                break
-
-            if recovery and recovery.get("action") == "blocked":
-                terminal_outcome = _orch.ORCH_RECOVERY_BLOCKED_COST
-                diag = recovery.get("diagnostics") or {}
-                issues = diag.get("issues") or []
-                msg = (
-                    "Startup recovery is blocked by an unrecoverable pipeline "
-                    f"checkpoint: {', '.join(map(str, issues)) or recovery.get('reason')}"
-                )
-                if ui:
-                    ui.log_history(f"[Orchestrator] {msg}", "error")
-                    ui.set_status(
-                        "Recovery blocked; governed diagnostics/operator action required",
-                        is_working=False,
-                    )
-                _orch.log.error(msg)
-                _orch.log_system_event(
-                    "orchestrator.recovery_blocked_stop",
-                    "error",
-                    msg,
-                    {
-                        "reason": recovery.get("reason"),
-                        "issues": issues,
-                        "diagnostics": diag,
-                    },
-                )
-                break
-
-            # If recovering, skip Phase 1 (context already known from checkpoint)
-            if recovery and recovery.get("action") == "resume":
-                route_log_kwargs = _orch._recovery_route_log_kwargs(recovery)
-                # Ensure the Slice 2b consumer gate-chain task is (re)driven
-                # whenever we resume a ``workers_done`` checkpoint that owns a
-                # sealed-but-non-terminal candidate.  This MUST run before (and
-                # independently of) ``_advance_deterministic_recovery`` because a
-                # transient consumer-gate infra failure (e.g. a Claude-subprocess
-                # init timeout during run_review) lets the consumer asyncio task
-                # exit, and the only thing that relaunches it is this ensure
-                # call.  When ``route_policy`` returns ``next_tool=None`` (e.g.
-                # an epoch-binding identity drift the loop cannot self-heal),
-                # ``_advance_deterministic_recovery`` reports ``routed=False``
-                # and the gated ensure call below (inside ``if routed``) never
-                # fires, so the primary parks forever waiting for a consumer
-                # that is not running.  Running it unconditionally here keeps
-                # the consumer alive across transient gate failures and route
-                # hiccups alike; it is idempotent (a no-op when the consumer is
-                # already live or no candidate is sealed).
-                _resume_ckpt = (recovery or {}).get("checkpoint") or {}
-                if _resume_ckpt.get("stage") == "workers_done":
+                    _top_reason = None
+                if _top_reason is not None:
+                    _top_ok = False
                     try:
-                        await _ensure_slice2b_consumer_running(_resume_ckpt)
+                        from evolution_core import read_pipeline_checkpoint
+                        from tool_bot_management import (
+                            _do_abandon_generation,
+                            expected_abandon_identity,
+                        )
+                        _top_ckpt = read_pipeline_checkpoint()
+                        if _top_ckpt:
+                            _top_result = await _do_abandon_generation(
+                                reason=_top_reason,
+                                _bypass_rate_limit=True,
+                                **expected_abandon_identity(_top_ckpt),
+                            )
+                            _top_ok = bool(isinstance(_top_result, dict) and _top_result.get("abandoned"))
                     except Exception:
                         pass
-                advanced = await _orch._advance_deterministic_recovery(
-                    recovery,
-                    ui,
-                    cost_policy=operator_cost_policy,
-                    shutdown_mgr=shutdown_mgr,
-                    gen_count=gen_count,
-                    **route_log_kwargs,
-                )
-                if advanced["routed"]:
-                    if advanced["terminal_action"] == "generation_abandoned":
-                        stopped = _record_verified_canonical_abandon(
-                            checkpoint=(recovery or {}).get("checkpoint"),
-                            terminal_proof=(
-                                advanced.get("terminal_proof") or {}
-                            ),
-                            source="deterministic_recovery",
+                    try:
+                        _orch.log_system_event(
+                            "orchestrator.master_abandon_finalized_top",
+                            "info" if _top_ok else "error",
+                            f"Master-abandon signal drained at loop top (ok={_top_ok})",
+                            {"reason": _top_reason, "finalized": _top_ok},
                         )
-                        recovery = advanced["recovery"]
-                        if stopped:
-                            break
-                        await _orch.asyncio.sleep(0)
-                        continue
-                    if (
-                        advanced["terminal_action"]
-                        == "publication_handoff_completed"
-                    ):
-                        # Async-certification self-heal for staging publications
-                        # is now scheduled in the single chokepoint inside
-                        # ``_advance_deterministic_recovery`` (reached by every
-                        # ``publication_handoff_completed`` terminal action), so
-                        # no explicit scheduling is needed at any call site.
-                        if not _publication_accounting_allows_successor():
-                            break
-                    elif advanced["terminal_action"] in {
-                        None,
-                        "slice2b_consumer_parked",
-                    }:
-                        # Sealed candidate (gen N) with the consumer gate chain
-                        # running in the background.  The primary lane is parked
-                        # here while the consumer owns gen N's gates.  After a
-                        # process restart, recover_at_boot re-stashed the
-                        # consumer factory but does NOT launch the asyncio.Task;
-                        # if we never (re)launch it the primary parks forever
-                        # waiting for a consumer that is not running (restart
-                        # deadlock).  Drive the consumer task first, then fill
-                        # LLM idle time with a one-ahead draft for gen N+1.
-                        try:
-                            await _ensure_slice2b_consumer_running(
-                                (recovery or {}).get("checkpoint") or {}
-                            )
-                        except Exception:
-                            pass
-                        # Attempt a one-ahead draft prepare for gen N+1 to fill
-                        # LLM idle time.  This is the one-ahead producer that
-                        # keeps the producer LLM permits busy while gen N's
-                        # quality->review->critic->precommit chain runs
-                        # concurrently in the consumer.  Best-effort and
-                        # non-fatal: any failure simply continues the canonical
-                        # spin-wait on the primary slot.
-                        try:
-                            await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
-                        except Exception:
-                            pass
-                        # Primary is parked for the background consumer gate
-                        # chain: sleep for a bounded interval instead of
-                        # re-cycling every second.  The promotion barrier at
-                        # commit_bot is what unblocks publication; here we just
-                        # avoid a CPU/log busy-spin while the (native, slow)
-                        # consumer runs.  Shutdown remains interruptible.
-                        if advanced["terminal_action"] == "slice2b_consumer_parked":
-                            if await _parked_wait(shutdown_mgr, seconds=45.0):
-                                break
-                    recovery = advanced["recovery"]
-                    await _orch.asyncio.sleep(1)
+                    except Exception:
+                        pass
                     continue
-                ckpt = recovery["checkpoint"]
-                gen_ctx = _orch._generation_context_from_checkpoint(
-                    ckpt,
-                    gen_count=gen_count,
-                )
-                recovery = None  # consume recovery, only used once
-            else:
-                # Phase 1: Prepare (disposable on interrupt)
-                # Do not create a fresh candidate while a provider pause is
-                # active. Existing deterministic recovery routes are attempted
-                # above first, which lets the system strict bootstrap advance
-                # without any LLM dependency.
-                if not await _orch._honor_active_llm_pause(ui, shutdown_mgr):
-                    break
-                # After repeated eval timeouts, actually *lower* the hard
-                # min_games floor (align with national_native rd_min_games=12).
-                # The previous hardcode of 30 raised the bar above the profile
-                # default (24) and made prepare_generation thrash forever under
-                # DAEMON_EVAL_TIMEOUT=600s with pairs=5 (~7–8 min per batch).
-                degraded_min = None
-                if consecutive_prep_fails >= 3:
-                    from workflow_profiles import get_workflow_profile
 
-                    profile = get_workflow_profile()
-                    degraded_min = max(
-                        1,
-                        min(
-                            int(getattr(profile, "eval_wait_rd_min_games", 12) or 12),
-                            int(getattr(profile, "eval_wait_min_games", 24) or 24),
-                        ),
-                    )
+                # Watchdog recovery: if background watchdog detected a stuck pipeline,
+                # clear state and force a fresh cycle from the checkpoint stage.
+                if _orch._watchdog_triggered:
+                    _orch._watchdog_triggered = False
+                    if ui:
+                        ui.log_history("[Watchdog] Restarting cycle from checkpoint stage.", "warn")
+                    recovery = _orch._checkpoint_recovery_context("watchdog_recovery", ui)
+                    # Restart watchdog for the new cycle
+                    if _watchdog_task.done():
+                        _watchdog_task = _orch.asyncio.create_task(
+                            _orch._watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
+                        )
+
+                # 429 quota exhaustion check — block until reset, then dispatch a
+                # fresh provider stream from the validated checkpoint.
+                from rate_limiter import rate_limiter
+                if rate_limiter.is_blocked():
+                    wait = rate_limiter.wait_seconds()
                     if ui:
                         ui.log_history(
-                            f"评估等待连续超时，降低评估要求 ({degraded_min} 局) 继续进化...",
+                            f"⏳ API 配额耗尽，暂停进化。将在 {rate_limiter.reset_time_str()} 自动恢复 ({wait:.0f}s)",
                             "warn",
                         )
+                        ui.set_status(f"⏳ 配额等待中 → {rate_limiter.reset_time_str()}", is_working=False)
+                    await rate_limiter.wait_until_reset(shutdown_mgr=shutdown_mgr)
+                    continue
 
-                # Speculative one-ahead draft: while the primary prepare is
-                # blocked on eval_wait, launch a draft (which skips eval_wait)
-                # so the LLM produces Master/Workers output in parallel.  The
-                # draft costs LLM tokens only; it is stale-reaped if the
-                # eval_wait outcome diverges.  Best-effort and non-fatal.
-                try:
-                    await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
-                except Exception:
-                    pass
-                gen_ctx = await _orch._prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
-                if gen_ctx is None:
-                    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-                        break
-                    consecutive_prep_fails += 1
-                    from evolution_infra import is_daemon_alive
-                    if not is_daemon_alive() and ui:
-                        daemon_dead_level = "error" if consecutive_prep_fails >= 3 else "warn"
-                        ui.log_history(
-                            f"Daemon 未运行，等待恢复中... (连续失败 {consecutive_prep_fails} 次)",
-                            daemon_dead_level,
+                if recovery is None:
+                    recovery = _orch._checkpoint_recovery_context("active_checkpoint", ui)
+
+                gen_count += 1
+                _orch.log_system_event("orchestrator.cycle_start", "info", f"Cycle {gen_count} starting",
+                                 {"gen_count": gen_count})
+
+                if recovery and recovery.get("action") == "operator_action_required":
+                    terminal_outcome = _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST
+                    checkpoint = recovery.get("checkpoint") or {}
+                    msg = (
+                        "Startup recovery is parked at the operator-only official "
+                        f"bootstrap boundary for v{checkpoint.get('next_v')}."
+                    )
+                    if ui:
+                        ui.log_history(f"[Orchestrator] {msg}", "warn")
+                        ui.set_status(
+                            "Stopped: operator action required",
+                            is_working=False,
                         )
-                    backoff = min(10 * (2 ** min(consecutive_prep_fails - 1, 4)), 300)
-                    if shutdown_mgr:
-                        try:
-                            await _orch.asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=backoff)
-                            break
-                        except _orch.asyncio.TimeoutError:
-                            pass
-                    else:
-                        await _orch.asyncio.sleep(backoff)
-                    continue
-                consecutive_prep_fails = 0
+                    _orch.log.warning(msg)
+                    _orch.log_system_event(
+                        "orchestrator.operator_action_required_stop",
+                        "warn",
+                        msg,
+                        {
+                            "next_v": checkpoint.get("next_v"),
+                            "source_v": checkpoint.get("source_v"),
+                            "stage": checkpoint.get("stage"),
+                        },
+                    )
+                    break
 
-                selected_recovery = _orch._checkpoint_recovery_context(
-                    "selected_after_prepare",
-                    ui,
-                    log_level="info",
-                    label="[Pipeline]",
-                )
-                if selected_recovery and selected_recovery.get("action") in {
-                    "blocked",
-                    "operator_action_required",
-                }:
-                    recovery = selected_recovery
-                    continue
-                if selected_recovery and selected_recovery.get("action") == "resume":
+                if recovery and recovery.get("action") == "blocked":
+                    terminal_outcome = _orch.ORCH_RECOVERY_BLOCKED_COST
+                    diag = recovery.get("diagnostics") or {}
+                    issues = diag.get("issues") or []
+                    msg = (
+                        "Startup recovery is blocked by an unrecoverable pipeline "
+                        f"checkpoint: {', '.join(map(str, issues)) or recovery.get('reason')}"
+                    )
+                    if ui:
+                        ui.log_history(f"[Orchestrator] {msg}", "error")
+                        ui.set_status(
+                            "Recovery blocked; governed diagnostics/operator action required",
+                            is_working=False,
+                        )
+                    _orch.log.error(msg)
+                    _orch.log_system_event(
+                        "orchestrator.recovery_blocked_stop",
+                        "error",
+                        msg,
+                        {
+                            "reason": recovery.get("reason"),
+                            "issues": issues,
+                            "diagnostics": diag,
+                        },
+                    )
+                    break
+
+                # If recovering, skip Phase 1 (context already known from checkpoint)
+                if recovery and recovery.get("action") == "resume":
+                    route_log_kwargs = _orch._recovery_route_log_kwargs(recovery)
+                    # Ensure the Slice 2b consumer gate-chain task is (re)driven
+                    # whenever we resume a ``workers_done`` checkpoint that owns a
+                    # sealed-but-non-terminal candidate.  This MUST run before (and
+                    # independently of) ``_advance_deterministic_recovery`` because a
+                    # transient consumer-gate infra failure (e.g. a Claude-subprocess
+                    # init timeout during run_review) lets the consumer asyncio task
+                    # exit, and the only thing that relaunches it is this ensure
+                    # call.  When ``route_policy`` returns ``next_tool=None`` (e.g.
+                    # an epoch-binding identity drift the loop cannot self-heal),
+                    # ``_advance_deterministic_recovery`` reports ``routed=False``
+                    # and the gated ensure call below (inside ``if routed``) never
+                    # fires, so the primary parks forever waiting for a consumer
+                    # that is not running.  Running it unconditionally here keeps
+                    # the consumer alive across transient gate failures and route
+                    # hiccups alike; it is idempotent (a no-op when the consumer is
+                    # already live or no candidate is sealed).
+                    _resume_ckpt = (recovery or {}).get("checkpoint") or {}
+                    if _resume_ckpt.get("stage") == "workers_done":
+                        try:
+                            await _ensure_slice2b_consumer_running(_resume_ckpt)
+                        except Exception:
+                            pass
                     advanced = await _orch._advance_deterministic_recovery(
-                        selected_recovery,
+                        recovery,
                         ui,
-                        log_level="info",
-                        label="[Pipeline]",
                         cost_policy=operator_cost_policy,
                         shutdown_mgr=shutdown_mgr,
-                        gen_ctx=gen_ctx,
                         gen_count=gen_count,
+                        **route_log_kwargs,
                     )
                     if advanced["routed"]:
                         if advanced["terminal_action"] == "generation_abandoned":
                             stopped = _record_verified_canonical_abandon(
-                                checkpoint=(
-                                    selected_recovery.get("checkpoint") or {}
-                                ),
+                                checkpoint=(recovery or {}).get("checkpoint"),
                                 terminal_proof=(
                                     advanced.get("terminal_proof") or {}
                                 ),
-                                source="selected_deterministic_recovery",
-                                gen_ctx=gen_ctx,
+                                source="deterministic_recovery",
                             )
                             recovery = advanced["recovery"]
                             if stopped:
@@ -969,243 +807,141 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                         if (
                             advanced["terminal_action"]
                             == "publication_handoff_completed"
-                            and not _publication_accounting_allows_successor()
                         ):
-                            break
-                        if advanced["terminal_action"] in {
+                            # Async-certification self-heal for staging publications
+                            # is now scheduled in the single chokepoint inside
+                            # ``_advance_deterministic_recovery`` (reached by every
+                            # ``publication_handoff_completed`` terminal action), so
+                            # no explicit scheduling is needed at any call site.
+                            if not _publication_accounting_allows_successor():
+                                break
+                        elif advanced["terminal_action"] in {
                             None,
                             "slice2b_consumer_parked",
                         }:
-                            # Same one-ahead draft-prepare hook as the primary
-                            # seal branch above; the selected deterministic
-                            # recovery route can also reach a sealed/consumer-
-                            # running state where the producer may advance.
+                            # Sealed candidate (gen N) with the consumer gate chain
+                            # running in the background.  The primary lane is parked
+                            # here while the consumer owns gen N's gates.  After a
+                            # process restart, recover_at_boot re-stashed the
+                            # consumer factory but does NOT launch the asyncio.Task;
+                            # if we never (re)launch it the primary parks forever
+                            # waiting for a consumer that is not running (restart
+                            # deadlock).  Drive the consumer task first, then fill
+                            # LLM idle time with a one-ahead draft for gen N+1.
+                            try:
+                                await _ensure_slice2b_consumer_running(
+                                    (recovery or {}).get("checkpoint") or {}
+                                )
+                            except Exception:
+                                pass
+                            # Attempt a one-ahead draft prepare for gen N+1 to fill
+                            # LLM idle time.  This is the one-ahead producer that
+                            # keeps the producer LLM permits busy while gen N's
+                            # quality->review->critic->precommit chain runs
+                            # concurrently in the consumer.  Best-effort and
+                            # non-fatal: any failure simply continues the canonical
+                            # spin-wait on the primary slot.
                             try:
                                 await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
                             except Exception:
                                 pass
-                            # Bounded park sleep to avoid the busy-spin (see
-                            # the primary seal branch above for rationale).
+                            # Primary is parked for the background consumer gate
+                            # chain: sleep for a bounded interval instead of
+                            # re-cycling every second.  The promotion barrier at
+                            # commit_bot is what unblocks publication; here we just
+                            # avoid a CPU/log busy-spin while the (native, slow)
+                            # consumer runs.  Shutdown remains interruptible.
                             if advanced["terminal_action"] == "slice2b_consumer_parked":
                                 if await _parked_wait(shutdown_mgr, seconds=45.0):
                                     break
                         recovery = advanced["recovery"]
                         await _orch.asyncio.sleep(1)
                         continue
-
-            # Phase 2: Run one generation (preserves state on interrupt). A
-            # deterministic route has already had priority; any remaining work
-            # needs the Orchestrator LLM and must honor the durable pause.
-            if not await _orch._honor_active_llm_pause(ui, shutdown_mgr):
-                if not (shutdown_mgr and shutdown_mgr.is_shutting_down):
-                    terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
-                break
-            cost = await _orch._run_one_cycle(
-                ui=ui,
-                log_file=log_file,
-                one_gen=False,
-                dry_run=False,
-                max_turns=None,
-                gen_ctx=gen_ctx,
-                shutdown_mgr=shutdown_mgr,
-                _cost_policy=operator_cost_policy,
-            )
-
-            # Master-abandon signal finalization (Stage-0 fix for the v161/v106
-            # livelock class).  When a Master-exhaustion path inside the just-
-            # finished cycle called ``_abandon_master_generation``, it did NOT
-            # run the publication-authority abandon inline (that raced the
-            # concurrently-mutated checkpoint and lost every CAS revalidation).
-            # It only signaled the request via ``master_abandon_signal``.  Now
-            # that ``_run_one_cycle`` has returned and the loop is between
-            # cycles, the checkpoint is quiescent — this is the safe point to
-            # finalize the canonical abandon transaction, exactly mirroring the
-            # HTTP ``POST /api/control/abandon`` "stop-then-abandon" pattern.
-            _master_abandon_reason = None
-            try:
-                from master_abandon_signal import consume_pending as _consume_master_abandon
-                _master_abandon_reason = _consume_master_abandon()
-            except Exception:
-                _master_abandon_reason = None
-            if _master_abandon_reason is not None:
-                _master_abandon_ok = False
-                try:
-                    from evolution_core import read_pipeline_checkpoint
-                    from tool_bot_management import (
-                        _do_abandon_generation,
-                        expected_abandon_identity,
+                    ckpt = recovery["checkpoint"]
+                    gen_ctx = _orch._generation_context_from_checkpoint(
+                        ckpt,
+                        gen_count=gen_count,
                     )
-                    _ma_ckpt = read_pipeline_checkpoint()
-                    if _ma_ckpt:
-                        _ma_result = await _do_abandon_generation(
-                            reason=_master_abandon_reason,
-                            # System-owned fail-closed path: the tool layer
-                            # already proved the Master exhausted its bounded
-                            # retry budget.  Bypass the 60s cooldown that
-                            # protects against LLM-driven abandon spam (which
-                            # cannot happen from this deterministic path).
-                            _bypass_rate_limit=True,
-                            **expected_abandon_identity(_ma_ckpt),
+                    recovery = None  # consume recovery, only used once
+                else:
+                    # Phase 1: Prepare (disposable on interrupt)
+                    # Do not create a fresh candidate while a provider pause is
+                    # active. Existing deterministic recovery routes are attempted
+                    # above first, which lets the system strict bootstrap advance
+                    # without any LLM dependency.
+                    if not await _orch._honor_active_llm_pause(ui, shutdown_mgr):
+                        break
+                    # After repeated eval timeouts, actually *lower* the hard
+                    # min_games floor (align with national_native rd_min_games=12).
+                    # The previous hardcode of 30 raised the bar above the profile
+                    # default (24) and made prepare_generation thrash forever under
+                    # DAEMON_EVAL_TIMEOUT=600s with pairs=5 (~7–8 min per batch).
+                    degraded_min = None
+                    if consecutive_prep_fails >= 3:
+                        from workflow_profiles import get_workflow_profile
+
+                        profile = get_workflow_profile()
+                        degraded_min = max(
+                            1,
+                            min(
+                                int(getattr(profile, "eval_wait_rd_min_games", 12) or 12),
+                                int(getattr(profile, "eval_wait_min_games", 24) or 24),
+                            ),
                         )
-                        _master_abandon_ok = bool(isinstance(_ma_result, dict) and _ma_result.get("abandoned"))
                         if ui:
-                            if _master_abandon_ok:
-                                ui.log_history(
-                                    f"Master-abandon finalized (quiescent): v{_ma_ckpt.get('next_v')} "
-                                    f"abandoned, starting fresh generation.",
-                                    "info",
-                                )
-                            else:
-                                ui.log_history(
-                                    f"Master-abandon finalization refused: "
-                                    f"{_ma_result if isinstance(_ma_result, dict) else 'unknown'}",
-                                    "error",
-                                )
-                except Exception as _ma_exc:
-                    if ui:
-                        ui.log_history(
-                            f"Master-abandon finalization error: {_ma_exc}",
-                            "error",
-                        )
-                try:
-                    _orch.log_system_event(
-                        "orchestrator.master_abandon_finalized",
-                        "info" if _master_abandon_ok else "error",
-                        f"Master-abandon signal finalized against quiescent checkpoint "
-                        f"(ok={_master_abandon_ok})",
-                        {"reason": _master_abandon_reason, "finalized": _master_abandon_ok},
+                            ui.log_history(
+                                f"评估等待连续超时，降低评估要求 ({degraded_min} 局) 继续进化...",
+                                "warn",
+                            )
+
+                    # Speculative one-ahead draft: while the primary prepare is
+                    # blocked on eval_wait, launch a draft (which skips eval_wait)
+                    # so the LLM produces Master/Workers output in parallel.  The
+                    # draft costs LLM tokens only; it is stale-reaped if the
+                    # eval_wait outcome diverges.  Best-effort and non-fatal.
+                    try:
+                        await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                    except Exception:
+                        pass
+                    gen_ctx = await _orch._prepare_or_fail(shutdown_mgr, ui, min_games=degraded_min)
+                    if gen_ctx is None:
+                        if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                            break
+                        consecutive_prep_fails += 1
+                        from evolution_infra import is_daemon_alive
+                        if not is_daemon_alive() and ui:
+                            daemon_dead_level = "error" if consecutive_prep_fails >= 3 else "warn"
+                            ui.log_history(
+                                f"Daemon 未运行，等待恢复中... (连续失败 {consecutive_prep_fails} 次)",
+                                daemon_dead_level,
+                            )
+                        backoff = min(10 * (2 ** min(consecutive_prep_fails - 1, 4)), 300)
+                        if shutdown_mgr:
+                            try:
+                                await _orch.asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=backoff)
+                                break
+                            except _orch.asyncio.TimeoutError:
+                                pass
+                        else:
+                            await _orch.asyncio.sleep(backoff)
+                        continue
+                    consecutive_prep_fails = 0
+
+                    selected_recovery = _orch._checkpoint_recovery_context(
+                        "selected_after_prepare",
+                        ui,
+                        log_level="info",
+                        label="[Pipeline]",
                     )
-                except Exception:
-                    pass
-                # Whether the abandon succeeded or was refused, do NOT re-enter
-                # the cycle on the same checkpoint (that is the livelock).  A
-                # successful abandon cleared the checkpoint so the loop top will
-                # prepare a fresh generation; a refused abandon means the
-                # canonical transaction itself reported a typed boundary (e.g.
-                # stage_not_disposable) and operator intervention is needed —
-                # either way, ``continue`` lets the loop top re-read the
-                # checkpoint state and route correctly instead of re-entering
-                # run_master on a doomed direction.
-                continue
-
-            if cost == _orch.ORCH_OPERATOR_COST_LIMIT_COST:
-                terminal_outcome = _orch.ORCH_OPERATOR_COST_LIMIT_COST
-                msg = (
-                    "Orchestrator stopped at the explicit operator generation cost limit. "
-                    "The checkpoint is preserved; change/disable the parent-process limit "
-                    "and explicitly restart to continue."
-                )
-                if ui:
-                    ui.log_history(msg, "error")
-                    ui.set_status("Stopped: operator generation cost limit", is_working=False)
-                _orch.log.error(msg)
-                break
-
-            if cost == _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST:
-                # A persisted manual pause ends the loop immediately; a
-                # transient pause waits for its bounded cooldown and then
-                # resumes from the exact active checkpoint. If persistence
-                # itself failed, fail closed instead of retrying blindly.
-                try:
-                    pause_state = _orch.load_llm_pause()
-                except Exception as exc:
-                    pause_state = None
-                    _orch.log.error("Cannot read LLM availability pause after block: %s", exc)
-                if not pause_state or not pause_state.get("active"):
-                    terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
-                    msg = (
-                        "LLM availability was classified but its durable pause "
-                        "record is unavailable; stopping fail-closed."
-                    )
-                    if ui:
-                        ui.log_history(msg, "error")
-                        ui.set_status("Stopped: LLM pause persistence failed", is_working=False)
-                    _orch.log.error(msg)
-                    break
-                if not await _orch._honor_active_llm_pause(ui, shutdown_mgr):
-                    if not (shutdown_mgr and shutdown_mgr.is_shutting_down):
-                        terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
-                    break
-                recovery = _orch._checkpoint_recovery_context(
-                    "llm_availability_resumed", ui
-                )
-                continue
-
-            if cost == _orch.ORCH_GENERATION_ABANDONED_COST:
-                stopped = _record_verified_canonical_abandon(
-                    source="provider_cycle",
-                    gen_ctx=gen_ctx,
-                    terminal_proof=(
-                        _orch._remembered_canonical_abandon_proof(gen_ctx) or {}
-                    ),
-                )
-                recovery = None
-                if stopped:
-                    break
-                await _orch.asyncio.sleep(0)
-                continue
-
-            if cost == _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST:
-                terminal_outcome = _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST
-                msg = (
-                    "Generation is parked at an operator-only boundary. "
-                    "Automatic evolution stopped without preparing a successor."
-                )
-                if ui:
-                    ui.log_history(msg, "warn")
-                    ui.set_status(
-                        "Stopped: operator action required",
-                        is_working=False,
-                    )
-                _orch.log.warning(msg)
-                _orch.log_system_event(
-                    "orchestrator.operator_action_required_stop",
-                    "warn",
-                    msg,
-                    {"gen_count": gen_count},
-                )
-                break
-
-            if cost == _orch.ORCH_RECOVERY_BLOCKED_COST:
-                terminal_outcome = _orch.ORCH_RECOVERY_BLOCKED_COST
-                msg = (
-                    "Orchestrator stopped fail-closed because checkpoint or "
-                    "terminal-generation authority could not be re-proven. "
-                    "Do not prepare another generation until governed recovery "
-                    "diagnostics are resolved."
-                )
-                if ui:
-                    ui.log_history(msg, "error")
-                    ui.set_status(
-                        "Stopped: recovery authority blocked",
-                        is_working=False,
-                    )
-                _orch.log.error(msg)
-                _orch.log_system_event(
-                    "orchestrator.recovery_authority_blocked_stop",
-                    "error",
-                    msg,
-                    {"cost_signal": cost},
-                )
-                break
-
-            # Timeout-extension sentinel: a cycle timed out but commit was imminent
-            # (stage=verified) so ONE extension was granted mid-cycle. The cycle is NOT
-            # complete — the bot has not committed yet. Do NOT run post_generation_cleanup,
-            # do NOT log 'gen complete', do NOT back off. Just resume from the checkpoint
-            # next iteration. Must come BEFORE the cost >= 0 success block so the sentinel
-            # is never treated as success. Value -99999.0 (distinct from auth clamp).
-            if cost == _orch.ORCH_ACTIONABLE_HANDOFF_COST:
-                recovery = _orch._checkpoint_recovery_context(
-                    "actionable_stage_handoff",
-                    ui,
-                    log_level="info",
-                    label="[Pipeline]",
-                )
-                if recovery:
-                    if recovery.get("action") == "resume":
+                    if selected_recovery and selected_recovery.get("action") in {
+                        "blocked",
+                        "operator_action_required",
+                    }:
+                        recovery = selected_recovery
+                        continue
+                    if selected_recovery and selected_recovery.get("action") == "resume":
                         advanced = await _orch._advance_deterministic_recovery(
-                            recovery,
+                            selected_recovery,
                             ui,
                             log_level="info",
                             label="[Pipeline]",
@@ -1215,18 +951,15 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                             gen_count=gen_count,
                         )
                         if advanced["routed"]:
-                            if (
-                                advanced["terminal_action"]
-                                == "generation_abandoned"
-                            ):
+                            if advanced["terminal_action"] == "generation_abandoned":
                                 stopped = _record_verified_canonical_abandon(
-                                    checkpoint=(recovery or {}).get(
-                                        "checkpoint"
+                                    checkpoint=(
+                                        selected_recovery.get("checkpoint") or {}
                                     ),
                                     terminal_proof=(
                                         advanced.get("terminal_proof") or {}
                                     ),
-                                    source="actionable_deterministic_recovery",
+                                    source="selected_deterministic_recovery",
                                     gen_ctx=gen_ctx,
                                 )
                                 recovery = advanced["recovery"]
@@ -1240,284 +973,562 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
                                 and not _publication_accounting_allows_successor()
                             ):
                                 break
+                            if advanced["terminal_action"] in {
+                                None,
+                                "slice2b_consumer_parked",
+                            }:
+                                # Same one-ahead draft-prepare hook as the primary
+                                # seal branch above; the selected deterministic
+                                # recovery route can also reach a sealed/consumer-
+                                # running state where the producer may advance.
+                                try:
+                                    await _try_launch_draft_prepare(ui, shutdown_mgr, gen_count)
+                                except Exception:
+                                    pass
+                                # Bounded park sleep to avoid the busy-spin (see
+                                # the primary seal branch above for rationale).
+                                if advanced["terminal_action"] == "slice2b_consumer_parked":
+                                    if await _parked_wait(shutdown_mgr, seconds=45.0):
+                                        break
                             recovery = advanced["recovery"]
                             await _orch.asyncio.sleep(1)
-                        else:
-                            await _orch.asyncio.sleep(0)
-                    continue
-                recovery = {
-                    "action": "blocked",
-                    "reason": "actionable_handoff_authority_missing",
-                    "checkpoint": None,
-                    "diagnostics": {
-                        "active": True,
-                        "recoverable": False,
-                        "issues": ["actionable_handoff_authority_missing"],
-                    },
-                }
-                continue
+                            continue
 
-            if cost == -99999.0:
-                if ui:
-                    ui.log_history(
-                        "Orchestrator: cycle timed out but commit was imminent — granted extension, "
-                        "resuming from checkpoint next cycle (no commit yet).",
-                        "warn",
-                    )
-                continue
+                # Phase 2: Run one generation (preserves state on interrupt). A
+                # deterministic route has already had priority; any remaining work
+                # needs the Orchestrator LLM and must honor the durable pause.
+                if not await _orch._honor_active_llm_pause(ui, shutdown_mgr):
+                    if not (shutdown_mgr and shutdown_mgr.is_shutting_down):
+                        terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
+                    break
+                cost = await _orch._run_one_cycle(
+                    ui=ui,
+                    log_file=log_file,
+                    one_gen=False,
+                    dry_run=False,
+                    max_turns=None,
+                    gen_ctx=gen_ctx,
+                    shutdown_mgr=shutdown_mgr,
+                    _cost_policy=operator_cost_policy,
+                )
 
-            if cost == _orch.SHUTDOWN_CANCEL_COST:
-                if ui:
-                    ui.log_history(
-                        "Orchestrator: shutdown cancellation observed; exiting loop without backoff.",
-                        "warn",
-                    )
-                break
-
-            # Phase 3: Cleanup (idempotent) — after any successful generation
-            if cost >= 0:
-                active_recovery = _orch._checkpoint_recovery_context("cycle_completed_with_active_checkpoint", ui)
-                if active_recovery:
-                    recovery = active_recovery
-                    ckpt = active_recovery.get("checkpoint") or {}
-                    _yield_stage = ckpt.get("stage")
-                    _yield_nvv = ckpt.get("next_v")
-                    # === Cross-cycle livelock circuit breaker (2026-08-12) ===
-                    # A fast-cycling livelock (e.g. run_master early-validation
-                    # returns an abandon_generation directive that the
-                    # direction_audited route guard blocks) yields active-
-                    # checkpoint cycles every ~60-90s WITHOUT advancing the
-                    # stage or hitting the 3600s CYCLE_TIMEOUT (B3). v170 spun
-                    # here for 36h (1,950 throwaway sessions, 0 publications).
-                    # Count consecutive same-(version,stage) yields; after
-                    # POK_ACTIVE_CKPT_CYCLE_BREAKER (default 5) force a canonical
-                    # abandon. ``infrastructure_exhausted:`` is admitted at every
-                    # disposable stage (pipeline_state.py broad_infra_stages), so
-                    # this bounds ANY directive-path livelock (21 known sites +
-                    # future regressions), not just the ones with inline abandons.
+                # Master-abandon signal finalization (Stage-0 fix for the v161/v106
+                # livelock class).  When a Master-exhaustion path inside the just-
+                # finished cycle called ``_abandon_master_generation``, it did NOT
+                # run the publication-authority abandon inline (that raced the
+                # concurrently-mutated checkpoint and lost every CAS revalidation).
+                # It only signaled the request via ``master_abandon_signal``.  Now
+                # that ``_run_one_cycle`` has returned and the loop is between
+                # cycles, the checkpoint is quiescent — this is the safe point to
+                # finalize the canonical abandon transaction, exactly mirroring the
+                # HTTP ``POST /api/control/abandon`` "stop-then-abandon" pattern.
+                _master_abandon_reason = None
+                try:
+                    from master_abandon_signal import consume_pending as _consume_master_abandon
+                    _master_abandon_reason = _consume_master_abandon()
+                except Exception:
+                    _master_abandon_reason = None
+                if _master_abandon_reason is not None:
+                    _master_abandon_ok = False
                     try:
-                        import os as _os_brk
-                        _breaker_cap = max(
-                            2, int(_os_brk.environ.get(
-                                "POK_ACTIVE_CKPT_CYCLE_BREAKER", "5"))
+                        from evolution_core import read_pipeline_checkpoint
+                        from tool_bot_management import (
+                            _do_abandon_generation,
+                            expected_abandon_identity,
                         )
-                    except Exception:
-                        _breaker_cap = 5
-                    _yield_counts = getattr(
-                        _orch.orchestrator_loop, "_active_ckpt_yield_counts", {}
-                    )
-                    if not isinstance(_yield_counts, dict):
-                        _yield_counts = {}
-                    _yk = (_yield_nvv, _yield_stage)
-                    _yield_counts.clear()  # track only the current target
-                    _yield_counts[_yk] = _yield_counts.get(_yk, 0) + 1
-                    _orch.orchestrator_loop._active_ckpt_yield_counts = _yield_counts
-                    _yield_n = _yield_counts[_yk]
-                    if _yield_n >= _breaker_cap and _yield_stage:
-                        _orch.log.warning(
-                            "Active-checkpoint livelock breaker: %d consecutive "
-                            "cycles at stage=%s v%s — forcing canonical abandon.",
-                            _yield_n, _yield_stage, _yield_nvv,
-                        )
-                        try:
-                            _orch.log_system_event(
-                                "pipeline.active_checkpoint_livelock_abandon",
-                                "error",
-                                f"Forcing abandon after {_yield_n} consecutive "
-                                f"active-checkpoint cycles stuck at "
-                                f"{_yield_stage} (v{_yield_nvv}) — directive-path "
-                                f"livelock breaker.",
-                                {
-                                    "stage": _yield_stage,
-                                    "next_v": _yield_nvv,
-                                    "consecutive_cycles": _yield_n,
-                                    "cap": _breaker_cap,
-                                },
-                            )
-                        except Exception:
-                            pass
-                        _breaker_broke = False
-                        try:
-                            from tool_bot_management import (
-                                _do_abandon_generation,
-                                expected_abandon_identity,
-                                validate_completed_abandon_handoff,
-                            )
-                            _abandon_result = await _do_abandon_generation(
-                                reason=(
-                                    f"infrastructure_exhausted:active_checkpoint_"
-                                    f"livelock ({_yield_n} cycles at "
-                                    f"{_yield_stage})"
-                                ),
+                        _ma_ckpt = read_pipeline_checkpoint()
+                        if _ma_ckpt:
+                            _ma_result = await _do_abandon_generation(
+                                reason=_master_abandon_reason,
+                                # System-owned fail-closed path: the tool layer
+                                # already proved the Master exhausted its bounded
+                                # retry budget.  Bypass the 60s cooldown that
+                                # protects against LLM-driven abandon spam (which
+                                # cannot happen from this deterministic path).
                                 _bypass_rate_limit=True,
-                                **expected_abandon_identity(ckpt),
+                                **expected_abandon_identity(_ma_ckpt),
                             )
-                            _terminal = _orch._completed_abandon_tool_result(
-                                _abandon_result
-                            )
-                            if _terminal is not None:
-                                if gen_ctx is not None:
-                                    _proof = validate_completed_abandon_handoff(
-                                        ckpt, _terminal
-                                    )
-                                    _orch._remember_verified_canonical_abandon(
-                                        gen_ctx, _proof
-                                    )
-                                _orch.orchestrator_loop._active_ckpt_yield_counts = {}
-                                _breaker_broke = True
-                                if ui:
+                            _master_abandon_ok = bool(isinstance(_ma_result, dict) and _ma_result.get("abandoned"))
+                            if ui:
+                                if _master_abandon_ok:
                                     ui.log_history(
-                                        f"[Orchestrator] Livelock breaker: "
-                                        f"abandoned after {_yield_n} stuck "
-                                        f"cycles at {_yield_stage}.",
+                                        f"Master-abandon finalized (quiescent): v{_ma_ckpt.get('next_v')} "
+                                        f"abandoned, starting fresh generation.",
+                                        "info",
+                                    )
+                                else:
+                                    ui.log_history(
+                                        f"Master-abandon finalization refused: "
+                                        f"{_ma_result if isinstance(_ma_result, dict) else 'unknown'}",
                                         "error",
                                     )
-                        except Exception as _ae:
-                            _orch.log.error(
-                                "active-checkpoint livelock breaker abandon "
-                                "failed closed: %s",
-                                _ae,
+                    except Exception as _ma_exc:
+                        if ui:
+                            ui.log_history(
+                                f"Master-abandon finalization error: {_ma_exc}",
+                                "error",
                             )
-                        if _breaker_broke:
-                            continue
-                    if ui:
-                        ui.log_history(
-                            "Orchestrator cycle ended while checkpoint is still active; "
-                            "continuing from checkpoint instead of marking generation complete.",
-                            "warn",
-                        )
                     try:
                         _orch.log_system_event(
-                            "orchestrator.cycle_yielded_active_checkpoint",
-                            "warn",
-                            "Cycle ended with active checkpoint; skipping post-generation cleanup",
-                            {
-                                "gen_count": gen_count,
-                                "stage": _yield_stage,
-                                "next_v": _yield_nvv,
-                                "source_v": ckpt.get("source_v"),
-                                "cost": round(cost, 4),
-                            },
+                            "orchestrator.master_abandon_finalized",
+                            "info" if _master_abandon_ok else "error",
+                            f"Master-abandon signal finalized against quiescent checkpoint "
+                            f"(ok={_master_abandon_ok})",
+                            {"reason": _master_abandon_reason, "finalized": _master_abandon_ok},
                         )
                     except Exception:
                         pass
-                    await _orch.asyncio.sleep(5)
+                    # Whether the abandon succeeded or was refused, do NOT re-enter
+                    # the cycle on the same checkpoint (that is the livelock).  A
+                    # successful abandon cleared the checkpoint so the loop top will
+                    # prepare a fresh generation; a refused abandon means the
+                    # canonical transaction itself reported a typed boundary (e.g.
+                    # stage_not_disposable) and operator intervention is needed —
+                    # either way, ``continue`` lets the loop top re-read the
+                    # checkpoint state and route correctly instead of re-entering
+                    # run_master on a doomed direction.
                     continue
-                # Reset the generic-failure backoff counter — the cycle succeeded.
-                if getattr(_orch.orchestrator_loop, "_gen_fail_count", 0):
-                    _orch.orchestrator_loop._gen_fail_count = 0
-                cleanup_ok = await _orch._run_post_generation_cleanup_with_timeout(
-                    shutdown_mgr, ui, gen_ctx, gen_count=gen_count
-                )
-                if cleanup_ok is not True:
+
+                if cost == _orch.ORCH_OPERATOR_COST_LIMIT_COST:
+                    terminal_outcome = _orch.ORCH_OPERATOR_COST_LIMIT_COST
+                    msg = (
+                        "Orchestrator stopped at the explicit operator generation cost limit. "
+                        "The checkpoint is preserved; change/disable the parent-process limit "
+                        "and explicitly restart to continue."
+                    )
+                    if ui:
+                        ui.log_history(msg, "error")
+                        ui.set_status("Stopped: operator generation cost limit", is_working=False)
+                    _orch.log.error(msg)
+                    break
+
+                if cost == _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST:
+                    # _run_one_cycle already persisted a typed pause. Waitable
+                    # 1302/429/quota cool down here; a missing/inactive record
+                    # means the cooldown already elapsed (do not kill the task).
+                    from orchestrator_abandon_and_cost import (
+                        _resume_generation_loop_after_llm_block,
+                    )
+                    may_continue = await _resume_generation_loop_after_llm_block(
+                        ui, shutdown_mgr
+                    )
+                    if may_continue:
+                        recovery = _orch._checkpoint_recovery_context(
+                            "llm_availability_resumed", ui
+                        )
+                        continue
+                    if not (shutdown_mgr and shutdown_mgr.is_shutting_down):
+                        terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
+                    break
+
+                if cost == _orch.ORCH_GENERATION_ABANDONED_COST:
+                    stopped = _record_verified_canonical_abandon(
+                        source="provider_cycle",
+                        gen_ctx=gen_ctx,
+                        terminal_proof=(
+                            _orch._remembered_canonical_abandon_proof(gen_ctx) or {}
+                        ),
+                    )
+                    recovery = None
+                    if stopped:
+                        break
+                    await _orch.asyncio.sleep(0)
+                    continue
+
+                if cost == _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST:
+                    terminal_outcome = _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST
+                    msg = (
+                        "Generation is parked at an operator-only boundary. "
+                        "Automatic evolution stopped without preparing a successor."
+                    )
+                    if ui:
+                        ui.log_history(msg, "warn")
+                        ui.set_status(
+                            "Stopped: operator action required",
+                            is_working=False,
+                        )
+                    _orch.log.warning(msg)
+                    _orch.log_system_event(
+                        "orchestrator.operator_action_required_stop",
+                        "warn",
+                        msg,
+                        {"gen_count": gen_count},
+                    )
+                    break
+
+                if cost == _orch.ORCH_RECOVERY_BLOCKED_COST:
                     terminal_outcome = _orch.ORCH_RECOVERY_BLOCKED_COST
                     msg = (
-                        "Post-generation verification did not complete; "
-                        "stopping before any successor generation is prepared."
+                        "Orchestrator stopped fail-closed because checkpoint or "
+                        "terminal-generation authority could not be re-proven. "
+                        "Do not prepare another generation until governed recovery "
+                        "diagnostics are resolved."
                     )
                     if ui:
                         ui.log_history(msg, "error")
                         ui.set_status(
-                            "Stopped: post-generation verification failed",
+                            "Stopped: recovery authority blocked",
                             is_working=False,
                         )
                     _orch.log.error(msg)
                     _orch.log_system_event(
-                        "orchestrator.post_cleanup_verification_blocked_stop",
+                        "orchestrator.recovery_authority_blocked_stop",
                         "error",
                         msg,
-                        {"gen_count": gen_count, "cost": round(cost, 4)},
+                        {"cost_signal": cost},
                     )
                     break
-                if ui:
-                    ui.log_history(f"Orchestrator gen {gen_count} complete. Cost: ${cost:.4f}", "info")
-                _orch.log_system_event("orchestrator.cycle_done", "info", f"Cycle {gen_count} done (cost=${cost:.4f})",
-                                 {"gen_count": gen_count, "cost": round(cost, 4)})
-                # Reset per-generation cost tracker for next cycle
-                if ui:
-                    ui.reset_gen_cost()
-                _reset_canonical_abandon_streak()
-                _orch.deactivate_generation_cost_scope()
 
-            # Auth error fast-fail (also catches 429 via negative cost from _stream_response)
-            if cost < 0:
-                # 429 quota — rate_limiter already set, loop top will handle blocking
-                from rate_limiter import rate_limiter
-                if rate_limiter.is_blocked():
+                # Timeout-extension sentinel: a cycle timed out but commit was imminent
+                # (stage=verified) so ONE extension was granted mid-cycle. The cycle is NOT
+                # complete — the bot has not committed yet. Do NOT run post_generation_cleanup,
+                # do NOT log 'gen complete', do NOT back off. Just resume from the checkpoint
+                # next iteration. Must come BEFORE the cost >= 0 success block so the sentinel
+                # is never treated as success. Value -99999.0 (distinct from auth clamp).
+                if cost == _orch.ORCH_ACTIONABLE_HANDOFF_COST:
+                    recovery = _orch._checkpoint_recovery_context(
+                        "actionable_stage_handoff",
+                        ui,
+                        log_level="info",
+                        label="[Pipeline]",
+                    )
+                    if recovery:
+                        if recovery.get("action") == "resume":
+                            advanced = await _orch._advance_deterministic_recovery(
+                                recovery,
+                                ui,
+                                log_level="info",
+                                label="[Pipeline]",
+                                cost_policy=operator_cost_policy,
+                                shutdown_mgr=shutdown_mgr,
+                                gen_ctx=gen_ctx,
+                                gen_count=gen_count,
+                            )
+                            if advanced["routed"]:
+                                if (
+                                    advanced["terminal_action"]
+                                    == "generation_abandoned"
+                                ):
+                                    stopped = _record_verified_canonical_abandon(
+                                        checkpoint=(recovery or {}).get(
+                                            "checkpoint"
+                                        ),
+                                        terminal_proof=(
+                                            advanced.get("terminal_proof") or {}
+                                        ),
+                                        source="actionable_deterministic_recovery",
+                                        gen_ctx=gen_ctx,
+                                    )
+                                    recovery = advanced["recovery"]
+                                    if stopped:
+                                        break
+                                    await _orch.asyncio.sleep(0)
+                                    continue
+                                if (
+                                    advanced["terminal_action"]
+                                    == "publication_handoff_completed"
+                                    and not _publication_accounting_allows_successor()
+                                ):
+                                    break
+                                recovery = advanced["recovery"]
+                                await _orch.asyncio.sleep(1)
+                            else:
+                                await _orch.asyncio.sleep(0)
+                        continue
+                    recovery = {
+                        "action": "blocked",
+                        "reason": "actionable_handoff_authority_missing",
+                        "checkpoint": None,
+                        "diagnostics": {
+                            "active": True,
+                            "recoverable": False,
+                            "issues": ["actionable_handoff_authority_missing"],
+                        },
+                    }
                     continue
 
-                # P2: LLM infra error (SDK signature/timeout/connection) — short backoff.
-                # cost == -0.5 sentinel from cycle_failed+infra_error path. Session already
-                # cleared inside _run_one_cycle's except handler, so no redundant clear here.
-                # Was previously misclassified as "API auth error (401/403)" with 300s backoff
-                # (the v97 1.5h stuck loop: signature storm → -1.0 → 300s → restart → repeat).
-                if cost == -0.5:
-                    _infra_backoff = 15
+                if cost == -99999.0:
                     if ui:
                         ui.log_history(
-                            f"Orchestrator: LLM infrastructure error (SDK signature/timeout/connection). "
-                            f"Backing off {_infra_backoff}s (short, NOT auth).", "warn")
-                    try:
-                        _orch.log_system_event("pipeline.infra_error_short_backoff", "warn",
-                            f"Infra error short backoff {_infra_backoff}s",
-                            {"cost_signal": cost})
-                    except Exception:
-                        pass
+                            "Orchestrator: cycle timed out but commit was imminent — granted extension, "
+                            "resuming from checkpoint next cycle (no commit yet).",
+                            "warn",
+                        )
+                    continue
+
+                if cost == _orch.SHUTDOWN_CANCEL_COST:
+                    if ui:
+                        ui.log_history(
+                            "Orchestrator: shutdown cancellation observed; exiting loop without backoff.",
+                            "warn",
+                        )
+                    break
+
+                # Phase 3: Cleanup (idempotent) — after any successful generation
+                if cost >= 0:
+                    active_recovery = _orch._checkpoint_recovery_context("cycle_completed_with_active_checkpoint", ui)
+                    if active_recovery:
+                        recovery = active_recovery
+                        ckpt = active_recovery.get("checkpoint") or {}
+                        _yield_stage = ckpt.get("stage")
+                        _yield_nvv = ckpt.get("next_v")
+                        # === Cross-cycle livelock circuit breaker (2026-08-12) ===
+                        # A fast-cycling livelock (e.g. run_master early-validation
+                        # returns an abandon_generation directive that the
+                        # direction_audited route guard blocks) yields active-
+                        # checkpoint cycles every ~60-90s WITHOUT advancing the
+                        # stage or hitting the 3600s CYCLE_TIMEOUT (B3). v170 spun
+                        # here for 36h (1,950 throwaway sessions, 0 publications).
+                        # Count consecutive same-(version,stage) yields; after
+                        # POK_ACTIVE_CKPT_CYCLE_BREAKER (default 5) force a canonical
+                        # abandon. ``infrastructure_exhausted:`` is admitted at every
+                        # disposable stage (pipeline_state.py broad_infra_stages), so
+                        # this bounds ANY directive-path livelock (21 known sites +
+                        # future regressions), not just the ones with inline abandons.
+                        try:
+                            import os as _os_brk
+                            _breaker_cap = max(
+                                2, int(_os_brk.environ.get(
+                                    "POK_ACTIVE_CKPT_CYCLE_BREAKER", "5"))
+                            )
+                        except Exception:
+                            _breaker_cap = 5
+                        _yield_counts = getattr(
+                            _orch.orchestrator_loop, "_active_ckpt_yield_counts", {}
+                        )
+                        if not isinstance(_yield_counts, dict):
+                            _yield_counts = {}
+                        _yk = (_yield_nvv, _yield_stage)
+                        _yield_counts.clear()  # track only the current target
+                        _yield_counts[_yk] = _yield_counts.get(_yk, 0) + 1
+                        _orch.orchestrator_loop._active_ckpt_yield_counts = _yield_counts
+                        _yield_n = _yield_counts[_yk]
+                        if _yield_n >= _breaker_cap and _yield_stage:
+                            _orch.log.warning(
+                                "Active-checkpoint livelock breaker: %d consecutive "
+                                "cycles at stage=%s v%s — forcing canonical abandon.",
+                                _yield_n, _yield_stage, _yield_nvv,
+                            )
+                            try:
+                                _orch.log_system_event(
+                                    "pipeline.active_checkpoint_livelock_abandon",
+                                    "error",
+                                    f"Forcing abandon after {_yield_n} consecutive "
+                                    f"active-checkpoint cycles stuck at "
+                                    f"{_yield_stage} (v{_yield_nvv}) — directive-path "
+                                    f"livelock breaker.",
+                                    {
+                                        "stage": _yield_stage,
+                                        "next_v": _yield_nvv,
+                                        "consecutive_cycles": _yield_n,
+                                        "cap": _breaker_cap,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            _breaker_broke = False
+                            try:
+                                from tool_bot_management import (
+                                    _do_abandon_generation,
+                                    expected_abandon_identity,
+                                    validate_completed_abandon_handoff,
+                                )
+                                _abandon_result = await _do_abandon_generation(
+                                    reason=(
+                                        f"infrastructure_exhausted:active_checkpoint_"
+                                        f"livelock ({_yield_n} cycles at "
+                                        f"{_yield_stage})"
+                                    ),
+                                    _bypass_rate_limit=True,
+                                    **expected_abandon_identity(ckpt),
+                                )
+                                _terminal = _orch._completed_abandon_tool_result(
+                                    _abandon_result
+                                )
+                                if _terminal is not None:
+                                    if gen_ctx is not None:
+                                        _proof = validate_completed_abandon_handoff(
+                                            ckpt, _terminal
+                                        )
+                                        _orch._remember_verified_canonical_abandon(
+                                            gen_ctx, _proof
+                                        )
+                                    _orch.orchestrator_loop._active_ckpt_yield_counts = {}
+                                    _breaker_broke = True
+                                    if ui:
+                                        ui.log_history(
+                                            f"[Orchestrator] Livelock breaker: "
+                                            f"abandoned after {_yield_n} stuck "
+                                            f"cycles at {_yield_stage}.",
+                                            "error",
+                                        )
+                            except Exception as _ae:
+                                _orch.log.error(
+                                    "active-checkpoint livelock breaker abandon "
+                                    "failed closed: %s",
+                                    _ae,
+                                )
+                            if _breaker_broke:
+                                continue
+                        if ui:
+                            ui.log_history(
+                                "Orchestrator cycle ended while checkpoint is still active; "
+                                "continuing from checkpoint instead of marking generation complete.",
+                                "warn",
+                            )
+                        try:
+                            _orch.log_system_event(
+                                "orchestrator.cycle_yielded_active_checkpoint",
+                                "warn",
+                                "Cycle ended with active checkpoint; skipping post-generation cleanup",
+                                {
+                                    "gen_count": gen_count,
+                                    "stage": _yield_stage,
+                                    "next_v": _yield_nvv,
+                                    "source_v": ckpt.get("source_v"),
+                                    "cost": round(cost, 4),
+                                },
+                            )
+                        except Exception:
+                            pass
+                        await _orch.asyncio.sleep(5)
+                        continue
+                    # Reset the generic-failure backoff counter — the cycle succeeded.
+                    if getattr(_orch.orchestrator_loop, "_gen_fail_count", 0):
+                        _orch.orchestrator_loop._gen_fail_count = 0
+                    cleanup_ok = await _orch._run_post_generation_cleanup_with_timeout(
+                        shutdown_mgr, ui, gen_ctx, gen_count=gen_count
+                    )
+                    if cleanup_ok is not True:
+                        terminal_outcome = _orch.ORCH_RECOVERY_BLOCKED_COST
+                        msg = (
+                            "Post-generation verification did not complete; "
+                            "stopping before any successor generation is prepared."
+                        )
+                        if ui:
+                            ui.log_history(msg, "error")
+                            ui.set_status(
+                                "Stopped: post-generation verification failed",
+                                is_working=False,
+                            )
+                        _orch.log.error(msg)
+                        _orch.log_system_event(
+                            "orchestrator.post_cleanup_verification_blocked_stop",
+                            "error",
+                            msg,
+                            {"gen_count": gen_count, "cost": round(cost, 4)},
+                        )
+                        break
+                    if ui:
+                        ui.log_history(f"Orchestrator gen {gen_count} complete. Cost: ${cost:.4f}", "info")
+                    _orch.log_system_event("orchestrator.cycle_done", "info", f"Cycle {gen_count} done (cost=${cost:.4f})",
+                                     {"gen_count": gen_count, "cost": round(cost, 4)})
+                    # Reset per-generation cost tracker for next cycle
+                    if ui:
+                        ui.reset_gen_cost()
+                    _reset_canonical_abandon_streak()
+                    _orch.deactivate_generation_cost_scope()
+
+                # Auth error fast-fail (also catches 429 via negative cost from _stream_response)
+                if cost < 0:
+                    # 429 quota — rate_limiter already set, loop top will handle blocking
+                    from rate_limiter import rate_limiter
+                    if rate_limiter.is_blocked():
+                        continue
+
+                    # P2: LLM infra error (SDK signature/timeout/connection) — short backoff.
+                    # cost == -0.5 sentinel from cycle_failed+infra_error path. Session already
+                    # cleared inside _run_one_cycle's except handler, so no redundant clear here.
+                    # Was previously misclassified as "API auth error (401/403)" with 300s backoff
+                    # (the v97 1.5h stuck loop: signature storm → -1.0 → 300s → restart → repeat).
+                    if cost == -0.5:
+                        _infra_backoff = 15
+                        if ui:
+                            ui.log_history(
+                                f"Orchestrator: LLM infrastructure error (SDK signature/timeout/connection). "
+                                f"Backing off {_infra_backoff}s (short, NOT auth).", "warn")
+                        try:
+                            _orch.log_system_event("pipeline.infra_error_short_backoff", "warn",
+                                f"Infra error short backoff {_infra_backoff}s",
+                                {"cost_signal": cost})
+                        except Exception:
+                            pass
+                        if shutdown_mgr:
+                            try:
+                                await _orch.asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=_infra_backoff)
+                                break
+                            except _orch.asyncio.TimeoutError:
+                                pass
+                        else:
+                            await _orch.asyncio.sleep(_infra_backoff)
+                        # Session already cleared in _run_one_cycle except handler (infra path).
+                        # Preserve the generation identity by resuming from the active checkpoint
+                        # on the next loop; otherwise Phase 1 may select a new source/crossover
+                        # while pipeline_state.json still points at the interrupted generation.
+                        recovery = _orch._checkpoint_recovery_context("infra_error", ui)
+                        continue
+
+                    # cost <= -1.0 lands here. Two distinct causes share this signal:
+                    #   (a) a genuine auth failure (401/403, set auth_error=True above) —
+                    #       credentials won't self-heal, so a long backoff is correct.
+                    #   (b) a generic cycle failure (crash/ProcessError/exit-143) with NO
+                    #       auth_error flag — usually another face of the transient SDK
+                    #       signature storm. Treating these as auth and waiting 300s each
+                    #       time turned a brief SDK hiccup into a multi-hour stuck loop.
+                    # Split them: real auth keeps 300s; generic failures get a short,
+                    # escalating backoff (30s -> 60s -> 120s -> cap 300s).
+                    # auth_error 只在 _run_one_cycle 作用域声明，orchestrator_loop 无法直接读
+                    # (root-cause-audit 2026-06-21: 引用未定义变量致 NameError crash)。从 cost
+                    # 推断：auth 失败返回 -max(abs(cost),1.0) (< -1.0)，generic crash 返回 -1.0。
+                    auth_error = cost < -1.0
+                    if auth_error:
+                        if ui:
+                            ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
+                        _wait = 300
+                    else:
+                        _gen_fail_count = getattr(_orch.orchestrator_loop, "_gen_fail_count", 0) + 1
+                        _orch.orchestrator_loop._gen_fail_count = _gen_fail_count
+                        _wait = min(30 * (2 ** min(_gen_fail_count - 1, 3)), 300)
+                        if ui:
+                            ui.log_history(
+                                f"Orchestrator: cycle failed (generic, not auth). "
+                                f"Backing off {_wait}s (consecutive #{_gen_fail_count}).", "warn")
                     if shutdown_mgr:
                         try:
-                            await _orch.asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=_infra_backoff)
+                            await _orch.asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=_wait)
                             break
                         except _orch.asyncio.TimeoutError:
                             pass
                     else:
-                        await _orch.asyncio.sleep(_infra_backoff)
-                    # Session already cleared in _run_one_cycle except handler (infra path).
-                    # Preserve the generation identity by resuming from the active checkpoint
-                    # on the next loop; otherwise Phase 1 may select a new source/crossover
-                    # while pipeline_state.json still points at the interrupted generation.
-                    recovery = _orch._checkpoint_recovery_context("infra_error", ui)
+                        await _orch.asyncio.sleep(_wait)
+                    _orch._clear_orchestrator_session()
                     continue
 
-                # cost <= -1.0 lands here. Two distinct causes share this signal:
-                #   (a) a genuine auth failure (401/403, set auth_error=True above) —
-                #       credentials won't self-heal, so a long backoff is correct.
-                #   (b) a generic cycle failure (crash/ProcessError/exit-143) with NO
-                #       auth_error flag — usually another face of the transient SDK
-                #       signature storm. Treating these as auth and waiting 300s each
-                #       time turned a brief SDK hiccup into a multi-hour stuck loop.
-                # Split them: real auth keeps 300s; generic failures get a short,
-                # escalating backoff (30s -> 60s -> 120s -> cap 300s).
-                # auth_error 只在 _run_one_cycle 作用域声明，orchestrator_loop 无法直接读
-                # (root-cause-audit 2026-06-21: 引用未定义变量致 NameError crash)。从 cost
-                # 推断：auth 失败返回 -max(abs(cost),1.0) (< -1.0)，generic crash 返回 -1.0。
-                auth_error = cost < -1.0
-                if auth_error:
-                    if ui:
-                        ui.log_history("Orchestrator: API auth error (401/403). Backing off 300s.", "error")
-                    _wait = 300
-                else:
-                    _gen_fail_count = getattr(_orch.orchestrator_loop, "_gen_fail_count", 0) + 1
-                    _orch.orchestrator_loop._gen_fail_count = _gen_fail_count
-                    _wait = min(30 * (2 ** min(_gen_fail_count - 1, 3)), 300)
-                    if ui:
-                        ui.log_history(
-                            f"Orchestrator: cycle failed (generic, not auth). "
-                            f"Backing off {_wait}s (consecutive #{_gen_fail_count}).", "warn")
-                if shutdown_mgr:
-                    try:
-                        await _orch.asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=_wait)
-                        break
-                    except _orch.asyncio.TimeoutError:
-                        pass
-                else:
-                    await _orch.asyncio.sleep(_wait)
-                _orch._clear_orchestrator_session()
-                continue
+                if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                    break
 
-            if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                await _orch.asyncio.sleep(5)
+            except _orch.LLMAvailabilityBlocked as exc:
+                # Prepare-time roles (e.g. DEGENERATION_DIAGNOSIS) raise this
+                # outside _run_one_cycle. Waitable 1302/429/quota must cool
+                # down inside this while; killing the task leaves saturator-only
+                # occupancy and no checkpoint progress.
+                from orchestrator_abandon_and_cost import (
+                    _resume_generation_loop_after_llm_block,
+                )
+                _orch._clear_orchestrator_session(
+                    reason="llm_availability_waitable_or_manual"
+                )
+                may_continue = await _resume_generation_loop_after_llm_block(
+                    ui, shutdown_mgr, exc=exc
+                )
+                if may_continue:
+                    recovery = None
+                    continue
+                if not (shutdown_mgr and shutdown_mgr.is_shutting_down):
+                    terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
                 break
 
-            await _orch.asyncio.sleep(5)
 
     except _orch.OperatorGenerationCostLimitExceeded as exc:
         # Deterministic checkpoint routes can execute LLM roles without opening
@@ -1568,17 +1579,33 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
         _orch.log.error("Eval source rating-ineligible stopped evolution: %s", exc)
         terminal_outcome = _orch.ORCH_OPERATOR_ACTION_REQUIRED_COST
     except _orch.LLMAvailabilityBlocked as exc:
-        # Defensive boundary for an LLM role outside the normal stream/direct
-        # route wrappers. Never relabel a provider stop as an orchestrator crash.
-        try:
-            _orch.persist_llm_pause(exc)
-        except Exception as pause_exc:
-            _orch.log.exception("Failed to persist outer-loop LLM pause: %s", pause_exc)
+        # Should be unreachable: the generation while catches this and waits
+        # waitable cooldowns. Keep persist + typed stop only for a true
+        # manual pause or if the inner handler itself failed.
+        from orchestrator_abandon_and_cost import (
+            _resume_generation_loop_after_llm_block,
+        )
         _orch._clear_orchestrator_session(reason="outer_llm_availability_blocked")
+        may_continue = False
+        try:
+            may_continue = await _resume_generation_loop_after_llm_block(
+                ui, shutdown_mgr, exc=exc
+            )
+        except Exception as pause_exc:
+            _orch.log.exception(
+                "Outer-loop LLM pause resume failed: %s", pause_exc
+            )
+        if may_continue:
+            _orch.log.error(
+                "Waitable LLM pause escaped the generation while; "
+                "this frame cannot continue the loop: %s",
+                exc,
+            )
+        else:
+            _orch.log.error("LLM availability stopped evolution: %s", exc)
         if ui:
             ui.set_status(f"Stopped: LLM unavailable ({exc.issue.category})", is_working=False)
             ui.log_history(str(exc), "error")
-        _orch.log.error("LLM availability stopped evolution: %s", exc)
         terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
     except _orch.LLMAvailabilityPauseError as exc:
         _orch._clear_orchestrator_session(reason="llm_availability_state_invalid")

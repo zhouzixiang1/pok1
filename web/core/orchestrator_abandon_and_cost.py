@@ -12,6 +12,7 @@ Members moved here (all re-exported by orchestrator.py):
 * Tool-result decoding: ``_tool_result_payload``,
   ``_completed_abandon_tool_result``, ``_raise_for_llm_availability_tool_result``.
 * LLM-availability pause: ``_honor_active_llm_pause``,
+  ``_resume_generation_loop_after_llm_block``,
   ``_is_cycle_infra_error``.
 * Log rotation / provider prompt: ``_rotate_orchestrator_logs``.
   (``_render_orchestrator_provider_prompt`` stays in ``orchestrator.py`` — the
@@ -229,6 +230,12 @@ async def _honor_active_llm_pause(ui=None, shutdown_mgr=None) -> bool:
     to advance.  A manual billing/auth pause stops the orchestrator without a
     retry loop.  Transient availability records wait only until their bounded
     system-owned cooldown and then reconcile themselves.
+
+    Waitable categories (``service_unavailable`` / GLM 1302, bare 429,
+    ``quota_429``) must not end the ``orchestrator_loop`` task: the generation
+    ``while`` catches ``LLMAvailabilityBlocked`` and calls
+    :func:`_resume_generation_loop_after_llm_block` so saturator-only occupancy
+    cannot replace an exited pipeline.
     """
 
     state = active_llm_pause()
@@ -297,6 +304,60 @@ async def _honor_active_llm_pause(ui=None, shutdown_mgr=None) -> bool:
         else:
             await asyncio.sleep(wait)
     return active_llm_pause() is None
+
+
+async def _resume_generation_loop_after_llm_block(
+    ui=None,
+    shutdown_mgr=None,
+    *,
+    exc: LLMAvailabilityBlocked | None = None,
+) -> bool:
+    """Keep the generation loop alive across waitable provider pauses.
+
+    Returns True iff ``orchestrator_loop`` should ``continue`` the generation
+    ``while``. False means a manual billing/auth pause, an unreadable pause
+    store, or shutdown — those still end the task.
+
+    A missing or already-inactive pause is treated as an elapsed cooldown, not
+    as fail-closed stop. On 2026-09-10 a prepare-time ``DEGENERATION_DIAGNOSIS``
+    GLM 1302 (``service_unavailable``) raised ``LLMAvailabilityBlocked`` outside
+    ``_run_one_cycle``; the outer handler stopped evolution while the FastAPI
+    saturator kept spending for ~42 hours after the 120s pause had cleared.
+    """
+
+    if exc is not None:
+        try:
+            _o.persist_llm_pause(exc)
+        except Exception as pause_exc:
+            _o.log.exception("Failed to persist LLM availability pause: %s", pause_exc)
+    if shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False):
+        return False
+    try:
+        pause_state = _o.load_llm_pause()
+    except Exception as load_exc:
+        _o.log.error("Cannot read LLM availability pause after block: %s", load_exc)
+        return False
+    if pause_state and pause_state.get("active"):
+        allowed = await _o._honor_active_llm_pause(ui, shutdown_mgr)
+        if shutdown_mgr is not None and getattr(
+            shutdown_mgr, "is_shutting_down", False
+        ):
+            return False
+        return bool(allowed)
+    _o.log.warning(
+        "LLM availability block with no active durable pause; continuing "
+        "the generation loop instead of stopping the orchestrator task"
+    )
+    try:
+        _o.log_system_event(
+            "orchestrator.llm_availability_inactive_continue",
+            "warn",
+            "Waitable LLM pause is inactive; generation loop continues",
+            {"operator_action_required": False},
+        )
+    except Exception:
+        pass
+    return True
 
 
 def _is_cycle_infra_error(e, *, is_shutting_down: bool = False) -> bool:

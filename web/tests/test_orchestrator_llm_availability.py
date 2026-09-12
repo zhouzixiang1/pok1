@@ -254,6 +254,81 @@ def test_manual_pause_guard_never_sleeps_or_retries(isolated_cycle, monkeypatch)
     assert issue.evidence_digest in ui.history[-1][1]
 
 
+def test_resume_helper_inactive_pause_continues_generation_loop(isolated_cycle):
+    import orchestrator_abandon_and_cost as oac
+
+    assert asyncio.run(oac._resume_generation_loop_after_llm_block(None, None)) is True
+
+
+def test_resume_helper_glm_1302_waits_then_continues(isolated_cycle, monkeypatch):
+    from llm_availability import LLMAvailabilityBlocked, classify_llm_availability
+    import orchestrator_abandon_and_cost as oac
+
+    issue = classify_llm_availability(
+        ["Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]"],
+        statuses=[429],
+    )
+    assert issue is not None
+    assert issue.category == "service_unavailable"
+    honored = []
+
+    async def honor(ui=None, shutdown_mgr=None):
+        honored.append(True)
+        return True
+
+    monkeypatch.setattr(orchestrator, "_honor_active_llm_pause", honor)
+    ok = asyncio.run(
+        oac._resume_generation_loop_after_llm_block(
+            None,
+            None,
+            exc=LLMAvailabilityBlocked(issue, role="DEGENERATION_DIAGNOSIS"),
+        )
+    )
+    assert ok is True
+    assert honored == [True]
+    pause = pause_store.load_llm_pause()
+    assert pause["active"] is True
+    assert pause["category"] == "service_unavailable"
+
+
+def test_resume_helper_billing_pause_still_stops(isolated_cycle):
+    from llm_availability import LLMAvailabilityBlocked, classify_llm_availability
+    import orchestrator_abandon_and_cost as oac
+
+    issue = classify_llm_availability(
+        ["HTTP 403: You've reached your usage limit for this billing cycle"],
+        statuses=[403],
+    )
+    assert issue is not None
+    ok = asyncio.run(
+        oac._resume_generation_loop_after_llm_block(
+            None,
+            None,
+            exc=LLMAvailabilityBlocked(issue, role="MASTER"),
+        )
+    )
+    assert ok is False
+    assert pause_store.load_llm_pause()["category"] == "billing_cycle_usage_limit"
+
+
+def test_generation_loop_catches_availability_inside_while():
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "core"
+        / "orchestrator_loop_phases.py"
+    )
+    text = src.read_text()
+    inner = text.find("killing the task leaves saturator-only")
+    cost_handler = text.find("ORCH_LLM_AVAILABILITY_BLOCKED_COST:")
+    outer_operator = text.find("except _orch.OperatorGenerationCostLimitExceeded")
+    assert inner != -1
+    assert cost_handler != -1
+    assert inner < outer_operator
+    assert "_resume_generation_loop_after_llm_block" in text
+
+
 def _install_deterministic_worker_route(monkeypatch, payload):
     async def handler(_args):
         return {

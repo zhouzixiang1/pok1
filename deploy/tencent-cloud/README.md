@@ -419,6 +419,16 @@ and the UI `⏳ 配额等待中` row are 1308-only.
 `api_concurrency` still halves global LLM concurrency on 429/529 as the
 first reaction to frequency pressure.
 
+Waitable GLM 1302 / bare 429 (`service_unavailable`, 120s cooldown) and a
+trusted `quota_429` pause **must not exit `orchestrator_loop`**. The
+generation `while` catches `LLMAvailabilityBlocked` from prepare-time
+roles (including `DEGENERATION_DIAGNOSIS`) and from `_run_one_cycle`,
+then `_resume_generation_loop_after_llm_block` waits the cooldown and
+continues. A 2026-09-10 1302 during v423 prepare stopped the orchestrator
+task while the lifespan saturator kept spending for ~42 hours after the
+pause file had already auto-resumed. Only billing/auth manual pauses
+(or shutdown) should set `running=false`.
+
 ### Phase E deploy (operator → runtime)
 
 After verifying tests on this operator checkout (`/home/ubuntu/pok1`):

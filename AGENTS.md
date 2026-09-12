@@ -404,6 +404,15 @@ The system handles true 1308 exhaustion through the singleton `rate_limiter`
    is checked on the same cycle. Every `run_claude_query` entry point also
    checks before dispatching, so background analysts and direct MCP calls
    cannot bypass the pause.
+   **Waitable pauses must not end the orchestrator task.** GLM 1302 / bare 429
+   (`service_unavailable`, 120s) and trusted `quota_429` cool down inside the
+   generation `while` via `_resume_generation_loop_after_llm_block` (including
+   prepare-time roles such as `DEGENERATION_DIAGNOSIS` that raise
+   `LLMAvailabilityBlocked` outside `_run_one_cycle`). Only manual
+   billing/auth pauses, an unreadable pause store, or shutdown stop the loop.
+   Killing the task on 1302 leaves FastAPI saturator occupancy with
+   `running=false` and no checkpoint progress (observed 2026-09-10: ~42h of
+   saturator-only spend after a 120s cooldown had already cleared).
 4. **Crash recovery**: The rate-limiter reset timestamp is persisted to
    `web/core/results/rate_limit_state.json`; the availability pause has its
    own durable store. A service restart re-loads **trusted** quota blocks
