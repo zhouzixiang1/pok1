@@ -159,7 +159,7 @@ def test_daemon_monitor_classifies_stop_sigkill_as_stop_not_crash(monkeypatch):
         def log_history(self, message, level):
             self.history.append((level, message))
 
-        def update_daemon_status(self, stats, ratings):
+        def update_daemon_status(self, stats, ratings, strict_bundle=None):
             self.status_updates.append((stats, ratings))
 
     class FakeStopEvent:
@@ -209,7 +209,7 @@ def test_daemon_monitor_crash_event_includes_exit_metadata(monkeypatch):
         def log_history(self, message, level):
             self.history.append((level, message))
 
-        def update_daemon_status(self, stats, ratings):
+        def update_daemon_status(self, stats, ratings, strict_bundle=None):
             pass
 
     class FakeStopEvent:

@@ -423,13 +423,19 @@ class WebUI(BaseUI):
         self._state["active_bots"] = current_active
         self._emit("eval_table", {"rows": rows})
 
-    def update_daemon_status(self, stats, ratings):
-        try:
-            from evaluation_bundle import load_current_strict_evaluation_bundle
+    def update_daemon_status(self, stats, ratings, strict_bundle=None):
+        # The daemon monitor thread resolves the bundle itself through the
+        # fingerprint-gated read projection in daemon_management and passes it
+        # as ``strict_bundle``; any other caller omits it and the bundle is
+        # loaded here directly (uncached), as before.
+        bundle = strict_bundle
+        if bundle is None:
+            try:
+                from evaluation_bundle import load_current_strict_evaluation_bundle
 
-            bundle = load_current_strict_evaluation_bundle()
-        except Exception:
-            bundle = {"available": False}
+                bundle = load_current_strict_evaluation_bundle()
+            except Exception:
+                bundle = {"available": False}
         if not isinstance(bundle, dict):
             bundle = {"available": False}
         if bundle.get("available") is True:

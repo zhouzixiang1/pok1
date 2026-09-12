@@ -813,7 +813,7 @@ class BaseUI:
     def log_io(self, msg, stream_type="default", role=""): pass
     def clear_io(self): pass
     def update_eval_table(self, ratings, active_bots): pass
-    def update_daemon_status(self, stats, ratings): pass
+    def update_daemon_status(self, stats, ratings, strict_bundle=None): pass
     def set_header(self, msg): pass
     def update_cost(self, role, cost_usd, usage): pass
     def begin_generation_cost(self, generation_id, spent_usd, policy_receipt=None): pass

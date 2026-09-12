@@ -79,7 +79,7 @@ class ToolUI(BaseUI):
     def update_eval_table(self, ratings, active_bots):
         pass
 
-    def update_daemon_status(self, stats, ratings):
+    def update_daemon_status(self, stats, ratings, strict_bundle=None):
         pass
 
     def set_header(self, msg):

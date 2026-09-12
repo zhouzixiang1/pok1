@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import secrets
@@ -48,6 +49,41 @@ _daemon_shutting_down = False
 _DAEMON_OWNER_TOKEN_ENV = "POK_DAEMON_OWNER_TOKEN"
 _DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC = 8.0
 _DAEMON_FORCE_ORPHAN_TIMEOUT_SEC = 2.0
+
+# The monitor loop used to poll every 3 seconds, and each tick rebuilt the
+# strict-evaluation read projection consumed by ``ui.update_daemon_status``:
+# that rebuild re-reads the immutable evaluation cycle and SHA256-verifies the
+# raw replay corpus it references (hundreds of MB), which dominated the web
+# process CPU.  Liveness (auto-restart / stability reset) only needs bounded
+# detection latency, so the tick interval is operator tunable and defaults to
+# 30 seconds; the expensive projection itself is additionally fingerprint
+# gated below.
+DAEMON_MONITOR_INTERVAL_ENV = "POK_DAEMON_MONITOR_INTERVAL_SEC"
+DAEMON_MONITOR_INTERVAL_DEFAULT_SEC = 30.0
+DAEMON_MONITOR_INTERVAL_MIN_SEC = 3.0
+DAEMON_MONITOR_INTERVAL_MAX_SEC = 600.0
+
+
+def daemon_monitor_interval_from_env() -> float:
+    """Parse ``POK_DAEMON_MONITOR_INTERVAL_SEC``, clamped to [3, 600] seconds."""
+    try:
+        value = float(
+            os.environ.get(
+                DAEMON_MONITOR_INTERVAL_ENV,
+                DAEMON_MONITOR_INTERVAL_DEFAULT_SEC,
+            )
+        )
+    except (TypeError, ValueError):
+        return DAEMON_MONITOR_INTERVAL_DEFAULT_SEC
+    if not math.isfinite(value):
+        return DAEMON_MONITOR_INTERVAL_DEFAULT_SEC
+    return max(
+        DAEMON_MONITOR_INTERVAL_MIN_SEC,
+        min(DAEMON_MONITOR_INTERVAL_MAX_SEC, value),
+    )
+
+
+DAEMON_MONITOR_INTERVAL_SEC = daemon_monitor_interval_from_env()
 
 
 def _daemon_exit_metadata(returncode):
@@ -613,6 +649,259 @@ def is_daemon_alive():
     return proc is not None and proc.poll() is None
 
 
+# ── Monitor-side strict-evaluation read projection ──────────────────────────
+#
+# ``ui.update_daemon_status`` projects the published strict evaluation bundle
+# into the dashboard.  Building that bundle re-reads the immutable committed
+# cycle and SHA256-verifies every raw match replay it references (hundreds of
+# MB), so the monitor thread gates the rebuild on a cheap filesystem
+# fingerprint of the exact input files the load consumes:
+#
+#   - policy_epoch_reset_receipt.json   (epoch reset receipt)
+#   - evaluation_data_manifest.json     (evaluation identity manifest)
+#   - evaluation_cycle_manifest.json    (cycle commit pointer, written last)
+#   - the epoch-reset archive claim/receipt files and archived destinations
+#     that the reset receipt is cross-bound to
+#   - the SEMANTIC_PATHS source files hashed into the evaluation identity
+#   - evaluation_cycles/**              (immutable cycle payloads + append logs)
+#   - match_replay/**                   (raw replays bound by SHA256)
+#   - the published active pool (git-tag derived discovery, TTL cached)
+#
+# This gates ONLY the read projection.  The rating daemon's own save_cycle
+# full re-verification and every non-monitor ``load_current_strict_evaluation_bundle``
+# caller (routes, tool status, stability observation, eval table) keep their
+# direct, uncached path.
+#
+# The fingerprint is sampled before the load, so a file that changes between
+# sampling and loading can only cause one extra rebuild on a later tick — a
+# cache hit always reproduces the exact input state of the cached build, and
+# a stale ``available`` bundle can never outlive a change to any consumed
+# input (a git-synced source file, a retagged pool, or a tampered reset
+# archive included).  Only the most recent SUCCESSFUL build is cached, and
+# success means ``available: True``: the loader reports nearly all failures
+# as reason dicts instead of raising (``active_pool_unavailable`` and
+# friends), and caching those would freeze the dashboard on "unavailable"
+# until the next evidence commit instead of retrying on the next tick.  A
+# persistently failing build therefore re-runs at the tick cadence — still
+# far below the old unconditional 3-second rebuild.  Inputs that are constant
+# for the life of the web process (workflow profile and bot_namespace
+# constants, resolved from imported code and the process environment) are
+# deliberately not fingerprinted.
+
+_DAEMON_MONITOR_BUNDLE_LOCK = threading.Lock()
+_DAEMON_MONITOR_BUNDLE_CACHE = {
+    "root": None,
+    "fingerprint": None,
+    "bundle": None,
+    "valid": False,
+}
+
+
+def reset_monitor_strict_bundle_cache():
+    """Drop the cached monitor projection (tests and operator tooling).
+
+    Production invalidation is fingerprint-driven: an epoch reset rewrites
+    the fingerprinted reset receipt, so no lifecycle code needs to call this.
+    """
+    with _DAEMON_MONITOR_BUNDLE_LOCK:
+        _DAEMON_MONITOR_BUNDLE_CACHE["root"] = None
+        _DAEMON_MONITOR_BUNDLE_CACHE["fingerprint"] = None
+        _DAEMON_MONITOR_BUNDLE_CACHE["bundle"] = None
+        _DAEMON_MONITOR_BUNDLE_CACHE["valid"] = False
+
+
+def _fingerprint_stat(path):
+    """Return the (st_mtime_ns, st_size) identity of one file, or None."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _fingerprint_file(path):
+    """Return the (stat identity, sha256) of one small control file.
+
+    The content digest binds the file even if a writer ever landed same-size
+    bytes on the same mtime_ns; the cost is one small read per tick.
+    """
+    stat = _fingerprint_stat(path)
+    if stat is None:
+        return None
+    try:
+        return (stat, hashlib.sha256(path.read_bytes()).hexdigest())
+    except OSError:
+        return None
+
+
+def _fingerprint_tree(path):
+    """Deterministic (relative name, mtime_ns, size) scan of a directory tree.
+
+    Hidden entries are pruned: the strict load chain never consumes them —
+    replay ids are grammar-validated non-hidden top-level names and cycle
+    directories are regex-validated — while the daemon stages each completed
+    match under ``match_replay/.pending/`` and publishes cycles through a
+    transient ``evaluation_cycles/.cycle-*`` temp directory between commits.
+    Counting that staging churn would defeat the cache during exactly the
+    active-daemon periods it exists for.  Like the stat-only tree identity,
+    note its residual limit: a deliberate same-size, same-mtime_ns in-place
+    rewrite of a large evidence file stays invisible here; save_cycle's own
+    full re-verification and every direct loader call remain the authority.
+    """
+    entries = []
+    if path.is_dir():
+        for dirpath, dirnames, filenames in os.walk(path):
+            dirnames[:] = sorted(
+                name for name in dirnames if not name.startswith(".")
+            )
+            for filename in filenames:
+                if filename.startswith("."):
+                    continue
+                file_path = Path(dirpath) / filename
+                stat = _fingerprint_stat(file_path)
+                if stat is not None:
+                    entries.append(
+                        (file_path.relative_to(path).as_posix(), stat[0], stat[1])
+                    )
+    return tuple(sorted(entries))
+
+
+def _monitor_semantic_fingerprint():
+    """Stat identity of the source files hashed into the evaluation identity.
+
+    ``base_evaluation_identity`` SHA256s these files on every load, so a git
+    sync that updates any of them flips bundle validity
+    (``cycle_manifest_evaluation_identity_invalid``) without touching the
+    results root; the projection must notice that too.
+    """
+    try:
+        from evaluation_data_identity import ROOT, SEMANTIC_PATHS
+    except Exception:
+        return None
+    return tuple(
+        _fingerprint_stat(ROOT / relative) for relative in SEMANTIC_PATHS
+    )
+
+
+def _monitor_epoch_archive_fingerprint(root):
+    """Identity of the epoch-reset archive evidence the receipt cross-binds.
+
+    Mirrors the project-root resolution of
+    ``system_strict_bootstrap.load_policy_epoch_reset_receipt``.  When the
+    receipt itself is unreadable the loader fails closed on its own, so a
+    stable ``None`` here is safe.
+    """
+    try:
+        receipt = json.loads(
+            (root / "policy_epoch_reset_receipt.json").read_text(encoding="utf-8")
+        )
+        if not isinstance(receipt, dict):
+            return None
+        from system_strict_bootstrap import (
+            POLICY_EPOCH_RESET_ARCHIVE_RECEIPT_FILENAME,
+            POLICY_EPOCH_RESET_CLAIM_FILENAME,
+        )
+
+        project_root = (
+            root.parents[2]
+            if root.name == "results"
+            and root.parent.name == "core"
+            and root.parent.parent.name == "web"
+            else root
+        )
+        archive_root = Path(project_root) / str(receipt.get("archive_root") or "")
+        destinations = [
+            *(receipt.get("archived_runtime") or []),
+            *(receipt.get("archived_bot_debris") or []),
+        ]
+        return (
+            _fingerprint_file(archive_root / POLICY_EPOCH_RESET_CLAIM_FILENAME),
+            _fingerprint_file(
+                archive_root / POLICY_EPOCH_RESET_ARCHIVE_RECEIPT_FILENAME
+            ),
+            tuple(
+                _fingerprint_stat(project_root / str(row.get("to") or ""))
+                for row in destinations
+                if isinstance(row, dict)
+            ),
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _monitor_pool_fingerprint():
+    """Published active pool exactly as the load chain re-derives it.
+
+    A pool change without a following cycle commit must still drop the
+    cached build, because the loader would now fail closed (pool mismatch or
+    empty pool) for the new pool.  Discovery is TTL cached, so the per-tick
+    cost is one cache lookup plus a shared git fan-out per TTL window.
+    """
+    try:
+        from evolution_infra import get_published_active_bots_read_only
+
+        return tuple(sorted(get_published_active_bots_read_only(ledger_fresh=True)))
+    except Exception:
+        return None
+
+
+def _monitor_bundle_fingerprint(root):
+    return (
+        _fingerprint_file(root / "policy_epoch_reset_receipt.json"),
+        _fingerprint_file(root / "evaluation_data_manifest.json"),
+        _fingerprint_file(root / "evaluation_cycle_manifest.json"),
+        _monitor_epoch_archive_fingerprint(root),
+        _monitor_semantic_fingerprint(),
+        _monitor_pool_fingerprint(),
+        _fingerprint_tree(root / "evaluation_cycles"),
+        _fingerprint_tree(root / "match_replay"),
+    )
+
+
+def monitor_strict_evaluation_bundle(results_dir=None):
+    """Return the fingerprint-gated strict bundle read projection.
+
+    While every consumed input still carries the fingerprint of the last
+    successful build, the previous bundle dict is reused and the expensive
+    evidence re-verification is skipped.  Only this read projection is
+    cached, and only successful (``available: True``) builds are cached.
+    While a bundle is available, the dashboard's stats/ratings are the
+    cycle-frozen figures inside it (WebUI.update_daemon_status ignores the
+    freshly polled per-tick values), so they refresh when the projection
+    rebuilds — a committed evidence change — not on every monitor tick.
+    """
+    root = Path(results_dir) if results_dir is not None else RESULTS_DIR
+    cache_key = str(root)
+    fingerprint = _monitor_bundle_fingerprint(root)
+    with _DAEMON_MONITOR_BUNDLE_LOCK:
+        if _DAEMON_MONITOR_BUNDLE_CACHE["valid"]:
+            if (
+                _DAEMON_MONITOR_BUNDLE_CACHE["root"] == cache_key
+                and _DAEMON_MONITOR_BUNDLE_CACHE["fingerprint"] == fingerprint
+            ):
+                return _DAEMON_MONITOR_BUNDLE_CACHE["bundle"]
+        # Stale entry: never serve it, and never serve a half-updated cache.
+        _DAEMON_MONITOR_BUNDLE_CACHE["valid"] = False
+    try:
+        from evaluation_bundle import load_current_strict_evaluation_bundle
+
+        bundle = load_current_strict_evaluation_bundle(root)
+    except Exception:
+        # Fail closed without caching the failure: the next tick retries.
+        return {"available": False}
+    if not isinstance(bundle, dict) or bundle.get("available") is not True:
+        # The loader reports most failures as reason dicts rather than
+        # raising; those stay uncached too, so a transient failure (pool
+        # discovery, concurrent publish) self-heals on the next tick.
+        return bundle if isinstance(bundle, dict) else {"available": False}
+    with _DAEMON_MONITOR_BUNDLE_LOCK:
+        _DAEMON_MONITOR_BUNDLE_CACHE["root"] = cache_key
+        _DAEMON_MONITOR_BUNDLE_CACHE["fingerprint"] = fingerprint
+        _DAEMON_MONITOR_BUNDLE_CACHE["bundle"] = bundle
+        _DAEMON_MONITOR_BUNDLE_CACHE["valid"] = True
+    return bundle
+
+
 def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
     """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
     global daemon_proc  # written below (daemon_proc = None); must be declared global
@@ -746,7 +1035,8 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                 restart_count = 0
             stats = load_daemon_stats()
             ratings = load_ratings()
-            ui.update_daemon_status(stats, ratings)
+            bundle = monitor_strict_evaluation_bundle()
+            ui.update_daemon_status(stats, ratings, strict_bundle=bundle)
         except Exception as e:
             ui.log_history(f"Daemon monitor error: {e}", "error")
             try:
@@ -757,4 +1047,4 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                 )
             except Exception:
                 pass
-        stop_event.wait(3)
+        stop_event.wait(DAEMON_MONITOR_INTERVAL_SEC)

@@ -133,6 +133,33 @@ abandon ledger, ratings, match history, or `pipeline_state.json`.
 A cycle emits `pipeline.disk_hygiene_done` when it actually freed bytes or
 is in pressure mode. Watch `journalctl -u pok-evolution | grep 'disk hygiene'`.
 
+### Daemon monitor (rating-daemon liveness poll)
+
+`web/core/daemon_management.py` runs `daemon_monitor_thread` to auto-restart a
+dead rating daemon and push the dashboard `daemon_stats` projection. Each tick
+fingerprint-gates the strict-evaluation read projection on every input the
+load consumes (reset receipt plus its epoch-archive claim bindings, evaluation
+manifests, the identity-relevant source files, `evaluation_cycles/**`,
+`match_replay/**`, and the published active pool; hidden staging entries such
+as `match_replay/.pending/` and `evaluation_cycles/.cycle-*` are excluded,
+since the load chain never consumes them): while no fingerprinted input
+changed, the previous projection is reused instead of SHA256-re-verifying
+the whole replay corpus; a failed build is never cached and is retried on the
+next tick. While a projection is available, the dashboard figures are the
+cycle-frozen numbers inside it, so they refresh when a cycle commits, not on
+every tick. The tick used to run every 3 seconds and rebuild that projection
+unconditionally — re-verifying ~465 MB of evidence and reaching 67% of the web
+process CPU; liveness detection only needs bounded latency, so the tick is now
+operator tunable. A dead rating daemon is therefore auto-restarted (and
+`rating_daemon_exited` stability resets) up to one tick later than before.
+This gates the monitor read projection only: the daemon's `save_cycle` full
+re-verification and every other `load_current_strict_evaluation_bundle`
+caller keep their direct, uncached path.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `POK_DAEMON_MONITOR_INTERVAL_SEC` | `30` | Seconds between monitor ticks, clamped to [3, 600]; non-numeric or non-finite values fall back to the default (read once at import; set it in `env.runtime` and restart the service) |
+
 ## Dual-checkout layout
 
 ```
