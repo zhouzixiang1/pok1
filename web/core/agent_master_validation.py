@@ -408,16 +408,24 @@ def _proposal_schema_repair_guidance(
                 "target symbol."
             )
             break
-    for item in hints:
-        if item.startswith("schema_retry_avoid_claimed_symbol."):
-            add(
-                "change_symbol "
-                + item.split(".", 1)[1]
-                + " is already claimed by another direction in this "
-                "ensemble; choose a different existing file.py:symbol that "
-                "still fits this direction's lens."
-            )
-            break
+    claimed_symbols = [
+        item.split(".", 1)[1]
+        for item in hints
+        if item.startswith("schema_retry_avoid_claimed_symbol.")
+    ]
+    if claimed_symbols:
+        # Render EVERY claimed symbol, not just the first: the collision
+        # avoid set finalized at retry dispatch carries all unavailable
+        # symbols (accepted claims + registered pins + the direction's own
+        # first-round symbol), and naming only one re-blinds the repair.
+        add(
+            "The change_symbol targets "
+            + ", ".join(claimed_symbols)
+            + " are already claimed by another direction in this ensemble "
+            "(or pinned to its in-flight repair); choose a different "
+            "existing file.py:symbol that still fits this direction's lens "
+            "and is not any of them."
+        )
     for item in hints:
         if item.startswith("schema_retry_target_infeasible_unpinned."):
             add(

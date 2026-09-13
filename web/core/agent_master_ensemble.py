@@ -360,6 +360,24 @@ async def _run_master_proposal_ensemble(
     invalid_proposal_specs: list[tuple[str, str, dict]] = []
     accepted_proposal_directions: dict[str, str] = {}
 
+    def _ensemble_unavailable_change_symbols(*extra: str) -> list[str]:
+        """Every change_symbol unavailable to a collision-class retry right
+        now: each symbol already accepted in this ensemble, each registered
+        schema-retry pin, plus the caller's explicitly passed first-round
+        symbol(s).  Read live so a retry-dispatch-time caller observes the
+        complete post-first-round state (v446: a set snapshotted at the
+        colliding direction's own construction point stayed blind to symbols
+        claimed by later directions)."""
+        unavailable: list[str] = []
+        for symbol in (
+            *seen_change_symbols,
+            *retry_pinned_symbols.values(),
+            *(str(item or "") for item in extra),
+        ):
+            if symbol and symbol not in unavailable:
+                unavailable.append(symbol)
+        return unavailable
+
     def proposal_actual_role(result: object) -> str | None:
         if not isinstance(result, dict):
             return None
@@ -463,6 +481,11 @@ async def _run_master_proposal_ensemble(
                 retry_pinned_symbols[direction] = pinned_symbol
             elif pinned_symbol:
                 repair["avoid_change_symbols"] = [pinned_symbol]
+                if pin_collides:
+                    # Collision-class repair: its avoid set is finalized with
+                    # the complete unavailable set at retry-dispatch time
+                    # (below), matching the distinctness repairs.
+                    repair["collision_retry"] = True
                 if target_infeasible and not pin_collides:
                     repair["target_infeasible_unpinned"] = True
             repair["projection_hints"] = list(attempt1_hints)
@@ -563,6 +586,44 @@ async def _run_master_proposal_ensemble(
             slot=f"proposal:{direction}",
         )
     if invalid_proposal_specs:
+        # v446 defect: a collision-class retry's avoid set named only the
+        # symbol its OWN first round collided with.  Symbols claimed by other
+        # (especially later-processed) accepted directions and pins registered
+        # by other schema repairs were invisible to both the retry prompt and
+        # the avoid check, so the single permitted retry re-collided and the
+        # direction died (counterfactual -> _size_conditioned_fold_rate
+        # already claimed by compute_memory; ensemble 2/3; generation
+        # abandoned).  Finalize the avoid set here, AFTER the whole first
+        # round, from one shared source: every accepted direction's
+        # change_symbol, every registered pin, and this direction's own
+        # first-round symbol.  The prompt tokens below and the attempt-2 hard
+        # validation both read this exact list, so the set the prompt says to
+        # avoid is the set validation rejects.
+        for _repair_spec in invalid_proposal_specs:
+            repair = _repair_spec[2]
+            if not isinstance(repair, dict):
+                continue
+            is_collision_retry = (
+                str(repair.get("kind") or "") == "distinctness"
+                or bool(repair.pop("collision_retry", False))
+            )
+            if not is_collision_retry:
+                # Non-collision schema repairs (clean pin, target-infeasible
+                # unpin) keep their construction-time behavior unchanged.
+                continue
+            own_symbols = [
+                str(s) for s in (repair.get("avoid_change_symbols") or [])
+            ]
+            unavailable = _ensemble_unavailable_change_symbols(*own_symbols)
+            repair["avoid_change_symbols"] = unavailable
+            hints = list(repair.get("projection_hints") or ())
+            known_hints = set(hints)
+            hints.extend(
+                f"schema_retry_avoid_claimed_symbol.{s}"
+                for s in unavailable
+                if f"schema_retry_avoid_claimed_symbol.{s}" not in known_hints
+            )
+            repair["projection_hints"] = hints
         retry_results = await _am.gather_llm_fail_fast(
             *(
                 propose(direction, directive, repair=repair)

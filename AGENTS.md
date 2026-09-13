@@ -1290,7 +1290,12 @@ PINNED to its original change_symbol (`pinned_change_symbol` +
 switched targets) unless that pin is already claimed by another direction
 in the same ensemble, in which case it becomes
 `schema_retry_avoid_claimed_symbol.<symbol>` so the retry can stay
-distinct. A retry whose own attempt-1 rejection proves the pinned TARGET's
+distinct. Collision-class retries (distinctness or a downgraded pin) carry
+one token per unavailable symbol — the finalize step merges every accepted
+direction's symbol, every registered retry pin, and the direction's own
+first symbol into the avoid set AFTER attempt-1 completes (per-direction
+construction would snapshot a stale set), renders the full list into the
+repair prompt, and the hard check rejects exactly that set. A retry whose own attempt-1 rejection proves the pinned TARGET's
 shape is itself infeasible (exact prefixes
 `proposal_mechanism_target_missing_from_executable_fields` /
 `proposal_mechanism_qualified_target_identifier_continuation` /

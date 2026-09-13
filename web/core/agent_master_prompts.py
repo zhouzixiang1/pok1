@@ -306,6 +306,27 @@ def _render_master_proposal_provider_prompt(inputs):
             "manipulate proposal_id; the system derives it from the substantive "
             "contract. Emit one complete object without commentary."
         )
+        # The collision avoid set finalized at retry dispatch names every
+        # symbol unavailable to this repair (accepted claims, registered
+        # pins, and this direction's own first-round symbol) as one
+        # schema_retry_avoid_claimed_symbol token per symbol.  Render the
+        # complete list: a distinctness retry that cannot see the claimed
+        # targets re-collides on its single permitted attempt (v446).
+        claimed_symbols = tuple(dict.fromkeys(
+            item.split(".", 1)[1]
+            for item in projection_hints
+            if item.startswith("schema_retry_avoid_claimed_symbol.")
+        ))
+        if claimed_symbols:
+            repair_text += (
+                "\n\nThe following change_symbol targets are already claimed "
+                "by other scouts in this ensemble or pinned to their "
+                "in-flight repairs; your change_symbol (and the "
+                "reachable_chain terminal) MUST NOT be any of: "
+                + ", ".join(claimed_symbols)
+                + ". Choose a genuinely different existing file.py:symbol "
+                "that still fits this slot's assigned lens."
+            )
     elif is_repair:
         repair_text = (
             "\n\nYour previous completed response failed deterministic projection. "
