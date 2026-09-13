@@ -1247,13 +1247,31 @@ binds the strongest row's `games` so citing that container can satisfy the
 snapshot citations are not a hard reject: the validator keeps the strongest
 three by bound `games`. A compiled worker binding that overflows the 13k
 prompt cap is mechanically trimmed (snapshot projections then prose fields)
-instead of relying on the one schema retry. Cold-start annealing (2026-08-17): after a rating-identity reset no
-row reaches the absolutes, so while the pool's best citable row is
+instead of relying on the one schema retry. Cold-start annealing (2026-08-17;
+primary tier per-matchup since 2026-09-13): after a rating-identity reset no
+row reaches the absolutes, so while the best citable row is
 observably below a tier, that tier anneals to best-available (shared floor
 15 games; below the floor nothing passes — citing sub-15 rows as
 load-bearing is noise fitting) and re-hardens automatically; an unreadable
-pool means UNKNOWN and the absolutes apply. The plan audit and the proposal
-gate share one citation set and one pool-max typing rule. Rationale:
+pool means UNKNOWN and the absolutes apply. The primary (matchup) tier now
+anneals **per cited matchup** — an unrelated large row no longer hardens
+the tier for a starved matchup: each H2H citation is graded against the
+best row available for that specific bot pair (both wire directions),
+`tier = 30 if best >= 30 else max(15, 3*best//4)` (best unresolvable →
+absolute tier); the aggregate tier still anneals on the pool-wide max and
+the `selection_snapshot.json#/rows` container-pointer rule is unchanged.
+The rejection hint carries the per-matchup numbers
+(`proposal_cited_sample_too_small.<matchup>.cited.<games>.best_available.<best>.tier.<tier>.and_aggregate.<tier>`).
+The plan audit and the proposal
+gate share one citation set and one tier/typing rule (shared helpers in
+`agent_master_validation.py`, imported by the audit mirror in
+`evidence_snapshot.py` — never two copies). When an audit rejection is
+purely statistical-floor and the pool contains no row that could satisfy
+the effective tiers, the corrective re-plan is skipped (reason token
+`evidence_floor_unsatisfiable` + `pipeline.master_audit_evidence_floor_unsatisfiable`
+event carrying the tier/best-available numbers — the rating daemon must
+supply more native samples) instead of burning the second `run_master` on a
+deterministic re-reject. Rationale:
 12/12 selected plans (v168-v187) acted on n=4-56 rows — pure noise fitting.
 Related contracts: within-ensemble proposals must carry DISTINCT
 `change_symbol`s (packet-level backstop
@@ -1263,7 +1281,17 @@ PINNED to its original change_symbol (`pinned_change_symbol` +
 switched targets) unless that pin is already claimed by another direction
 in the same ensemble, in which case it becomes
 `schema_retry_avoid_claimed_symbol.<symbol>` so the retry can stay
-distinct. The repair prompt renders those pin/budget/sample hints (a
+distinct. A retry whose own attempt-1 rejection proves the pinned TARGET's
+shape is itself infeasible (exact prefixes
+`proposal_mechanism_target_missing_from_executable_fields` /
+`proposal_mechanism_qualified_target_identifier_continuation` /
+`proposal_mechanism_root_scoped_unknown_leaf` /
+`proposal_mechanism_target_invalid`, 2026-09-13) releases the pin
+(`schema_retry_target_infeasible_unpinned.<symbol>`; the retry must pick a
+NEW change_symbol, still validated against the source graph, the avoid set,
+and already-claimed symbols) — pinning there would guarantee the retry
+reproduces the same deterministic rejection. The repair prompt renders
+those pin/budget/sample hints (a
 missing renderer branch left 85 generations blind). The shared
 cross-generation direction ledger lives in
 `recent_directions.py` (rendered advisory into master_context, and the plan

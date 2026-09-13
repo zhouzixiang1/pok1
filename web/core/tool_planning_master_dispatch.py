@@ -54,6 +54,70 @@ from tool_helpers import (
 import tool_planning as _tp  # noqa: E402,F401
 
 
+def _audit_rejection_is_pure_evidence_floor(audit_result: dict) -> bool:
+    """True when the deterministic audit rejection is ONLY the evidence floor.
+
+    The doomed-retry guard may only fire for rejections whose every
+    contradiction is a statistical-floor token (the shared
+    ``proposal_cited_sample_too_small...`` string emitted identically by the
+    proposal gate and the audit mirror). A citation-accuracy error, an LLM
+    audit verdict, or any mixed rejection keeps the corrective retry: the
+    model can still fix those.
+    """
+    if not isinstance(audit_result, dict):
+        return False
+    contradictions = audit_result.get("contradictions")
+    if not audit_result.get("deterministic_h2h_snapshot_check"):
+        return False
+    if not isinstance(contradictions, list) or not contradictions:
+        return False
+    return all(
+        str(item).startswith("proposal_cited_sample_too_small")
+        for item in contradictions
+    )
+
+
+def _master_audit_doomed_retry_report(
+    audit_result: dict,
+    next_v,
+) -> "dict | None":
+    """Doomed-retry report for a pure evidence-floor rejection, or None.
+
+    Delegates to ``evidence_snapshot.evidence_floor_retry_doomed``: a report
+    is returned only when the rejection is purely statistical-floor AND no
+    row anywhere in the pool could satisfy either tier — the retry is then
+    mathematically unsatisfiable on the citation dimension. An unreadable
+    pool (None) never skips.
+    """
+    if not _audit_rejection_is_pure_evidence_floor(audit_result):
+        return None
+    try:
+        from evidence_snapshot import evidence_floor_retry_doomed
+
+        report = evidence_floor_retry_doomed(next_v)
+    except Exception:
+        return None
+    if isinstance(report, dict) and report.get("doomed"):
+        return report
+    return None
+
+
+def _doomed_evidence_floor_abandon_reason(
+    next_v,
+    report: dict,
+    feedback: str,
+) -> str:
+    """MASTER_AUDIT_REJECTED reason carrying the evidence_floor_unsatisfiable token."""
+    return (
+        f"master_audit_rejected v{next_v}: evidence_floor_unsatisfiable "
+        f"(primary tier >= {report.get('primary_tier')}, best matchup games "
+        f"{report.get('best_matchup_games')}, best non-matchup games "
+        f"{report.get('best_non_matchup_games')}, aggregate tier >= "
+        f"{report.get('aggregate_tier')}; the rating daemon must supply more "
+        f"native samples) {str(feedback or '')[:240]}"
+    )
+
+
 async def run_master_impl(args):
     _t0 = time.time()
     source_v = args.get("source_v")
@@ -1844,6 +1908,78 @@ async def run_master_impl(args):
                         "Master plan audit is blocking. This generation was abandoned "
                         "after the corrective re-plan budget was exhausted. Start a "
                         "fresh generation; do not execute workers from the rejected plan."
+                    ),
+                )
+            # Doomed-retry skip (2026-09-13): when the rejection is purely the
+            # statistical evidence floor and NO row in the pool can satisfy
+            # either tier, a corrective re-plan is mathematically unable to fix
+            # the citation dimension — it would burn the second Master run and
+            # fail identically. Skip straight to the existing
+            # MASTER_AUDIT_REJECTED terminal path (same abandon pipeline, no
+            # new stage/checkpoint fields) and wait for the rating daemon to
+            # supply more samples instead.
+            _doomed_report = _master_audit_doomed_retry_report(
+                audit_result, next_v
+            )
+            if _doomed_report is not None:
+                try:
+                    audit_result.setdefault("contradictions", []).append(
+                        "evidence_floor_unsatisfiable"
+                    )
+                except Exception:
+                    pass
+                try:
+                    _tp.log_system_event(
+                        "pipeline.master_audit_evidence_floor_unsatisfiable",
+                        "warn",
+                        (
+                            f"Master audit evidence floor unsatisfiable for v{next_v}: "
+                            f"no pool row can meet the statistical evidence tiers "
+                            f"(primary tier >= {_doomed_report.get('primary_tier')}, "
+                            f"best matchup games "
+                            f"{_doomed_report.get('best_matchup_games')}, best "
+                            f"non-matchup games "
+                            f"{_doomed_report.get('best_non_matchup_games')}, "
+                            f"aggregate tier >= "
+                            f"{_doomed_report.get('aggregate_tier')}). The rating "
+                            "daemon must supply more native samples before Master "
+                            "can cite legal evidence; skipping the doomed corrective "
+                            "retry.",
+                        ),
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "doomed_report": _doomed_report,
+                            "audit_attempt": _audit_attempt + 1,
+                        },
+                    )
+                except Exception:
+                    pass
+                _nf = _tp._bump_master_fail_count(next_v, source_v, value=_audit_attempt + 1)
+                return await _tp._abandon_master_generation(
+                    next_v,
+                    source_v,
+                    error="MASTER_AUDIT_REJECTED",
+                    fail_count=_nf,
+                    reason=_doomed_evidence_floor_abandon_reason(
+                        next_v,
+                        _doomed_report,
+                        audit_result.get("feedback", ""),
+                    ),
+                    event_type="pipeline.master_audit_exhausted_abandon",
+                    event_message=(
+                        f"Master audit evidence floor unsatisfiable for v{next_v} — "
+                        f"the corrective retry cannot meet the citation tiers; "
+                        f"abandoning and waiting for rating daemon samples"
+                    ),
+                    ui=ui,
+                    payload={"audit": audit_result, "doomed_report": _doomed_report},
+                    directive=(
+                        "The statistical evidence floor cannot be met by any row in "
+                        "the current snapshot pool. This generation was abandoned "
+                        "without burning the corrective re-plan; the rating daemon "
+                        "must supply more native samples before a fresh generation "
+                        "can cite legal evidence."
                     ),
                 )
             # Re-plan with rejection feedback, then re-audit the new plan

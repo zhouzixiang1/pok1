@@ -61,8 +61,19 @@ def test_two_tier_bar_accepts_rows_aggregate(tmp_path):
     }), encoding="utf-8")
     # pool max 314 >= absolute tiers (30/200): an h2h primary row plus the
     # /rows aggregate container passes; a sub-200 aggregate row still fails.
-    assert _snapshot_evidence_two_tier_errors([33, 250], tmp_path) == []
-    assert _snapshot_evidence_two_tier_errors([33, 120], tmp_path) != []
+    # Contract change 2026-09-13: the tier check takes (reference, games)
+    # citations — the aggregate container pointer keeps binding the strongest
+    # row's games, and this tmp_path has no head_to_head.json so the h2h
+    # citation grades at the unknown-matchup absolute tier 30 (33 >= 30).
+    h2h_ref = f"snapshot:head_to_head.json#/{bot_name(STRICT_SOURCE_V)} vs {bot_name(STRICT_TARGET_V)}"
+    assert _snapshot_evidence_two_tier_errors(
+        [(h2h_ref, 33), ("snapshot:selection_snapshot.json#/rows", 250)],
+        tmp_path,
+    ) == []
+    assert _snapshot_evidence_two_tier_errors(
+        [(h2h_ref, 33), ("snapshot:selection_snapshot.json#/rows", 120)],
+        tmp_path,
+    ) != []
 
 
 # ═══════════════════════════════════════════════════════════════════════════

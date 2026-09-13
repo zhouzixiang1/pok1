@@ -51,6 +51,25 @@ RETIRED_ACTIVE_PATHS = (
     ROOT / "web" / "server" / "routes" / "scheduler.py",
 )
 
+# Interactive agent CLIs (claude-agent-sdk with project setting sources, IDE
+# agents) recreate an empty project ``.claude/`` directory — and sometimes the
+# gitignored ``.claude/worktrees/`` scratch or a session-local
+# ``settings.local.json`` — in whatever checkout they run in.  That is tooling
+# session state, not the retired Claude-orchestration facility this gate
+# retires: any other content under ``.claude`` (settings.json, commands/,
+# skills/, agents/, ...) is still the retired facility signature and fails.
+_AGENT_CLI_SCRATCH_ENTRIES = {"worktrees", "settings.local.json"}
+
+
+def _is_agent_cli_scratch_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    return all(
+        (child.name == "worktrees" and child.is_dir())
+        or (child.name == "settings.local.json" and child.is_file())
+        for child in path.iterdir()
+    )
+
 RETIRED_IMPORT_ROOTS = {
     "archive",
     "engine",
@@ -114,8 +133,31 @@ def _literal_contains_line_delimiter(node: ast.AST) -> bool:
 
 
 def test_retired_facilities_are_not_active_paths():
-    present = [path.relative_to(ROOT).as_posix() for path in RETIRED_ACTIVE_PATHS if path.exists()]
+    present = [
+        path.relative_to(ROOT).as_posix()
+        for path in RETIRED_ACTIVE_PATHS
+        if path.exists()
+        and not (path == ROOT / ".claude" and _is_agent_cli_scratch_dir(path))
+    ]
     assert present == []
+
+
+def test_agent_cli_scratch_dir_tolerances(tmp_path):
+    empty = tmp_path / ".claude"
+    empty.mkdir()
+    assert _is_agent_cli_scratch_dir(empty)
+    (empty / "worktrees").mkdir()
+    (empty / "worktrees" / "some-worktree").mkdir()
+    (empty / "settings.local.json").write_text("{}", encoding="utf-8")
+    assert _is_agent_cli_scratch_dir(empty)
+    facility = tmp_path / "claude-facility"
+    facility.mkdir()
+    (facility / "settings.json").write_text("{}", encoding="utf-8")
+    assert not _is_agent_cli_scratch_dir(facility)
+    (facility / "settings.json").unlink()
+    (facility / "commands").mkdir()
+    assert not _is_agent_cli_scratch_dir(facility)
+    assert not _is_agent_cli_scratch_dir(tmp_path / "does-not-exist")
 
 
 def test_native_workflow_uses_only_current_registered_skill_layers():

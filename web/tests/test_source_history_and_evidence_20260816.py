@@ -99,11 +99,22 @@ def test_two_tier_hint_is_compact_and_charset_safe():
 
     import agent_master_validation as amv
 
+    # Contract change 2026-09-13 (per-matchup primary annealing): the tier
+    # check takes (reference, games) citations and the rejection token
+    # carries the per-matchup quartet matchup/cited/best_available/tier
+    # instead of the old max_games_seen/need_primary pair. Aggregate-class
+    # citations with no matchup alias grade against the pool-annealed
+    # primary tier, so these no-matchup citations behave exactly like the
+    # old numeric form.
     # Neither tier met.
-    errs = amv._snapshot_evidence_two_tier_errors([12, 7])
+    errs = amv._snapshot_evidence_two_tier_errors(
+        [("snapshot:bot_stats.json#/national_cloud_v1", 12),
+         ("snapshot:bot_stats.json#/national_cloud_v2", 7)]
+    )
     assert errs == [
-        "proposal_cited_sample_too_small.max_games_seen.12"
-        ".need_primary.30.and_aggregate.200"
+        "proposal_cited_sample_too_small.matchup.none"
+        ".cited.12.best_available.0.tier.30"
+        ".and_aggregate.200"
         ".aggregate_sources.bot_stats.selection_snapshot"
     ]
     for err in errs:
@@ -111,10 +122,15 @@ def test_two_tier_hint_is_compact_and_charset_safe():
         assert re.fullmatch(r"[a-z0-9_.:-]+", err) is not None
 
     # Primary met, aggregate missing.
-    assert amv._snapshot_evidence_two_tier_errors([45])
+    assert amv._snapshot_evidence_two_tier_errors(
+        [("snapshot:bot_stats.json#/national_cloud_v1", 45)]
+    )
     # Both met (a single 200+ row satisfies both tiers).
-    assert amv._snapshot_evidence_two_tier_errors([45, 234]) == []
-    assert amv._snapshot_evidence_two_tier_errors([]) 
+    assert amv._snapshot_evidence_two_tier_errors(
+        [("snapshot:bot_stats.json#/national_cloud_v1", 45),
+         ("snapshot:bot_stats.json#/national_cloud_v2", 234)]
+    ) == []
+    assert amv._snapshot_evidence_two_tier_errors([])
 
 
 def test_binding_exposes_structured_games_scalars(tmp_path, monkeypatch):
@@ -159,11 +175,20 @@ def test_audit_floor_errors_require_primary_and_aggregate(monkeypatch, tmp_path)
         },
     )
     # Primary met (55>=30) but no aggregate snapshot reference in the text.
+    # Contract change 2026-09-13: the audit mirror now emits the SAME shared
+    # proposal_cited_sample_too_small token as the proposal gate (both sides
+    # format through one shared formatter), instead of the old prose
+    # "statistical evidence bar not met: ..." verdict.
     errs = es.statistical_evidence_floor_errors(
         {"worker_prompt": "national_cloud_v1 vs national_cloud_v185 games=55 weakness"},
         190,
     )
-    assert errs and "aggregate corroboration" in errs[0]
+    assert errs == [
+        "proposal_cited_sample_too_small.national_cloud_v1_vs_national_cloud_v185"
+        ".cited.55.best_available.55.tier.30"
+        ".and_aggregate.200"
+        ".aggregate_sources.bot_stats.selection_snapshot"
+    ]
 
     # With an aggregate snapshot reference, the bar passes.
     errs = es.statistical_evidence_floor_errors(
@@ -175,7 +200,9 @@ def test_audit_floor_errors_require_primary_and_aggregate(monkeypatch, tmp_path)
     )
     assert errs == []
 
-    # Only a sparse row cited: primary tier fails too.
+    # Only a sparse row cited: the per-matchup tier anneals on that matchup's
+    # best row (8) but never below the shared 15-game floor, so the 8-game
+    # citation is still rejected and the token carries the per-matchup numbers.
     errs = es.statistical_evidence_floor_errors(
         {
             "worker_prompt": "national_cloud_v1 vs national_cloud_v29 games=8 weakness",
@@ -183,7 +210,12 @@ def test_audit_floor_errors_require_primary_and_aggregate(monkeypatch, tmp_path)
         },
         190,
     )
-    assert errs and "primary matchup row games >= 30" in errs[0]
+    assert errs == [
+        "proposal_cited_sample_too_small.national_cloud_v1_vs_national_cloud_v29"
+        ".cited.8.best_available.8.tier.15"
+        ".and_aggregate.200"
+        ".aggregate_sources.bot_stats.selection_snapshot"
+    ]
 
 
 # --- 1.3 direction dedup / retry pinning / direction-scoped novelty --------
@@ -368,26 +400,64 @@ def test_evidence_tiers_anneal_during_cold_start(tmp_path):
     cold = tmp_path / "cold"
     cold.mkdir()
     (cold / "head_to_head.json").write_text(
-        json.dumps({"a vs b": {"games": 31, "a_wins": 15, "b_wins": 16}}),
+        json.dumps({
+            "national_cloud_v1 vs national_cloud_v2": {
+                "games": 31, "a_wins": 15, "b_wins": 16,
+            },
+            "national_cloud_v1 vs national_cloud_v3": {
+                "games": 24, "a_wins": 12, "b_wins": 12,
+            },
+            "national_cloud_v1 vs national_cloud_v4": {
+                "games": 18, "a_wins": 9, "b_wins": 9,
+            },
+        }),
         encoding="utf-8",
     )
     assert amv._effective_evidence_tiers(cold) == (30, 23)
     # Primary 31-row + a 24-game corroboration row passes during cold start
     # (aggregate anneals to 75% of pool max — demanding the exact max was a
     # relevance-blind moving target: v196 cited 44 with pool max 47).
-    assert amv._snapshot_evidence_two_tier_errors([31, 24], cold) == []
-    assert amv._snapshot_evidence_two_tier_errors([24, 24], cold)
-    assert amv._snapshot_evidence_two_tier_errors([18], cold)
+    # Contract change 2026-09-13 (per-matchup primary annealing): citations
+    # are (reference, games) pairs and the primary tier anneals on the cited
+    # matchup's own best row — citing a 24-best matchup's 24-row now passes
+    # primary at its annealed tier 18, and an 18-best matchup's 18-row passes
+    # at tier 15; only missing aggregate corroboration can still reject it.
+    def _ref(a, b):
+        from bot_namespace import bot_name
+        return f"snapshot:head_to_head.json#/{bot_name(a)} vs {bot_name(b)}"
+
+    assert amv._snapshot_evidence_two_tier_errors(
+        [(_ref(1, 2), 31), (_ref(1, 3), 24)], cold
+    ) == []
+    assert amv._snapshot_evidence_two_tier_errors(
+        [(_ref(1, 3), 24), (_ref(1, 3), 24)], cold
+    ) == []
+    errs18 = amv._snapshot_evidence_two_tier_errors([(_ref(1, 4), 18)], cold)
+    assert errs18 and ".cited.18.best_available.18.tier.15." in errs18[0]
+    assert ".and_aggregate.23." in errs18[0]
 
     frozen = tmp_path / "frozen"
     frozen.mkdir()
     (frozen / "head_to_head.json").write_text(
-        json.dumps({"a vs b": {"games": 12, "a_wins": 6, "b_wins": 6}}),
+        json.dumps({"national_cloud_v1 vs national_cloud_v2": {
+            "games": 12, "a_wins": 6, "b_wins": 6,
+        }}),
         encoding="utf-8",
     )
     # Below the shared 15-game floor nothing passes: citing 12-game rows as
     # load-bearing IS noise fitting — the generation waits for the pool.
     assert amv._effective_evidence_tiers(frozen) == (15, 15)
+    assert amv._snapshot_evidence_two_tier_errors(
+        [
+            (_ref(1, 2), 12),
+            ("snapshot:bot_stats.json#/national_cloud_v1", 12),
+        ],
+        frozen,
+    ) == [
+        "proposal_cited_sample_too_small.national_cloud_v1_vs_national_cloud_v2"
+        ".cited.12.best_available.12.tier.15.and_aggregate.15"
+        ".aggregate_sources.bot_stats.selection_snapshot"
+    ]
 
     # Unknown pool -> absolute tiers (no silent weakening on read failure).
     assert amv._effective_evidence_tiers(None) == (30, 200)

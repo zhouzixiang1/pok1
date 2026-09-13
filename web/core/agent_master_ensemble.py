@@ -59,6 +59,23 @@ def _extract_change_symbol_from_output(raw_output: object) -> str | None:
 
 _log = logging.getLogger("pok.master")
 
+# Attempt-1 rejection hint prefixes proving the pinned TARGET's own shape is
+# infeasible for the proposal contract (mechanism-target binding classes).
+# A schema retry pinned to such a target can only reproduce the same
+# deterministic rejection, so these classes RELEASE the pin (downgrade to an
+# avoid instruction plus the distinct ``schema_retry_target_infeasible_unpinned``
+# prompt token) instead of burning the single permitted retry on a re-fail.
+# Matching is exact-prefix so sibling codes that merely share the
+# ``proposal_mechanism_target_`` stem (e.g. ``proposal_mechanism_target_mismatch``)
+# do NOT unpin — only these four classes prove the target shape itself cannot
+# satisfy the contract.
+_TARGET_INFEASIBLE_HINT_PREFIXES = (
+    "proposal_mechanism_target_missing_from_executable_fields",
+    "proposal_mechanism_qualified_target_identifier_continuation",
+    "proposal_mechanism_root_scoped_unknown_leaf",
+    "proposal_mechanism_target_invalid",
+)
+
 
 async def _run_master_proposal_ensemble(
     planning_context: str,
@@ -396,23 +413,11 @@ async def _run_master_proposal_ensemble(
                     )
                 if resolved is not None and resolved in source_graph:
                     pinned_symbol = resolved
-            # A pin that another direction already claimed (accepted attempt-1
-            # proposal or an earlier invalid direction's pin) is a trap: the
-            # retry cannot both keep it and stay distinct.  Downgrade that pin
-            # to an avoid instruction so the retry picks a free symbol.
-            pin_collides = bool(
-                pinned_symbol
-                and (
-                    pinned_symbol in seen_change_symbols
-                    or pinned_symbol in set(retry_pinned_symbols.values())
-                )
-            )
-            if pinned_symbol and not pin_collides:
-                repair["pinned_change_symbol"] = pinned_symbol
-                retry_pinned_symbols[direction] = pinned_symbol
-            elif pinned_symbol:
-                repair["avoid_change_symbols"] = [pinned_symbol]
-            repair["projection_hints"] = (
+            # This direction's OWN attempt-1 rejection codes, computed BEFORE
+            # any retry token is appended: the infeasibility decision below
+            # reads only this output's validation errors, never another
+            # direction's rejection or a prior generation's.
+            attempt1_hints = (
                 _am._master_proposal_projection_hints(
                     output,
                     source_graph=source_graph,
@@ -424,15 +429,51 @@ async def _run_master_proposal_ensemble(
                 )
                 or ["proposal_contract_invalid"]
             )
+            # Target-shape infeasibility (2026-09-13): when the attempt-1
+            # rejection itself proves the proposed target's SHAPE cannot
+            # satisfy the mechanism-target contract, pinning the retry to the
+            # same change_symbol guarantees the retry reproduces the same
+            # rejection — the one permitted schema attempt burns on a
+            # deterministic re-fail (six-in-a-row observed live).  Release the
+            # pin exactly like a collision does (downgrade to an avoid
+            # instruction) but with a distinct prompt token so the model is
+            # told to pick a NEW target symbol.
+            target_infeasible = any(
+                str(hint).startswith(_TARGET_INFEASIBLE_HINT_PREFIXES)
+                for hint in attempt1_hints
+            )
+            # A pin that another direction already claimed (accepted attempt-1
+            # proposal or an earlier invalid direction's pin) is a trap: the
+            # retry cannot both keep it and stay distinct.  Downgrade that pin
+            # to an avoid instruction so the retry picks a free symbol.
+            # Collision keeps its original token/behavior; infeasibility only
+            # applies when the pin did not collide.
+            pin_collides = bool(
+                pinned_symbol
+                and (
+                    pinned_symbol in seen_change_symbols
+                    or pinned_symbol in set(retry_pinned_symbols.values())
+                )
+            )
+            if pinned_symbol and not pin_collides and not target_infeasible:
+                repair["pinned_change_symbol"] = pinned_symbol
+                retry_pinned_symbols[direction] = pinned_symbol
+            elif pinned_symbol:
+                repair["avoid_change_symbols"] = [pinned_symbol]
+                if target_infeasible and not pin_collides:
+                    repair["target_infeasible_unpinned"] = True
+            repair["projection_hints"] = list(attempt1_hints)
             if pinned_symbol:
-                repair["projection_hints"] = list(repair["projection_hints"]) + [
+                repair["projection_hints"].append(
                     (
                         "schema_retry_avoid_claimed_symbol."
                         if pin_collides
+                        else "schema_retry_target_infeasible_unpinned."
+                        if target_infeasible
                         else "schema_retry_keep_change_symbol."
                     )
                     + pinned_symbol
-                ]
+                )
             _log.warning(
                 "Master proposal %s rejected (attempt 1): %s",
                 direction,
@@ -590,16 +631,29 @@ async def _run_master_proposal_ensemble(
                 continue
             # Retry pinning: a schema repair must keep its original target
             # family (v187's retry silently switched symbols); a distinctness
-            # repair must avoid the symbol that caused the conflict.
+            # repair must avoid the symbol that caused the conflict.  A
+            # target-infeasible unpinned repair deliberately releases the
+            # pin: the retry MUST pick a new change_symbol, which still has
+            # to clear the full proposal validation (change_symbol /
+            # source_symbols membership in source_graph) plus the avoid and
+            # already-claimed checks below.
             pinned_symbol = (
                 str(repair.get("pinned_change_symbol") or "")
                 if isinstance(repair, dict) else ""
+            )
+            target_infeasible_unpinned = bool(
+                isinstance(repair, dict)
+                and repair.get("target_infeasible_unpinned")
             )
             avoid_symbols = (
                 [str(s) for s in (repair.get("avoid_change_symbols") or [])]
                 if isinstance(repair, dict) else []
             )
-            if pinned_symbol and proposal_symbol != pinned_symbol:
+            if (
+                pinned_symbol
+                and proposal_symbol != pinned_symbol
+                and not target_infeasible_unpinned
+            ):
                 if strict_authority_enabled:
                     from strict_authority_workflow import reject_duplicate_proposal
 

@@ -70,6 +70,30 @@ _PROPOSAL_MAX_SNAPSHOT_REFS = 3
 _PROPOSAL_COLD_START_PRIMARY_FLOOR = 15
 
 
+def _strength_row_games(node) -> int:
+    """``games`` under the shared pool-max typing rule (0 when untyped).
+
+    One copy of the typing rule shared by the proposal gate and the audit
+    mirror (``evidence_snapshot``): a countable row must carry an int
+    ``games`` plus at least one int strength companion (``a_wins`` /
+    ``wins`` / ``win_rate``) so metadata scalars never inflate the pool.
+    """
+    if not isinstance(node, dict):
+        return 0
+    games = node.get("games")
+    if (
+        isinstance(games, int)
+        and not isinstance(games, bool)
+        and any(
+            isinstance(node.get(k), int)
+            and not isinstance(node.get(k), bool)
+            for k in ("a_wins", "wins", "win_rate")
+        )
+    ):
+        return games
+    return 0
+
+
 def _snapshot_pool_max_games(snapshot_dir) -> int:
     """Largest games count across the snapshot's citable strength rows."""
     if snapshot_dir is None:
@@ -86,16 +110,8 @@ def _snapshot_pool_max_games(snapshot_dir) -> int:
         while stack:
             node = stack.pop()
             if isinstance(node, dict):
-                games = node.get("games")
-                if (
-                    isinstance(games, int)
-                    and not isinstance(games, bool)
-                    and games > best
-                    and any(
-                        isinstance(node.get(k), int)
-                        for k in ("a_wins", "wins", "win_rate")
-                    )
-                ):
+                games = _strength_row_games(node)
+                if games > best:
                     best = games
                 stack.extend(node.values())
             elif isinstance(node, list):
@@ -103,15 +119,22 @@ def _snapshot_pool_max_games(snapshot_dir) -> int:
     return best
 
 
-def _effective_evidence_tiers(snapshot_dir) -> tuple[int, int]:
-    """(primary, aggregate) thresholds after cold-start annealing.
+def _pool_annealed_tiers(
+    pool_max: int,
+    *,
+    min_primary_games: int = _PROPOSAL_MIN_PRIMARY_GAMES,
+    min_aggregate_games: int = _PROPOSAL_MIN_AGGREGATE_GAMES,
+) -> tuple[int, int]:
+    """(primary, aggregate) tiers after pool-wide cold-start annealing.
 
     ``pool_max <= 0`` (no readable snapshot) means UNKNOWN, not empty: the
     absolute tiers apply — annealing only weakens the bar when the pool is
-    observably small, never when we merely failed to look."""
-    pool_max = _snapshot_pool_max_games(snapshot_dir)
+    observably small, never when we merely failed to look. Shared by the
+    proposal gate and the audit mirror so the two sides can never disagree
+    on the tier math.
+    """
     if pool_max <= 0:
-        return _PROPOSAL_MIN_PRIMARY_GAMES, _PROPOSAL_MIN_AGGREGATE_GAMES
+        return min_primary_games, min_aggregate_games
     # Fractional tolerance: while the pool is below an absolute tier, that
     # tier anneals to 75% of the pool max — the annealed bar must not demand
     # citing THE single biggest row (it may be irrelevant to a direction, and
@@ -126,28 +149,214 @@ def _effective_evidence_tiers(snapshot_dir) -> tuple[int, int]:
             (3 * pool_max) // 4,
         )
 
-    return _anneal(_PROPOSAL_MIN_PRIMARY_GAMES), _anneal(
-        _PROPOSAL_MIN_AGGREGATE_GAMES
+    return _anneal(min_primary_games), _anneal(min_aggregate_games)
+
+
+def _effective_evidence_tiers(snapshot_dir) -> tuple[int, int]:
+    """(primary, aggregate) thresholds after cold-start annealing.
+
+    The aggregate tier and the pool-wide fallback primary tier (used for
+    aggregate-class citations that carry no matchup) both anneal on the
+    whole-pool max; matchup-row primary tiers anneal per matchup instead
+    (see :func:`_matchup_primary_tier`).
+    """
+    return _pool_annealed_tiers(_snapshot_pool_max_games(snapshot_dir))
+
+
+def _h2h_pair_versions(text) -> tuple[int, int] | None:
+    """Unordered version pair of an H2H matchup alias, or ``None``.
+
+    Accepts any text carrying the canonical pairing alias — snapshot
+    references (``snapshot:head_to_head.json#/a vs b``), snapshot H2H keys,
+    and rejection tokens — and normalizes both directions ``a-vs-b`` /
+    ``b-vs-a`` onto one sorted pair so caller-side alias handling stays
+    symmetric (the same normalization ``h2h_citation_repair_guidance``
+    applies when mapping citation errors back to rows).
+    """
+    match = re.search(
+        rf"\b{re.escape(ACTIVE_BOT_PREFIX)}(\d+)\s+vs\s+"
+        rf"{re.escape(ACTIVE_BOT_PREFIX)}(\d+)\b",
+        str(text or ""),
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    a, b = int(match.group(1)), int(match.group(2))
+    return (a, b) if a <= b else (b, a)
+
+
+def _matchup_primary_tier(best_pair: int) -> int:
+    """Primary (matchup-row) tier annealed on THAT matchup's best row.
+
+    Per-matchup annealing (2026-09-13): an irrelevant large row elsewhere in
+    the pool (a different pairing, or a per-bot aggregate) no longer hardens
+    the tier of the matchup a proposal actually wants to cite — the
+    253-generation abandonment chain where a 48-game unrelated row pinned
+    the primary tier at 30 while every relevant matchup sat at 4-21 games.
+    ``best_pair <= 0`` (unreadable/unknown matchup) keeps the absolute tier,
+    mirroring the unknown-pool rule; the shared 15-game floor never moves.
+    """
+    if best_pair >= _PROPOSAL_MIN_PRIMARY_GAMES:
+        return _PROPOSAL_MIN_PRIMARY_GAMES
+    if best_pair > 0:
+        return max(
+            _PROPOSAL_COLD_START_PRIMARY_FLOOR,
+            (3 * best_pair) // 4,
+        )
+    return _PROPOSAL_MIN_PRIMARY_GAMES
+
+
+def _load_head_to_head_rows(snapshot_dir) -> dict:
+    """Top-level H2H matchup rows of a snapshot dir ({} when unreadable)."""
+    if snapshot_dir is None:
+        return {}
+    try:
+        data = json.loads(
+            (Path(snapshot_dir) / "head_to_head.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _matchup_max_games_rows(h2h_rows, pair) -> int:
+    """Largest typed games among the cited matchup's rows, both directions."""
+    best = 0
+    if not isinstance(h2h_rows, dict):
+        return best
+    for key, row in h2h_rows.items():
+        if _h2h_pair_versions(str(key)) != pair:
+            continue
+        games = _strength_row_games(row)
+        if games > best:
+            best = games
+    return best
+
+
+def _rows_max_games(rows) -> int:
+    """Largest typed games across all rows of an H2H mapping."""
+    best = 0
+    if not isinstance(rows, dict):
+        return best
+    for row in rows.values():
+        games = _strength_row_games(row)
+        if games > best:
+            best = games
+    return best
+
+
+def _matchup_token(pair) -> str:
+    """Charset-safe matchup label for rejection tokens (``a_vs_b``)."""
+    return f"{bot_name(pair[0])}_vs_{bot_name(pair[1])}"
+
+
+def _cited_sample_primary_state(
+    citations: "list[tuple[str | None, int]]",
+    h2h_rows,
+    pool_primary: int,
+) -> tuple[bool, dict]:
+    """Shared primary-tier evaluation over one citation set.
+
+    Each citation is ``(reference-or-key text, games)``. A citation whose
+    text carries a matchup alias is a matchup row and passes primary when
+    its games reach that matchup's per-matchup tier; any other citation
+    (per-bot aggregate pointers) keeps the legacy pool-annealed primary
+    tier, so the change is a pure relaxation on the primary side. Returns
+    ``(has_primary, report)`` where ``report`` describes the strongest
+    cited matchup (or the ``matchup.none`` form) for the rejection token.
+    """
+    has_primary = False
+    best_matchup: tuple[int, tuple[int, int]] | None = None
+    for reference, games in citations:
+        pair = _h2h_pair_versions(reference)
+        if pair is None:
+            if games >= pool_primary:
+                has_primary = True
+            continue
+        if best_matchup is None or games > best_matchup[0]:
+            best_matchup = (games, pair)
+        if games >= _matchup_primary_tier(
+            _matchup_max_games_rows(h2h_rows, pair)
+        ):
+            has_primary = True
+    if best_matchup is not None:
+        cited, pair = best_matchup
+        best_available = _matchup_max_games_rows(h2h_rows, pair)
+        return has_primary, {
+            "matchup": _matchup_token(pair),
+            "cited": cited,
+            "best_available": best_available,
+            "tier": _matchup_primary_tier(best_available),
+        }
+    return has_primary, {
+        # No matchup citation to grade: report the best H2H row available
+        # anywhere and the pool-wide primary tier the gate actually applied
+        # to the aggregate-class citations.
+        "matchup": "matchup.none",
+        "cited": max((games for _ref, games in citations), default=0),
+        "best_available": _rows_max_games(h2h_rows),
+        "tier": pool_primary,
+    }
+
+
+def format_cited_sample_rejection(
+    *,
+    matchup: str,
+    cited: int,
+    best_available: int,
+    tier: int,
+    aggregate_tier: int,
+) -> str:
+    """The one shared two-tier rejection token formatter.
+
+    The proposal validator and the plan-audit mirror must emit byte-identical
+    rejection strings (AGENTS.md: one citation set, one pool-max typing rule),
+    so both sides format through this single function. Per-matchup fields let
+    the model self-correct: it sees the matchup it cited, that matchup's best
+    available row, and the tier that row needs.
+    """
+    return (
+        "proposal_cited_sample_too_small"
+        f".{matchup}"
+        f".cited.{int(cited)}"
+        f".best_available.{int(best_available)}"
+        f".tier.{int(tier)}"
+        f".and_aggregate.{int(aggregate_tier)}"
+        ".aggregate_sources.bot_stats.selection_snapshot"
     )
 
 
 def _snapshot_evidence_two_tier_errors(
-    games_seen: "list[int]",
+    citations: "list[tuple[str | None, int]]",
     snapshot_dir=None,
 ) -> list[str]:
-    """Compact, charset-safe two-tier verdict for hints/repair feedback."""
-    best = max(games_seen) if games_seen else 0
-    primary, aggregate = _effective_evidence_tiers(snapshot_dir)
-    if any(g >= primary for g in games_seen) and any(
-        g >= aggregate for g in games_seen
-    ):
+    """Compact, charset-safe two-tier verdict for hints/repair feedback.
+
+    ``citations`` is a list of ``(reference-or-key, games)`` pairs — the
+    validated snapshot bindings of one proposal. Primary (matchup-row)
+    tiers anneal per cited matchup; the aggregate tier anneals on the
+    whole-pool max exactly as before.
+    """
+    pool_primary, aggregate_tier = _effective_evidence_tiers(snapshot_dir)
+    h2h_rows = _load_head_to_head_rows(snapshot_dir)
+    has_primary, report = _cited_sample_primary_state(
+        citations, h2h_rows, pool_primary
+    )
+    has_aggregate = any(
+        games >= aggregate_tier for _reference, games in citations
+    )
+    if has_primary and has_aggregate:
         return []
     return [
-        "proposal_cited_sample_too_small"
-        f".max_games_seen.{best}"
-        f".need_primary.{primary}"
-        f".and_aggregate.{aggregate}"
-        ".aggregate_sources.bot_stats.selection_snapshot"
+        format_cited_sample_rejection(
+            matchup=report["matchup"],
+            cited=report["cited"],
+            best_available=report["best_available"],
+            tier=report["tier"],
+            aggregate_tier=aggregate_tier,
+        )
     ]
 
 # Closed aliases whose natural-language spellings ("fold rate", "fold-rate",
@@ -210,8 +419,27 @@ def _proposal_schema_repair_guidance(
             )
             break
     for item in hints:
+        if item.startswith("schema_retry_target_infeasible_unpinned."):
+            add(
+                "The original target "
+                + item.split(".", 1)[1]
+                + " is itself structurally infeasible for this proposal: its "
+                "mechanism-target shape cannot satisfy the executable-fields "
+                "contract, so rewording it cannot pass. This repair MUST "
+                "choose a NEW change_symbol — a different existing "
+                "file.py:symbol from the verified index that fits this "
+                "direction's lens — and must avoid every symbol already "
+                "claimed by another direction in this ensemble."
+            )
+            break
+    for item in hints:
         if item.startswith("proposal_cited_sample_too_small"):
+            # Contract change 2026-09-13: the rejection token now carries the
+            # per-matchup quartet (matchup/cited/best_available/tier); the
+            # legacy need_primary form stays parseable for older records.
             match = re.search(
+                r"tier\.(\d+)\.and_aggregate\.(\d+)", item
+            ) or re.search(
                 r"need_primary\.(\d+)\.and_aggregate\.(\d+)", item
             )
             primary_n = (
@@ -220,10 +448,18 @@ def _proposal_schema_repair_guidance(
             aggregate_n = (
                 match.group(2) if match else str(_PROPOSAL_MIN_AGGREGATE_GAMES)
             )
+            best_n = re.search(r"best_available\.(\d+)", item)
+            best_clause = (
+                " (best row for the cited matchup currently has "
+                f"games={best_n.group(1)})"
+                if best_n
+                else ""
+            )
             add(
-                "Cite stronger snapshot rows: at least one validated row "
-                f"with games>={primary_n} (the strongest head_to_head row) "
-                f"and one aggregate row with games>={aggregate_n} (a "
+                "Cite stronger snapshot rows: at least one validated matchup "
+                f"row with games>={primary_n} (the primary tier anneals per "
+                f"cited matchup while its sample is cold{best_clause}) and "
+                f"one aggregate row with games>={aggregate_n} (a "
                 "snapshot:bot_stats.json#/<bot_name> row or "
                 "snapshot:selection_snapshot.json#/rows). Copy the exact "
                 "validated pointers from the snapshot pointer index."
@@ -1340,14 +1576,20 @@ def _validated_master_proposal(
     normalized["evidence_refs"] = evidence_refs
     normalized["snapshot_evidence"] = snapshot_evidence
     if require_snapshot_evidence:
-        # Two-tier statistical evidence bar: primary row >= 30 games plus
-        # aggregate corroboration >= 200 games (see constants above).
-        games_seen = [
-            int(b["games"])
-            for b in snapshot_evidence
-            if isinstance(b, dict) and isinstance(b.get("games"), int)
+        # Two-tier statistical evidence bar: a matchup row reaching its
+        # per-matchup primary tier plus aggregate corroboration reaching the
+        # pool-annealed aggregate tier (see constants above).
+        citations = [
+            (
+                binding.get("reference") if isinstance(binding, dict) else None,
+                int(binding["games"]),
+            )
+            for binding in snapshot_evidence
+            if isinstance(binding, dict)
+            and isinstance(binding.get("games"), int)
+            and not isinstance(binding.get("games"), bool)
         ]
-        if _snapshot_evidence_two_tier_errors(games_seen, snapshot_dir):
+        if _snapshot_evidence_two_tier_errors(citations, snapshot_dir):
             return None
     if (
         evidence_mode == "frozen_strength_snapshot"
@@ -1620,7 +1862,7 @@ def _master_proposal_projection_hints(
     referenced: set[str] = set()
     normalized_refs: set[str] = set()
     snapshot_ref_count = 0
-    snapshot_games_seen: list[int] = []
+    snapshot_citations: list[tuple[str | None, int]] = []
     if not isinstance(raw_refs, list) or not 1 <= len(raw_refs) <= 10:
         errors.append("proposal_evidence_refs_shape_invalid")
     else:
@@ -1666,8 +1908,16 @@ def _master_proposal_projection_hints(
                 )
                 if normalized_ref is not None:
                     snapshot_ref_count += 1
-                    if isinstance(binding.get("games"), int):
-                        snapshot_games_seen.append(int(binding["games"]))
+                    if (
+                        isinstance(binding.get("games"), int)
+                        and not isinstance(binding.get("games"), bool)
+                    ):
+                        snapshot_citations.append(
+                            (
+                                binding.get("reference"),
+                                int(binding["games"]),
+                            )
+                        )
             if normalized_ref is None or normalized_ref in normalized_refs:
                 errors.append("proposal_evidence_ref_invalid")
             else:
@@ -1681,7 +1931,7 @@ def _master_proposal_projection_hints(
         if require_snapshot_evidence:
             errors.extend(
                 _snapshot_evidence_two_tier_errors(
-                    snapshot_games_seen, snapshot_dir
+                    snapshot_citations, snapshot_dir
                 )
             )
     if len(str(data.get("risks") or "").strip()) < 20:

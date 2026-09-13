@@ -747,6 +747,22 @@ def h2h_citation_repair_guidance(
                 if key in h2h and key not in seen:
                     wanted.append(key)
                     seen.add(key)
+        # Rejection tokens (2026-09-13) carry the charset-safe underscore
+        # matchup form ``a_vs_b``; map it back onto both snapshot row keys
+        # the same way the spaced alias above is mapped.
+        for token_match in re.findall(
+            rf"\b{re.escape(ACTIVE_BOT_PREFIX)}(\d+)_vs_"
+            rf"{re.escape(ACTIVE_BOT_PREFIX)}(\d+)\b",
+            str(err),
+        ):
+            a_v, b_v = token_match
+            for key in (
+                f"{bot_name(int(a_v))} vs {bot_name(int(b_v))}",
+                f"{bot_name(int(b_v))} vs {bot_name(int(a_v))}",
+            ):
+                if key in h2h and key not in seen:
+                    wanted.append(key)
+                    seen.add(key)
 
     rows: list[str] = []
     for key in wanted[:max_rows]:
@@ -910,10 +926,12 @@ def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
 def _snapshot_pool_max_games_for(next_v: int | str) -> int:
     """Largest games count across the generation snapshot's citable rows.
 
-    Typing rule matches agent_master_validation._snapshot_pool_max_games
+    Typing rule is the ONE shared ``agent_master_validation._strength_row_games``
     (strength-signal keys must be ints) so the two tiers can never disagree
     because one scanner accepted a float the other rejected.
     """
+    from agent_master_validation import _strength_row_games
+
     best = 0
     bundle = load_generation_evaluation_snapshot(next_v)
     for role in ("h2h", "bot_stats", "selection"):
@@ -924,16 +942,8 @@ def _snapshot_pool_max_games_for(next_v: int | str) -> int:
         while stack:
             node = stack.pop()
             if isinstance(node, dict):
-                games = node.get("games")
-                if (
-                    isinstance(games, int)
-                    and not isinstance(games, bool)
-                    and games > best
-                    and any(
-                        isinstance(node.get(k), int)
-                        for k in ("a_wins", "wins")
-                    )
-                ):
+                games = _strength_row_games(node)
+                if games > best:
                     best = games
                 stack.extend(node.values())
             elif isinstance(node, list):
@@ -952,11 +962,17 @@ def statistical_evidence_floor_errors(
 
     2026-08-16 evolution audit: 12/12 selected plans acted on n=4-56 H2H
     rows (8/12 on n<=15) — pure noise fitting. A load-bearing claim must
-    cite one matchup row with games >= 30 (primary) AND one row with
-    games >= 200 (aggregate corroboration; per-bot rows in bot_stats.json
-    and selection_snapshot rows carry 200-500 games). Rows whose cited
-    numbers already FAIL validate_h2h_citations_against_snapshot are not
-    re-litigated here — this check is sufficiency, that one is accuracy.
+    cite one matchup row with games >= its per-matchup primary tier
+    (30 once that matchup is mature; annealed to that matchup's best row
+    while cold, floor 15) AND one row with games >= 200 as aggregate
+    corroboration (per-bot rows in bot_stats.json and selection_snapshot
+    rows carry 200-500 games). Rows whose cited numbers already FAIL
+    validate_h2h_citations_against_snapshot are not re-litigated here —
+    this check is sufficiency, that one is accuracy.
+
+    2026-09-13: the tier math, matchup classification, and rejection token
+    are shared with the proposal gate (agent_master_validation) so both
+    sides emit byte-identical verdicts.
     """
     h2h = load_generation_h2h_snapshot(next_v)
     if not h2h:
@@ -976,13 +992,15 @@ def statistical_evidence_floor_errors(
             raw = binding.get("snapshot_evidence")
             if isinstance(raw, list):
                 bindings = [b for b in raw if isinstance(b, dict)]
-    cited_games: list[int] = []
+    citations: list[tuple[str, int]] = []
     if bindings:
         for binding_row in bindings:
             games = binding_row.get("games")
             if isinstance(games, int) and not isinstance(games, bool):
-                cited_games.append(games)
-    if not cited_games:
+                citations.append(
+                    (str(binding_row.get("reference") or ""), int(games))
+                )
+    if not citations:
         for key, row in h2h.items():
             if not isinstance(row, dict):
                 continue
@@ -997,21 +1015,33 @@ def statistical_evidence_floor_errors(
                     text,
                     re.IGNORECASE,
                 ):
-                    cited_games.append(games)
+                    citations.append((str(key), games))
                     break
-    if not cited_games:
+    if not citations:
         # No matchup citation at all: the accuracy validator or the proposal
         # schema owns that failure mode; sufficiency has nothing to grade.
         return []
-    # Cold-start annealing (2026-08-17): after the rating identity reset no
-    # row reaches the absolute tiers, so the audit-side floor anneals to the
-    # pool's best available row exactly like the proposal validator's (see
-    # agent_master_validation). An unreadable pool (0) means UNKNOWN: the
-    # absolute floor applies unchanged.
-    pool_max = _snapshot_pool_max_games_for(next_v)
-    if 0 < pool_max < min_primary_games:
-        min_primary_games = max(15, (3 * pool_max) // 4)
-    has_primary = any(g >= min_primary_games for g in cited_games)
+    # Primary (matchup-row) tiers anneal per cited matchup; the aggregate tier
+    # and the pool-wide fallback primary anneal on the whole-pool max. The
+    # tier math, matchup classification, and rejection token are the SAME
+    # shared helpers the proposal validator uses (agent_master_validation), so
+    # the audit mirror and the proposal gate can never emit divergent verdicts
+    # or rejection strings (AGENTS.md: one citation set, one pool-max typing
+    # rule).
+    from agent_master_validation import (
+        _cited_sample_primary_state,
+        _pool_annealed_tiers,
+        format_cited_sample_rejection,
+    )
+
+    pool_primary, aggregate_tier = _pool_annealed_tiers(
+        _snapshot_pool_max_games_for(next_v),
+        min_primary_games=min_primary_games,
+        min_aggregate_games=min_aggregate_games,
+    )
+    has_primary, report = _cited_sample_primary_state(
+        citations, h2h, pool_primary
+    )
     # Aggregate corroboration: H2H rows cap at ~58 games, so the >=200 tier
     # is necessarily a bot_stats.json / selection_snapshot.json citation —
     # detect the snapshot reference in the plan text.
@@ -1023,19 +1053,108 @@ def statistical_evidence_floor_errors(
     )
     if has_primary and has_aggregate:
         return []
-    top = sorted(set(cited_games), reverse=True)[:4]
-    missing = []
-    if not has_primary:
-        missing.append(f"primary matchup row games >= {min_primary_games}")
-    if not has_aggregate:
-        missing.append(
-            "aggregate corroboration (snapshot:bot_stats.json or "
-            "snapshot:selection_snapshot.json reference)"
-        )
     return [
-        "statistical evidence bar not met: cited matchup rows' games="
-        f"{top}; need {' AND '.join(missing)}"
+        format_cited_sample_rejection(
+            matchup=report["matchup"],
+            cited=report["cited"],
+            best_available=report["best_available"],
+            tier=report["tier"],
+            aggregate_tier=aggregate_tier,
+        )
     ]
+
+
+# Roles of the evaluation bundle that mirror the proposal gate's seven
+# strength-snapshot files (match_history_index and the manifest carry no
+# citable strength rows).
+_EVIDENCE_POOL_ROLES = (
+    "h2h",
+    "bot_stats",
+    "selection",
+    "ratings",
+    "action_stats",
+    "action_stats_per_opp",
+    "replay_spotlight",
+)
+
+
+def evidence_floor_retry_doomed(next_v: int | str) -> dict | None:
+    """Whether ANY pool row could satisfy the two statistical evidence tiers.
+
+    2026-09-13 doomed-retry guard: after a purely statistical-floor audit
+    rejection, a corrective re-plan can only succeed if the pool actually
+    contains a row that could serve as a primary matchup basis (a pairing
+    whose best row reaches that pairing's per-matchup tier — equivalently,
+    some H2H row at or above the shared 15-game floor — or an aggregate-class
+    row at or above the pool-annealed primary tier) AND a row that could
+    serve as aggregate corroboration. When either side is unsatisfiable the
+    retry is mathematically doomed and must not burn the second Master run.
+
+    Returns ``None`` when the pool cannot be read (UNKNOWN never skips);
+    otherwise a report dict whose ``doomed`` flags the unsatisfiable case
+    and whose numbers feed the operator event.
+    """
+    bundle = load_generation_evaluation_snapshot(next_v)
+    if not isinstance(bundle, dict) or not bundle.get("available"):
+        return None
+    from agent_master_validation import (
+        _h2h_pair_versions,
+        _matchup_primary_tier,
+        _pool_annealed_tiers,
+        _strength_row_games,
+    )
+
+    pair_best: dict[tuple[int, int], int] = {}
+    non_matchup_max = 0
+    h2h = bundle.get("h2h") if isinstance(bundle.get("h2h"), dict) else {}
+    for key, row in h2h.items():
+        games = _strength_row_games(row)
+        if games <= 0:
+            continue
+        pair = _h2h_pair_versions(str(key))
+        if pair is None:
+            # Unparseable H2H keys classify as aggregate-class citations at
+            # the gate, so they count toward the non-matchup maximum here.
+            non_matchup_max = max(non_matchup_max, games)
+        else:
+            pair_best[pair] = max(pair_best.get(pair, 0), games)
+    for role in _EVIDENCE_POOL_ROLES:
+        if role == "h2h":
+            continue
+        data = bundle.get(role)
+        if not isinstance(data, dict):
+            continue
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                games = _strength_row_games(node)
+                if games > non_matchup_max:
+                    non_matchup_max = games
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+    all_max = max(
+        [non_matchup_max, *pair_best.values()] if pair_best else [non_matchup_max]
+    )
+    pool_primary, aggregate_tier = _pool_annealed_tiers(all_max)
+    primary_satisfiable = (
+        any(
+            best >= _matchup_primary_tier(best)
+            for best in pair_best.values()
+        )
+        or non_matchup_max >= pool_primary
+    )
+    aggregate_satisfiable = all_max >= aggregate_tier
+    return {
+        "doomed": not (primary_satisfiable and aggregate_satisfiable),
+        "primary_satisfiable": primary_satisfiable,
+        "aggregate_satisfiable": aggregate_satisfiable,
+        "primary_tier": pool_primary,
+        "aggregate_tier": aggregate_tier,
+        "best_matchup_games": max(pair_best.values(), default=0),
+        "best_non_matchup_games": non_matchup_max,
+    }
 
 
 def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str) -> list[str]:

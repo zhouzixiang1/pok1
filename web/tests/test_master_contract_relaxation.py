@@ -142,6 +142,7 @@ def test_guidance_retry_avoid_claimed_symbol_is_disclosed():
 
 
 def test_guidance_cited_sample_carries_thresholds():
+    """Legacy-format token still renders its thresholds (older records)."""
     guidance = _proposal_schema_repair_guidance(
         (
             "proposal_cited_sample_too_small.max_games_seen.30"
@@ -151,6 +152,25 @@ def test_guidance_cited_sample_carries_thresholds():
         **_GUIDANCE_KWARGS,
     )
     assert "games>=30" in guidance and "games>=200" in guidance
+    assert "bot_stats.json#/" in guidance
+    assert "selection_snapshot.json#/rows" in guidance
+
+
+def test_guidance_cited_sample_carries_per_matchup_quartet():
+    """Contract change 2026-09-13: the rejection token now carries the
+    per-matchup quartet (matchup/cited/best_available/tier) and the repair
+    guidance must disclose the per-matchup tier plus the best available row
+    instead of the old pool-wide need_primary number."""
+    guidance = _proposal_schema_repair_guidance(
+        (
+            "proposal_cited_sample_too_small.national_cloud_v2_vs_national_cloud_v3"
+            ".cited.18.best_available.18.tier.15.and_aggregate.36"
+            ".aggregate_sources.bot_stats.selection_snapshot",
+        ),
+        **_GUIDANCE_KWARGS,
+    )
+    assert "games>=15" in guidance and "games>=36" in guidance
+    assert "best row for the cited matchup currently has games=18" in guidance
     assert "bot_stats.json#/" in guidance
     assert "selection_snapshot.json#/rows" in guidance
 
