@@ -326,11 +326,30 @@ def _render_master_proposal_provider_prompt(inputs):
             )
     invocation_id = str(inputs["invocation_id"])
     purpose = f"master_proposal_scout:{direction}"
+    # Pre-injection of the exact citable snapshot rows (2026-09-13): proposal
+    # Scouts must pick evidence_refs that clear the two-tier statistical
+    # evidence bar, and hallucinated matchup numbers were the top rejection
+    # class.  Render the same deterministic numbers table the final Master
+    # gets, from the same frozen generation snapshot.  Advisory and fail-open:
+    # no readable snapshot (or a no-strength bootstrap mode) silently omits
+    # the section; the gates stay the authority.
+    citation_preinjection = ""
+    if require_snapshot_evidence:
+        try:
+            from evidence_snapshot import exact_citable_rows_preinjection
+
+            citation_preinjection = exact_citable_rows_preinjection(
+                next_v, source_v=source_v
+            )
+        except Exception:
+            citation_preinjection = ""
     text = (
         "You are an independent poker-bot mechanism proposal scout. "
         + lineage_scope + "\n"
         + f"Distinct lens: {directive}\n"
-        + code_scope + planning_context + "\n\n"
+        + code_scope + planning_context
+        + (f"\n\n{citation_preinjection}" if citation_preinjection else "")
+        + "\n\n"
         + str(inputs["source_symbol_index"])
         + repair_text
         + "\n\nFINAL SCOUT OUTPUT CONTRACT (this overrides the embedded Master output format):\n"
@@ -516,6 +535,23 @@ def _render_master_final_provider_prompt(inputs):
     if not final_output_guard.startswith("# SYSTEM-OWNED FINAL EMISSION GATE"):
         raise ValueError("Master final emission guard is invalid")
     text = master_prompt + "\n" + master_context
+    # Pre-injection of the exact citable snapshot rows (2026-09-13): the plan
+    # audit compares cited H2H games/wins numbers verbatim against the frozen
+    # generation evidence snapshot, and recalled numbers kept disagreeing
+    # even after a corrective retry injected the right ones.  Give the final
+    # Master the deterministic table to copy.  Advisory and fail-open: a
+    # missing/unreadable snapshot (including the no-strength bootstrap modes)
+    # silently omits the section; the audit stays the authority.
+    try:
+        from evidence_snapshot import exact_citable_rows_preinjection
+
+        citation_preinjection = exact_citable_rows_preinjection(
+            int(inputs["next_v"]), source_v=int(inputs["source_v"])
+        )
+    except Exception:
+        citation_preinjection = ""
+    if citation_preinjection:
+        text += "\n\n" + citation_preinjection
     from strategy_reference_pack import current_strict_runtime_prompt_overlay
 
     text += "\n\n" + current_strict_runtime_prompt_overlay()

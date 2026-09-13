@@ -4,7 +4,7 @@ The Master ensemble pins every schema retry to its original change_symbol
 (``schema_retry_keep_change_symbol.<symbol>``) unless the pin collides with
 another direction's claim (``schema_retry_avoid_claimed_symbol.<symbol>``).
 When the attempt-1 rejection itself proves the pinned TARGET's own shape is
-infeasible for the proposal contract (the four mechanism-target binding
+infeasible for the proposal contract (the three mechanism-target binding
 classes), a pinned retry can only reproduce the same deterministic rejection
 and burns the single permitted repair — observed six-in-a-row in live logs.
 
@@ -41,10 +41,8 @@ _H2H_REF = (
 )
 _BOT_STATS_REF = f"snapshot:bot_stats.json#/{bot_name(STRICT_SOURCE_V)}"
 
-# The four target-shape infeasibility classes that must release the pin,
-# exercised in the exact suffixed forms the runtime emits (the bare
-# ``proposal_mechanism_target_invalid`` form comes from
-# agent_master_validation.py:1448; the other three carry colon suffixes).
+# The three target-shape infeasibility classes that must release the pin,
+# exercised in the exact suffixed forms the runtime emits.
 _PREFIX_VARIANTS = (
     "proposal_mechanism_target_missing_from_executable_fields:"
     "deadline:expected_diff,intervention,structural_change",
@@ -52,13 +50,17 @@ _PREFIX_VARIANTS = (
     "opponent.rates_fold",
     "proposal_mechanism_root_scoped_unknown_leaf:"
     "opponent.rates:adaptation_weight",
-    "proposal_mechanism_target_invalid",
 )
 
-# A sibling code sharing only the ``proposal_mechanism_target_`` stem: a
-# mismatch is repairable in place, so it must NOT release the pin.
-_SIBLING_STEM_CODE = (
-    "proposal_mechanism_target_mismatch:expected=deadline:actual=deck.shuffle"
+# Sibling codes that must NOT release the pin.  The bare
+# ``proposal_mechanism_target_invalid`` form (agent_master_validation.py:1690)
+# is the scalar mechanism_target spelling check — unrelated to the pinned
+# change_symbol's shape — so its repair is re-spelling mechanism_target in
+# place, keeping the pin.  A mismatch is repairable in place for the same
+# reason.
+_KEEP_PIN_CODES = (
+    "proposal_mechanism_target_invalid",
+    "proposal_mechanism_target_mismatch:expected=deadline:actual=deck.shuffle",
 )
 
 _UNPIN_TOKEN = "schema_retry_target_infeasible_unpinned.policy.py:_choose_intent_mechanism"
@@ -486,10 +488,11 @@ async def test_unpin_decision_uses_only_that_directions_own_rejection(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Each of the four infeasibility prefixes (exact-prefix matching, including
-# the colon-suffixed wire forms) releases the pin; a sibling stem code does
-# not.  The attempt-1 hints are controlled through the marker so every
-# prefix is exercised deterministically against the same ensemble flow.
+# Each of the three infeasibility prefixes (exact-prefix matching, including
+# the colon-suffixed wire forms) releases the pin; sibling stem codes and the
+# bare scalar-spelling code do not.  The attempt-1 hints are controlled
+# through the marker so every prefix is exercised deterministically against
+# the same ensemble flow.
 # ═══════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize("prefix", _PREFIX_VARIANTS)
@@ -527,17 +530,22 @@ async def test_each_target_infeasible_prefix_releases_the_pin(
     assert "policy.py:_choose_intent" in symbols
 
 
+@pytest.mark.parametrize("code", _KEEP_PIN_CODES)
 @pytest.mark.asyncio
-async def test_sibling_stem_code_does_not_release_the_pin(
-    monkeypatch, tmp_path
+async def test_scalar_target_code_does_not_release_the_pin(
+    monkeypatch, tmp_path, code
 ):
+    """Repairable-in-place target codes keep the pin: a symbol-switching
+    retry is still dropped (the repair is re-spelling the target literal,
+    not switching change_symbol)."""
+
     import agent_master
 
     real_hints = agent_master._master_proposal_projection_hints
 
     def marker_hints(output, *args, **kwargs):
         if "UNPIN-MARKER" in str(output):
-            return [_SIBLING_STEM_CODE]
+            return [code]
         return real_hints(output, *args, **kwargs)
 
     harness = _Harness(
@@ -559,3 +567,6 @@ async def test_sibling_stem_code_does_not_release_the_pin(
         hint.startswith("schema_retry_target_infeasible_unpinned")
         for hint in retry_inputs[0]["projection_hints"]
     )
+    retry_prompt = harness.retry_prompt("mechanism")
+    assert "must not switch" in retry_prompt
+    assert "structurally infeasible" not in retry_prompt

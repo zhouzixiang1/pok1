@@ -39,6 +39,7 @@ def _patch_h2h_paths(
     *,
     match_history_rows=(),
     rating_history_rows=(),
+    bot_stats_rows=None,
 ):
     import evaluation_data_identity
     import evolution_infra
@@ -93,8 +94,15 @@ def _patch_h2h_paths(
         )
         for name in active
     }
+    bot_stats_payload = {
+        name: dict(
+            (bot_stats_rows or {}).get(name)
+            or {"games": 20, "win_rate": 0.5}
+        )
+        for name in active
+    }
     (results / "bot_stats.json").write_text(
-        json.dumps({name: {"games": 20, "win_rate": 0.5} for name in active}),
+        json.dumps(bot_stats_payload),
         encoding="utf-8",
     )
     (results / "glicko_ratings.json").write_text(
@@ -104,23 +112,34 @@ def _patch_h2h_paths(
         }),
         encoding="utf-8",
     )
+    selection_rows = [{
+        "name": name,
+        "selection_score": 0.5,
+        "leaderboard_score": 0.5,
+        "h2h_avg_wr": 0.5,
+        "h2h_games": h2h_games[name],
+        "h2h_opponents": h2h_opponents[name],
+        "h2h_opponents_total": max(0, len(active) - 1),
+        "h2h_coverage": 1.0,
+        "strength_confidence": "medium",
+    } for name in active]
+    # Per-bot aggregate games on the selection rows, derived from the
+    # bot_stats rows so the published bundle's semantic check
+    # (selection games == bot_stats games) always holds.  A row with games
+    # plus win_rate is typed by the shared strength-row rule, so tests can
+    # plant tier-qualifying aggregate pointers.
+    for row in selection_rows:
+        stats = bot_stats_payload.get(row["name"]) or {}
+        if isinstance(stats.get("games"), int):
+            row["games"] = int(stats["games"])
+            row.setdefault("win_rate", 0.5)
     (results / "selection_snapshot.json").write_text(
         json.dumps({
             "schema_version": 1,
             "save_num": 1,
             "daemon_run_id": "test-run",
             "active_bots": active,
-            "rows": [{
-                "name": name,
-                "selection_score": 0.5,
-                "leaderboard_score": 0.5,
-                "h2h_avg_wr": 0.5,
-                "h2h_games": h2h_games[name],
-                "h2h_opponents": h2h_opponents[name],
-                "h2h_opponents_total": max(0, len(active) - 1),
-                "h2h_coverage": 1.0,
-                "strength_confidence": "medium",
-            } for name in active],
+            "rows": selection_rows,
             "rating_history_tail": [],
         }),
         encoding="utf-8",

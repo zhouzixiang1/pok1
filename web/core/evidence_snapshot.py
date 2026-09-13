@@ -713,22 +713,61 @@ def build_h2h_prompt_summary(
     return "\n".join(lines)
 
 
+def _h2h_repair_row_line(key: str, row: dict, *, source_v: int | str | None = None) -> str:
+    """One canonical-citation row line (single format source).
+
+    Shared by the audit repair guidance (``h2h_citation_repair_guidance``)
+    and the pre-plan exact-citable-rows table
+    (``exact_citable_rows_preinjection``) so both always print the same
+    ``canonical_citation`` bytes the audit compares against.
+    """
+    games = int(row.get("games", 0) or 0)
+    a_wins = int(row.get("a_wins", 0) or 0)
+    b_wins = int(row.get("b_wins", 0) or 0)
+    draws = int(row.get("draws", 0) or 0)
+    win_rate = _row_win_rate(row)
+    if win_rate is None:
+        win_rate = 0.0
+    line = (
+        f"- canonical_citation: {key}: games={games}, "
+        f"a_wins={a_wins}, b_wins={b_wins}, draws={draws}, win_rate={win_rate:.4f}"
+    )
+    a_v, b_v = _row_versions(key)
+    if source_v is not None and str(source_v) in {a_v, b_v}:
+        source = str(source_v)
+        if a_v == source:
+            source_wins, source_losses, source_wr = a_wins, b_wins, win_rate
+        else:
+            source_wins, source_losses, source_wr = b_wins, a_wins, 1.0 - win_rate
+        line += f" (v{source} perspective: {source_wins}W/{source_losses}L, wr={source_wr:.4f})"
+    return line
+
+
 def h2h_citation_repair_guidance(
     next_v: int | str,
     citation_errors: list[str],
     *,
     source_v: int | str | None = None,
     max_rows: int = 12,
+    max_aggregate_refs: int = 6,
 ) -> str:
     """Return concrete snapshot rows to repair rejected H2H citations.
 
     Audit rejection feedback is often too negative ("the numbers are wrong")
     without giving the Master a replacement fact. This helper maps citation
     errors back to exact snapshot rows so the retry prompt contains the row key
-    and counts to use verbatim.
+    and counts to use verbatim.  When a rejection carries the two-tier token
+    ``proposal_cited_sample_too_small`` (the aggregate corroboration leg),
+    the guidance additionally lists the aggregate pointers that satisfy the
+    CURRENT pool-annealed aggregate tier, with the tier number spelled out.
     """
+    aggregate_errors = [
+        str(err)
+        for err in (citation_errors or [])
+        if "proposal_cited_sample_too_small" in str(err)
+    ]
     h2h = load_generation_h2h_snapshot(next_v)
-    if not h2h or not citation_errors:
+    if (not h2h or not citation_errors) and not aggregate_errors:
         return ""
 
     wanted: list[str] = []
@@ -769,34 +808,151 @@ def h2h_citation_repair_guidance(
         row = h2h.get(key)
         if not isinstance(row, dict):
             continue
-        games = int(row.get("games", 0) or 0)
-        a_wins = int(row.get("a_wins", 0) or 0)
-        b_wins = int(row.get("b_wins", 0) or 0)
-        draws = int(row.get("draws", 0) or 0)
-        win_rate = _row_win_rate(row)
-        if win_rate is None:
-            win_rate = 0.0
-        line = (
-            f"- canonical_citation: {key}: games={games}, "
-            f"a_wins={a_wins}, b_wins={b_wins}, draws={draws}, win_rate={win_rate:.4f}"
-        )
-        a_v, b_v = _row_versions(key)
-        if source_v is not None and str(source_v) in {a_v, b_v}:
-            source = str(source_v)
-            if a_v == source:
-                source_wins, source_losses, source_wr = a_wins, b_wins, win_rate
-            else:
-                source_wins, source_losses, source_wr = b_wins, a_wins, 1.0 - win_rate
-            line += f" (v{source} perspective: {source_wins}W/{source_losses}L, wr={source_wr:.4f})"
-        rows.append(line)
+        rows.append(_h2h_repair_row_line(key, row, source_v=source_v))
 
-    if not rows:
+    blocks: list[str] = []
+    if rows:
+        blocks.append("\n".join([
+            "Use these exact stable snapshot rows to repair the rejected H2H citations:",
+            *rows,
+            "Do not replace them with live H2H, match_history, replay-window, or daemon-updated counts.",
+        ]))
+    if aggregate_errors:
+        try:
+            tier, pointers = _aggregate_tier_pointers(
+                next_v, max_refs=max_aggregate_refs
+            )
+        except Exception:
+            tier, pointers = 0, []
+        if pointers:
+            blocks.append("\n".join([
+                "Aggregate corroboration leg: cite at least one of these exact "
+                f"aggregate pointers whose bound games reach the current aggregate "
+                f"tier (games >= {tier}):",
+                *(
+                    f"- {pointer} — games={games}"
+                    for pointer, games in pointers
+                ),
+            ]))
+    if not blocks:
         return ""
-    return "\n".join([
-        "Use these exact stable snapshot rows to repair the rejected H2H citations:",
-        *rows,
-        "Do not replace them with live H2H, match_history, replay-window, or daemon-updated counts.",
-    ])
+    return "\n\n".join(blocks)
+
+
+def exact_citable_rows_preinjection(
+    next_v: int | str,
+    *,
+    source_v: int | str | None = None,
+    max_h2h_rows: int = 12,
+    max_aggregate_refs: int = 6,
+    max_chars: int = 2500,
+) -> str:
+    """Deterministic exact-citable-rows table injected into Master prompts.
+
+    Two consecutive generations died at the plan audit because the final
+    Master plan cited H2H games/wins numbers that disagreed with the frozen
+    snapshot (hallucinated recall), and because no aggregate pointer was
+    known to clear the annealed aggregate tier.  This table is rendered from
+    the SAME frozen generation evidence snapshot the audit validates against
+    (never live results), so the model can copy numbers instead of recalling
+    them: the source parent's H2H rows (both directions, games desc, top 12)
+    plus the aggregate pointers that satisfy the CURRENT pool-annealed
+    aggregate tier (top 6, shared tier math with the audit mirror).
+
+    Advisory and fail-open: an unreadable/missing snapshot yields ``""`` and
+    the caller renders the prompt without this section — the gate remains the
+    audit.  The section is hard-bounded by ``max_chars`` (trailing H2H rows
+    are dropped first, never the aggregate pointers or the closing
+    instruction).
+    """
+    try:
+        bundle = load_generation_evaluation_snapshot(next_v)
+        if not isinstance(bundle, dict) or not bundle.get("available"):
+            return ""
+        h2h = bundle.get("h2h") if isinstance(bundle.get("h2h"), dict) else {}
+
+        h2h_entries: list[tuple[int, str, dict]] = []
+        for key, row in h2h.items():
+            if not isinstance(row, dict):
+                continue
+            a_v, b_v = _row_versions(str(key))
+            if (
+                source_v is not None
+                and str(int(source_v)) not in {a_v, b_v}
+            ):
+                continue
+            games = int(row.get("games", 0) or 0)
+            if games <= 0:
+                continue
+            h2h_entries.append((games, str(key), row))
+        h2h_entries.sort(key=lambda item: (-item[0], item[1]))
+        h2h_lines = [
+            _h2h_repair_row_line(key, row, source_v=source_v)
+            for _games, key, row in h2h_entries[:max_h2h_rows]
+        ]
+
+        aggregate_tier, pointers = _aggregate_tier_pointers(
+            next_v, bundle=bundle, max_refs=max_aggregate_refs
+        )
+        if pointers:
+            aggregate_lines = [
+                f"- {pointer} — games={games}"
+                for pointer, games in pointers
+            ]
+            aggregate_note = (
+                "Aggregate corroboration rows/pointers that satisfy the current "
+                f"aggregate evidence tier (games >= {aggregate_tier}) — the plan "
+                "must cite at least one of these as corroboration:"
+            )
+        else:
+            aggregate_lines = []
+            aggregate_note = (
+                "No aggregate row currently reaches the aggregate evidence tier "
+                f"(games >= {aggregate_tier}); do not fabricate aggregate counts."
+            )
+
+        def _render(h2h_block: list[str], aggregate_block: list[str]) -> str:
+            source_label = (
+                f"for source parent {bot_name(int(source_v))} "
+                if source_v is not None
+                else ""
+            )
+            return "\n".join([
+                "EXACT CITABLE SNAPSHOT ROWS (system-rendered from the frozen "
+                "generation evidence snapshot; the audit validates against this "
+                "same snapshot):",
+                f"Matchup H2H rows {source_label}(both directions, games "
+                "descending, at most "
+                f"{max_h2h_rows}) — when citing a matchup, copy one of these "
+                "rows verbatim:",
+                *h2h_block,
+                aggregate_note,
+                *aggregate_block,
+                "Hard requirement: cite games/wins/draws numbers ONLY as printed "
+                "above. The audit re-validates every cited number verbatim "
+                "against this same frozen snapshot; recalled, recomputed, or "
+                "live-file numbers fail the audit.",
+            ])
+
+        h2h_block = list(h2h_lines)
+        aggregate_block = list(aggregate_lines)
+        text = _render(h2h_block, aggregate_block)
+        # Deterministic bound: drop trailing (weakest) H2H rows first; the
+        # aggregate pointers and the closing instruction always survive.
+        while len(text) > max_chars and len(h2h_block) > 1:
+            h2h_block.pop()
+            text = _render(h2h_block, aggregate_block)
+        while len(text) > max_chars and len(aggregate_block) > 1:
+            aggregate_block.pop()
+            text = _render(h2h_block, aggregate_block)
+        if len(text) > max_chars:
+            text = (
+                text[:max_chars].rsplit("\n", 1)[0]
+                + "\n... [rows truncated by deterministic size bound]"
+            )
+        return text
+    except Exception:
+        return ""
 
 
 def h2h_snapshot_contract_text(
@@ -923,17 +1079,19 @@ def _h2h_key_aliases(key: str) -> list[tuple[str, str, str]]:
     return deduped
 
 
-def _snapshot_pool_max_games_for(next_v: int | str) -> int:
-    """Largest games count across the generation snapshot's citable rows.
+def _pool_max_games_from_roles(bundle: dict | None) -> int:
+    """Largest typed games across one loaded bundle's h2h/bot_stats/selection.
 
     Typing rule is the ONE shared ``agent_master_validation._strength_row_games``
     (strength-signal keys must be ints) so the two tiers can never disagree
-    because one scanner accepted a float the other rejected.
+    because one scanner accepted a float the other rejected.  The scan is the
+    audit-mirror half of ``statistical_evidence_floor_errors`` tier math; the
+    pre-injection table and the aggregate repair guidance reuse this exact
+    scan so the advertised pointers can never disagree with the gate either.
     """
     from agent_master_validation import _strength_row_games
 
     best = 0
-    bundle = load_generation_evaluation_snapshot(next_v)
     for role in ("h2h", "bot_stats", "selection"):
         data = bundle.get(role) if isinstance(bundle, dict) else None
         if not isinstance(data, dict):
@@ -949,6 +1107,97 @@ def _snapshot_pool_max_games_for(next_v: int | str) -> int:
             elif isinstance(node, list):
                 stack.extend(node)
     return best
+
+
+def _snapshot_pool_max_games_for(next_v: int | str) -> int:
+    """Largest games count across the generation snapshot's citable rows."""
+    return _pool_max_games_from_roles(load_generation_evaluation_snapshot(next_v))
+
+
+def _aggregate_tier_pointers(
+    next_v: int | str,
+    *,
+    bundle: dict | None = None,
+    max_refs: int = 6,
+) -> tuple[int, list[tuple[str, int]]]:
+    """Aggregate-tier pointers the plan can legally cite, with exact games.
+
+    The aggregate corroboration leg of the two-tier statistical evidence bar
+    needs a citation whose bound ``games`` reaches the pool-annealed aggregate
+    tier (>= 200 once the pool is mature).  H2H rows cap far below that, so
+    the legal citations are per-bot ``bot_stats.json`` pointers, the
+    ``selection_snapshot.json#/rows`` container pointer (bound to its
+    strongest row's games exactly like ``_snapshot_reference_evidence_binding``
+    binds a list), and individual selection rows.  Tier math is the SAME
+    shared helpers the audit mirror uses, so a pointer printed here can never
+    be below the tier the gate will apply.  Returns
+    ``(aggregate_tier, [(pointer, games), ...])``; the tier is 0 when the
+    snapshot cannot be read (UNKNOWN — callers fail open).
+    """
+    from agent_master_validation import _pool_annealed_tiers
+
+    if bundle is None:
+        bundle = load_generation_evaluation_snapshot(next_v)
+    if not isinstance(bundle, dict) or not bundle.get("available"):
+        return 0, []
+    _pool_primary, aggregate_tier = _pool_annealed_tiers(
+        _pool_max_games_from_roles(bundle)
+    )
+
+    # Pointer games use the SAME rule the proposal gate's
+    # ``_snapshot_reference_evidence_binding`` writes into
+    # ``binding["games"]``: a raw int ``games`` scalar (the typed
+    # ``_strength_row_games`` rule deliberately rejects selection rows whose
+    # only companion is a float ``win_rate``, but the gate grades citation
+    # games by the binding, so the advertised numbers must match the
+    # binding, not the pool-max typing).
+    def _row_games(node: object) -> int:
+        if not isinstance(node, dict):
+            return 0
+        games = node.get("games")
+        if isinstance(games, int) and not isinstance(games, bool):
+            return games
+        return 0
+
+    # (games, priority, pointer): priority 0 = the advertised selection
+    # container pointer, 1 = per-bot bot_stats rows, 2 = individual selection
+    # rows.  Sorting is priority-then-games so the simplest pointer leads.
+    ranked: list[tuple[int, int, str]] = []
+    bot_stats = bundle.get("bot_stats")
+    if isinstance(bot_stats, dict):
+        for name, row in bot_stats.items():
+            games = _row_games(row)
+            if games < aggregate_tier or games <= 0:
+                continue
+            escaped = str(name).replace("~", "~0").replace("/", "~1")
+            ranked.append((games, 1, f"snapshot:bot_stats.json#/{escaped}"))
+    selection = bundle.get("selection")
+    rows = (
+        selection.get("rows")
+        if isinstance(selection, dict) and isinstance(selection.get("rows"), list)
+        else []
+    )
+    strongest = max((_row_games(row) for row in rows), default=0)
+    if strongest >= aggregate_tier:
+        ranked.append(
+            (strongest, 0, "snapshot:selection_snapshot.json#/rows")
+        )
+    for index, row in enumerate(rows):
+        games = _row_games(row)
+        if games < aggregate_tier or games <= 0:
+            continue
+        ranked.append((games, 2, f"snapshot:selection_snapshot.json#/rows/{index}"))
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+    pointers: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for games, _priority, pointer in ranked:
+        if pointer in seen:
+            continue
+        seen.add(pointer)
+        pointers.append((pointer, games))
+        if len(pointers) >= max_refs:
+            break
+    return aggregate_tier, pointers
 
 
 def statistical_evidence_floor_errors(

@@ -1262,6 +1262,15 @@ absolute tier); the aggregate tier still anneals on the pool-wide max and
 the `selection_snapshot.json#/rows` container-pointer rule is unchanged.
 The rejection hint carries the per-matchup numbers
 (`proposal_cited_sample_too_small.<matchup>.cited.<games>.best_available.<best>.tier.<tier>.and_aggregate.<tier>`).
+The final-plan and scout prompts pre-inject the exact citable rows
+(source-parent H2H rows, both directions, <=12 by games, plus aggregate
+pointers satisfying the current aggregate tier, <=6, whole section <=2500
+chars; `exact_citable_rows_preinjection` in `evidence_snapshot.py`) rendered
+from the same frozen generation evidence snapshot the audit validates
+against — an absent/unreadable snapshot silently omits the section
+(fail-open; the gate stays at the audit). The audit repair guidance
+(`h2h_citation_repair_guidance`) likewise lists tier-satisfying aggregate
+pointers when the corroboration leg failed.
 The plan audit and the proposal
 gate share one citation set and one tier/typing rule (shared helpers in
 `agent_master_validation.py`, imported by the audit mirror in
@@ -1285,8 +1294,10 @@ distinct. A retry whose own attempt-1 rejection proves the pinned TARGET's
 shape is itself infeasible (exact prefixes
 `proposal_mechanism_target_missing_from_executable_fields` /
 `proposal_mechanism_qualified_target_identifier_continuation` /
-`proposal_mechanism_root_scoped_unknown_leaf` /
-`proposal_mechanism_target_invalid`, 2026-09-13) releases the pin
+`proposal_mechanism_root_scoped_unknown_leaf`, 2026-09-13; the bare
+`proposal_mechanism_target_invalid` scalar-spelling code deliberately does
+NOT unpin — it is fixable in-place without switching targets) releases the
+pin
 (`schema_retry_target_infeasible_unpinned.<symbol>`; the retry must pick a
 NEW change_symbol, still validated against the source graph, the avoid set,
 and already-claimed symbols) — pinning there would guarantee the retry

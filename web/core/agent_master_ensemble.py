@@ -67,13 +67,16 @@ _log = logging.getLogger("pok.master")
 # prompt token) instead of burning the single permitted retry on a re-fail.
 # Matching is exact-prefix so sibling codes that merely share the
 # ``proposal_mechanism_target_`` stem (e.g. ``proposal_mechanism_target_mismatch``)
-# do NOT unpin — only these four classes prove the target shape itself cannot
-# satisfy the contract.
+# do NOT unpin — only these three classes prove the target shape itself cannot
+# satisfy the contract.  The bare ``proposal_mechanism_target_invalid`` was
+# removed (2026-09-13): it is the scalar mechanism_target spelling check,
+# unrelated to the pinned change_symbol's shape, so unpinning the change_symbol
+# on it produced a misleading "pick a NEW target" instruction while the actual
+# repair is to re-spell mechanism_target in place.
 _TARGET_INFEASIBLE_HINT_PREFIXES = (
     "proposal_mechanism_target_missing_from_executable_fields",
     "proposal_mechanism_qualified_target_identifier_continuation",
     "proposal_mechanism_root_scoped_unknown_leaf",
-    "proposal_mechanism_target_invalid",
 )
 
 
