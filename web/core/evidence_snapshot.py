@@ -11,6 +11,7 @@ planning/audit stage validates the same content-addressed contract.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import bisect
 import fcntl
 import hashlib
 import json
@@ -1752,102 +1753,122 @@ def _collect_matchup_rewrites(
                 ))
 
 
-def _apply_rewrites(
-    text: str,
-    ops: list[tuple[tuple[int, int], str, dict]],
-    *,
-    path: str,
-    report: list[dict],
+def _flatten_marked(
+    value: Any,
+    pieces: list[tuple[int, int, Any, Any, str, str]],
+    start: int,
+    path: str = "",
+    parent: Any = None,
+    key: Any = None,
 ) -> tuple[str, int]:
-    """Apply non-overlapping digit rewrites left-to-right, recording each.
+    """Render one plan node exactly like :func:`_flatten_text`, with spans.
+
+    Returns ``(text, end_offset)`` where offsets are absolute in the final
+    joined document.  Every non-empty scalar leaf is recorded in ``pieces``
+    as ``(start, end, parent, key, path, rendered_text)`` so a digit span
+    found in the joined text can be mapped back to the exact container slot
+    that rendered it (a string leaf -> in-string rewrite; an int leaf -> the
+    int is reassigned).  The rendering must stay byte-identical to
+    ``_flatten_text`` — the audit's citation windows are computed over that
+    exact joined form.
+    """
+    if isinstance(value, dict):
+        lines: list[str] = []
+        pos = start
+        for child_key, item in value.items():
+            prefix = f"{child_key}: "
+            child_path = f"{path}.{child_key}" if path else str(child_key)
+            child_text, child_end = _flatten_marked(
+                item, pieces, pos + len(prefix), child_path, value, child_key
+            )
+            lines.append(prefix + child_text)
+            pos = child_end + 1  # +1 joins the next rendered line
+        text = "\n".join(lines)
+        return text, start + len(text)
+    if isinstance(value, (list, tuple, set)):
+        lines = []
+        pos = start
+        for index, item in enumerate(value):
+            child_path = f"{path}[{index}]"
+            child_text, child_end = _flatten_marked(
+                item, pieces, pos, child_path, value, index
+            )
+            lines.append(child_text)
+            pos = child_end + 1
+        text = "\n".join(lines)
+        return text, start + len(text)
+    text = str(value or "")
+    if text and parent is not None:
+        pieces.append((start, start + len(text), parent, key, path, text))
+    return text, start + len(text)
+
+
+def _apply_span_rewrites(
+    pieces: list[tuple[int, int, Any, Any, str, str]],
+    ops: list[tuple[tuple[int, int], str, dict]],
+    report: list[dict],
+) -> int:
+    """Apply digit rewrites to the plan leaves the flagged spans rendered from.
 
     Overlapping ops (a digit span claimed by two windows) apply once — the
     leftmost wins — and any residual mismatch stays for the audit to reject.
-    Returns the rewritten text and the number of applied rewrites (the
-    report list itself is capped; the count is not).
+    String leaves are rebuilt in place; int leaves (the flattened ``games:``
+    lines of structured binding objects) have their number reassigned only
+    when the flagged span is exactly the leaf's rendered digits.  Returns
+    the number of applied rewrites (the report list itself is capped; the
+    count is not).
     """
+    piece_starts = [piece[0] for piece in pieces]
     applied: list[tuple[int, int]] = []
-    pieces: list[str] = []
-    cursor = 0
-    count = 0
+    per_leaf: dict[int, list[tuple[tuple[int, int], str, dict]]] = {}
     for (start, end), replacement, meta in sorted(
         ops, key=lambda op: (op[0][0], op[0][1])
     ):
         if any(start < a_end and end > a_start for a_start, a_end in applied):
             continue
-        applied.append((start, end))
-        pieces.append(text[cursor:start])
-        pieces.append(replacement)
-        cursor = end
-        count += 1
-        if len(report) < _NORMALIZATION_REPORT_CAP:
-            report.append({"path": path, **meta})
-    if not applied:
-        return text, 0
-    pieces.append(text[cursor:])
-    return "".join(pieces), count
-
-
-def _normalize_leaf_strings(
-    parent: Any,
-    key: Any,
-    h2h: dict,
-    key_citable: dict[str, bool],
-    bundle: dict,
-    normalizations: list[dict],
-    counts: list[int],
-    path: str,
-) -> None:
-    """Rewrite citation numbers in one string leaf, recursing containers.
-
-    ``parent[key]`` is assigned in place so the exact plan object the audit
-    reads afterwards carries the normalized values.
-    """
-    value = parent[key]
-    if isinstance(value, dict):
-        for child_key in list(value.keys()):
-            _normalize_leaf_strings(
-                value,
-                child_key,
-                h2h,
-                key_citable,
-                bundle,
-                normalizations,
-                counts,
-                f"{path}.{child_key}" if path else str(child_key),
-            )
-        return
-    if isinstance(value, list):
-        for index in range(len(value)):
-            _normalize_leaf_strings(
-                value,
-                index,
-                h2h,
-                key_citable,
-                bundle,
-                normalizations,
-                counts,
-                f"{path}[{index}]",
-            )
-        return
-    if not isinstance(value, str) or not value:
-        return
-    ops: list[tuple[tuple[int, int], str, dict]] = []
-    for row_key, row in h2h.items():
-        if not isinstance(row, dict) or not key_citable.get(str(row_key), False):
+        index = bisect.bisect_right(piece_starts, start) - 1
+        if index < 0:
             continue
-        _collect_matchup_rewrites(
-            value, str(row_key), row, key_citable[str(row_key)], ops
+        piece = pieces[index]
+        if not (piece[0] <= start and end <= piece[1]):
+            continue
+        applied.append((start, end))
+        per_leaf.setdefault(index, []).append(
+            ((start - piece[0], end - piece[0]), replacement, meta)
         )
-    _collect_aggregate_games_rewrites(value, bundle, ops)
-    if not ops:
-        return
-    new_text, applied = _apply_rewrites(
-        value, ops, path=path, report=normalizations
-    )
-    if new_text != value:
-        parent[key] = new_text
-        counts[0] += applied
+    count = 0
+    for index, leaf_ops in per_leaf.items():
+        _start, _end, parent, key, path, rendered = pieces[index]
+        value = parent[key]
+        if isinstance(value, str):
+            new_text = value
+            for (rel_start, rel_end), replacement, meta in leaf_ops:
+                new_text = (
+                    new_text[:rel_start] + replacement + new_text[rel_end:]
+                )
+            if new_text != value:
+                parent[key] = new_text
+                for _span, _replacement, meta in leaf_ops:
+                    if len(report) < _NORMALIZATION_REPORT_CAP:
+                        report.append({"path": path, **meta})
+                count += len(leaf_ops)
+        elif (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and rendered.isdigit()
+            and len(leaf_ops) == 1
+            and leaf_ops[0][0] == (0, len(rendered))
+            and str(int(leaf_ops[0][1])) == leaf_ops[0][1]
+        ):
+            replacement = int(leaf_ops[0][1])
+            if replacement != value:
+                parent[key] = replacement
+                if len(report) < _NORMALIZATION_REPORT_CAP:
+                    report.append(
+                        {"path": path, **leaf_ops[0][2]}
+                    )
+                count += 1
+    return count
 
 
 def normalize_master_plan_citations(
@@ -1860,8 +1881,17 @@ def normalize_master_plan_citations(
 
     Runs at the plan-accepted/audit-start seam on the SAME in-memory plan the
     audit then reads, using the SAME frozen generation evidence snapshot the
-    audit validates against (never live results).  Rules, strictly
-    fail-closed:
+    audit validates against (never live results).  The plan is flattened to
+    the byte-identical text ``validate_h2h_citations_against_snapshot`` sees
+    (``_flatten_text``), so every citation the audit can attribute — prose
+    windows AND structured binding objects (``{"games": 259, ...}`` int
+    leaves inside ``proposal_ensemble`` / ``proposal_binding``
+    ``snapshot_evidence`` lists, which the joined text renders as
+    ``games: 259`` lines inside cross-object pair windows) — is normalized
+    with the audit's own attribution priority: numbers inside a pairing
+    window (before its truncating aggregate pointer / next pairing) belong
+    to the pair row, numbers under a resolvable aggregate pointer belong to
+    that pointer's row.  Rules, strictly fail-closed:
 
     - An H2H matchup citation is normalized only when it resolves to a real
       snapshot row (both wire directions, shared ``_h2h_pair_versions``
@@ -1872,6 +1902,18 @@ def normalize_master_plan_citations(
       ``snapshot:selection_snapshot.json#/rows...``) has its bound ``games``
       normalized only when the pointer resolves against the bundle; an
       unresolvable pointer is untouched.
+    - Only the compared citation digits change.  ``node_sha256`` /
+      ``projection_sha256`` / ``resolved_projection`` bytes are never
+      touched (the audit's patterns cannot match their quoted/hex forms).
+      The ``proposal_binding`` / ``proposal_ensemble`` snapshot-evidence int
+      leaves ARE rewritten because the audit demonstrably compares them
+      (the v485 ``cited games=259`` rejection came from exactly such a
+      leaf); nothing in the non-bootstrap path re-derives those bindings
+      after acceptance, and the blueprint equality check that re-derives
+      ``proposal_binding`` from the ensemble runs only in the bootstrap
+      mode where normalization is skipped (no strength pool), so both
+      structures stay mutually consistent when rewritten to the same row
+      values.
     - Every replacement is recorded in the returned report; the audit itself
       is untouched, so a residual rejection still blocks the plan.
 
@@ -1915,21 +1957,18 @@ def normalize_master_plan_citations(
         best = _matchup_max_games_rows(h2h, pair)
         key_citable[str(key)] = best >= _matchup_primary_tier(best)
 
-    normalizations: list[dict] = []
-    counts = [0]
-    for top_key in list(master_plan.keys()):
-        _normalize_leaf_strings(
-            master_plan,
-            top_key,
-            h2h,
-            key_citable,
-            bundle,
-            normalizations,
-            counts,
-            str(top_key),
+    pieces: list[tuple[int, int, Any, Any, str, str]] = []
+    text, _end = _flatten_marked(master_plan, pieces, 0)
+    ops: list[tuple[tuple[int, int], str, dict]] = []
+    for key, row in h2h.items():
+        if not isinstance(row, dict) or not key_citable.get(str(key), False):
+            continue
+        _collect_matchup_rewrites(
+            text, str(key), row, key_citable[str(key)], ops
         )
-    report["total"] = counts[0]
-    report["normalizations"] = normalizations
+    _collect_aggregate_games_rewrites(text, bundle, ops)
+    normalizations: list[dict] = report["normalizations"]
+    report["total"] = _apply_span_rewrites(pieces, ops, normalizations)
     if source_v is not None:
         report["source_v"] = str(source_v)
     return report

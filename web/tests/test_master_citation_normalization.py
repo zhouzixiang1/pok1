@@ -360,3 +360,275 @@ def test_report_is_capped_but_total_counts_every_rewrite(
         value.endswith("games=45, a_wins=29, b_wins=16.")
         for value in plan.values()
     )
+
+
+# ---------------------------------------------------------------------------
+# Real v485/v486 rejection shapes (results/v486/logs/master_io.txt)
+# ---------------------------------------------------------------------------
+# The audited plan carries the proposal packet (proposal_ensemble) and its
+# derived proposal_binding, whose snapshot_evidence lists contain structured
+# binding objects with int leaves.  The audit flattens them to ``games: 30``
+# lines and attributes them to the pair via cross-object windows — numbers
+# the string-leaf-only normalizer never touched (v486 fired 0 times).
+
+def _v486_style_fixture(monkeypatch, tmp_path):
+    """Frozen snapshot shaped like the real v485/v486 rejection: the pair row
+    moved to games=28 while stale bindings still say 30, and the aggregate
+    selection container binds 220 while the stale binding says 259."""
+    key = f"{bot_name(1)} vs {bot_name(105)}"
+    _patch_h2h_paths(
+        monkeypatch,
+        tmp_path,
+        {
+            key: {
+                "games": 28,
+                "a_wins": 11,
+                "b_wins": 17,
+                "draws": 0,
+                "win_rate": 0.3929,
+            },
+        },
+        bot_stats_rows={bot_name(1): {"games": 220, "wins": 130, "win_rate": 0.59}},
+    )
+    evidence_snapshot.ensure_generation_h2h_snapshot(24)
+    return key
+
+
+def _sorted_binding(raw):
+    """Real packets serialize with ``json.dumps(..., sort_keys=True)``
+    (``_parse_valid_proposal_packet``), so in-memory binding key order is
+    alphabetical — ``reference`` is second-to-last and the long
+    ``resolved_projection`` line directly follows it."""
+    return json.loads(json.dumps(raw, sort_keys=True))
+
+
+def _stale_h2h_binding(key):
+    """Binding-shaped object exactly as the packet carries it after the JSON
+    round-trip: alphabetically ordered keys (a_wins first, reference second
+    to last), stale counts.  With this order the binding's own ``games``
+    leaf is rendered BEFORE its ``reference`` alias line, so the pair window
+    starting at the alias never sees it — the audit only ever flags what
+    follows the alias."""
+    return _sorted_binding({
+        "a_wins": 11,
+        "b_wins": 19,
+        "draws": 0,
+        "games": 30,
+        "node_sha256": "a" * 64,
+        "projection_sha256": "b" * 64,
+        "projection_truncated": False,
+        "reference": f"snapshot:head_to_head.json#/{key}",
+        "resolved_projection": json.dumps(
+            {
+                "a_wins": 11,
+                "b_wins": 19,
+                "draws": 0,
+                "games": 30,
+                "win_rate": 0.6444,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    })
+
+
+def _stale_selection_binding():
+    """Real serialized shape from the v486 packet: alphabetically ordered
+    keys with ``games`` FIRST, so the flattened ``games: 259`` line lands
+    inside the preceding h2h binding's pair window (the audit attributes it
+    to the pair row — the exact v485/v486 rejection).  The projection is a
+    long truncated container dump like the real binding, so after the
+    pointer's reference line it swallows the pointer's own aggregate window
+    and nothing beyond the binding is attributed."""
+    projection = json.dumps(
+        [
+            {"confidence": "confirmed_weakness", "games": 220, "pad": "x" * 40}
+            for _index in range(20)
+        ],
+        separators=(",", ":"),
+    )
+    assert len(projection) > 400
+    return _sorted_binding({
+        "games": 259,
+        "node_sha256": "c" * 64,
+        "resolved_projection": projection,
+        "projection_sha256": "d" * 64,
+        "projection_truncated": True,
+        "reference": "snapshot:selection_snapshot.json#/rows",
+    })
+
+
+def test_structured_binding_objects_are_normalized_with_audit_attribution(
+    monkeypatch, tmp_path
+):
+    """Structured int leaves inside snapshot_evidence are rewritten.
+
+    The real v486 packet bindings render (alphabetical JSON order) so the
+    selection binding's ``games: 259`` line follows the h2h binding's
+    ``reference`` alias line: the pair window reaches it before its own
+    ``snapshot:`` reference truncates the window, and the audit attributes
+    it to the pair row.  The normalizer follows that exact attribution.
+    Digest and projection bytes are never touched.
+    """
+    import copy
+
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    stale_h2h = _stale_h2h_binding(key)
+    stale_selection = _stale_selection_binding()
+    plan = {
+        "proposal_binding": {
+            "selected_proposal_id": "abc",
+            "snapshot_evidence": [stale_h2h, stale_selection],
+        },
+        "proposal_ensemble": {
+            "proposals": [
+                {
+                    "schema_version": "master-proposal-v4",
+                    "snapshot_evidence": [
+                        copy.deepcopy(stale_h2h),
+                        copy.deepcopy(stale_selection),
+                    ],
+                }
+            ]
+        },
+    }
+    marked_text = evidence_snapshot._flatten_marked(plan, [], 0)[0]
+    assert marked_text == evidence_snapshot._flatten_text(plan)
+
+    pre_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
+    )
+    joined = "; ".join(pre_errors)
+    # One error per packet copy, exactly like the real v486 rejection: the
+    # pair window flags the selection binding's games leaf, not the h2h
+    # binding's own counts (those render before their alias line).
+    assert joined.count("cited games=259") == 2
+    assert "snapshot has games=28" in joined
+
+    report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
+
+    for binding_list in (
+        plan["proposal_binding"]["snapshot_evidence"],
+        plan["proposal_ensemble"]["proposals"][0]["snapshot_evidence"],
+    ):
+        h2h_binding, selection_binding = binding_list
+        # The selection binding's games leaf is reached by the h2h binding's
+        # pair window (its serialized key order puts ``games`` before its own
+        # snapshot: reference), so the audit's attribution gives it the pair
+        # row — exactly the real v485/v486 rejection.
+        assert selection_binding["games"] == 28
+        # The h2h binding's own counts render before their alias line: the
+        # audit never attributed them, so normalization never touches them.
+        assert h2h_binding["games"] == 30
+        assert h2h_binding["a_wins"] == 11
+        assert h2h_binding["b_wins"] == 19
+        # Digest/projection bytes untouched.
+        assert h2h_binding["node_sha256"] == "a" * 64
+        assert h2h_binding["projection_sha256"] == "b" * 64
+        assert selection_binding["node_sha256"] == "c" * 64
+    assert report["total"] == 2
+    selection_entry = _report_entry(
+        report,
+        kind="h2h_matchup",
+        field="games",
+        **{"from": 259, "to": 28},
+    )
+    assert "snapshot_evidence[1]" in selection_entry["path"]
+    assert evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
+    ) == []
+
+
+def test_mixed_prose_window_follows_pair_attribution(monkeypatch, tmp_path):
+    """Numbers before a truncating pointer belong to the pair row; the number
+    after the pointer belongs to the aggregate pointer's row."""
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    plan = {
+        "analysis": (
+            f"{key}: games=30, a_wins=11, b_wins=19, draws=0, "
+            "win_rate=0.3667 (confirmed weakness), corroborated by the "
+            "aggregate row snapshot:selection_snapshot.json#/rows "
+            "(games=259)."
+        ),
+    }
+    pre_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
+    )
+    joined = "; ".join(pre_errors)
+    assert "cited games=30" in joined
+    assert "snapshot has games=28" in joined
+
+    report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
+
+    assert plan["analysis"] == (
+        f"{key}: games=28, a_wins=11, b_wins=17, draws=0, "
+        "win_rate=0.3667 (confirmed weakness), corroborated by the "
+        "aggregate row snapshot:selection_snapshot.json#/rows "
+        "(games=220)."
+    )
+    _report_entry(
+        report,
+        kind="h2h_matchup",
+        field="games",
+        **{"from": 30, "to": 28},
+    )
+    _report_entry(
+        report,
+        kind="h2h_matchup",
+        field="b_wins",
+        **{"from": 19, "to": 17},
+    )
+    _report_entry(
+        report,
+        kind="aggregate_pointer",
+        field="games",
+        **{"from": 259, "to": 220},
+    )
+    assert evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
+    ) == []
+
+
+def test_five_repeated_stale_objects_are_all_rewritten(
+    monkeypatch, tmp_path
+):
+    """The same stale binding pair repeated 5 times (packet proposals plus
+    the derived proposal_binding) is rewritten at every occurrence."""
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    proposals = [
+        {
+            "schema_version": "master-proposal-v4",
+            "snapshot_evidence": [
+                _stale_h2h_binding(key),
+                _stale_selection_binding(),
+            ],
+        }
+        for _index in range(4)
+    ]
+    plan = {
+        "proposal_binding": {
+            "selected_proposal_id": "abc",
+            "snapshot_evidence": [
+                _stale_h2h_binding(key),
+                _stale_selection_binding(),
+            ],
+        },
+        "proposal_ensemble": {"proposals": proposals},
+    }
+    pre_joined = "; ".join(
+        evidence_snapshot.validate_h2h_citations_against_snapshot(plan, 24)
+    )
+    assert pre_joined.count("cited games=259") == 5
+
+    report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
+
+    all_selections = [p["snapshot_evidence"][1] for p in proposals] + [
+        plan["proposal_binding"]["snapshot_evidence"][1]
+    ]
+    assert len(all_selections) == 5
+    for binding in all_selections:
+        assert binding["games"] == 28
+    assert report["total"] == 5
+    assert evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
+    ) == []
