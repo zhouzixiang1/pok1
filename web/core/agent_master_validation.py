@@ -645,6 +645,44 @@ def _proposal_schema_repair_guidance(
             "state_learning_primary, mechanism_target, and intervention_target "
             "from one mapping row without relabelling it."
         )
+    required_text_fields = [
+        item.split(":", 1)[1]
+        for item in hints
+        if item.startswith("proposal_required_text_invalid:")
+    ]
+    if required_text_fields:
+        add(
+            "These required text fields are missing or under 20 characters: "
+            + ", ".join(dict.fromkeys(required_text_fields))
+            + ". Write one complete, specific value (>= 20 characters) for "
+            "each listed field."
+        )
+    for item in hints:
+        if item.startswith("proposal_measurement_target_expected_mismatch:"):
+            add(
+                "measurement target= must be exactly "
+                + item.split("expected=", 1)[-1]
+                + " for this generation's evidence mode; copy it verbatim."
+            )
+            break
+    for item in hints:
+        if item.startswith("proposal_measurement_target_forbidden_match:"):
+            add(
+                "measurement target= names the prepared candidate bot "
+                + item.split("forbidden=", 1)[-1]
+                + ", which does not exist yet; measure the published source "
+                "parent bot instead."
+            )
+            break
+    if any(
+        "proposal_measurement_target_not_bound_to_snapshot" in item
+        for item in hints
+    ):
+        add(
+            "measurement target= must name a bot that appears inside the "
+            "cited snapshot rows; cite a snapshot row (head_to_head or "
+            "bot_stats) that contains the target bot."
+        )
     if not guidance:
         add(
             "Re-emit one complete object and repair only the canonical projection "
@@ -1965,6 +2003,96 @@ def _master_proposal_projection_hints(
         if bindability_error:
             errors.append(bindability_error)
     return list(dict.fromkeys(errors))
+
+
+def _proposal_contract_invalid_detail_hints(
+    output: str,
+    *,
+    source_graph: dict[str, set[str]] | None = None,
+    snapshot_dir: Path | None = None,
+    national_policy_only: bool = False,
+    require_snapshot_evidence: bool = False,
+    evidence_mode: str | None = None,
+    allowed_primaries: tuple[str, ...] | None = None,
+    expected_measurement_target: str | None = None,
+    forbidden_measurement_target: str | None = None,
+    max_details: int = 3,
+) -> list[str]:
+    """Concrete field-level codes behind the generic ``proposal_contract_invalid`` fallback.
+
+    ``_master_proposal_projection_hints`` mirrors most deterministic
+    rejections, but three validator checks sit outside its parameter surface:
+    the expected/forbidden measurement-target bindings (validator-only
+    arguments) and the frozen-snapshot measurement binding.  When one of
+    those rejects a proposal, the primary hints list comes back EMPTY and
+    callers fall back to the bare generic token ``proposal_contract_invalid``
+    — a repair prompt with no actionable field (live v450: a first retry died
+    on exactly that opaque token).  This probe recomputes the primary
+    field-level hints and extends them with the three binding checks, so the
+    fallback can render the generic code first followed by at most
+    ``max_details`` concrete field-level codes.
+    """
+
+    from llm_query import parse_json_output_with_mode
+
+    try:
+        allowed_primaries = _canonical_proposal_primaries(allowed_primaries)
+    except ValueError:
+        return ["proposal_allowed_primaries_invalid"]
+    details = _master_proposal_projection_hints(
+        output,
+        source_graph=source_graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=national_policy_only,
+        require_snapshot_evidence=require_snapshot_evidence,
+        evidence_mode=evidence_mode,
+        allowed_primaries=allowed_primaries,
+    )
+    data, _mode = parse_json_output_with_mode(output or "")
+    if not isinstance(data, dict):
+        return details[:max_details]
+    measurement = (
+        _system_bound_proposal_measurement(data.get("measurement"), evidence_mode)
+        or str(data.get("measurement") or "")
+    )
+    if evidence_mode == "frozen_strength_snapshot":
+        raw_refs = data.get("evidence_refs")
+        if isinstance(raw_refs, dict):
+            raw_refs = list(raw_refs.values())
+        snapshot_evidence: list[dict] = []
+        if isinstance(raw_refs, list):
+            for raw_ref in raw_refs:
+                text = str(raw_ref or "").strip()
+                if text.startswith("snapshot:"):
+                    binding = _snapshot_reference_evidence_binding(
+                        text,
+                        snapshot_dir,
+                    )
+                    if binding is not None:
+                        snapshot_evidence.append(binding)
+        if not _measurement_target_bound_to_snapshot(measurement, snapshot_evidence):
+            details.append("proposal_measurement_target_not_bound_to_snapshot")
+    if expected_measurement_target is not None:
+        parsed = _parsed_proposal_measurement(measurement)
+        if (
+            parsed is None
+            or parsed["target"] != str(expected_measurement_target).strip().lower()
+        ):
+            details.append(
+                "proposal_measurement_target_expected_mismatch:expected="
+                + str(expected_measurement_target).strip().lower()
+            )
+    if forbidden_measurement_target is not None:
+        parsed = _parsed_proposal_measurement(measurement)
+        if (
+            parsed is None
+            or parsed["target"] == str(forbidden_measurement_target).strip().lower()
+        ):
+            details.append(
+                "proposal_measurement_target_forbidden_match:forbidden="
+                + str(forbidden_measurement_target).strip().lower()
+            )
+    return details[:max_details]
 
 
 def _validated_proposal_critique(output: str, proposal_ids: set[str]) -> dict | None:

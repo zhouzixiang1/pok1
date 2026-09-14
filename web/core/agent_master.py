@@ -112,6 +112,7 @@ from agent_master_validation import (  # noqa: F401
     _proposal_binding_error,
     _proposal_closed_json_shape,
     _proposal_compilation_contract_text,
+    _proposal_contract_invalid_detail_hints,
     _proposal_falsifier_mapping_text,
     _proposal_falsifier_primary,
     _proposal_identity,

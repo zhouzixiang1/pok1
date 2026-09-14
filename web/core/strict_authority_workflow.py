@@ -1248,6 +1248,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
         from agent_master import (
             _canonical_proposal_primaries,
             _master_proposal_projection_hints,
+            _proposal_contract_invalid_detail_hints,
             _source_symbol_graph,
             _validated_master_proposal,
         )
@@ -1314,7 +1315,29 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                 national_policy_only=True,
                 evidence_mode=evidence_mode,
                 allowed_primaries=allowed_primaries,
-            ) or ["proposal_contract_invalid"]
+            )
+            if not hints:
+                # v450 pass-rate fix: the bare generic token gave the durable
+                # rejection record no repairable detail.  Append the concrete
+                # field-level codes (generic code first, details after) — the
+                # projection re-probe on recovery renders them into the retry.
+                hints = [
+                    "proposal_contract_invalid",
+                    *_proposal_contract_invalid_detail_hints(
+                        raw_output,
+                        source_graph=source_graph,
+                        snapshot_dir=(
+                            candidate_dir
+                            / ".protocol_bootstrap_no_strength_evidence"
+                            if evidence_mode == "fresh_strict_control_no_strength"
+                            else None
+                        ),
+                        national_policy_only=True,
+                        evidence_mode=evidence_mode,
+                        allowed_primaries=allowed_primaries,
+                        expected_measurement_target=expected_measurement_target,
+                    ),
+                ]
             projection_detail_errors = [
                 "strict_authority_proposal_projection:" + hint
                 for hint in hints

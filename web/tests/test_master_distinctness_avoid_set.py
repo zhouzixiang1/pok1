@@ -331,9 +331,10 @@ def test_guidance_renders_every_claimed_symbol_not_only_the_first():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# (c) Non-collision paths keep their construction-time behavior: the clean
-# ensemble issues no retry at all, and the target-infeasible unpin keeps its
-# single-symbol avoid set with no claimed-symbol tokens injected.
+# (c) The clean ensemble issues no retry at all, and the target-infeasible
+# unpin now finalizes the SAME complete avoid set as a collision repair
+# (2026-09-13 v449 pass-rate fix — previously the unpin carried only its own
+# infeasible symbol and could burn its single attempt on a claimed target).
 # ═══════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
@@ -365,22 +366,29 @@ async def test_clean_ensemble_issues_no_repair_and_no_avoid_tokens(
 
 
 @pytest.mark.asyncio
-async def test_infeasible_unpin_retry_keeps_own_symbol_only_avoid(
+async def test_infeasible_unpin_retry_finalizes_full_avoid_set(
     monkeypatch, tmp_path
 ):
-    attempt1 = json.dumps(_strip_deadline_literals(
-        json.loads(_raw_proposal("mechanism", snapshot=True))
-    ))
+    """v449 fix: the target-infeasible unpin repair gets the complete
+    unavailable set (own infeasible symbol + every other direction's claim),
+    rendered into the retry prompt through the shared avoid branch, so the
+    single unpin attempt can pick a genuinely free symbol and survive."""
+
     harness = _AvoidHarness(
         monkeypatch,
         tmp_path,
-        attempt1={"mechanism": attempt1},
+        attempt1={
+            "mechanism": json.dumps(_strip_deadline_literals(
+                json.loads(_raw_proposal("mechanism", snapshot=True))
+            )),
+            "counterfactual": _proposal("counterfactual", snapshot=True),
+            "compute_memory": _proposal("compute_memory", snapshot=True),
+        },
         retry={"mechanism": _retargeted_proposal("mechanism", "_choose_intent")},
     )
     packet = await harness.run(tmp_path)
 
-    # Byte-for-byte the pre-fix unpin behavior: no claimed-symbol tokens are
-    # injected into a NON-collision repair, and the switched symbol survives.
+    # The switched-to-free-symbol retry is accepted: 3/3, not 2/3.
     assert packet["valid"] is True
     assert packet["proposal_count"] == 3
     retry_inputs = harness.retry_inputs("mechanism", "schema")
@@ -391,10 +399,27 @@ async def test_infeasible_unpin_retry_keeps_own_symbol_only_avoid(
         in hints
     )
     assert not any(
-        hint.startswith("schema_retry_avoid_claimed_symbol")
+        hint.startswith("schema_retry_keep_change_symbol")
         for hint in hints
     )
+    # Own infeasible symbol AND both other directions' accepted claims.
+    assert _token(_M) in hints
+    assert _token(_CF) in hints
+    assert _token(_C) in hints
+    assert repair_hints_all_avoid(hints, {_M, _CF, _C})
     retry_prompt = harness.retry_prompt("mechanism", "schema")
-    assert "MUST NOT be any of" not in retry_prompt
+    assert "structurally infeasible" in retry_prompt
+    assert "already claimed" in retry_prompt
+    # Deterministic finalize order: accepted claims first (insertion order),
+    # then the direction's own first-round symbol.
+    assert f"{_CF}, {_C}, {_M}" in retry_prompt
     symbols = {p["change_symbol"] for p in packet["ordered_proposals"]}
     assert "policy.py:_choose_intent" in symbols
+
+
+def repair_hints_all_avoid(hints, expected_symbols):
+    return {
+        item.split(".", 1)[1]
+        for item in hints
+        if item.startswith("schema_retry_avoid_claimed_symbol.")
+    } == set(expected_symbols)

@@ -79,6 +79,44 @@ _TARGET_INFEASIBLE_HINT_PREFIXES = (
     "proposal_mechanism_root_scoped_unknown_leaf",
 )
 
+# v449-v452 pass-rate fix (2026-09-13): each direction previously owned
+# exactly ONE schema/distinctness retry, so a retry that fixed the original
+# deterministic error but introduced a NEW failure class died on its second
+# rejection (live v450: attempt-1
+# ``proposal_mechanism_shared_leaf_requires_full_namespace`` -> retry
+# ``proposal_contract_invalid`` -> ensemble 2/3 -> generation abandoned).
+# When a first-retry validation failure carries at least one error-class
+# prefix (first segment of the hint code, see ``_proposal_error_classes``)
+# absent from the direction's attempt-1 rejection classes, the direction may
+# take exactly ONE additional retry — the real progress plus a fresh,
+# repairable failure shape.  The second retry mirrors the FIRST retry's
+# pin/avoid rules, including the finalized complete avoid set.  Any other
+# case (same error class repeated, or a cross-direction pin/avoid/claim
+# rejection) never adds an attempt.  The extra-round budget is a module
+# constant so it stays auditable; 0 restores the single-retry behavior.
+# Strict-authority generations never take the extra round: their durable
+# ``MAX_SCHEMA_ATTEMPTS_PER_SLOT`` journal contract
+# (strict_authority_workflow) stays authoritative.
+_ENSEMBLE_NEW_ERROR_RETRY_ROUNDS = 1
+
+
+def _proposal_error_classes(hints: object) -> frozenset[str]:
+    """First error-code segment of every hint: the stable failure class.
+
+    ``proposal_required_text_invalid:targeted_failure`` collapses to
+    ``proposal_required_text_invalid`` and
+    ``schema_retry_keep_change_symbol.policy.py:_x`` to
+    ``schema_retry_keep_change_symbol``, so parametric suffixes (field names,
+    bot names, symbols, matchup quartets) do not fabricate a "new" class
+    while genuinely different codes still count as new.
+    """
+    classes: set[str] = set()
+    for hint in hints or ():
+        head = str(hint or "").split(":", 1)[0].split(".", 1)[0]
+        if head:
+            classes.add(head)
+    return frozenset(classes)
+
 
 async def _run_master_proposal_ensemble(
     planning_context: str,
@@ -279,9 +317,15 @@ async def _run_master_proposal_ensemble(
         projection_hints = list((repair or {}).get("projection_hints") or ())
         is_repair = bool(repair_kind)
         is_distinctness_repair = repair_kind == "distinctness"
+        # The bounded second retry (``retry_round`` = 2) reuses the stable
+        # strict-safe role label; only its diagnostic IO log basename gets a
+        # round suffix so the two attempts never overwrite one log file.
+        retry_round_tag = str(
+            (repair or {}).get("retry_round") or ""
+        ) if isinstance(repair, dict) else ""
         purpose = f"master_proposal_scout:{direction}"
         log_basename = (
-            f"master_proposal_{direction}_{'distinctness' if is_distinctness_repair else 'schema'}_retry_io.txt"
+            f"master_proposal_{direction}_{'distinctness' if is_distinctness_repair else 'schema'}_retry{retry_round_tag}_io.txt"
             if is_repair
             else f"master_proposal_{direction}_io.txt"
         )
@@ -378,6 +422,46 @@ async def _run_master_proposal_ensemble(
                 unavailable.append(symbol)
         return unavailable
 
+    def _resolve_output_change_symbol(output: str) -> str:
+        """Graph-resolved change_symbol of a rejected raw output (or '').
+        The pin must use the GRAPH-RESOLVED spelling: the raw output failed
+        validation by definition, and pinning an unnormalized or
+        nonexistent symbol makes every retry lose the != comparison
+        (raw "bluff_allowed" resolves to "_bluff_allowed" — static
+        audit finding 2, 2026-08-17).  Unresolvable symbols return ''."""
+        raw_symbol = _extract_change_symbol_from_output(output)
+        if raw_symbol and source_graph is not None:
+            resolved = _am._normalize_source_symbol(raw_symbol)
+            if resolved is not None and resolved not in source_graph:
+                resolved = _am._fuzzy_resolve_symbol(
+                    resolved, source_graph, emit_event=False
+                )
+            if resolved is not None and resolved in source_graph:
+                return resolved
+        return ""
+
+    def _contract_invalid_fallback_hints(output: str) -> list[str]:
+        """The generic ``proposal_contract_invalid`` code first, followed by
+        up to three concrete field-level codes (v450 pass-rate fix: the bare
+        generic token gave the single permitted repair no actionable
+        detail)."""
+        details = _am._proposal_contract_invalid_detail_hints(
+            output,
+            source_graph=source_graph,
+            snapshot_dir=snapshot_dir,
+            national_policy_only=True,
+            require_snapshot_evidence=require_snapshot_evidence,
+            evidence_mode=evidence_mode,
+            allowed_primaries=allowed_primaries,
+            expected_measurement_target=(
+                _am.bot_name(int(source_v)) if singleton_no_strength else None
+            ),
+            forbidden_measurement_target=(
+                _am.bot_name(int(next_v)) if require_snapshot_evidence else None
+            ),
+        )
+        return ["proposal_contract_invalid", *details]
+
     def proposal_actual_role(result: object) -> str | None:
         if not isinstance(result, dict):
             return None
@@ -418,22 +502,8 @@ async def _run_master_proposal_ensemble(
         if proposal is None:
             repair = {"kind": "schema"}
             # Pin the schema retry to its original target family so repair
-            # pressure cannot silently redirect the direction (v187). The pin
-            # must use the GRAPH-RESOLVED spelling: the raw output failed
-            # validation by definition, and pinning an unnormalized or
-            # nonexistent symbol makes every retry lose the != comparison
-            # (raw "bluff_allowed" resolves to "_bluff_allowed" — static
-            # audit finding 2, 2026-08-17). Unresolvable pins are dropped.
-            pinned_symbol = None
-            raw_symbol = _extract_change_symbol_from_output(output)
-            if raw_symbol and source_graph is not None:
-                resolved = _am._normalize_source_symbol(raw_symbol)
-                if resolved is not None and resolved not in source_graph:
-                    resolved = _am._fuzzy_resolve_symbol(
-                        resolved, source_graph, emit_event=False
-                    )
-                if resolved is not None and resolved in source_graph:
-                    pinned_symbol = resolved
+            # pressure cannot silently redirect the direction (v187).
+            pinned_symbol = _resolve_output_change_symbol(output) or None
             # This direction's OWN attempt-1 rejection codes, computed BEFORE
             # any retry token is appended: the infeasibility decision below
             # reads only this output's validation errors, never another
@@ -448,7 +518,7 @@ async def _run_master_proposal_ensemble(
                     evidence_mode=evidence_mode,
                     allowed_primaries=allowed_primaries,
                 )
-                or ["proposal_contract_invalid"]
+                or _contract_invalid_fallback_hints(output)
             )
             # Target-shape infeasibility (2026-09-13): when the attempt-1
             # rejection itself proves the proposed target's SHAPE cannot
@@ -599,17 +669,28 @@ async def _run_master_proposal_ensemble(
         # first-round symbol.  The prompt tokens below and the attempt-2 hard
         # validation both read this exact list, so the set the prompt says to
         # avoid is the set validation rejects.
+        # v449 pass-rate fix: the target-infeasible UNPIN repair finalizes the
+        # same way.  Its construction-time avoid list named only its own
+        # infeasible symbol, so the unpin retry could burn its single attempt
+        # on a symbol another direction had already claimed (the v446 blind
+        # spot again, one path over).  The avoid set is REPLACED by the
+        # complete unavailable set (live claims + registered pins + the
+        # direction's own first-round symbol), rendered through the same
+        # schema_retry_avoid_claimed_symbol tokens and enforced by the same
+        # attempt-2 avoid check.  Clean-pin repairs keep their
+        # construction-time behavior unchanged.
         for _repair_spec in invalid_proposal_specs:
             repair = _repair_spec[2]
             if not isinstance(repair, dict):
                 continue
+            is_unpinned_retry = bool(repair.get("target_infeasible_unpinned"))
             is_collision_retry = (
                 str(repair.get("kind") or "") == "distinctness"
                 or bool(repair.pop("collision_retry", False))
             )
-            if not is_collision_retry:
-                # Non-collision schema repairs (clean pin, target-infeasible
-                # unpin) keep their construction-time behavior unchanged.
+            if not (is_collision_retry or is_unpinned_retry):
+                # Clean-pin schema repairs keep their construction-time
+                # behavior unchanged.
                 continue
             own_symbols = [
                 str(s) for s in (repair.get("avoid_change_symbols") or [])
@@ -624,47 +705,58 @@ async def _run_master_proposal_ensemble(
                 if f"schema_retry_avoid_claimed_symbol.{s}" not in known_hints
             )
             repair["projection_hints"] = hints
-        retry_results = await _am.gather_llm_fail_fast(
-            *(
-                propose(direction, directive, repair=repair)
-                for direction, directive, repair in invalid_proposal_specs
-            ),
-        )
-        retry_provider_errors: list[tuple[str, BaseException]] = []
-        for (direction, _directive, repair), result in zip(
-            invalid_proposal_specs, retry_results
-        ):
-            if isinstance(result, _am.LLMAvailabilityBlocked):
-                raise result
-            if isinstance(result, BaseException):
-                from strict_authority_workflow import StrictAuthorityError
-
-                if isinstance(result, StrictAuthorityError):
-                    raise result
-                retry_provider_errors.append((direction, result))
-                continue
-            output = result.get("output", "") if isinstance(result, dict) else ""
-            proposal = _am._validated_master_proposal(
-                output,
-                direction,
-                source_graph=source_graph,
-                snapshot_dir=snapshot_dir,
-                national_policy_only=True,
-                require_snapshot_evidence=require_snapshot_evidence,
-                execution_mode=proposal_execution_mode,
-                evidence_mode=evidence_mode,
-                expected_measurement_target=(
-                    _am.bot_name(int(source_v)) if singleton_no_strength else None
+        async def _dispatch_retry_round(
+            retry_specs: list,
+            *,
+            attempt_label: str,
+        ) -> tuple:
+            """Gather one schema/distinctness repair round and validate each
+            result in place.  Returns ``(provider_errors,
+            validation_failures)``; validation_failures carries ``(direction,
+            directive, repair, output, fresh_hints)`` for every result the
+            deterministic projection rejected, so the bounded new-error retry
+            decision below can compare failure classes across attempts."""
+            retry_results = await _am.gather_llm_fail_fast(
+                *(
+                    propose(direction, directive, repair=repair)
+                    for direction, directive, repair in retry_specs
                 ),
-                forbidden_measurement_target=(
-                    _am.bot_name(int(next_v)) if require_snapshot_evidence else None
-                ),
-                allowed_primaries=allowed_primaries,
-                actual_role=proposal_actual_role(result),
             )
-            if proposal is None:
-                fresh_hints = (
-                    _am._master_proposal_projection_hints(
+            provider_errors: list = []
+            validation_failures: list = []
+            for (direction, _directive, repair), result in zip(
+                retry_specs, retry_results
+            ):
+                if isinstance(result, _am.LLMAvailabilityBlocked):
+                    raise result
+                if isinstance(result, BaseException):
+                    from strict_authority_workflow import StrictAuthorityError
+
+                    if isinstance(result, StrictAuthorityError):
+                        raise result
+                    provider_errors.append((direction, result))
+                    continue
+                output = result.get("output", "") if isinstance(result, dict) else ""
+                proposal = _am._validated_master_proposal(
+                    output,
+                    direction,
+                    source_graph=source_graph,
+                    snapshot_dir=snapshot_dir,
+                    national_policy_only=True,
+                    require_snapshot_evidence=require_snapshot_evidence,
+                    execution_mode=proposal_execution_mode,
+                    evidence_mode=evidence_mode,
+                    expected_measurement_target=(
+                        _am.bot_name(int(source_v)) if singleton_no_strength else None
+                    ),
+                    forbidden_measurement_target=(
+                        _am.bot_name(int(next_v)) if require_snapshot_evidence else None
+                    ),
+                    allowed_primaries=allowed_primaries,
+                    actual_role=proposal_actual_role(result),
+                )
+                if proposal is None:
+                    primary_hints = _am._master_proposal_projection_hints(
                         output,
                         source_graph=source_graph,
                         snapshot_dir=snapshot_dir,
@@ -673,103 +765,216 @@ async def _run_master_proposal_ensemble(
                         evidence_mode=evidence_mode,
                         allowed_primaries=allowed_primaries,
                     )
-                    or ["proposal_contract_invalid"]
+                    fresh_hints = (
+                        list(primary_hints)
+                        if primary_hints
+                        else _contract_invalid_fallback_hints(output)
+                    )
+                    _log.warning(
+                        "Master proposal %s rejected (%s): hints=%s; "
+                        "retry_was_based_on=%s",
+                        direction,
+                        attempt_label,
+                        fresh_hints,
+                        (repair or {}).get("projection_hints", [])
+                        if isinstance(repair, dict)
+                        else [],
+                    )
+                    validation_failures.append(
+                        (direction, _directive, repair, output, fresh_hints)
+                    )
+                    continue
+                proposal_id = proposal["proposal_id"]
+                proposal_symbol = str(proposal.get("change_symbol") or "")
+                if proposal_id in seen_proposal_ids:
+                    if strict_authority_enabled:
+                        from strict_authority_workflow import reject_duplicate_proposal
+
+                        reject_duplicate_proposal(result["strict_call"])
+                    continue
+                # Retry pinning: a schema repair must keep its original target
+                # family (v187's retry silently switched symbols); a distinctness
+                # repair must avoid the symbol that caused the conflict.  A
+                # target-infeasible unpinned repair deliberately releases the
+                # pin: the retry MUST pick a new change_symbol, which still has
+                # to clear the full proposal validation (change_symbol /
+                # source_symbols membership in source_graph) plus the avoid and
+                # already-claimed checks below.
+                pinned_symbol = (
+                    str(repair.get("pinned_change_symbol") or "")
+                    if isinstance(repair, dict) else ""
                 )
-                _log.warning(
-                    "Master proposal %s rejected (attempt 2): hints=%s; "
-                    "retry_was_based_on=%s",
-                    direction,
-                    fresh_hints,
-                    (repair or {}).get("projection_hints", [])
-                    if isinstance(repair, dict)
-                    else [],
+                target_infeasible_unpinned = bool(
+                    isinstance(repair, dict)
+                    and repair.get("target_infeasible_unpinned")
                 )
-                continue
-            proposal_id = proposal["proposal_id"]
-            proposal_symbol = str(proposal.get("change_symbol") or "")
-            if proposal_id in seen_proposal_ids:
+                avoid_symbols = (
+                    [str(s) for s in (repair.get("avoid_change_symbols") or [])]
+                    if isinstance(repair, dict) else []
+                )
+                if (
+                    pinned_symbol
+                    and proposal_symbol != pinned_symbol
+                    and not target_infeasible_unpinned
+                ):
+                    if strict_authority_enabled:
+                        from strict_authority_workflow import reject_duplicate_proposal
+
+                        reject_duplicate_proposal(result["strict_call"])
+                    _log.warning(
+                        "Master proposal %s schema retry switched target "
+                        "%s -> %s; rejected (retry must keep its symbol)",
+                        direction, pinned_symbol, proposal_symbol or "?",
+                    )
+                    continue
+                if proposal_symbol and proposal_symbol in avoid_symbols:
+                    if strict_authority_enabled:
+                        from strict_authority_workflow import reject_duplicate_proposal
+
+                        reject_duplicate_proposal(result["strict_call"])
+                    _log.warning(
+                        "Master proposal %s distinctness retry reused the "
+                        "conflicting symbol %s; rejected",
+                        direction, proposal_symbol,
+                    )
+                    continue
+                if proposal_symbol and proposal_symbol in seen_change_symbols:
+                    if strict_authority_enabled:
+                        from strict_authority_workflow import reject_duplicate_proposal
+
+                        reject_duplicate_proposal(result["strict_call"])
+                    _log.warning(
+                        "Master proposal %s retry collided on change_symbol %s "
+                        "(claimed by direction %s); rejected",
+                        direction, proposal_symbol,
+                        seen_change_symbols[proposal_symbol],
+                    )
+                    continue
                 if strict_authority_enabled:
-                    from strict_authority_workflow import reject_duplicate_proposal
+                    from strict_authority_workflow import accept_role_result
 
-                    reject_duplicate_proposal(result["strict_call"])
-                continue
-            # Retry pinning: a schema repair must keep its original target
-            # family (v187's retry silently switched symbols); a distinctness
-            # repair must avoid the symbol that caused the conflict.  A
-            # target-infeasible unpinned repair deliberately releases the
-            # pin: the retry MUST pick a new change_symbol, which still has
-            # to clear the full proposal validation (change_symbol /
-            # source_symbols membership in source_graph) plus the avoid and
-            # already-claimed checks below.
-            pinned_symbol = (
-                str(repair.get("pinned_change_symbol") or "")
-                if isinstance(repair, dict) else ""
-            )
-            target_infeasible_unpinned = bool(
-                isinstance(repair, dict)
-                and repair.get("target_infeasible_unpinned")
-            )
-            avoid_symbols = (
-                [str(s) for s in (repair.get("avoid_change_symbols") or [])]
-                if isinstance(repair, dict) else []
-            )
-            if (
-                pinned_symbol
-                and proposal_symbol != pinned_symbol
-                and not target_infeasible_unpinned
-            ):
-                if strict_authority_enabled:
-                    from strict_authority_workflow import reject_duplicate_proposal
+                    accept_role_result(
+                        result["strict_call"],
+                        role_result=proposal,
+                        parse_contract=_am._PROPOSAL_SCHEMA_VERSION,
+                    )
 
-                    reject_duplicate_proposal(result["strict_call"])
-                _log.warning(
-                    "Master proposal %s schema retry switched target "
-                    "%s -> %s; rejected (retry must keep its symbol)",
-                    direction, pinned_symbol, proposal_symbol or "?",
-                )
-                continue
-            if proposal_symbol and proposal_symbol in avoid_symbols:
-                if strict_authority_enabled:
-                    from strict_authority_workflow import reject_duplicate_proposal
-
-                    reject_duplicate_proposal(result["strict_call"])
-                _log.warning(
-                    "Master proposal %s distinctness retry reused the "
-                    "conflicting symbol %s; rejected",
-                    direction, proposal_symbol,
-                )
-                continue
-            if proposal_symbol and proposal_symbol in seen_change_symbols:
-                if strict_authority_enabled:
-                    from strict_authority_workflow import reject_duplicate_proposal
-
-                    reject_duplicate_proposal(result["strict_call"])
-                _log.warning(
-                    "Master proposal %s retry collided on change_symbol %s "
-                    "(claimed by direction %s); rejected",
-                    direction, proposal_symbol,
-                    seen_change_symbols[proposal_symbol],
-                )
-                continue
-            if strict_authority_enabled:
-                from strict_authority_workflow import accept_role_result
-
-                accept_role_result(
-                    result["strict_call"],
+                proposal_invocations[proposal_id] = _am._record_master_invocation_evidence(
+                    result,
+                    output=output,
                     role_result=proposal,
-                    parse_contract=_am._PROPOSAL_SCHEMA_VERSION,
+                )
+                seen_proposal_ids.add(proposal_id)
+                if proposal_symbol:
+                    seen_change_symbols[proposal_symbol] = direction
+                accepted_proposal_directions[proposal_id] = direction
+                proposals.append(proposal)
+            return provider_errors, validation_failures
+
+        def _second_retry_repair(
+            direction: str,
+            first_repair: dict,
+            fresh_hints: list,
+            failed_output: str,
+        ) -> dict | None:
+            """Build the bounded second retry's repair for one direction.
+
+            Mirrors the FIRST retry's pin/avoid rules: a clean pin stays
+            pinned (downgraded to the full avoid set when the pin has since
+            been claimed, same rule as first-round construction); a
+            collision/distinctness or target-infeasible unpin repair avoids
+            the complete unavailable set at second-dispatch time — the live
+            claims and pins plus this direction's own round-1 and round-2
+            symbols.  Returns ``None`` when the failure carries no error
+            class beyond the attempt-1 rejection classes: the first retry did
+            not fix the original failure, so one more identical attempt
+            cannot help either (v450 gate).
+            """
+            first_hints = [
+                str(item)
+                for item in ((first_repair or {}).get("projection_hints") or ())
+            ]
+            if not (
+                _proposal_error_classes(fresh_hints)
+                - _proposal_error_classes(first_hints)
+            ):
+                return None
+            second: dict = {
+                "kind": str((first_repair or {}).get("kind") or "schema"),
+                "retry_round": 2,
+            }
+            hints = list(fresh_hints)
+            own_symbols = [
+                str(s)
+                for s in ((first_repair or {}).get("avoid_change_symbols") or [])
+            ]
+            failed_symbol = _resolve_output_change_symbol(failed_output)
+            if failed_symbol:
+                own_symbols.append(failed_symbol)
+
+            def _apply_full_avoid() -> None:
+                unavailable = _ensemble_unavailable_change_symbols(*own_symbols)
+                second["avoid_change_symbols"] = unavailable
+                known = set(hints)
+                hints.extend(
+                    f"schema_retry_avoid_claimed_symbol.{s}"
+                    for s in unavailable
+                    if f"schema_retry_avoid_claimed_symbol.{s}" not in known
                 )
 
-            proposal_invocations[proposal_id] = _am._record_master_invocation_evidence(
-                result,
-                output=output,
-                role_result=proposal,
+            pinned_symbol = str(
+                (first_repair or {}).get("pinned_change_symbol") or ""
             )
-            seen_proposal_ids.add(proposal_id)
-            if proposal_symbol:
-                seen_change_symbols[proposal_symbol] = direction
-            accepted_proposal_directions[proposal_id] = direction
-            proposals.append(proposal)
+            unpinned = bool(
+                (first_repair or {}).get("target_infeasible_unpinned")
+            )
+            if pinned_symbol and not unpinned:
+                # Mirrors first-round construction, EXCLUDING this direction's
+                # own registered pin (it was registered after the round-1
+                # collision check ran, so round-2 must not count itself).
+                pin_collides = bool(
+                    pinned_symbol in seen_change_symbols
+                    or any(
+                        other != direction
+                        and retry_pinned_symbols.get(other) == pinned_symbol
+                        for other in retry_pinned_symbols
+                    )
+                )
+                if pin_collides:
+                    # Same downgrade rule as first-round construction.
+                    second["collision_retry"] = True
+                    _apply_full_avoid()
+                else:
+                    second["pinned_change_symbol"] = pinned_symbol
+                    hints.append(
+                        "schema_retry_keep_change_symbol." + pinned_symbol
+                    )
+            elif unpinned:
+                # Keep the distinct unpin token (it names the round-1 symbol)
+                # so the retry is again told to pick a NEW target, now also
+                # dodging the complete unavailable set.
+                second["target_infeasible_unpinned"] = True
+                for item in first_hints:
+                    if item.startswith(
+                        "schema_retry_target_infeasible_unpinned."
+                    ):
+                        if item not in hints:
+                            hints.append(item)
+                        break
+                _apply_full_avoid()
+            else:
+                # Distinctness/collision repair: avoid the complete set,
+                # exactly like the finalized first retry.
+                _apply_full_avoid()
+            second["projection_hints"] = hints
+            return second
+
+        retry_provider_errors, retry_validation_failures = (
+            await _dispatch_retry_round(
+                invalid_proposal_specs,
+                attempt_label="attempt 2",
+            )
+        )
         if retry_provider_errors:
             direction, error = retry_provider_errors[0]
             raise_provider_failure(
@@ -778,6 +983,56 @@ async def _run_master_proposal_ensemble(
                 error,
                 slot=f"proposal:{direction}",
             )
+        # v449-v452 pass-rate fix: the bounded new-error second retry.  A
+        # direction whose FIRST retry failed with at least one error class
+        # absent from its attempt-1 rejection classes may take exactly ONE
+        # additional retry (see ``_ENSEMBLE_NEW_ERROR_RETRY_ROUNDS``): the
+        # retry demonstrably fixed the old failure and hit a fresh, possibly
+        # repairable one.  Strict-authority generations are excluded (their
+        # durable MAX_SCHEMA_ATTEMPTS_PER_SLOT journal contract stays
+        # authoritative), and no third round exists — the cap is structural.
+        if (
+            retry_validation_failures
+            and _ENSEMBLE_NEW_ERROR_RETRY_ROUNDS > 0
+            and not strict_authority_enabled
+        ):
+            second_retry_specs = []
+            for (
+                direction,
+                directive,
+                first_repair,
+                failed_output,
+                fresh_hints,
+            ) in retry_validation_failures:
+                second_repair = _second_retry_repair(
+                    direction,
+                    first_repair,
+                    fresh_hints,
+                    failed_output,
+                )
+                if second_repair is not None:
+                    second_retry_specs.append(
+                        (direction, directive, second_repair)
+                    )
+            if second_retry_specs:
+                _log.warning(
+                    "Master ensemble new-error second retry for directions: %s",
+                    [direction for direction, _d, _r in second_retry_specs],
+                )
+                second_provider_errors, _second_failures = (
+                    await _dispatch_retry_round(
+                        second_retry_specs,
+                        attempt_label="attempt 3",
+                    )
+                )
+                if second_provider_errors:
+                    direction, error = second_provider_errors[0]
+                    raise_provider_failure(
+                        "proposal_scout_repair",
+                        direction,
+                        error,
+                        slot=f"proposal:{direction}",
+                    )
     if len(proposals) != len(_am._MASTER_PROPOSAL_DIRECTIONS):
         _log.error(
             "Master ensemble insufficient: got %d valid proposals, need %d. "
