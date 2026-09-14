@@ -166,8 +166,23 @@ def _saturator_bots(session_id: int, limit: int = 2) -> "list[Path]":
     return [focus] + others
 
 
-_SATURATOR_HARD_STOP = """
-HARD STOP: after at most 18 Read tool calls, write the Phase 4 JSON array and end.
+def _saturator_max_read_calls() -> int:
+    """Per-packet Read-tool budget (the per-stream consumption dial).
+
+    Docstring context (see _saturator_bots): per-turn cache re-reads dominate
+    saturator consumption, so the turn budget — not the base context — is the
+    per-stream efficiency lever. Default 18 keeps the historical bounded-packet
+    contract; operators raise it for heavier packets instead of raising the
+    global concurrency cap.
+    """
+    try:
+        return max(6, int(os.environ.get("POK_LLM_SATURATOR_MAX_READ_CALLS", "18")))
+    except (TypeError, ValueError):
+        return 18
+
+
+_SATURATOR_HARD_STOP = f"""
+HARD STOP: after at most {_saturator_max_read_calls()} Read tool calls, write the Phase 4 JSON array and end.
 Do not pad, do not start extra phases, do not promise a follow-up. A finished
 bounded packet is worth more than an unfinished 60-turn essay. Re-read code
 before every citation; never cite from memory.

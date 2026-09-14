@@ -448,7 +448,10 @@ queue-starvation fix plus the v298 over-preempt hole plus the v328-v335
 Master/crossover starvation. Saturator jobs are bounded (matchup / line-audit /
 function-trace, plus abandon-attribution when a receipt exists) so occupancy
 produces 1-3 hypothesized `change_symbol` contracts plus last-abandon class
-instead of unread essays. The focus pool pins the live checkpoint `source_v`
+instead of unread essays. The per-packet Read-call budget is the per-stream
+efficiency dial (`POK_LLM_SATURATOR_MAX_READ_CALLS`, default 18, production
+28 since 2026-09-13) — per-turn cache re-reads dominate saturator consumption,
+so heavier packets beat higher concurrency on this memory-capped VM. The focus pool pins the live checkpoint `source_v`
 (when that bot is published) ahead of "newest 4 + v1", because prepare only
 injects findings whose `focus_v`/`opponent_v` match the selected parent.
 Launch also refuses when live `claude` children

@@ -120,10 +120,22 @@ def test_saturator_job_rotation_splits_work():
     for i in range(3):
         prompt = str(llm_saturator.saturator_job_for(i)["prompt"])
         assert "HARD STOP" in prompt
-        assert "18 Read" in prompt
+        # The Read-call budget is env-tunable (POK_LLM_SATURATOR_MAX_READ_CALLS,
+        # default 18); the prompt must always carry the configured number.
+        assert f"{llm_saturator._saturator_max_read_calls()} Read" in prompt
         assert "hypothesized_symbol" in prompt
         assert "Phase 4 — CONTRACTS" in prompt
         assert "LAST ABANDON RECEIPT:" not in prompt
+
+
+def test_saturator_max_read_calls_env_override(monkeypatch):
+    assert llm_saturator._saturator_max_read_calls() == 18
+    monkeypatch.setenv("POK_LLM_SATURATOR_MAX_READ_CALLS", "28")
+    assert llm_saturator._saturator_max_read_calls() == 28
+    monkeypatch.setenv("POK_LLM_SATURATOR_MAX_READ_CALLS", "bogus")
+    assert llm_saturator._saturator_max_read_calls() == 18
+    monkeypatch.setenv("POK_LLM_SATURATOR_MAX_READ_CALLS", "2")
+    assert llm_saturator._saturator_max_read_calls() == 6
 
 
 def test_pick_preemptable_many_batches_youngest():
