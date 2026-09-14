@@ -1786,6 +1786,49 @@ async def run_master_impl(args):
             )
     _tp._touch_master_checkpoint(next_v, source_v, phase="master_plan_ready")
 
+    # --- Deterministic citation normalization (pre-audit) ---
+    # v451/v485 died at the plan audit on hallucinated H2H numbers even with
+    # the exact-citable-rows preinjection and repair guidance.  Between plan
+    # acceptance and the audit start, rewrite resolvable citation numbers in
+    # this exact in-memory plan to the SAME frozen generation evidence
+    # snapshot values the audit compares against.  Strictly fail-closed:
+    # citations that resolve to no snapshot row (or to a row that cannot
+    # legally serve as primary evidence) are untouched, the audit logic is
+    # untouched, and a residual rejection still blocks the plan.
+    if not protocol_bootstrap_no_strength:
+        _citation_normalization_report = None
+        try:
+            from evidence_snapshot import normalize_master_plan_citations
+
+            _citation_normalization_report = normalize_master_plan_citations(
+                data, next_v, source_v=source_v
+            )
+        except Exception:
+            _citation_normalization_report = None
+        if (
+            isinstance(_citation_normalization_report, dict)
+            and _citation_normalization_report.get("total")
+        ):
+            try:
+                _tp.log_system_event(
+                    "pipeline.master_citations_normalized",
+                    "warn",
+                    (
+                        f"Master plan citations normalized against the frozen "
+                        f"snapshot before the audit for v{next_v}: "
+                        f"{_citation_normalization_report['total']} value(s) "
+                        "rewritten."
+                    ),
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "normalizations": _citation_normalization_report["total"],
+                        "normalization_report": _citation_normalization_report,
+                    },
+                )
+            except Exception:
+                pass
+
     # --- P0-1: Post-Master Plan Verification Audit ---
     # Capped retry loop: on audit rejection, re-plan AND re-audit only while the
     # unified Master budget still allows it. The audit_attempt counter is

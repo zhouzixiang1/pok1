@@ -1276,7 +1276,16 @@ from the same frozen generation evidence snapshot the audit validates
 against — an absent/unreadable snapshot silently omits the section
 (fail-open; the gate stays at the audit). The audit repair guidance
 (`h2h_citation_repair_guidance`) likewise lists tier-satisfying aggregate
-pointers when the corroboration leg failed.
+pointers when the corroboration leg failed. Because the model kept writing
+hallucinated numbers even with exact rows pre-injected (v451/v485, four
+rejections in a row), a deterministic normalization seam runs between plan
+acceptance and the audit: citations resolvable to real snapshot rows (same
+frozen snapshot, same alias/direction mapping) have their
+games/a_wins/b_wins/draws rewritten field-by-field to the row values with a
+`pipeline.master_citations_normalized` report event; unresolvable or
+tier-starved citations are left untouched for the audit to reject — the
+audit is unchanged and remains the gate
+(`normalize_master_plan_citations`, `evidence_snapshot.py`).
 The plan audit and the proposal
 gate share one citation set and one tier/typing rule (shared helpers in
 `agent_master_validation.py`, imported by the audit mirror in

@@ -1459,3 +1459,477 @@ def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str)
                             f"{alias} cited {field}={value}, snapshot has {field}={actual} (key {key})"
                         )
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Deterministic citation normalization (pre-audit)
+# ---------------------------------------------------------------------------
+# v451/v485 (2026-09) died at the plan audit because the final Master plan
+# kept writing hallucinated H2H games/wins numbers even though the prompt
+# pre-injected the exact citable rows and the rejection feedback carried the
+# repair guidance.  The audit itself is correct (fail-closed), so the last
+# deterministic line of defense is to REWRITE resolvable citation numbers in
+# the accepted plan to the SAME frozen snapshot values the audit compares
+# against, before the audit reads the plan.  The audit logic is untouched:
+# after normalization a pass means the plan cites snapshot-exact numbers, and
+# a residual rejection still blocks the plan exactly as before.
+
+_CITED_FIELD_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("games", r"\bgames?\s*[:=]\s*(\d+)"),
+    ("a_wins", r"\ba_wins\s*[:=]\s*(\d+)"),
+    ("b_wins", r"\bb_wins\s*[:=]\s*(\d+)"),
+    ("draws", r"\bdraws\s*[:=]\s*(\d+)"),
+)
+_CITED_GAMES_FALLBACK_PATTERN = r"(?<![\w.])(\d+)\s*(?:g|games|局)\b"
+# Aggregate pointer citations: snapshot:bot_stats.json#/... and
+# snapshot:selection_snapshot.json#/rows...  The locator stops at the same
+# prose boundaries the flattened plan realistically delimits with.
+_AGGREGATE_CITATION_POINTER_RE = re.compile(
+    r"snapshot:((?:bot_stats|selection_snapshot)\.json)#(/[^\s\"'<>|,;)\]]*)",
+    re.IGNORECASE,
+)
+_NORMALIZATION_REPORT_CAP = 64
+
+
+def _row_int(row: dict, field: str) -> int:
+    return int(row.get(field, 0) or 0)
+
+
+def _pointer_node(bundle: dict, filename: str, locator: str) -> object:
+    """Resolve one aggregate pointer against the loaded snapshot bundle.
+
+    Mirrors ``agent_master_validation._snapshot_reference_evidence_binding``
+    resolution (same ~1/~0 unescaping, same strongest-row rule for list
+    containers) but reads the already-parsed bundle instead of reopening the
+    snapshot files, so normalization and the audit see identical bytes.
+    """
+    role = {
+        "bot_stats.json": "bot_stats",
+        "selection_snapshot.json": "selection",
+    }.get(filename.lower())
+    if role is None:
+        return None
+    node: object = bundle.get(role)
+    if locator == "/":
+        return node
+    for raw_part in locator[1:].split("/"):
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        if isinstance(node, dict):
+            if part not in node:
+                return None
+            node = node[part]
+        elif isinstance(node, list):
+            if not part.isdigit() or int(part) >= len(node):
+                return None
+            node = node[int(part)]
+        else:
+            return None
+    return node
+
+
+def _pointer_resolved_games(bundle: dict, filename: str, locator: str) -> int | None:
+    """Sample size an aggregate pointer binds (``None`` when unresolvable).
+
+    Dict rows bind their own ``games``; list containers (e.g.
+    ``selection_snapshot.json#/rows``) bind the strongest element's raw int
+    ``games`` — the exact rule ``_snapshot_reference_evidence_binding``
+    applies when it creates the proposal's own bindings, so normalization
+    and the proposal gate can never disagree on a pointer's games.
+    """
+    node = _pointer_node(bundle, filename, locator)
+    if isinstance(node, dict):
+        games = node.get("games")
+        if isinstance(games, int) and not isinstance(games, bool):
+            return games
+        return None
+    if isinstance(node, list):
+        strongest = 0
+        for element in node:
+            if not isinstance(element, dict):
+                continue
+            value = element.get("games")
+            if (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > strongest
+            ):
+                strongest = value
+        return strongest if strongest > 0 else None
+    return None
+
+
+def _collect_aggregate_games_rewrites(
+    text: str,
+    bundle: dict,
+    ops: list[tuple[tuple[int, int], str, dict]],
+) -> None:
+    """Queue ``games=`` digit rewrites under resolvable aggregate pointers."""
+    for match in _AGGREGATE_CITATION_POINTER_RE.finditer(text):
+        filename, locator = match.group(1), match.group(2)
+        resolved = _pointer_resolved_games(bundle, filename, locator)
+        if resolved is None:
+            # 解析不到行: leave the citation untouched for the audit.
+            continue
+        window = _matchup_citation_window(text, match.start(), match.group(0))
+        window_text = text[match.start(): match.start() + len(window)]
+        pattern = re.compile(_CITED_FIELD_PATTERNS[0][1], re.IGNORECASE)
+        field_match = pattern.search(window_text)
+        if field_match is None:
+            field_match = re.search(
+                _CITED_GAMES_FALLBACK_PATTERN, window_text, re.IGNORECASE
+            )
+        if field_match is None:
+            continue
+        try:
+            cited_games = int(field_match.group(1))
+        except (TypeError, ValueError):
+            continue
+        if cited_games == resolved:
+            continue
+        span = (
+            match.start() + field_match.start(1),
+            match.start() + field_match.end(1),
+        )
+        ops.append((
+            span,
+            str(resolved),
+            {
+                "kind": "aggregate_pointer",
+                "pointer": f"snapshot:{filename}#{locator}",
+                "field": "games",
+                "from": cited_games,
+                "to": resolved,
+            },
+        ))
+
+
+def _collect_matchup_rewrites(
+    text: str,
+    key: str,
+    row: dict,
+    matchup_citable: bool,
+    ops: list[tuple[tuple[int, int], str, dict]],
+) -> None:
+    """Queue digit rewrites for one H2H row's citations inside one leaf.
+
+    The extraction mirrors ``validate_h2h_citations_against_snapshot`` field
+    by field (same patterns, same window, same W/L perspective fill) so a
+    rewritten citation is exactly one the audit would otherwise reject.
+    """
+    key_match = _h2h_key_re().search(str(key))
+    key_a = key_match.group(1) if key_match else None
+    row_values = {
+        field: _row_int(row, field)
+        for field, _pattern in _CITED_FIELD_PATTERNS
+    }
+    seen_spans: set[tuple[int, int]] = set()
+    for alias, first_v, _second_v in _h2h_key_aliases(str(key)):
+        if not alias:
+            continue
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        for alias_match in pattern.finditer(text):
+            span = alias_match.span()
+            if span in seen_spans:
+                continue
+            seen_spans.add(span)
+            window = _matchup_citation_window(text, span[0], alias)
+            window_start = span[0]
+            window_text = text[window_start: window_start + len(window)]
+
+            explicit: dict[str, tuple[int, int, int] | None] = {}
+            cited: dict[str, int | None] = {}
+            for field, field_pattern in _CITED_FIELD_PATTERNS:
+                field_match = re.search(field_pattern, window_text, re.IGNORECASE)
+                if field_match is None:
+                    explicit[field] = None
+                    cited[field] = None
+                    continue
+                try:
+                    value = int(field_match.group(1))
+                except (TypeError, ValueError):
+                    field_match = None
+                    value = None
+                explicit[field] = (
+                    (field_match.start(1), field_match.end(1), value)
+                    if field_match is not None
+                    else None
+                )
+                cited[field] = value
+            if cited["games"] is None:
+                fallback = re.search(
+                    _CITED_GAMES_FALLBACK_PATTERN, window_text, re.IGNORECASE
+                )
+                if fallback is not None:
+                    try:
+                        cited["games"] = int(fallback.group(1))
+                        explicit["games"] = (
+                            fallback.start(1), fallback.end(1), cited["games"],
+                        )
+                    except (TypeError, ValueError):
+                        pass
+
+            # W/L fill: identical perspective mapping to the audit.
+            wl_match = _WL_RE.search(window_text)
+            wl_rewrite: tuple[int, int, int, int, int, int] | None = None
+            if wl_match:
+                wins = int(wl_match.group(1))
+                losses = int(wl_match.group(2))
+                key_first = key_a if key_a is not None else first_v
+                if first_v == key_first:
+                    target_w, target_l = row_values["a_wins"], row_values["b_wins"]
+                    if cited["a_wins"] is None:
+                        cited["a_wins"] = wins
+                    if cited["b_wins"] is None:
+                        cited["b_wins"] = losses
+                else:
+                    target_w, target_l = row_values["b_wins"], row_values["a_wins"]
+                    if cited["a_wins"] is None:
+                        cited["a_wins"] = losses
+                    if cited["b_wins"] is None:
+                        cited["b_wins"] = wins
+                if cited["games"] is None:
+                    cited["games"] = wins + losses
+                wl_contributed = (
+                    explicit["games"] is None
+                    or explicit["a_wins"] is None
+                    or explicit["b_wins"] is None
+                )
+                if wl_contributed and (wins, losses) != (target_w, target_l):
+                    wl_rewrite = (
+                        wl_match.start(1), wl_match.end(1), target_w,
+                        wl_match.start(2), wl_match.end(2), target_l,
+                    )
+
+            if not matchup_citable:
+                # 行本身不满足 per-matchup 门槛: leave the citation untouched
+                # so the audit keeps rejecting it exactly as before.
+                continue
+
+            for field, _field_pattern in _CITED_FIELD_PATTERNS:
+                bound = explicit[field]
+                if bound is None:
+                    continue
+                start, end, value = bound
+                if value == row_values[field]:
+                    continue
+                ops.append((
+                    (window_start + start, window_start + end),
+                    str(row_values[field]),
+                    {
+                        "kind": "h2h_matchup",
+                        "matchup": alias,
+                        "field": field,
+                        "from": value,
+                        "to": row_values[field],
+                    },
+                ))
+            if wl_rewrite is not None:
+                w_start, w_end, target_w, l_start, l_end, target_l = wl_rewrite
+                ops.append((
+                    (window_start + w_start, window_start + w_end),
+                    str(target_w),
+                    {
+                        "kind": "h2h_matchup",
+                        "matchup": alias,
+                        "field": "wins(W)",
+                        "from": int(wl_match.group(1)),
+                        "to": target_w,
+                    },
+                ))
+                ops.append((
+                    (window_start + l_start, window_start + l_end),
+                    str(target_l),
+                    {
+                        "kind": "h2h_matchup",
+                        "matchup": alias,
+                        "field": "losses(L)",
+                        "from": int(wl_match.group(2)),
+                        "to": target_l,
+                    },
+                ))
+
+
+def _apply_rewrites(
+    text: str,
+    ops: list[tuple[tuple[int, int], str, dict]],
+    *,
+    path: str,
+    report: list[dict],
+) -> tuple[str, int]:
+    """Apply non-overlapping digit rewrites left-to-right, recording each.
+
+    Overlapping ops (a digit span claimed by two windows) apply once — the
+    leftmost wins — and any residual mismatch stays for the audit to reject.
+    Returns the rewritten text and the number of applied rewrites (the
+    report list itself is capped; the count is not).
+    """
+    applied: list[tuple[int, int]] = []
+    pieces: list[str] = []
+    cursor = 0
+    count = 0
+    for (start, end), replacement, meta in sorted(
+        ops, key=lambda op: (op[0][0], op[0][1])
+    ):
+        if any(start < a_end and end > a_start for a_start, a_end in applied):
+            continue
+        applied.append((start, end))
+        pieces.append(text[cursor:start])
+        pieces.append(replacement)
+        cursor = end
+        count += 1
+        if len(report) < _NORMALIZATION_REPORT_CAP:
+            report.append({"path": path, **meta})
+    if not applied:
+        return text, 0
+    pieces.append(text[cursor:])
+    return "".join(pieces), count
+
+
+def _normalize_leaf_strings(
+    parent: Any,
+    key: Any,
+    h2h: dict,
+    key_citable: dict[str, bool],
+    bundle: dict,
+    normalizations: list[dict],
+    counts: list[int],
+    path: str,
+) -> None:
+    """Rewrite citation numbers in one string leaf, recursing containers.
+
+    ``parent[key]`` is assigned in place so the exact plan object the audit
+    reads afterwards carries the normalized values.
+    """
+    value = parent[key]
+    if isinstance(value, dict):
+        for child_key in list(value.keys()):
+            _normalize_leaf_strings(
+                value,
+                child_key,
+                h2h,
+                key_citable,
+                bundle,
+                normalizations,
+                counts,
+                f"{path}.{child_key}" if path else str(child_key),
+            )
+        return
+    if isinstance(value, list):
+        for index in range(len(value)):
+            _normalize_leaf_strings(
+                value,
+                index,
+                h2h,
+                key_citable,
+                bundle,
+                normalizations,
+                counts,
+                f"{path}[{index}]",
+            )
+        return
+    if not isinstance(value, str) or not value:
+        return
+    ops: list[tuple[tuple[int, int], str, dict]] = []
+    for row_key, row in h2h.items():
+        if not isinstance(row, dict) or not key_citable.get(str(row_key), False):
+            continue
+        _collect_matchup_rewrites(
+            value, str(row_key), row, key_citable[str(row_key)], ops
+        )
+    _collect_aggregate_games_rewrites(value, bundle, ops)
+    if not ops:
+        return
+    new_text, applied = _apply_rewrites(
+        value, ops, path=path, report=normalizations
+    )
+    if new_text != value:
+        parent[key] = new_text
+        counts[0] += applied
+
+
+def normalize_master_plan_citations(
+    master_plan: Any,
+    next_v: int | str,
+    *,
+    source_v: int | str | None = None,
+) -> dict:
+    """Rewrite resolvable citation numbers in an accepted plan to snapshot values.
+
+    Runs at the plan-accepted/audit-start seam on the SAME in-memory plan the
+    audit then reads, using the SAME frozen generation evidence snapshot the
+    audit validates against (never live results).  Rules, strictly
+    fail-closed:
+
+    - An H2H matchup citation is normalized only when it resolves to a real
+      snapshot row (both wire directions, shared ``_h2h_pair_versions``
+      mapping) AND that row's matchup satisfies the per-matchup primary tier.
+      A citation that resolves to no row, or whose row cannot legally serve
+      as primary evidence, is left untouched for the audit to reject.
+    - An aggregate pointer citation (``snapshot:bot_stats.json#/...`` /
+      ``snapshot:selection_snapshot.json#/rows...``) has its bound ``games``
+      normalized only when the pointer resolves against the bundle; an
+      unresolvable pointer is untouched.
+    - Every replacement is recorded in the returned report; the audit itself
+      is untouched, so a residual rejection still blocks the plan.
+
+    Returns a report dict; never raises for plan-shape reasons (fail-open to
+    the audit, which remains the gate).
+    """
+    report: dict = {
+        "available": False,
+        "total": 0,
+        "normalizations": [],
+    }
+    if not isinstance(master_plan, dict):
+        return report
+    try:
+        h2h = load_generation_h2h_snapshot(next_v)
+        bundle = load_generation_evaluation_snapshot(next_v)
+    except Exception as exc:  # pragma: no cover - defensive, audit still gates
+        report["reason"] = f"snapshot_read_failed:{type(exc).__name__}"
+        return report
+    if not h2h or not isinstance(bundle, dict) or not bundle.get("available"):
+        return report
+    report["available"] = True
+
+    from agent_master_validation import (
+        _h2h_pair_versions,
+        _matchup_max_games_rows,
+        _matchup_primary_tier,
+    )
+
+    # A matchup row may only carry a normalized citation when the matchup can
+    # legally serve as primary evidence; sub-tier rows stay untouched so the
+    # audit keeps rejecting them (normalization never legitimizes a citation).
+    key_citable: dict[str, bool] = {}
+    for key, row in h2h.items():
+        if not isinstance(row, dict):
+            continue
+        pair = _h2h_pair_versions(str(key))
+        if pair is None:
+            key_citable[str(key)] = False
+            continue
+        best = _matchup_max_games_rows(h2h, pair)
+        key_citable[str(key)] = best >= _matchup_primary_tier(best)
+
+    normalizations: list[dict] = []
+    counts = [0]
+    for top_key in list(master_plan.keys()):
+        _normalize_leaf_strings(
+            master_plan,
+            top_key,
+            h2h,
+            key_citable,
+            bundle,
+            normalizations,
+            counts,
+            str(top_key),
+        )
+    report["total"] = counts[0]
+    report["normalizations"] = normalizations
+    if source_v is not None:
+        report["source_v"] = str(source_v)
+    return report
