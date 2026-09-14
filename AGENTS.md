@@ -784,8 +784,11 @@ prepared-baseline binder requires that exact token — an empty string is not
 The prepared-baseline contract binds parents to their canonical semantic bot
 names (not frozen 64-hex snapshot directory basenames) and stores the preplan
 transition's frozen capability objects for exact bind-time forwarding, so the
-build and bind capability revalidations are symmetric; legacy v2 payloads and
-stripped capabilities fail closed (details in
+build and bind capability revalidations are symmetric; the policy payload's
+`source_bot` label is bound the same way (`build_architecture_policy(source_
+bot_label=...)`, 2026-09-14) — otherwise the Master-entry recomputation from
+the live `bots/<name>` directory can never match the frozen digest; legacy
+v2 payloads and stripped capabilities fail closed (details in
 `docs/national-runtime-architecture-policy.md`).
 H2H citation accuracy binds numbers to one matchup alias and stops at the next
 pairing or a `snapshot:` / `bot_stats.json` / `selection_snapshot.json`

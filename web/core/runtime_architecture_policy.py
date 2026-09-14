@@ -1199,7 +1199,21 @@ def build_architecture_policy(
     *,
     source_capabilities: dict[str, Any] | None = None,
     prepared_capability_snapshot: dict[str, Any] | None = None,
+    source_bot_label: str | None = None,
 ) -> dict[str, Any]:
+    """Build the frozen architecture policy for a source bot directory.
+
+    ``source_bot_label`` overrides the recorded ``source_bot`` identity label,
+    mirroring ``build_prepared_capability_snapshot``'s ``parent_bot_label``.
+    Crossover prepare recomputes the policy from content-addressed frozen
+    snapshot directories whose 64-hex basename is not a semantic identity, but
+    the Master-entry gate re-derives the payload from the live
+    ``bots/<name>`` directory, so the prepare-side caller must bind the
+    canonical ``bot_name(source_v)`` label to keep the frozen and recomputed
+    digests equal; the default keeps deriving the label from the directory for
+    backcompat (byte-identical digests when omitted).
+    """
+
     source = Path(source_bot_dir)
     capabilities = source_capabilities or _lineage_capabilities(source)
     if prepared_capability_snapshot is not None:
@@ -1207,6 +1221,7 @@ def build_architecture_policy(
             prepared_capability_snapshot,
             parent_bot_dir=source,
             parent_capabilities=capabilities,
+            parent_bot_label=source_bot_label,
         )
         if snapshot_errors:
             raise ValueError(
@@ -1214,7 +1229,7 @@ def build_architecture_policy(
                 + "; ".join(snapshot_errors)
             )
     return _build_architecture_policy_payload(
-        source.name,
+        source_bot_label if source_bot_label is not None else source.name,
         capabilities,
         prepared_capability_snapshot,
     )

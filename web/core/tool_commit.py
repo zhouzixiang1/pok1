@@ -1757,6 +1757,13 @@ async def run_crossover(args):
                         "source_capabilities"
                     ),
                     prepared_capability_snapshot=capability_snapshot,
+                    # parent_a_evidence_dir is the content-addressed frozen
+                    # snapshot directory (64-hex basename); the Master-entry
+                    # gate recomputes this same payload from the live
+                    # bots/<name> directory, so the source_bot label must be
+                    # the canonical semantic name or the digests can never
+                    # match (mirrors parent_bot_label above).
+                    source_bot_label=bot_name(parent_a),
                 )
             except Exception as exc:
                 return await _record_crossover_infrastructure(
