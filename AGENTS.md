@@ -324,6 +324,36 @@ The committed thinking budget and effort live in
 `enabled`/`adaptive`/`disabled`, `POK_LLM_THINKING_BUDGET`, `POK_LLM_EFFORT`),
 all read from `_llm_thinking_options` in `web/core/llm_query.py`.
 
+**Switchable transport base (`POK_LLM_TRANSPORT`, default `claude`).** The
+single `run_claude_query` chokepoint can spawn either provider process
+transport: `claude` (default — `claude_agent_sdk` spawning the Claude Code
+CLI; byte-identical to the historical path when the var is unset) or `codex`
+(one-shot `codex exec --json --ephemeral -s read-only` per attempt, exit on
+completion; adapter `web/core/llm_query_codex.py`, dispatched inside
+`llm_query_retry._run_stream_with_signature_retry_attempts` only). The codex
+adapter translates the official JSONL event stream
+(`thread.started`/`turn.started`/`item.completed`/`turn.completed`) into the
+exact SDK message objects, so the semaphore acquisition point, role-IO
+evidence files, `llm_call_metrics.jsonl` schema (codex usage keys map onto
+`input_tokens`/`output_tokens`/`cache_read_input_tokens`/
+`cache_creation_input_tokens`, missing fields 0, cost null), the GLM
+1302/1308 classification chain (provider error text — JSON error events plus
+the stderr tail — is raised inside `ClaudeSDKError`), and the stall/idle
+role timeouts are all shared verbatim with the claude path. Timeout/cancel
+kills the codex process *group* and proves exit via `returncode` on the same
+provider-attempt cleanup predicates. Endpoint/model/`wire_api`/auth are
+operator-owned in `~/.codex/config.toml` (official GLM Coding Plan page
+`docs.bigmodel.cn/cn/coding-plan/tool/codex`: base_url
+`https://open.bigmodel.cn/api/v1`, `wire_api="responses"`,
+`experimental_bearer_token`); `POK_LLM_EFFORT` maps onto codex
+`model_reasoning_effort` (official档位 `low`/`high`/`max`). Known capability
+gap (documented, intentional): the codex run is always `-s read-only`, so
+Worker/crossover **write** scopes are unavailable under this transport — the
+AGENTS.md read-permission audit chain stays at the prompt layer exactly as
+today. `POK_CODEX_BIN` / `POK_CODEX_MODEL` are optional per-dispatch
+overrides; the key is committed unset in `deploy/tencent-cloud/env.runtime`
+(switching is an orchestration decision, never a local edit).
+
 Because GLM with `effort=max` has variable output speed,
 role timeouts are kept generous via env overrides in
 `deploy/tencent-cloud/env.runtime`: see each role's `*_TOTAL_TIMEOUT` /

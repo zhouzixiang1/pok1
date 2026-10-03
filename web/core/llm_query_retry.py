@@ -54,6 +54,10 @@ from claude_agent_sdk import (
 )
 from llm_availability import LLMAvailabilityBlocked, LLMAvailabilityTrace
 
+# Codex transport adapter (POK_LLM_TRANSPORT=codex).  Imports only stdlib +
+# claude_agent_sdk message types, so no circular dependency with llm_query.
+import llm_query_codex as _cx
+
 # NOTE: ``llm_query`` imports this module at its own top level.  To avoid a
 # circular import we do NOT ``import llm_query`` at module scope.  Each
 # function that needs to read a monkeypatchable parent symbol (claude_query,
@@ -993,15 +997,31 @@ async def _run_stream_with_signature_retry_attempts(
     _lq._assert_no_unresolved_provider_attempts()
     for sdk_attempt in range(_SIGNATURE_MAX_ATTEMPTS):
         _lq._assert_no_unresolved_provider_attempts()
-        owned_transport = _lq._new_owned_sdk_transport(full_prompt, options)
+        # Transport dispatch (POK_LLM_TRANSPORT, default "claude"): the codex
+        # adapter spawns a one-shot ``codex exec`` process and yields the same
+        # SDK message objects, so everything below (semaphore acquisition,
+        # _process_stream, billing, metrics, cleanup) is shared verbatim.
+        # The claude branch is byte-identical to the pre-codex path.
+        _codex_transport = _cx.codex_transport_enabled()
+        if _codex_transport:
+            owned_transport = _cx.new_codex_exec_transport(full_prompt, options)
+        else:
+            owned_transport = _lq._new_owned_sdk_transport(full_prompt, options)
         provider_attempt = _lq._new_provider_attempt(owned_transport)
         provider_token = _lq._LLM_PROVIDER_ATTEMPT.set(provider_attempt)
         try:
-            query_gen = _lq.claude_query(
-                prompt=full_prompt,
-                options=options,
-                transport=owned_transport,
-            )
+            if _codex_transport:
+                query_gen = _cx.codex_query(
+                    prompt=full_prompt,
+                    options=options,
+                    transport=owned_transport,
+                )
+            else:
+                query_gen = _lq.claude_query(
+                    prompt=full_prompt,
+                    options=options,
+                    transport=owned_transport,
+                )
         except BaseException:
             _lq._LLM_PROVIDER_ATTEMPT.reset(provider_token)
             raise
@@ -1037,7 +1057,11 @@ async def _run_stream_with_signature_retry_attempts(
                     attempt=sdk_attempt,
                     max_attempts=_SIGNATURE_MAX_ATTEMPTS,
                     role=role_name,
-                    model=getattr(options, "model", None),
+                    model=(
+                        _cx.codex_metrics_model()
+                        if _codex_transport
+                        else getattr(options, "model", None)
+                    ),
                     total_elapsed_sec=time.time() - _attempt_start,
                     first_token_latency_sec=stream_metrics.get("first_token_latency_sec"),
                     first_text_latency_sec=stream_metrics.get("first_text_latency_sec"),
