@@ -44,32 +44,74 @@ Capability differences vs the claude transport (documented in AGENTS.md):
 - Endpoint/model/wire_api/auth come from the operator's ``~/.codex/config.toml``
   (official GLM Coding Plan page: base_url ``https://open.bigmodel.cn/api/v1``,
   ``wire_api="responses"``, ``experimental_bearer_token``); ``POK_CODEX_MODEL``
-  may override the model per dispatch.
+  may override the model per dispatch.  The binary is pre-resolved via
+  ``shutil.which`` before every spawn (:func:`resolve_codex_binary`):
+  PATH first, then — for BARE names only — the user-local install base
+  ``$HOME/.local/bin`` (the service PATH excludes ``~/.local/bin`` while
+  the codex CLI user install lives exactly there, so the transport runs
+  under the committed service environment with no operator-added env key).
+  An
+  unresolvable binary raises an actionable error that
+  ``classify_llm_availability`` rates as NO availability issue (never a
+  1302/1308/quota pause; the dispatch path surfaces it as
+  ``ClaudeSDKError``), and the web lifespan fails fast at startup via
+  :func:`assert_codex_transport_ready` when the codex transport is selected
+  but the binary is missing from the service PATH.  The preflight surface
+  (transport selection + binary resolution) is stdlib-only and importable
+  by ANY python3 — claude_agent_sdk is imported lazily-guarded, so a
+  service-environment smoke or systemd ExecStartPre that resolves
+  ``python3`` from the service PATH still gets the binary diagnosis
+  instead of ``ModuleNotFoundError`` (2026-10-04); SDK-typed entries fail
+  closed via :func:`_require_sdk` with the POK_PYTHON guidance.
 """
+
+from __future__ import annotations
 
 import asyncio
 import contextlib
 import collections
 import json
 import os
+import shutil
 import signal
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    UserMessage,
-    SystemMessage,
-    TextBlock,
-    ThinkingBlock,
-    ToolResultBlock,
-    ResultMessage,
-    ClaudeSDKError,
-)
+try:
+    from claude_agent_sdk import (
+        AssistantMessage,
+        UserMessage,
+        SystemMessage,
+        TextBlock,
+        ThinkingBlock,
+        ToolResultBlock,
+        ResultMessage,
+        ClaudeSDKError,
+    )
+
+    _SDK_IMPORT_ERROR = None
+except ImportError as _sdk_exc:  # SDK-free interpreter (see below)
+    # The transport preflight surface of this module (codex_transport_enabled
+    # / codex_binary_from_env / resolve_codex_binary /
+    # assert_codex_transport_ready) must stay importable by ANY python3:
+    # service-environment smokes, systemd ExecStartPre, and operator deploy
+    # checks resolve ``python3`` from the service PATH, which does NOT carry
+    # the venv's claude_agent_sdk (2026-10-04 smoke: ``ModuleNotFoundError:
+    # No module named 'claude_agent_sdk'`` replaced the binary diagnosis the
+    # preflight exists to produce).  No placeholder SDK types are bound —
+    # every SDK-typed entry point calls _require_sdk() and fails with an
+    # actionable chained error instead of constructing broken objects.
+    _SDK_IMPORT_ERROR = _sdk_exc
 
 #: Transport selector env var.  ``claude`` (default) keeps the exact existing
 #: SDK path; ``codex`` routes the dispatch through this adapter.
 TRANSPORT_ENV = "POK_LLM_TRANSPORT"
 
-#: Binary override (default ``codex`` resolved via PATH).
+#: Binary override (default ``codex``).  Resolved at spawn time by
+#: :func:`resolve_codex_binary`: ``shutil.which`` first (honours a directory
+#: component in the value), then — for BARE names only — the standard
+#: user-local install bin dir ``$HOME/.local/bin`` (the service PATH never
+#: includes it, but the codex CLI user install lives exactly there).
+#: A value carrying a directory component is authoritative and gets no
+#: fallback.
 CODEX_BIN_ENV = "POK_CODEX_BIN"
 
 #: Optional per-dispatch model override forwarded as ``-c model=<v>``.
@@ -128,6 +170,145 @@ def codex_effort_from_env() -> str:
 
 def codex_binary_from_env() -> str:
     return str(os.environ.get(CODEX_BIN_ENV, "codex") or "codex")
+
+
+#: Standard user-local install bin directory (pip ``--user`` base) consulted
+#: when a BARE binary name is absent from PATH.  The committed service PATH
+#: (``deploy/tencent-cloud/env.runtime``) intentionally excludes it, but the
+#: runtime always has ``HOME`` and the codex CLI user install lives exactly
+#: there on the cloud VM — so the codex transport must resolve it without an
+#: operator-added env key (2026-10-04 service-env smoke: HOME/PATH/
+#: POK_LLM_TRANSPORT alone failed at the preflight with a PATH-only lookup).
+_USER_LOCAL_BIN_DIRNAME = ".local/bin"
+
+
+class CodexBinaryNotFound(RuntimeError):
+    """The configured codex binary is unresolvable — a service-CONFIG error.
+
+    Raised by :func:`resolve_codex_binary` / :func:`assert_codex_transport_ready`
+    under ANY interpreter (stdlib-only path, no claude_agent_sdk needed).
+    The dispatch path (:meth:`CodexExecTransport.spawn`) re-raises the same
+    text as ``ClaudeSDKError`` so the retry loop and availability classifier
+    see the SDK error type they already handle.
+    """
+
+
+def _codex_binary_guidance(configured: str, attempted=None) -> str:
+    tried = ", ".join(repr(path) for path in (attempted or [configured]))
+    return (
+        "codex binary not found in service PATH: none of "
+        + tried
+        + " is executable (PATH="
+        + str(os.environ.get("PATH") or "")
+        + "; bare names also try $HOME/"
+        + _USER_LOCAL_BIN_DIRNAME
+        + "); set POK_CODEX_BIN to an absolute path (e.g. "
+        "POK_CODEX_BIN=/home/ubuntu/.local/bin/codex) or append its "
+        "directory to PATH= in deploy/tencent-cloud/env.runtime, then "
+        "restart pok-evolution"
+    )
+
+
+def _user_local_bin_candidates(name: str) -> list:
+    """Bare-name fallback paths under the user-local install base."""
+
+    home = str(os.environ.get("HOME") or "").strip()
+    if not home or not name:
+        return []
+    return [os.path.join(home, _USER_LOCAL_BIN_DIRNAME, name)]
+
+
+def resolve_codex_binary() -> str:
+    """Resolve the configured codex binary to an absolute executable path.
+
+    Resolution order: (1) ``shutil.which`` honours a directory component in
+    ``POK_CODEX_BIN`` (absolute or relative path checked directly) and
+    otherwise searches the process ``PATH``; (2) for a BARE name only, the
+    standard user-local install bin dir ``$HOME/.local/bin`` (the pip
+    ``--user`` base) is tried next — again through ``shutil.which``, so
+    executability is proven.  The committed service ``PATH``
+    (``deploy/tencent-cloud/env.runtime``) intentionally excludes
+    ``~/.local/bin`` while the codex CLI user install lives exactly there,
+    so the transport must resolve it from ``HOME`` with no operator-added
+    env key (2026-10-04 service-env smoke: HOME/PATH/POK_LLM_TRANSPORT
+    alone failed a PATH-only lookup at the preflight).  A ``POK_CODEX_BIN``
+    carrying a directory component is authoritative and gets NO fallback.
+    An unresolvable binary is a *service-configuration* failure, not
+    provider unavailability: the raised error text deliberately matches no
+    GLM 1302/1308/429/503/529 marker, so ``classify_llm_availability``
+    returns ``None`` for it and no durable cooldown/quota pause is ever
+    armed (2026-10-03 incident: every dispatch died as a bare
+    ``FileNotFoundError: 'codex'`` and burned v490/v491/v492 while a stale
+    claude-era 1302 pause took the blame).
+
+    Stdlib-only: safe to call from any python3 (smoke / ExecStartPre)
+    regardless of claude_agent_sdk availability.
+    """
+
+    configured = codex_binary_from_env()
+    attempted = [configured]
+    resolved = shutil.which(configured)
+    if not resolved and not os.path.dirname(configured):
+        # Bare name absent from PATH: try the user-local install base before
+        # failing (the service PATH never includes ~/.local/bin).
+        for candidate in _user_local_bin_candidates(configured):
+            attempted.append(candidate)
+            resolved = shutil.which(candidate)
+            if resolved:
+                break
+    if resolved:
+        return resolved
+    raise CodexBinaryNotFound(_codex_binary_guidance(configured, attempted))
+
+
+def _resolve_binary_or_sdk_error() -> str:
+    """Dispatch-path resolver: the spawn failure must surface as
+    ``ClaudeSDKError`` (the type the retry loop, provider-attempt lifecycle,
+    and availability classifier already handle).  Under an SDK-free
+    interpreter the actionable :class:`CodexBinaryNotFound` itself
+    propagates — identical text, no SDK required."""
+
+    try:
+        return resolve_codex_binary()
+    except CodexBinaryNotFound as exc:
+        if _SDK_IMPORT_ERROR is not None:
+            raise
+        raise ClaudeSDKError(str(exc)) from exc
+
+
+def assert_codex_transport_ready():
+    """Startup preflight for the codex transport (web lifespan entry point).
+
+    Returns the resolved absolute binary path when the codex transport is
+    selected, ``None`` otherwise.  Raises the actionable
+    :class:`CodexBinaryNotFound` at STARTUP when ``POK_LLM_TRANSPORT=codex``
+    is configured but the binary cannot be resolved, so the
+    misconfiguration is a diagnosable boot failure instead of one opaque
+    per-role spawn error per dispatched role.  Stdlib-only: runnable by ANY
+    python3 (service-environment smoke, systemd ExecStartPre) — it must NOT
+    depend on claude_agent_sdk, because the smoke interpreter resolves
+    ``python3`` from the service PATH, which does not carry the venv
+    (2026-10-04: the preflight itself died with ``ModuleNotFoundError: No
+    module named 'claude_agent_sdk'`` before producing the diagnosis).
+    """
+
+    if not codex_transport_enabled():
+        return None
+    return resolve_codex_binary()
+
+
+def _require_sdk(entry: str) -> None:
+    """Fail closed (with guidance) on SDK-typed entries under an SDK-free
+    interpreter, instead of NameError/TypeError from unbound SDK names."""
+
+    if _SDK_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            f"{entry} requires claude_agent_sdk (import failed: "
+            f"{_SDK_IMPORT_ERROR}); run under the service interpreter "
+            "(POK_PYTHON=/home/ubuntu/pok1/.venv/bin/python). The transport "
+            "preflight assert_codex_transport_ready() is SDK-free and works "
+            "under any python3."
+        ) from _SDK_IMPORT_ERROR
 
 
 def codex_metrics_model() -> str:
@@ -221,6 +402,7 @@ class CodexEventTranslator:
     """
 
     def __init__(self, model_label: str):
+        _require_sdk("CodexEventTranslator (codex event translation)")
         self.model_label = str(model_label or "codex")
         self.thread_id = None
         self.final_text = ""
@@ -466,7 +648,17 @@ class CodexExecTransport:
     async def spawn(self):
         if self._process is not None:
             raise RuntimeError("codex transport process already spawned")
+        # Resolve the binary BEFORE exec: the service PATH may not contain
+        # the user-local install directory, and a bare name PATH cannot
+        # resolve would otherwise die as an opaque per-role
+        # FileNotFoundError inside every dispatch.  An unresolvable binary
+        # raises an actionable ClaudeSDKError here (classified as no LLM
+        # availability issue — never a 1302/1308/quota pause), and the
+        # resolved absolute path keeps the exec independent of the child
+        # PATH regardless of how the service environment mutates later.
+        resolved_binary = _resolve_binary_or_sdk_error()
         self._argv = self.build_argv()
+        self._argv[0] = resolved_binary
         self._process = await asyncio.create_subprocess_exec(
             *self._argv,
             stdin=asyncio.subprocess.PIPE,
@@ -544,6 +736,7 @@ async def codex_query(prompt=None, *, options=None, transport=None):
     GLM 1302/1308 classification chain parses them unchanged.
     """
 
+    _require_sdk("codex_query (codex exec stream)")
     if transport is None:
         transport = new_codex_exec_transport(prompt, options)
     process = await transport.spawn()

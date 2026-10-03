@@ -12,7 +12,23 @@ Covers the hard contracts of the switchable transport layer:
    body carries the raw GLM 1302/1308 envelope so classify_llm_availability
    (and the quota pause chain behind it) keeps parsing them;
 4. timeout/cancel — the one-shot process tree is killed and exit confirmed via
-   returncode on the same provider-attempt cleanup predicates.
+   returncode on the same provider-attempt cleanup predicates;
+5. binary resolution — the configured binary is pre-resolved via shutil.which
+   before every spawn and the web lifespan fails fast when the codex transport
+   is selected but the binary is unresolvable in the service PATH (2026-10-03:
+   every dispatch died as a bare FileNotFoundError 'codex' because the service
+   PATH lacks ~/.local/bin, burning v490/v491/v492); the actionable failure is
+   a service-configuration error (CodexBinaryNotFound on the preflight surface,
+   ClaudeSDKError with identical text on the dispatch path) and must NEVER be
+   classified as an LLM availability issue (no 1302/1308/quota/cooldown pause
+   can be armed from it);
+6. SDK-free preflight — the transport-selection + binary-resolution surface is
+   stdlib-only and importable by ANY python3: a service-environment smoke (or
+   systemd ExecStartPre) whose ``python3`` resolves from the service PATH
+   without the venv still gets the binary diagnosis instead of
+   ``ModuleNotFoundError: No module named 'claude_agent_sdk'`` (2026-10-04);
+   SDK-typed entries (translator/codex_query) fail closed with the POK_PYTHON
+   guidance under such an interpreter.
 """
 
 import asyncio
@@ -1015,3 +1031,498 @@ def test_argv_shape_readonly_json_stdin(monkeypatch):
     argv = lcx.CodexExecTransport("p", None).build_argv()
     assert "model=glm-5.3" in argv
     assert lcx.codex_metrics_model() == "glm-5.3"
+
+
+# ---------------------------------------------------------------------------
+# Contract 5: binary pre-resolution (fail-fast, distinct from 1302/1308)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_codex_binary_which_lookup_and_absolute_override(monkeypatch):
+    """Unset POK_CODEX_BIN searches PATH for a bare `codex`; an absolute
+    override is checked directly (shutil.which honours the directory
+    component), so the operator can pin the service install path."""
+
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    seen = {}
+
+    def fake_which(name):
+        seen["name"] = name
+        return "/opt/codex/bin/codex"
+
+    monkeypatch.setattr(lcx.shutil, "which", fake_which)
+    assert lcx.resolve_codex_binary() == "/opt/codex/bin/codex"
+    assert seen["name"] == "codex"
+
+    monkeypatch.setenv("POK_CODEX_BIN", "/home/ubuntu/.local/bin/codex")
+    assert lcx.resolve_codex_binary() == "/opt/codex/bin/codex"
+    assert seen["name"] == "/home/ubuntu/.local/bin/codex"
+
+
+def _make_user_local_codex(base):
+    """Create a fake user-local install under ``base``: .local/bin/codex
+    executable.  Returns (home_dir, binary_path)."""
+
+    bindir = base / ".local" / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    binfile = bindir / "codex"
+    binfile.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binfile.chmod(0o755)
+    return base, binfile
+
+
+def test_resolve_codex_binary_falls_back_to_user_local_bin(monkeypatch, tmp_path):
+    """2026-10-04 service-env smoke regression: a BARE name absent from the
+    service PATH resolves from the pip --user install base $HOME/.local/bin
+    (proven executable via shutil.which) — the transport needs no
+    operator-added env key."""
+
+    import os as _os
+
+    home, binfile = _make_user_local_codex(tmp_path / "home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    real_which = lcx.shutil.which
+
+    def fake_which(name, *args, **kwargs):
+        if not _os.path.dirname(str(name)):
+            return None  # bare name is NOT on the service PATH
+        return real_which(name, *args, **kwargs)
+
+    monkeypatch.setattr(lcx.shutil, "which", fake_which)
+    assert lcx.resolve_codex_binary() == str(binfile)
+    # The startup preflight passes under exactly the smoke's env shape.
+    monkeypatch.setenv("POK_LLM_TRANSPORT", "codex")
+    assert lcx.assert_codex_transport_ready() == str(binfile)
+
+
+def test_resolve_codex_binary_explicit_path_gets_no_fallback(monkeypatch, tmp_path):
+    """A POK_CODEX_BIN carrying a directory component is authoritative: a
+    nonexistent explicit path raises even though a valid user-local install
+    exists under $HOME (no silent substitution of the operator's choice)."""
+
+    import os as _os
+
+    home, _binfile = _make_user_local_codex(tmp_path / "home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    monkeypatch.setenv("POK_CODEX_BIN", str(tmp_path / "missing" / "codex"))
+    real_which = lcx.shutil.which
+
+    def fake_which(name, *args, **kwargs):
+        if not _os.path.dirname(str(name)):
+            return None
+        return real_which(name, *args, **kwargs)
+
+    monkeypatch.setattr(lcx.shutil, "which", fake_which)
+    with pytest.raises(lcx.CodexBinaryNotFound) as excinfo:
+        lcx.resolve_codex_binary()
+    # The guidance reports exactly the configured path, and NO fallback
+    # candidate from the fake $HOME was attempted or echoed (str(home)
+    # absent from the message; the only .local/bin mention is the literal
+    # documented "$HOME/.local/bin" phrase).
+    assert str(tmp_path / "missing" / "codex") in str(excinfo.value)
+    assert str(home) not in str(excinfo.value)
+    assert "$HOME/.local/bin" in str(excinfo.value)
+
+
+def test_resolve_codex_binary_without_home_has_no_fallback(monkeypatch, tmp_path):
+    """No HOME -> no user-local fallback attempted (nothing to resolve
+    from); the actionable guidance still raises."""
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: None)
+    with pytest.raises(lcx.CodexBinaryNotFound) as excinfo:
+        lcx.resolve_codex_binary()
+    assert "codex binary not found" in str(excinfo.value)
+
+
+def test_service_env_preflight_resolves_via_user_local_bin_real_which(
+    monkeypatch, tmp_path
+):
+    """Direct replica of the failing 2026-10-04 smoke with the REAL
+    shutil.which: env keys exactly HOME + committed service PATH +
+    POK_LLM_TRANSPORT=codex (no POK_CODEX_BIN) — the preflight must now
+    resolve the $HOME/.local/bin install instead of refusing to start."""
+
+    home, binfile = _make_user_local_codex(tmp_path / "home")
+    monkeypatch.setenv("HOME", str(home))
+    # The committed service PATH from deploy/tencent-cloud/env.runtime:19.
+    monkeypatch.setenv(
+        "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+    monkeypatch.setenv("POK_LLM_TRANSPORT", "codex")
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    # NOTE: no shutil.which monkeypatch — the real resolver runs, exactly as
+    # in the service smoke.
+    assert lcx.assert_codex_transport_ready() == str(binfile)
+
+
+def test_spawn_missing_binary_raises_actionable_sdk_error(monkeypatch):
+    """The exact 2026-10-03 production shape: service PATH without
+    ~/.local/bin, POK_CODEX_BIN unset.  spawn() must fail with an
+    actionable ClaudeSDKError (not a bare FileNotFoundError) whose text
+    matches NO availability marker, so no cooldown/quota pause is armed."""
+
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: None)
+
+    transport = lcx.CodexExecTransport("p", None)
+    with pytest.raises(ClaudeSDKError) as excinfo:
+        asyncio_run(transport.spawn())
+    text = str(excinfo.value)
+
+    # Actionable guidance, echoing the configured name and the searched PATH.
+    assert "codex binary not found" in text
+    assert "'codex'" in text
+    assert "/usr/local/bin" in text
+    assert "POK_CODEX_BIN=/home/ubuntu/.local/bin/codex" in text
+    assert "deploy/tencent-cloud/env.runtime" in text
+    # The guidance documents the bare-name $HOME/.local/bin fallback.
+    assert "$HOME/.local/bin" in text
+
+    # Spawn-class failure stays distinct from provider availability: it is
+    # never quota (1308), never a rate limit (1302), and never a durable
+    # availability pause — classify returns None.
+    assert llm_query._is_quota_exceeded(text) is False
+    assert llm_query._is_rate_limited(text) is False
+    issue = classify_llm_availability(exception=excinfo.value)
+    assert issue is None
+
+    # No process was created; the transport stays closeable (exit confirmed).
+    assert transport._process is None
+    assert asyncio_run(transport.close()) is True
+
+
+def test_spawn_execs_resolved_absolute_binary(monkeypatch):
+    """spawn() execs the RESOLVED absolute path as argv[0] (independent of
+    the child PATH), keeping the rest of the argv contract unchanged."""
+
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setenv("POK_LLM_EFFORT", "max")
+    monkeypatch.delenv("POK_CODEX_MODEL", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: "/opt/codex/bin/codex")
+
+    captured = {}
+
+    class _Proc:
+        pid = 424243
+        returncode = None
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["start_new_session"] = kwargs.get("start_new_session")
+        return _Proc()
+
+    monkeypatch.setattr(lcx.asyncio, "create_subprocess_exec", fake_exec)
+
+    transport = lcx.CodexExecTransport("p", None)
+    proc = asyncio_run(transport.spawn())
+    assert captured["argv"][0] == "/opt/codex/bin/codex"
+    assert captured["argv"][1] == "exec"
+    assert "--json" in captured["argv"]
+    assert captured["argv"][-1] == "-"
+    assert captured["start_new_session"] is True
+    assert transport._argv[0] == "/opt/codex/bin/codex"
+    assert proc is transport._process
+
+
+def test_codex_spawn_failure_through_process_stream_is_not_a_pause(monkeypatch):
+    """End-to-end through the REAL _process_stream: the spawn failure
+    propagates as ClaudeSDKError (not LLMAvailabilityBlocked), so the
+    saturator/orchestrator cooldown and quota-pause chains never engage."""
+
+    from llm_availability import LLMAvailabilityBlocked
+
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: None)
+
+    async def run():
+        gen = lcx.codex_query(prompt="p", options=None)
+        return await llm_query._process_stream(
+            gen, "/tmp/none.log", _NullUI(), "role"
+        )
+
+    with pytest.raises(ClaudeSDKError) as excinfo:
+        asyncio_run(run())
+    assert "codex binary not found" in str(excinfo.value)
+    assert classify_llm_availability(exception=excinfo.value) is None
+    # Guard the import-time assumption used above (LLMAvailabilityBlocked is
+    # the pause entry point; it must NOT be the raised type here).
+    assert not isinstance(excinfo.value, LLMAvailabilityBlocked)
+
+
+def test_assert_codex_transport_ready_preflight_gates_on_transport(monkeypatch):
+    """The lifespan preflight is a no-op on the default claude transport
+    (even with a broken PATH) and resolves/raises only under codex."""
+
+    # claude transport: never touches the binary.
+    monkeypatch.delenv("POK_LLM_TRANSPORT", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: None)
+    assert lcx.assert_codex_transport_ready() is None
+
+    # codex transport + resolvable binary -> resolved absolute path.
+    monkeypatch.setenv("POK_LLM_TRANSPORT", "codex")
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: "/opt/codex/bin/codex")
+    assert lcx.assert_codex_transport_ready() == "/opt/codex/bin/codex"
+
+    # codex transport + unresolvable binary -> actionable startup failure.
+    # The preflight raises the SDK-free CodexBinaryNotFound (deterministic
+    # under ANY interpreter); the dispatch path (spawn) is what re-raises
+    # the same text as ClaudeSDKError.
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: None)
+    with pytest.raises(lcx.CodexBinaryNotFound) as excinfo:
+        lcx.assert_codex_transport_ready()
+    assert "codex binary not found" in str(excinfo.value)
+    assert "POK_CODEX_BIN" in str(excinfo.value)
+
+
+def test_web_lifespan_fails_fast_when_codex_binary_unresolvable(monkeypatch):
+    """The web lifespan itself must refuse to start (fail-fast) when
+    POK_LLM_TRANSPORT=codex is configured but the binary cannot be resolved
+    — the startup-diagnosable contract asked for after the v490-v492
+    incident, instead of burning generations on per-role spawn errors."""
+
+    import server.app as app_module
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    def _deny(_label):
+        raise RuntimeError("epoch not initialized")
+
+    import epoch_authority
+
+    monkeypatch.setenv("POK_LLM_TRANSPORT", "codex")
+    monkeypatch.delenv("POK_WEB_VIEW_ONLY", raising=False)
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(epoch_authority, "require_policy_epoch_initialized", _deny)
+    monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module.arena_manager, "startup", noop)
+    monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
+
+    async def exercise():
+        async with app_module.lifespan(app_module.app):
+            raise AssertionError("lifespan must not start under a broken codex transport")
+
+    with pytest.raises(lcx.CodexBinaryNotFound) as excinfo:
+        asyncio_run(exercise())
+    assert "codex binary not found" in str(excinfo.value)
+    assert "POK_CODEX_BIN" in str(excinfo.value)
+
+
+def test_web_lifespan_allows_resolvable_codex_binary(monkeypatch):
+    """Mirror: with the binary resolvable the preflight passes and the
+    lifespan proceeds (reset_required keeps the runtime stopped, exactly
+    like the claude path)."""
+
+    import server.app as app_module
+    import epoch_authority
+    from server.state import app_state
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    def _deny(_label):
+        raise RuntimeError("epoch not initialized")
+
+    monkeypatch.setenv("POK_LLM_TRANSPORT", "codex")
+    monkeypatch.delenv("POK_WEB_VIEW_ONLY", raising=False)
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: "/opt/codex/bin/codex")
+    monkeypatch.setattr(epoch_authority, "require_policy_epoch_initialized", _deny)
+    monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module.arena_manager, "startup", noop)
+    monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
+    app_state.stop_running()
+
+    async def exercise():
+        async with app_module.lifespan(app_module.app):
+            assert app_state.to_dict()["running"] is False
+
+    asyncio_run(exercise())
+
+
+# ---------------------------------------------------------------------------
+# Contract 6: SDK-free preflight (any python3: smoke / ExecStartPre)
+# ---------------------------------------------------------------------------
+
+
+def _run_sdkfree_python(code: str, tmp_path, *, path, extra_env=None):
+    """Run ``code`` under an interpreter whose claude_agent_sdk import FAILS.
+
+    A stub package on PYTHONPATH raises ImportError on import — the exact
+    shape of the 2026-10-04 service-environment smoke, whose ``python3``
+    resolves from the service PATH and therefore does not see the venv's
+    site-packages.  ``path`` becomes the child PATH (hermetic: no host
+    codex install can leak into the assertion).
+    """
+    import subprocess
+    import sys
+
+    stub_dir = tmp_path / "sdk_stub"
+    stub_dir.mkdir(exist_ok=True)
+    (stub_dir / "claude_agent_sdk.py").write_text(
+        "raise ImportError('simulated missing claude_agent_sdk (smoke interpreter)')\n",
+        encoding="utf-8",
+    )
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": str(path),
+        "PYTHONPATH": str(stub_dir),
+    }
+    env.update(extra_env or {})
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _core_dir() -> str:
+    from pathlib import Path
+
+    return str(Path(__file__).resolve().parents[1] / "core")
+
+
+def test_preflight_importable_and_actionable_without_sdk(tmp_path):
+    """The exact 2026-10-04 smoke regression: SDK-free interpreter, service
+    PATH without the install directory, POK_LLM_TRANSPORT=codex.  The module
+    must IMPORT (not die on claude_agent_sdk) and the preflight must raise
+    the actionable CodexBinaryNotFound guidance."""
+
+    empty_bin = tmp_path / "svcpath"
+    empty_bin.mkdir()
+    code = f"""
+import sys
+sys.path.insert(0, {_core_dir()!r})
+import llm_query_codex as lcx
+assert lcx._SDK_IMPORT_ERROR is not None, "stub must block claude_agent_sdk"
+try:
+    lcx.assert_codex_transport_ready()
+    raise SystemExit("FAIL: no error raised")
+except lcx.CodexBinaryNotFound as exc:
+    text = str(exc)
+    assert "codex binary not found" in text, text
+    assert "'codex'" in text, text
+    assert "POK_CODEX_BIN=/home/ubuntu/.local/bin/codex" in text, text
+    assert "deploy/tencent-cloud/env.runtime" in text, text
+print("PREFLIGHT_ACTIONABLE_OK")
+"""
+    proc = _run_sdkfree_python(
+        code, tmp_path, path=empty_bin, extra_env={"POK_LLM_TRANSPORT": "codex"}
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "PREFLIGHT_ACTIONABLE_OK" in proc.stdout
+
+
+def test_preflight_resolves_absolute_binary_without_sdk(tmp_path):
+    """Mirror: with POK_CODEX_BIN pointing at a real executable the SDK-free
+    preflight resolves and returns the absolute path (smoke ok:true)."""
+
+    svc_bin = tmp_path / "svcbin"
+    svc_bin.mkdir()
+    codex_sh = svc_bin / "codex"
+    codex_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex_sh.chmod(0o755)
+    code = f"""
+import sys
+sys.path.insert(0, {_core_dir()!r})
+import llm_query_codex as lcx
+assert lcx._SDK_IMPORT_ERROR is not None
+resolved = lcx.assert_codex_transport_ready()
+assert resolved == {str(codex_sh)!r}, resolved
+print("PREFLIGHT_RESOLVED_OK", resolved)
+"""
+    proc = _run_sdkfree_python(
+        code,
+        tmp_path,
+        path=svc_bin,
+        extra_env={
+            "POK_LLM_TRANSPORT": "codex",
+            "POK_CODEX_BIN": str(codex_sh),
+        },
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "PREFLIGHT_RESOLVED_OK" in proc.stdout
+
+
+def test_sdkfree_service_env_smoke_resolves_via_user_local_bin(tmp_path):
+    """The exact failing 2026-10-04 service-env smoke, SDK-free: env keys
+    HOME + service PATH (no ~/.local/bin) + POK_LLM_TRANSPORT=codex, NO
+    POK_CODEX_BIN.  The user-local install base under $HOME resolves and the
+    preflight returns ok (this is the round that failed PATH-only)."""
+
+    home_codex = tmp_path / ".local" / "bin" / "codex"
+    home_codex.parent.mkdir(parents=True, exist_ok=True)
+    home_codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    home_codex.chmod(0o755)
+    svc_path = tmp_path / "svcpath"
+    svc_path.mkdir()
+    code = f"""
+import sys
+sys.path.insert(0, {_core_dir()!r})
+import llm_query_codex as lcx
+assert lcx._SDK_IMPORT_ERROR is not None
+resolved = lcx.assert_codex_transport_ready()
+assert resolved == {str(home_codex)!r}, resolved
+print("SMOKE_USER_LOCAL_OK", resolved)
+"""
+    proc = _run_sdkfree_python(
+        code, tmp_path, path=svc_path, extra_env={"POK_LLM_TRANSPORT": "codex"}
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "SMOKE_USER_LOCAL_OK" in proc.stdout
+
+
+def test_sdk_typed_entries_fail_closed_without_sdk(tmp_path):
+    """Under an SDK-free interpreter the SDK-typed entry points fail closed
+    with the POK_PYTHON guidance (never NameError from unbound SDK names)."""
+
+    empty_bin = tmp_path / "svcpath"
+    empty_bin.mkdir()
+    code = f"""
+import asyncio
+import sys
+sys.path.insert(0, {_core_dir()!r})
+import llm_query_codex as lcx
+assert lcx._SDK_IMPORT_ERROR is not None
+
+try:
+    lcx.CodexEventTranslator(model_label="m")
+    raise SystemExit("FAIL: translator constructed without SDK")
+except RuntimeError as exc:
+    assert "claude_agent_sdk" in str(exc), exc
+    assert "POK_PYTHON" in str(exc), exc
+
+async def _consume():
+    async for _message in lcx.codex_query(prompt="p"):
+        pass
+
+try:
+    asyncio.run(_consume())
+    raise SystemExit("FAIL: codex_query ran without SDK")
+except RuntimeError as exc:
+    assert "POK_PYTHON" in str(exc), exc
+print("SDK_GUARD_OK")
+"""
+    proc = _run_sdkfree_python(
+        code, tmp_path, path=empty_bin, extra_env={"POK_LLM_TRANSPORT": "codex"}
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "SDK_GUARD_OK" in proc.stdout
+
+
+def test_sdk_present_import_is_unaffected():
+    """Under the real venv (claude_agent_sdk installed) the guarded import
+    binds the SDK names exactly as before — no behavior change in-service."""
+
+    assert lcx._SDK_IMPORT_ERROR is None
+    assert lcx.ClaudeSDKError is not None

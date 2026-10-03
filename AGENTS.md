@@ -353,6 +353,36 @@ AGENTS.md read-permission audit chain stays at the prompt layer exactly as
 today. `POK_CODEX_BIN` / `POK_CODEX_MODEL` are optional per-dispatch
 overrides; the key is committed unset in `deploy/tencent-cloud/env.runtime`
 (switching is an orchestration decision, never a local edit).
+**Binary pre-resolution is mandatory and fail-fast.** The adapter resolves
+the configured binary via `shutil.which` before every spawn
+(`resolve_codex_binary` in `web/core/llm_query_codex.py`) and execs the
+resolved absolute path. Resolution order: `PATH` first, then — for BARE
+names only — the standard user-local install base `$HOME/.local/bin`
+(pip `--user` base; the service PATH excludes `~/.local/bin` while the
+codex CLI user install lives exactly there, so the transport runs under
+the committed service environment — `HOME` + service PATH +
+`POK_LLM_TRANSPORT=codex` — with no operator-added env key; the
+2026-10-04 service-env smoke failed a PATH-only lookup and passes with
+the fallback). A `POK_CODEX_BIN` carrying a directory component is
+authoritative and gets no fallback; an absolute `POK_CODEX_BIN` (e.g.
+`/home/ubuntu/.local/bin/codex`) or appending the install directory to
+`PATH=` in `env.runtime` remain explicit overrides. An unresolvable binary
+raises an actionable error that `classify_llm_availability` rates as NO
+availability issue (never a 1302/1308/quota/cooldown pause — the spawn
+class is distinct from provider 429 by construction), and the web lifespan
+fails startup via `assert_codex_transport_ready` instead of burning
+generations on per-role spawn errors (2026-10-03: v490/v491 abandoned and
+v492's master slots lost to a bare `FileNotFoundError: 'codex'`). The
+preflight surface (transport selection + binary resolution) is
+**stdlib-only and importable by any python3**: `claude_agent_sdk` is
+imported guarded (lazily-failing), the preflight raises
+`CodexBinaryNotFound` with the same guidance under ANY interpreter
+(`ClaudeSDKError` with identical text remains the dispatch-path/spawn
+type in-service), and SDK-typed entries (`CodexEventTranslator`,
+`codex_query`) fail closed with the `POK_PYTHON` guidance — so a
+service-environment smoke or systemd `ExecStartPre` whose `python3`
+resolves from the service PATH still gets the binary diagnosis instead of
+`ModuleNotFoundError: No module named 'claude_agent_sdk'` (2026-10-04).
 
 Because GLM with `effort=max` has variable output speed,
 role timeouts are kept generous via env overrides in
