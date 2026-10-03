@@ -1794,7 +1794,11 @@ async def run_master_impl(args):
     # snapshot values the audit compares against.  Strictly fail-closed:
     # citations that resolve to no snapshot row (or to a row that cannot
     # legally serve as primary evidence) are untouched, the audit logic is
-    # untouched, and a residual rejection still blocks the plan.
+    # untouched, and a residual rejection still blocks the plan.  The sealed
+    # proposal structures (proposal_ensemble / proposal_binding) are NEVER
+    # rewritten (v488): their bytes back the sealed proposal_id / scout
+    # role_result_digest the quality gate re-derives, so stale numbers there
+    # stay byte-exact and the audit rejects them.
     if not protocol_bootstrap_no_strength:
         _citation_normalization_report = None
         try:

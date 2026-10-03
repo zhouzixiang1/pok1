@@ -1285,7 +1285,15 @@ games/a_wins/b_wins/draws rewritten field-by-field to the row values with a
 `pipeline.master_citations_normalized` report event; unresolvable or
 tier-starved citations are left untouched for the audit to reject — the
 audit is unchanged and remains the gate
-(`normalize_master_plan_citations`, `evidence_snapshot.py`).
+(`normalize_master_plan_citations`, `evidence_snapshot.py`). The seam never
+rewrites the sealed proposal structures (`proposal_ensemble` /
+`proposal_binding`): their bytes back the sealed `proposal_id` and the
+scout `role_result_digest` that the quality gate re-derives from the live
+ensemble bytes, so any post-acceptance rewrite deterministically fails
+`proposal_identity_mismatch` / `proposal_invocation_result_mismatch` for
+every proposal (v488), and a rewritten packet can never be re-signed —
+stale citation numbers inside those structures are left byte-exact for the
+audit to reject (fixing such staleness before the seal is future work).
 The plan audit and the proposal
 gate share one citation set and one tier/typing rule (shared helpers in
 `agent_master_validation.py`, imported by the audit mirror in

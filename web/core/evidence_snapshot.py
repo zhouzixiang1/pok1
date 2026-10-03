@@ -1753,6 +1753,28 @@ def _collect_matchup_rewrites(
                 ))
 
 
+# Rendered plan paths whose bytes back sealed provider identities.  The
+# ensemble packet's ``proposal_id`` (sha256 over the substantive contract,
+# which includes ``snapshot_evidence``) and each scout invocation's
+# ``role_result_digest`` (canonical digest over the original proposal bytes)
+# are sealed at acceptance, and the quality gate re-derives both from the
+# live ``master_plan['proposal_ensemble']`` bytes.  Post-acceptance rewrites
+# of these structures therefore guarantee
+# ``proposal_identity_mismatch`` / ``proposal_invocation_result_mismatch``
+# for every proposal (v488: three proposals failed the quality gate after
+# normalization rewrote four snapshot-evidence ``games`` leaves, two of them
+# reached only through the shallow-shared ``proposal_binding`` copies).  A
+# rewritten packet can never be re-signed — ``role_result_digest`` binds the
+# scout output — so the seam must leave these bytes untouched and let the
+# audit reject stale citation numbers inside them.  The proper place to fix
+# stale sealed citations is BEFORE sealing (Scout acceptance); that larger
+# move is future work.
+_SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES = (
+    "proposal_ensemble.",
+    "proposal_binding",
+)
+
+
 def _flatten_marked(
     value: Any,
     pieces: list[tuple[int, int, Any, Any, str, str]],
@@ -1768,9 +1790,11 @@ def _flatten_marked(
     as ``(start, end, parent, key, path, rendered_text)`` so a digit span
     found in the joined text can be mapped back to the exact container slot
     that rendered it (a string leaf -> in-string rewrite; an int leaf -> the
-    int is reassigned).  The rendering must stay byte-identical to
-    ``_flatten_text`` — the audit's citation windows are computed over that
-    exact joined form.
+    int is reassigned).  Leaves under a sealed proposal structure
+    (``_SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES``) still render — the audit's
+    citation windows are computed over that exact joined form — but are NOT
+    recorded, so no rewrite op can ever own their bytes.  The rendering must
+    stay byte-identical to ``_flatten_text``.
     """
     if isinstance(value, dict):
         lines: list[str] = []
@@ -1798,7 +1822,11 @@ def _flatten_marked(
         text = "\n".join(lines)
         return text, start + len(text)
     text = str(value or "")
-    if text and parent is not None:
+    if (
+        text
+        and parent is not None
+        and not path.startswith(_SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES)
+    ):
         pieces.append((start, start + len(text), parent, key, path, text))
     return text, start + len(text)
 
@@ -1887,7 +1915,7 @@ def normalize_master_plan_citations(
     windows AND structured binding objects (``{"games": 259, ...}`` int
     leaves inside ``proposal_ensemble`` / ``proposal_binding``
     ``snapshot_evidence`` lists, which the joined text renders as
-    ``games: 259`` lines inside cross-object pair windows) — is normalized
+    ``games: 259`` lines inside cross-object pair windows) — is ATTRIBUTED
     with the audit's own attribution priority: numbers inside a pairing
     window (before its truncating aggregate pointer / next pairing) belong
     to the pair row, numbers under a resolvable aggregate pointer belong to
@@ -1902,18 +1930,21 @@ def normalize_master_plan_citations(
       ``snapshot:selection_snapshot.json#/rows...``) has its bound ``games``
       normalized only when the pointer resolves against the bundle; an
       unresolvable pointer is untouched.
-    - Only the compared citation digits change.  ``node_sha256`` /
-      ``projection_sha256`` / ``resolved_projection`` bytes are never
-      touched (the audit's patterns cannot match their quoted/hex forms).
-      The ``proposal_binding`` / ``proposal_ensemble`` snapshot-evidence int
-      leaves ARE rewritten because the audit demonstrably compares them
-      (the v485 ``cited games=259`` rejection came from exactly such a
-      leaf); nothing in the non-bootstrap path re-derives those bindings
-      after acceptance, and the blueprint equality check that re-derives
-      ``proposal_binding`` from the ensemble runs only in the bootstrap
-      mode where normalization is skipped (no strength pool), so both
-      structures stay mutually consistent when rewritten to the same row
-      values.
+    - Sealed proposal structures are NEVER rewritten, even when the audit's
+      attribution reaches a stale number inside them
+      (``_SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES``: ``proposal_ensemble`` /
+      ``proposal_binding``, including every ``snapshot_evidence`` int leaf).
+      Their bytes back the sealed ``proposal_id`` and scout
+      ``role_result_digest`` that the quality gate re-derives from the live
+      ensemble, so any post-acceptance rewrite deterministically fails
+      ``proposal_identity_mismatch`` / ``proposal_invocation_result_mismatch``
+      for every proposal (v488), and a rewritten packet can never be
+      re-signed.  Stale citations inside sealed structures stay byte-exact
+      and the audit keeps rejecting them; the fix for such staleness belongs
+      BEFORE acceptance (normalizing the Scout payload pre-seal), which is
+      future work.  ``node_sha256`` / ``projection_sha256`` /
+      ``resolved_projection`` bytes are never touched either (the audit's
+      patterns cannot match their quoted/hex forms).
     - Every replacement is recorded in the returned report; the audit itself
       is untouched, so a residual rejection still blocks the plan.
 

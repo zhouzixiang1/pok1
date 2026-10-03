@@ -368,8 +368,14 @@ def test_report_is_capped_but_total_counts_every_rewrite(
 # The audited plan carries the proposal packet (proposal_ensemble) and its
 # derived proposal_binding, whose snapshot_evidence lists contain structured
 # binding objects with int leaves.  The audit flattens them to ``games: 30``
-# lines and attributes them to the pair via cross-object windows — numbers
-# the string-leaf-only normalizer never touched (v486 fired 0 times).
+# lines and attributes them to the pair via cross-object windows.  Those
+# structures are SEALED at acceptance (proposal_id / scout
+# role_result_digest are computed over exactly these bytes), so the
+# normalizer attributes them like the audit but never rewrites them — a
+# post-acceptance rewrite deterministically failed the v488 quality gate
+# with proposal_identity_mismatch / proposal_invocation_result_mismatch for
+# every proposal, and the re-signed digest can never be recomputed.  Stale
+# sealed citations stay byte-exact and the audit keeps rejecting them.
 
 def _v486_style_fixture(monkeypatch, tmp_path):
     """Frozen snapshot shaped like the real v485/v486 rejection: the pair row
@@ -458,17 +464,19 @@ def _stale_selection_binding():
     })
 
 
-def test_structured_binding_objects_are_normalized_with_audit_attribution(
+def test_structured_sealed_binding_objects_are_never_rewritten(
     monkeypatch, tmp_path
 ):
-    """Structured int leaves inside snapshot_evidence are rewritten.
+    """Structured int leaves inside sealed snapshot_evidence stay byte-exact.
 
     The real v486 packet bindings render (alphabetical JSON order) so the
     selection binding's ``games: 259`` line follows the h2h binding's
     ``reference`` alias line: the pair window reaches it before its own
     ``snapshot:`` reference truncates the window, and the audit attributes
-    it to the pair row.  The normalizer follows that exact attribution.
-    Digest and projection bytes are never touched.
+    it to the pair row.  The normalizer attributes it the same way but must
+    NOT rewrite it: these bytes back the sealed proposal_id / scout
+    role_result_digest (v488 quality-gate regression).  The audit outcome is
+    byte-identical with and without normalization.
     """
     import copy
 
@@ -492,6 +500,7 @@ def test_structured_binding_objects_are_normalized_with_audit_attribution(
             ]
         },
     }
+    pre_bytes = json.dumps(plan, sort_keys=True, separators=(",", ":"))
     marked_text = evidence_snapshot._flatten_marked(plan, [], 0)[0]
     assert marked_text == evidence_snapshot._flatten_text(plan)
 
@@ -507,18 +516,20 @@ def test_structured_binding_objects_are_normalized_with_audit_attribution(
 
     report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
 
+    # Nothing was rewritten: the sealed structures stay byte-identical and
+    # the audit keeps rejecting the stale citations (fail-closed).
+    assert json.dumps(plan, sort_keys=True, separators=(",", ":")) == pre_bytes
+    assert report["total"] == 0
+    assert report["normalizations"] == []
     for binding_list in (
         plan["proposal_binding"]["snapshot_evidence"],
         plan["proposal_ensemble"]["proposals"][0]["snapshot_evidence"],
     ):
         h2h_binding, selection_binding = binding_list
-        # The selection binding's games leaf is reached by the h2h binding's
-        # pair window (its serialized key order puts ``games`` before its own
-        # snapshot: reference), so the audit's attribution gives it the pair
-        # row — exactly the real v485/v486 rejection.
-        assert selection_binding["games"] == 28
-        # The h2h binding's own counts render before their alias line: the
-        # audit never attributed them, so normalization never touches them.
+        # The audit's pair-window attribution still REACHES the selection
+        # binding's games leaf (serialized key order puts ``games`` before
+        # its own snapshot: reference) — it is simply never rewritten.
+        assert selection_binding["games"] == 259
         assert h2h_binding["games"] == 30
         assert h2h_binding["a_wins"] == 11
         assert h2h_binding["b_wins"] == 19
@@ -526,17 +537,9 @@ def test_structured_binding_objects_are_normalized_with_audit_attribution(
         assert h2h_binding["node_sha256"] == "a" * 64
         assert h2h_binding["projection_sha256"] == "b" * 64
         assert selection_binding["node_sha256"] == "c" * 64
-    assert report["total"] == 2
-    selection_entry = _report_entry(
-        report,
-        kind="h2h_matchup",
-        field="games",
-        **{"from": 259, "to": 28},
-    )
-    assert "snapshot_evidence[1]" in selection_entry["path"]
     assert evidence_snapshot.validate_h2h_citations_against_snapshot(
         plan, 24
-    ) == []
+    ) == pre_errors
 
 
 def test_mixed_prose_window_follows_pair_attribution(monkeypatch, tmp_path):
@@ -589,11 +592,122 @@ def test_mixed_prose_window_follows_pair_attribution(monkeypatch, tmp_path):
     ) == []
 
 
-def test_five_repeated_stale_objects_are_all_rewritten(
+def test_sealed_proposal_structures_are_never_rewritten(monkeypatch, tmp_path):
+    """v488 regression: the seam must never mutate sealed proposal structures.
+
+    At plan acceptance the ensemble's ``proposal_id`` (sha256 over the
+    substantive contract, which includes ``snapshot_evidence``) and each
+    scout invocation's ``role_result_digest`` (canonical digest over the
+    original proposal bytes) are sealed.  The quality gate
+    (``_selected_proposal_quality_evidence``) later re-feeds
+    ``master_plan['proposal_ensemble']`` to ``_parse_valid_proposal_packet``,
+    which re-derives both identities from the live bytes — so ANY
+    post-acceptance rewrite of ``proposal_ensemble`` / ``proposal_binding``
+    deterministically fails ``proposal_identity_mismatch`` and
+    ``proposal_invocation_result_mismatch`` for every proposal (v488: three
+    proposals, six gate errors, quality gate dead after four ``games``
+    leaves were rewritten).  ``role_result_digest`` seals the scout output,
+    so a rewritten packet can never be re-signed; the only safe behavior is
+    to leave the sealed bytes untouched and let the audit reject stale
+    citation numbers inside them.
+    """
+    import copy
+
+    from agent_master_validation import _proposal_identity
+
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+
+    def _ordered_proposal(direction):
+        return {
+            "direction": direction,
+            "schema_version": "master-proposal-v4",
+            "change_symbol": f"policy.py:_choose_intent_{direction}",
+            "snapshot_evidence": [
+                _stale_h2h_binding(key),
+                _stale_selection_binding(),
+            ],
+        }
+
+    plan = {
+        "analysis": (
+            f"{key}: games=30, a_wins=11, b_wins=19. Corroboration "
+            "snapshot:selection_snapshot.json#/rows (games=259)."
+        ),
+        "selected_proposal_id": "da60ede64cd3e9a5",
+        "proposal_binding": {
+            "selected_proposal_id": "da60ede64cd3e9a5",
+            "snapshot_evidence": [
+                _stale_h2h_binding(key),
+                _stale_selection_binding(),
+            ],
+        },
+        "proposal_ensemble": {
+            "ordered_proposals": [
+                _ordered_proposal("mechanism"),
+                _ordered_proposal("compute_memory"),
+            ],
+        },
+    }
+    pre_ensemble_bytes = json.dumps(
+        plan["proposal_ensemble"], sort_keys=True, separators=(",", ":")
+    )
+    pre_binding_bytes = json.dumps(
+        plan["proposal_binding"], sort_keys=True, separators=(",", ":")
+    )
+    pre_ids = [
+        _proposal_identity(item)
+        for item in plan["proposal_ensemble"]["ordered_proposals"]
+    ]
+
+    report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
+
+    # The sealed structures stay byte-identical, so the gate-rederived
+    # proposal identities (and the scout-sealed role_result_digestes over
+    # these same bytes) still match.
+    assert json.dumps(
+        plan["proposal_ensemble"], sort_keys=True, separators=(",", ":")
+    ) == pre_ensemble_bytes
+    assert json.dumps(
+        plan["proposal_binding"], sort_keys=True, separators=(",", ":")
+    ) == pre_binding_bytes
+    assert [
+        _proposal_identity(item)
+        for item in plan["proposal_ensemble"]["ordered_proposals"]
+    ] == pre_ids
+    # The stale citation numbers inside the sealed structures are left for
+    # the audit to reject — including the shallow-shared binding copy.
+    assert plan["proposal_binding"]["snapshot_evidence"][1]["games"] == 259
+    assert all(
+        item["snapshot_evidence"][1]["games"] == 259
+        for item in plan["proposal_ensemble"]["ordered_proposals"]
+    )
+    assert not [
+        entry
+        for entry in report["normalizations"]
+        if str(entry.get("path", "")).startswith(
+            ("proposal_ensemble.", "proposal_binding")
+        )
+    ]
+    post_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
+    )
+    assert "; ".join(post_errors).count("cited games=259") == 3
+
+    # The seam stays live OUTSIDE the sealed structures: the prose citation
+    # in the very same plan is still normalized to the snapshot row values.
+    assert plan["analysis"] == (
+        f"{key}: games=28, a_wins=11, b_wins=17. Corroboration "
+        "snapshot:selection_snapshot.json#/rows (games=220)."
+    )
+
+
+def test_five_repeated_stale_objects_are_all_left_for_the_audit(
     monkeypatch, tmp_path
 ):
     """The same stale binding pair repeated 5 times (packet proposals plus
-    the derived proposal_binding) is rewritten at every occurrence."""
+    the derived proposal_binding) is left byte-exact at every occurrence —
+    the audit rejects each one (v488: the ensemble/binding bytes back the
+    sealed proposal identities the quality gate re-derives)."""
     key = _v486_style_fixture(monkeypatch, tmp_path)
     proposals = [
         {
@@ -615,10 +729,11 @@ def test_five_repeated_stale_objects_are_all_rewritten(
         },
         "proposal_ensemble": {"proposals": proposals},
     }
-    pre_joined = "; ".join(
-        evidence_snapshot.validate_h2h_citations_against_snapshot(plan, 24)
+    pre_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
     )
-    assert pre_joined.count("cited games=259") == 5
+    assert "; ".join(pre_errors).count("cited games=259") == 5
+    pre_bytes = json.dumps(plan, sort_keys=True, separators=(",", ":"))
 
     report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
 
@@ -627,8 +742,12 @@ def test_five_repeated_stale_objects_are_all_rewritten(
     ]
     assert len(all_selections) == 5
     for binding in all_selections:
-        assert binding["games"] == 28
-    assert report["total"] == 5
-    assert evidence_snapshot.validate_h2h_citations_against_snapshot(
+        assert binding["games"] == 259
+    assert report["total"] == 0
+    assert report["normalizations"] == []
+    assert json.dumps(plan, sort_keys=True, separators=(",", ":")) == pre_bytes
+    post_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
         plan, 24
-    ) == []
+    )
+    assert post_errors == pre_errors
+    assert "; ".join(post_errors).count("cited games=259") == 5
