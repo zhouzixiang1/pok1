@@ -945,7 +945,8 @@ async def _signature_retry_sleep(delay, role_name, log_file_path):
 # ---------------------------------------------------------------------------
 
 async def _run_stream_with_signature_retry(
-    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None,
+    allowed_write_dir=None,
 ):
     """Run bounded SDK retries under one role-wide total wall-clock budget.
 
@@ -953,6 +954,9 @@ async def _run_stream_with_signature_retry(
     retry loop, so signature-retry backoff sleeps release the permit and allow
     other LLM work to fill the gap.  This keeps the 2-permit pool utilized even
     during multi-attempt signature retries.
+
+    ``allowed_write_dir`` (P7-1) forwards the dispatch-declared write scope to
+    the codex transport (the claude path enforces it through options.hooks).
     """
 
     import llm_query as _lq
@@ -971,13 +975,15 @@ async def _run_stream_with_signature_retry(
         return await _run_stream_with_signature_retry_attempts(
             full_prompt, options, log_file_path, ui, role_name,
             semaphore=semaphore,
+            allowed_write_dir=allowed_write_dir,
         )
     finally:
         _lq._LLM_TOTAL_DEADLINE.reset(token)
 
 
 async def _run_stream_with_signature_retry_attempts(
-    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None,
+    allowed_write_dir=None,
 ):
     """Run one streaming query with retries on transient SDK signature errors.
 
@@ -1002,9 +1008,14 @@ async def _run_stream_with_signature_retry_attempts(
         # SDK message objects, so everything below (semaphore acquisition,
         # _process_stream, billing, metrics, cleanup) is shared verbatim.
         # The claude branch is byte-identical to the pre-codex path.
+        # P7-1: the codex branch receives the dispatch-declared write scope so
+        # build_argv can select workspace-write + writable_roots (the claude
+        # branch enforces the same scope through its options.hooks guards).
         _codex_transport = _cx.codex_transport_enabled()
         if _codex_transport:
-            owned_transport = _cx.new_codex_exec_transport(full_prompt, options)
+            owned_transport = _cx.new_codex_exec_transport(
+                full_prompt, options, allowed_write_dir
+            )
         else:
             owned_transport = _lq._new_owned_sdk_transport(full_prompt, options)
         provider_attempt = _lq._new_provider_attempt(owned_transport)

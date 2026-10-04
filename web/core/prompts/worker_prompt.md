@@ -26,7 +26,7 @@ pipes such as `2>&1 | grep ...` instead of redirecting probe output to `/tmp` or
    is failure. The only valid target is the existing `policy.py`; if any task
    names another writable file, report BLOCKED instead of creating it.
 2. After every edit, Read the changed region and verify the applied behavior.
-3. Before finishing, run `python -m py_compile {candidate_path}/policy.py`,
+3. Before finishing, run `python3 -m py_compile {candidate_path}/policy.py`,
    then Read every changed region. The system-owned Worker boundary compares
    the lease preimage and final bytes; do not open the parent or construct a
    second lineage diff. No substantive `policy.py` difference means failure
@@ -39,7 +39,7 @@ pipes such as `2>&1 | grep ...` instead of redirecting probe output to `/tmp` or
 <tools>
 - **Read** reads source files.
 - **Bash** runs statically bounded read inspection and exact-file
-  `python -m py_compile` only. Dynamic candidate execution is unavailable.
+  `python3 -m py_compile` only. Dynamic candidate execution is unavailable.
 - **Edit** modifies declared source files.
 - There is no Write tool. Do not wait for or invoke Write.
 - Do not use webReader, web search, file URLs, or GitHub URLs.

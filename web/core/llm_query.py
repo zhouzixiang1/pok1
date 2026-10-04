@@ -67,6 +67,75 @@ _LLM_TOTAL_DEADLINE = contextvars.ContextVar(
 # patches applied to this module's namespace take effect at call time.
 import llm_query_retry as _qr  # noqa: E402
 
+# Codex transport adapter surface (POK_LLM_TRANSPORT=codex), consumed by the
+# P7-3 write-scope preflight below. The adapter module is stdlib-only (its
+# claude_agent_sdk import is guarded), so this import adds no SDK dependency.
+import llm_query_codex as _cx  # noqa: E402
+
+
+def _assert_codex_write_scope_ready(role_name, tools, allowed_write_dir):
+    """P7-3 (2026-10-04): fail fast before dispatch when the codex transport
+    is selected, the role declared write-capable tools, a write scope was
+    declared, and that scope resolves to zero existing directory roots.
+
+    Without this check the dispatch would silently run ``-s read-only``:
+    every provider patch gets rejected by the sandbox, the lease bytes stay
+    frozen, and the zero-change detector blames the model (the exact
+    v494/v500/v509 failure chain). The failure is a service/lease
+    configuration error: an actionable RuntimeError is raised and a
+    ``pipeline.codex_write_scope_unresolvable`` system event names the role,
+    scope, and fix. The error text deliberately matches no GLM
+    1302/1308/429/503/529 marker, so ``classify_llm_availability`` returns
+    None and no durable cooldown/quota pause is ever armed from it. The
+    claude transport and read-only role shapes are no-ops.
+    """
+
+    if not _cx.codex_transport_enabled():
+        return
+    if not isinstance(tools, (list, tuple)) or not any(
+        str(tool) in _cx._WRITE_TOOL_NAMES for tool in tools
+    ):
+        return
+    if allowed_write_dir is None:
+        # Write-capable tools with NO declared scope is the claude-path
+        # read-only-guard shape: the read-only sandbox is the correct
+        # enforcement, not a failure.
+        return
+    try:
+        _cx.codex_writable_roots(
+            allowed_write_dir, tools=tools, require_resolvable=True
+        )
+    except _cx.CodexWriteScopeUnresolvable as exc:
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.codex_write_scope_unresolvable",
+                "error",
+                f"{role_name}: codex transport write scope declared but "
+                f"unresolvable; refusing to dispatch a read-only sandbox for "
+                f"a write role: {str(exc)[:400]}",
+                {
+                    "role": str(role_name),
+                    "transport": "codex",
+                    "allowed_write_dir": (
+                        {
+                            k: [str(p) for p in v]
+                            for k, v in allowed_write_dir.items()
+                        }
+                        if isinstance(allowed_write_dir, dict)
+                        else str(allowed_write_dir)
+                    ),
+                },
+            )
+        except Exception:
+            pass  # Event persistence must not mask the actionable raise.
+        raise RuntimeError(
+            f"codex transport write scope unresolvable for role "
+            f"{role_name!r}: {exc}"
+        ) from exc
+
+
 # Owned provider-attempt lifecycle + terminal-abandon result cache live in
 # llm_provider_attempt (companion module).  These names are re-exported here
 # for backward compatibility so existing imports and monkeypatches on
@@ -1278,7 +1347,8 @@ async def cleanup_owned_provider_attempt(
 
 
 async def _run_stream_with_signature_retry(
-    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None,
+    allowed_write_dir=None,
 ):
     """Delegate to llm_query_retry.
 
@@ -1291,21 +1361,29 @@ async def _run_stream_with_signature_retry(
     per attempt inside the companion. Dropping the kwarg here raises
     ``unexpected keyword argument 'semaphore'`` and aborts every role
     (including Combined analyst) before any provider stream starts.
+
+    ``allowed_write_dir`` must likewise be forwarded (P7-1, 2026-10-04): the
+    codex transport consumes the dispatch-declared write scope at its argv
+    seam; dropping it silently reverts every write-capable role to the
+    read-only sandbox and reproduces the v509 patch-rejection failure.
     """
 
     return await _qr._run_stream_with_signature_retry(
         full_prompt, options, log_file_path, ui, role_name,
         semaphore=semaphore,
+        allowed_write_dir=allowed_write_dir,
     )
 
 
 async def _run_stream_with_signature_retry_attempts(
-    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None
+    full_prompt, options, log_file_path, ui, role_name, *, semaphore=None,
+    allowed_write_dir=None,
 ):
     """Delegate to llm_query_retry."""
     return await _qr._run_stream_with_signature_retry_attempts(
         full_prompt, options, log_file_path, ui, role_name,
         semaphore=semaphore,
+        allowed_write_dir=allowed_write_dir,
     )
 
 
@@ -1670,6 +1748,12 @@ async def run_claude_query(
         options_kwargs["hooks"] = _sub_hooks
     options = ClaudeAgentOptions(**options_kwargs)
 
+    # P7-3 (2026-10-04): under the codex transport a write-capable role whose
+    # declared write scope resolves to zero existing directory roots must fail
+    # fast HERE, before any provider stream — never silently dispatch into the
+    # read-only sandbox that rejects every patch and freezes the lease bytes.
+    _assert_codex_write_scope_ready(role_name, tools, allowed_write_dir)
+
     lifecycle_fields = {
         "role": role_name,
         "role_contract_id": role_contract.role_id,
@@ -1798,6 +1882,10 @@ async def run_claude_query(
             full_text, cost_usd, usage = await _run_stream_with_signature_retry(
                 full_prompt, options, log_file_path, ui, role_name,
                 semaphore=_role_sem,
+                # P7-1: the codex transport consumes the declared write scope
+                # at its argv seam (workspace-write + writable_roots); the
+                # claude branch ignores it (its hooks already enforce scope).
+                allowed_write_dir=allowed_write_dir,
             )
 
         streamed_output = "\n".join(full_text)

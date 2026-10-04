@@ -669,7 +669,7 @@ def test_full_retry_loop_records_codex_metrics_schema(monkeypatch, tmp_path):
     # that loop into a busy starve (the rc1 tests patch sleep only because
     # their _process_stream is fake).
 
-    def fake_new_transport(full_prompt, options):
+    def fake_new_transport(full_prompt, options, allowed_write_dir=None):
         return _FakeTransport([json.dumps(e) for e in _smoke_events()])
 
     monkeypatch.setattr(

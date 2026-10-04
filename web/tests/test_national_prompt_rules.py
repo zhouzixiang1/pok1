@@ -387,7 +387,11 @@ def test_role_prompts_match_the_runtime_read_capability_guard():
     reviewer = _prompt("reviewer_prompt.md")
     crossover = _prompt("crossover_prompt.md")
 
-    assert "python -m py_compile {candidate_path}/policy.py" in worker
+    # P7-4 (2026-10-04): the sandbox where Workers run Bash has only python3
+    # (v509 io evidence: `python -m py_compile` exit 127), so every
+    # worker-visible compile instruction must say python3.
+    assert "python3 -m py_compile {candidate_path}/policy.py" in worker
+    assert "python -m py_compile" not in worker
     assert "diff -rq bots/national_v" not in worker
     assert "python -B -c" not in worker
     assert "no filesystem tools" in master

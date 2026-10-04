@@ -1507,7 +1507,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
         f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
         "- Fix only the listed gate blocker.\n"
         "- Preserve national protocol/card mapping and previously passing behavior.\n"
-        "- Run `python -m py_compile` on the exact edited file before finishing; system gates own imports and execution."
+        "- Run `python3 -m py_compile` on the exact edited file before finishing; system gates own imports and execution."
     )
     return {
         "worker_id": f"auto_quality_repair_gate_{suffix}",

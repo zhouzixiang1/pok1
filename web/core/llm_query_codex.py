@@ -34,9 +34,17 @@ already consumes, so every downstream contract is preserved by construction:
 
 Capability differences vs the claude transport (documented in AGENTS.md):
 
-- The codex run is always ``-s read-only``: filesystem *writes* (Worker /
-  crossover Edit scopes) are not available under this transport yet — the
-  read-audit chain stays at the prompt layer exactly as today.
+- Sandbox/write scope (P7-1, 2026-10-04): a role that declared an
+  Edit/Write tool AND supplied a resolvable ``allowed_write_dir`` runs under
+  ``-s workspace-write`` with the scope's directory roots in
+  ``sandbox_workspace_write.writable_roots`` (CLI syntax verified by a real
+  smoke on this host: the declared root is writable, a control directory
+  outside it stays read-only). Every other dispatch keeps the exact
+  historical ``-s read-only`` argv. Codex grants writes at directory
+  granularity only; the file-level boundary stays enforced by the existing
+  ``audit_worker_boundary`` contract, which is not relaxed. A declared-but-
+  unresolvable scope fails closed (:class:`CodexWriteScopeUnresolvable`)
+  instead of silently degrading to read-only.
 - Effort mapping: ``POK_LLM_EFFORT`` (official GLM档位 ``low``/``high``/
   ``max``) is forwarded as ``-c model_reasoning_effort=...`` (default
   ``max``).  ``POK_LLM_THINKING_BUDGET`` is not forwarded (codex has no
@@ -122,6 +130,112 @@ CODEX_CLOSE_GRACE_ENV = "POK_CODEX_CLOSE_GRACE_SEC"
 
 #: model_reasoning_effort档位 (official GLM Coding Plan levels).
 _CODEX_EFFORT_LEVELS = ("low", "high", "max")
+
+#: Built-in tool names whose presence means the role may mutate files. Only
+#: a role that declared one of these AND supplied a resolvable write scope
+#: gets ``-s workspace-write``; everything else stays ``-s read-only``.
+_WRITE_TOOL_NAMES = ("Edit", "Write", "NotebookEdit")
+
+#: Config override key carrying the directory-level writable roots under the
+#: codex workspace-write sandbox. Verified against the real CLI on this host
+#: (2026-10-04 smoke): ``-s workspace-write -c
+#: 'sandbox_workspace_write.writable_roots=["/path"]'`` makes exactly that
+#: root writable while a control directory outside it (and outside the
+#: workspace / temp) stays ``Read-only file system``.
+_WRITABLE_ROOTS_CONFIG_KEY = "sandbox_workspace_write.writable_roots"
+
+
+class CodexWriteScopeUnresolvable(RuntimeError):
+    """A write-capable role declared a write scope that resolves to zero
+    existing directory roots — a dispatch-configuration error, fail-closed.
+
+    Raised by :func:`codex_writable_roots` (via ``require_resolvable=True``)
+    and by :meth:`CodexExecTransport.build_argv` so the failure can never
+    silently degrade to a read-only sandbox (the exact v509 failure mode:
+    every provider patch rejected, lease bytes frozen, zero-change detector
+    blaming the model). The text deliberately matches no GLM 1302/1308/429
+    marker, so ``classify_llm_availability`` never arms a pause from it.
+    """
+
+
+def _declares_write_tools(tools) -> bool:
+    """True when the declared built-in tool set proves file-mutation intent."""
+
+    if isinstance(tools, (str, bytes)) or not isinstance(tools, (list, tuple, set, frozenset)):
+        # A ToolsPreset dict or scalar carries no provable built-in Edit/Write
+        # declaration — fail closed to the read-only sandbox.
+        return False
+    return any(str(tool) in _WRITE_TOOL_NAMES for tool in tools)
+
+
+def _normalize_write_scope(allowed_write_dir) -> tuple[list[str], list[str]]:
+    """Normalize a write scope into (dirs, files) string lists.
+
+    Accepts the dispatch-side normalized mapping (``{"dirs": [...],
+    "files": [...]}``) or a scalar path. Missing keys and ``None`` normalize
+    to empty lists (no declared scope).
+    """
+
+    if allowed_write_dir is None:
+        return [], []
+    if isinstance(allowed_write_dir, dict):
+        dirs = [str(p) for p in (allowed_write_dir.get("dirs") or ())]
+        files = [str(p) for p in (allowed_write_dir.get("files") or ())]
+        return dirs, files
+    if isinstance(allowed_write_dir, (list, tuple)):
+        # Bare sequence form: every entry is a directory root.
+        return [str(p) for p in allowed_write_dir], []
+    return [str(allowed_write_dir)], []
+
+
+def codex_writable_roots(
+    allowed_write_dir, tools=None, *, require_resolvable: bool = False
+) -> list[str]:
+    """Resolve the codex directory-level writable roots for one dispatch.
+
+    Codex grants writes at DIRECTORY granularity: the workspace (process
+    cwd) plus ``sandbox_workspace_write.writable_roots`` plus the system
+    temp tree. This resolver maps the role's exact write scope onto that
+    coarse surface: every declared directory root, and the PARENT directory
+    of every declared exact file. Only roots that exist on disk are
+    returned; file-level precision stays enforced by the existing
+    ``audit_worker_boundary`` contract, which is not relaxed.
+
+    ``tools`` gates on a provable Edit/Write declaration; when omitted or
+    write-free the resolver returns ``[]`` (read-only sandbox). With
+    ``require_resolvable=True`` a declared-but-unresolvable scope raises
+    :class:`CodexWriteScopeUnresolvable` instead of returning ``[]`` so the
+    caller can fail fast rather than silently downgrade.
+    """
+
+    if not _declares_write_tools(tools):
+        return []
+    dirs, files = _normalize_write_scope(allowed_write_dir)
+    if not dirs and not files:
+        return []
+    roots: list[str] = []
+    candidates = list(dirs) + [
+        os.path.dirname(str(file)) or "." for file in files
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if not os.path.isdir(candidate):
+            continue
+        root = os.path.realpath(candidate)
+        if root not in roots:
+            roots.append(root)
+    if not roots and require_resolvable:
+        raise CodexWriteScopeUnresolvable(
+            "codex transport write scope declared but unresolvable: "
+            f"dirs={dirs!r} files={files!r} resolve to zero existing "
+            "directory roots; the dispatch cannot build the workspace-write "
+            "writable_roots argv and would silently degrade to the read-only "
+            "sandbox (every provider patch rejected, lease bytes frozen). "
+            "Fix the lease/workspace directory creation or the declared "
+            "allowed_write_dir before dispatching this role."
+        )
+    return roots
 
 #: Role-IO/tool-result preview bound (mirrors _process_stream previews).
 _TOOL_RESULT_PREVIEW_CHARS = 3000
@@ -628,11 +742,20 @@ class CodexExecTransport:
     spawned) and an awaitable ``close()`` that terminates the process group
     and leaves ``returncode`` set, so exit confirmation
     (``_provider_attempt_exit_confirmed``) works unchanged.
+
+    ``allowed_write_dir`` (P7-1, 2026-10-04) carries the dispatch-declared
+    write scope into the argv: with a provable Edit/Write tool declaration
+    AND a resolvable scope the sandbox becomes ``-s workspace-write`` with
+    the scope's directory roots in ``sandbox_workspace_write.writable_roots``
+    (verified CLI syntax, real-smoke proven). Anything else keeps the exact
+    historical ``-s read-only`` argv. File-level precision remains the
+    ``audit_worker_boundary`` contract, which is not relaxed.
     """
 
-    def __init__(self, full_prompt, options):
+    def __init__(self, full_prompt, options, allowed_write_dir=None):
         self._prompt = str(full_prompt or "")
         self._options = options
+        self._allowed_write_dir = allowed_write_dir
         self._process = None
         self._argv = None
 
@@ -644,8 +767,23 @@ class CodexExecTransport:
             "exec",
             "--json",
             "--ephemeral",
-            "-s",
-            "read-only",
+        ]
+        write_roots = codex_writable_roots(
+            self._allowed_write_dir,
+            tools=getattr(self._options, "tools", None),
+            require_resolvable=True,
+        )
+        if write_roots:
+            argv += ["-s", "workspace-write"]
+            # The value side must parse as TOML; json.dumps of a list of
+            # plain strings is a valid TOML array of basic strings.
+            argv += [
+                "-c",
+                f"{_WRITABLE_ROOTS_CONFIG_KEY}={json.dumps(write_roots)}",
+            ]
+        else:
+            argv += ["-s", "read-only"]
+        argv += [
             "--skip-git-repo-check",
             "-c",
             f"model_reasoning_effort={codex_effort_from_env()}",
@@ -704,10 +842,17 @@ class CodexExecTransport:
         return process.returncode is not None
 
 
-def new_codex_exec_transport(full_prompt, options) -> CodexExecTransport:
-    """Create the codex transport owned by one provider attempt."""
+def new_codex_exec_transport(
+    full_prompt, options, allowed_write_dir=None
+) -> CodexExecTransport:
+    """Create the codex transport owned by one provider attempt.
 
-    return CodexExecTransport(full_prompt, options)
+    ``allowed_write_dir`` is the dispatch-declared write scope (normalized
+    ``{"dirs": [...], "files": [...]}`` mapping or scalar path); see
+    :class:`CodexExecTransport` for the sandbox mapping.
+    """
+
+    return CodexExecTransport(full_prompt, options, allowed_write_dir)
 
 
 async def _write_stdin(stdin, data: bytes):

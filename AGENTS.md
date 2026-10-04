@@ -346,13 +346,36 @@ operator-owned in `~/.codex/config.toml` (official GLM Coding Plan page
 `docs.bigmodel.cn/cn/coding-plan/tool/codex`: base_url
 `https://open.bigmodel.cn/api/v1`, `wire_api="responses"`,
 `experimental_bearer_token`); `POK_LLM_EFFORT` maps onto codex
-`model_reasoning_effort` (official档位 `low`/`high`/`max`). Known capability
-gap (documented, intentional): the codex run is always `-s read-only`, so
-Worker/crossover **write** scopes are unavailable under this transport — the
-AGENTS.md read-permission audit chain stays at the prompt layer exactly as
-today. `POK_CODEX_BIN` / `POK_CODEX_MODEL` are optional per-dispatch
-overrides; the key is committed unset in `deploy/tencent-cloud/env.runtime`
-(switching is an orchestration decision, never a local edit).
+`model_reasoning_effort` (official档位 `low`/`high`/`max`). **Write scopes
+(P7-1, 2026-10-04):** a dispatch that declares an Edit/Write tool AND a
+resolvable `allowed_write_dir` runs `codex exec -s workspace-write` with the
+scope's directory roots in
+`-c sandbox_workspace_write.writable_roots=[...]` (CLI syntax verified by a
+real smoke on the cloud VM: the declared root is writable, a control
+directory outside it — and outside the workspace/temp — stays
+`Read-only file system`); every other dispatch keeps the exact historical
+`-s read-only` argv. The dispatch-declared write scope flows
+`run_claude_query → _run_stream_with_signature_retry(allowed_write_dir=…)
+→ llm_query_retry → new_codex_exec_transport`, and
+`_assert_codex_write_scope_ready` (llm_query) fail-fasts — with a
+`pipeline.codex_write_scope_unresolvable` system event — before any
+provider stream when a write-capable role's declared scope resolves to zero
+existing directory roots, so a broken lease can never silently degrade to
+the read-only sandbox that froze v494/v500/v509. Codex grants writes at
+DIRECTORY granularity (workspace + writable_roots + system temp); the
+file-level boundary stays enforced by the existing `audit_worker_boundary`
+contract, which is not relaxed. The Worker zero-change detector
+(`agent_workers`) likewise classifies an unchanged lease whose role output /
+io log carries sandbox write-rejection signatures
+(`read-only sandbox` / `Errno 30` / `read-only file system` /
+`rejected by user approval settings`, shared scanner in `worker_boundary`)
+as `llm_infrastructure` (WorkerInfrastructureError, no model-retry burn)
+instead of blaming the model; a crossover accepted as a byte-identical
+parent copy emits `pipeline.crossover_degraded_to_parent_copy` with those
+markers instead of passing silently. `POK_CODEX_BIN` / `POK_CODEX_MODEL`
+are optional per-dispatch overrides; the key is committed unset in
+`deploy/tencent-cloud/env.runtime` (switching is an orchestration decision,
+never a local edit).
 **Binary pre-resolution is mandatory and fail-fast.** The adapter resolves
 the configured binary via `shutil.which` before every spawn
 (`resolve_codex_binary` in `web/core/llm_query_codex.py`) and execs the

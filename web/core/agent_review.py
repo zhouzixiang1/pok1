@@ -247,6 +247,97 @@ def _crossover_projection_failure(component, issue, **extra):
     return projection_failure(component, issue, **extra)
 
 
+#: Bound on the crossover io-log tail scanned for sandbox write-rejection
+#: signatures when a crossover silently degrades to a parent copy.
+_CROSSOVER_IO_REJECTION_SCAN_BYTES = 256 * 1024
+
+
+def _log_crossover_parent_copy_degradation(
+    *,
+    target_dir,
+    frozen_parent_a_dir,
+    io_log_file,
+    target_v,
+    parent_a_v,
+    parent_b_v,
+    attempt,
+):
+    """P7-5 (2026-10-04): event a crossover accepted as a byte-identical
+    parent-A copy.
+
+    The provenance contract deliberately accepts "leave Parent A unchanged",
+    so a crossover whose every ``apply_patch`` was rejected by the transport
+    sandbox (v509: ``writing is blocked by read-only sandbox``) flows through
+    all gates and publishes a silent parent copy — a recombination that
+    never happened. This never blocks the crossover (the copy remains a
+    legal outcome) and never raises; it makes the degradation observable by
+    emitting ``pipeline.crossover_degraded_to_parent_copy`` with the sandbox
+    rejection markers scanned from the crossover io log, so a transport
+    fault cannot masquerade as a legitimate no-op recombination.
+    """
+
+    try:
+        target = Path(target_dir)
+        parent = Path(frozen_parent_a_dir)
+        if not target.is_dir() or not parent.is_dir():
+            return
+        changed = []
+        parent_files = {f.name for f in parent.glob("*.py")}
+        for f in target.glob("*.py"):
+            src_f = parent / f.name
+            if f.name not in parent_files:
+                changed.append(f.name + " (new)")
+            elif src_f.is_file() and f.read_text(encoding="utf-8") != src_f.read_text(
+                encoding="utf-8"
+            ):
+                changed.append(f.name + " (modified)")
+        if changed:
+            return
+
+        io_tail = ""
+        try:
+            log_path = Path(io_log_file)
+            if log_path.is_file():
+                size = log_path.stat().st_size
+                with log_path.open("rb") as handle:
+                    if size > _CROSSOVER_IO_REJECTION_SCAN_BYTES:
+                        handle.seek(size - _CROSSOVER_IO_REJECTION_SCAN_BYTES)
+                    io_tail = handle.read(
+                        _CROSSOVER_IO_REJECTION_SCAN_BYTES
+                    ).decode("utf-8", "replace")
+        except OSError:
+            io_tail = ""
+
+        from worker_boundary import scan_sandbox_write_rejections
+
+        markers = scan_sandbox_write_rejections(io_tail)
+        from system_log import log_system_event
+
+        log_system_event(
+            "pipeline.crossover_degraded_to_parent_copy",
+            "warn",
+            f"Crossover v{target_v} (v{parent_a_v}×v{parent_b_v}) accepted a "
+            f"byte-identical parent-A copy (attempt {attempt + 1})"
+            + (
+                " — sandbox write rejections detected in the io log: "
+                + ", ".join(markers)
+                if markers
+                else ""
+            ),
+            {
+                "target_v": target_v,
+                "parent_a": parent_a_v,
+                "parent_b": parent_b_v,
+                "attempt": attempt + 1,
+                "sandbox_rejection_markers": markers,
+                "io_log_file": str(io_log_file),
+            },
+        )
+    except Exception:
+        # Observability only: never block an accepted crossover on this.
+        pass
+
+
 def _crossover_synthesis_in_progress(issue):
     """A concurrent valid lease is a retry signal, not infrastructure drift."""
     return {
@@ -1717,6 +1808,21 @@ async def _run_crossover(
             )
         except Exception:
             pass
+
+        # P7-5 (2026-10-04): a crossover accepted with ZERO files changed vs
+        # parent A is either a legitimate no-op recombination or a transport
+        # fault whose every apply_patch was sandbox-rejected. Event it (with
+        # the io-log rejection markers) instead of letting the degradation
+        # pass silently as a parent byte-copy.
+        _log_crossover_parent_copy_degradation(
+            target_dir=target_dir,
+            frozen_parent_a_dir=frozen_parent_a_dir,
+            io_log_file=log_file,
+            target_v=target_v,
+            parent_a_v=parent_a_v,
+            parent_b_v=parent_b_v,
+            attempt=attempt,
+        )
 
         projection = _project_crossover_candidate(
             workspace=target_dir,

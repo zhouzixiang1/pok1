@@ -211,7 +211,7 @@ Workers may inspect the lease candidate and compile the exact edited file. The
 trusted quality gate exclusively owns imports, candidate execution, native TCP
 smoke and dynamic tests. Worker-visible verification is:
 
-1. `python -m py_compile {candidate_path}/policy.py`
+1. `python3 -m py_compile {candidate_path}/policy.py`
 2. Read every edited region and report the intended reachable consumer.
 3. Leave import/native-contract/smoke/self-test execution to the system gate.
 4. The system boundary, not the Worker, proves that only `policy.py` changed,

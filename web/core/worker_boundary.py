@@ -55,6 +55,37 @@ _BINARY_ARTIFACT_SUFFIXES = frozenset({
     ".pkl", ".pickle", ".db", ".sqlite", ".sqlite3",
 })
 
+# Sandbox write-rejection signatures observed in real Worker/crossover io
+# evidence (2026-10-04 P7 investigation, results/v509/logs/worker_1_io.txt
+# lines 561-570/1143-1155 and crossover_io.txt:979): every provider-compliant
+# patch was rejected by the transport sandbox while the lease bytes stayed
+# frozen, and the zero-change detector misread that as model laziness. The
+# markers are matched case-insensitively against role output / io-log text.
+SANDBOX_WRITE_REJECTION_MARKERS: tuple[str, ...] = (
+    "read-only sandbox",
+    "errno 30",
+    "read-only file system",
+    "rejected by user approval settings",
+)
+
+
+def scan_sandbox_write_rejections(*texts) -> list[str]:
+    """Return the distinct sandbox write-rejection markers present in ``texts``.
+
+    Pure text scan (lowercased substring match); never raises on non-str
+    inputs. Callers feed the role's terminal output plus a bounded tail of
+    its io-log file — the two surfaces where rejected ``apply_patch`` /
+    shell-write errors are visible to the control plane.
+    """
+    lowered = "\n".join(str(text or "") for text in texts).lower()
+    if not lowered.strip():
+        return []
+    return [
+        marker
+        for marker in SANDBOX_WRITE_REJECTION_MARKERS
+        if marker in lowered
+    ]
+
 # Worker rollback snapshots are intentionally bounded in memory so a malformed
 # candidate cannot force a sparse/oversized allocation before quality gates.
 WORKER_SNAPSHOT_MAX_FILE_COUNT = ARTIFACT_MAX_FILE_COUNT

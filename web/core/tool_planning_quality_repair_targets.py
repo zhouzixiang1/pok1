@@ -486,7 +486,7 @@ def _official_repair_tasks(ckpt, feedback):
         f"Official evidence:\n{evidence[:5000]}\n\n"
         f"Required method:\n{method}\n\n"
         "Verification expectation:\n"
-        "- Run `python -m py_compile` on the exact edited file; imports and dynamic checks remain system-owned.\n"
+        "- Run `python3 -m py_compile` on the exact edited file; imports and dynamic checks remain system-owned.\n"
         "- Confirm only policy.py changed; system artifacts must remain byte-identical.\n"
         "- End with the concrete official failure class you addressed."
     )

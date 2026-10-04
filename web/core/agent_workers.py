@@ -33,6 +33,7 @@ from worker_boundary import (
     is_binary_artifact_path,
     read_regular_file_bytes,
     restore_python_files,
+    scan_sandbox_write_rejections,
     snapshot_python_files,
 )
 from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
@@ -178,6 +179,42 @@ class WorkerInfrastructureError(RuntimeError):
             f"worker {worker_id} ({role}) infrastructure unavailable: "
             + "; ".join(self.issues[:3])
         )
+
+
+#: Bound on the io-log tail scanned for sandbox write-rejection signatures
+#: after a zero-change attempt (the role io file accumulates the whole
+#: attempt's tool errors; only the recent tail is attributable to this
+#: attempt, and the scan stays cheap for very large logs).
+_WORKER_IO_REJECTION_SCAN_BYTES = 256 * 1024
+
+
+def _worker_sandbox_rejection_hits(worker_output, worker_log_file):
+    """Sandbox write-rejection markers in this worker attempt's evidence.
+
+    Scans the provider-visible terminal output plus a bounded tail of the
+    role io log (where rejected ``apply_patch`` / shell-write tool errors
+    land). Returns the distinct matched markers; empty means no transport
+    write rejection is provable (P7-2, 2026-10-04: v494/v500/v509 Workers
+    produced contract-compliant patches that the read-only transport sandbox
+    rejected on every attempt, which the byte-diff zero-change check
+    misread as model laziness). Never raises; a missing/unreadable log
+    simply contributes no text.
+    """
+
+    tail = ""
+    try:
+        path = Path(worker_log_file)
+        if path.is_file():
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                if size > _WORKER_IO_REJECTION_SCAN_BYTES:
+                    handle.seek(size - _WORKER_IO_REJECTION_SCAN_BYTES)
+                tail = handle.read(_WORKER_IO_REJECTION_SCAN_BYTES).decode(
+                    "utf-8", "replace"
+                )
+    except OSError:
+        tail = ""
+    return scan_sandbox_write_rejections(worker_output, tail)
 
 
 def _worker_timeout_for_task(task, reviewer_feedback):
@@ -1269,6 +1306,56 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 )
                 continue
             if unchanged:
+                # P7-2 (2026-10-04): a zero-change attempt is only model
+                # laziness when NO sandbox write-rejection signature is
+                # present in the attempt's evidence. When the transport
+                # sandbox rejected the writes (read-only sandbox / Errno 30 /
+                # read-only file system / rejected by user approval settings
+                # — the exact v494/v500/v509 codex-transport failure), the
+                # lease bytes are frozen because the PATCHES WERE REJECTED,
+                # not because none were produced. That is an infrastructure
+                # failure: classify llm_infrastructure, surface it to the
+                # operator, and stop — educating the model with retry
+                # guidance cannot fix a read-only mount and only burns the
+                # remaining provider budget.
+                rejection_markers = _worker_sandbox_rejection_hits(
+                    worker_output, worker_log_file
+                )
+                if rejection_markers:
+                    _last_reason = (
+                        "worker writes rejected by the transport sandbox "
+                        f"({', '.join(rejection_markers)}); target files "
+                        f"unchanged: {', '.join(unchanged)}"
+                    )
+                    _last_failure_type = "llm_infrastructure"
+                    _infrastructure_issues.append(_last_reason)
+                    ui.log_history(
+                        f"Worker {w_id} ({role}) writes rejected by the "
+                        f"transport sandbox ({', '.join(rejection_markers)}); "
+                        "classifying as infrastructure failure",
+                        "error",
+                    )
+                    try:
+                        from system_log import log_system_event
+
+                        log_system_event(
+                            "pipeline.worker_writes_sandbox_rejected",
+                            "error",
+                            f"Worker {w_id} ({role}) produced patches but the "
+                            f"transport sandbox rejected every write for "
+                            f"v{next_v}",
+                            {
+                                "version": next_v,
+                                "worker_id": w_id,
+                                "role": role,
+                                "unchanged_targets": list(unchanged[:20]),
+                                "sandbox_rejection_markers": rejection_markers,
+                                "log_file": str(worker_log_file),
+                            },
+                        )
+                    except Exception:
+                        pass
+                    break
                 _last_reason = f"zero changes in target files: {', '.join(unchanged)}"
                 _last_failure_type = "zero_changes"
                 retry_guidance += (
