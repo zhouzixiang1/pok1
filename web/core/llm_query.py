@@ -73,7 +73,9 @@ import llm_query_retry as _qr  # noqa: E402
 import llm_query_codex as _cx  # noqa: E402
 
 
-def _assert_codex_write_scope_ready(role_name, tools, allowed_write_dir):
+def _assert_codex_write_scope_ready(
+    role_name, tools, allowed_write_dir, *, base_dir=None
+):
     """P7-3 (2026-10-04): fail fast before dispatch when the codex transport
     is selected, the role declared write-capable tools, a write scope was
     declared, and that scope resolves to zero existing directory roots.
@@ -103,7 +105,10 @@ def _assert_codex_write_scope_ready(role_name, tools, allowed_write_dir):
         return
     try:
         _cx.codex_writable_roots(
-            allowed_write_dir, tools=tools, require_resolvable=True
+            allowed_write_dir,
+            tools=tools,
+            require_resolvable=True,
+            base_dir=base_dir,
         )
     except _cx.CodexWriteScopeUnresolvable as exc:
         try:
@@ -1752,7 +1757,11 @@ async def run_claude_query(
     # declared write scope resolves to zero existing directory roots must fail
     # fast HERE, before any provider stream — never silently dispatch into the
     # read-only sandbox that rejects every patch and freezes the lease bytes.
-    _assert_codex_write_scope_ready(role_name, tools, allowed_write_dir)
+    # base_dir mirrors the claude-path cwd (PROJECT_ROOT) so relative scope
+    # entries resolve identically on both transports.
+    _assert_codex_write_scope_ready(
+        role_name, tools, allowed_write_dir, base_dir=str(PROJECT_ROOT)
+    )
 
     lifecycle_fields = {
         "role": role_name,

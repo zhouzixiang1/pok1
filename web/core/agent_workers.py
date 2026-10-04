@@ -183,32 +183,43 @@ class WorkerInfrastructureError(RuntimeError):
 
 #: Bound on the io-log tail scanned for sandbox write-rejection signatures
 #: after a zero-change attempt (the role io file accumulates the whole
-#: attempt's tool errors; only the recent tail is attributable to this
-#: attempt, and the scan stays cheap for very large logs).
+#: attempt's tool errors; only the bytes written since the attempt began are
+#: attributable to it, and the scan stays cheap for very large logs).
 _WORKER_IO_REJECTION_SCAN_BYTES = 256 * 1024
 
 
-def _worker_sandbox_rejection_hits(worker_output, worker_log_file):
+def _io_log_size(worker_log_file) -> int:
+    """Current byte size of the role io log (0 when absent/unreadable)."""
+
+    try:
+        return Path(worker_log_file).stat().st_size
+    except OSError:
+        return 0
+
+
+def _worker_sandbox_rejection_hits(worker_output, worker_log_file, since_offset=0):
     """Sandbox write-rejection markers in this worker attempt's evidence.
 
-    Scans the provider-visible terminal output plus a bounded tail of the
-    role io log (where rejected ``apply_patch`` / shell-write tool errors
-    land). Returns the distinct matched markers; empty means no transport
-    write rejection is provable (P7-2, 2026-10-04: v494/v500/v509 Workers
-    produced contract-compliant patches that the read-only transport sandbox
-    rejected on every attempt, which the byte-diff zero-change check
-    misread as model laziness). Never raises; a missing/unreadable log
-    simply contributes no text.
+    Scans the provider-visible terminal output plus the io-log bytes written
+    since ``since_offset`` (the attempt's start offset — the log accumulates
+    across attempts, and a PREVIOUS attempt's rejection transcript must not
+    reclassify a later genuinely-lazy attempt as infrastructure; bounded to
+    ``_WORKER_IO_REJECTION_SCAN_BYTES`` from that offset). Returns the
+    distinct matched markers; empty means no transport write rejection is
+    provable (P7-2, 2026-10-04: v494/v500/v509 Workers produced
+    contract-compliant patches that the read-only transport sandbox rejected
+    on every attempt, which the byte-diff zero-change check misread as model
+    laziness). Never raises; a missing/unreadable log simply contributes no
+    text.
     """
 
     tail = ""
     try:
         path = Path(worker_log_file)
         if path.is_file():
-            size = path.stat().st_size
+            offset = max(0, int(since_offset or 0))
             with path.open("rb") as handle:
-                if size > _WORKER_IO_REJECTION_SCAN_BYTES:
-                    handle.seek(size - _WORKER_IO_REJECTION_SCAN_BYTES)
+                handle.seek(offset)
                 tail = handle.read(_WORKER_IO_REJECTION_SCAN_BYTES).decode(
                     "utf-8", "replace"
                 )
@@ -1131,6 +1142,11 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         worker_output_evidence.pop(idx, None)
 
     for attempt in range(MAX_WORKER_RETRIES):
+        # O1 (review note): record where this attempt's io-log bytes BEGIN.
+        # The scan after a zero-change verdict reads only this increment, so
+        # an earlier attempt's rejection transcript cannot reclassify a later
+        # genuinely-lazy attempt as infrastructure.
+        _attempt_io_offset = _io_log_size(worker_log_file)
         if not parallel_mode:
             ui.clear_io()
             ui.set_status(f"[{role}] coding for v{next_v}...", is_working=True)
@@ -1319,7 +1335,9 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 # guidance cannot fix a read-only mount and only burns the
                 # remaining provider budget.
                 rejection_markers = _worker_sandbox_rejection_hits(
-                    worker_output, worker_log_file
+                    worker_output,
+                    worker_log_file,
+                    since_offset=_attempt_io_offset,
                 )
                 if rejection_markers:
                     _last_reason = (

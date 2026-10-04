@@ -34,17 +34,26 @@ already consumes, so every downstream contract is preserved by construction:
 
 Capability differences vs the claude transport (documented in AGENTS.md):
 
-- Sandbox/write scope (P7-1, 2026-10-04): a role that declared an
-  Edit/Write tool AND supplied a resolvable ``allowed_write_dir`` runs under
-  ``-s workspace-write`` with the scope's directory roots in
-  ``sandbox_workspace_write.writable_roots`` (CLI syntax verified by a real
-  smoke on this host: the declared root is writable, a control directory
-  outside it stays read-only). Every other dispatch keeps the exact
-  historical ``-s read-only`` argv. Codex grants writes at directory
-  granularity only; the file-level boundary stays enforced by the existing
-  ``audit_worker_boundary`` contract, which is not relaxed. A declared-but-
-  unresolvable scope fails closed (:class:`CodexWriteScopeUnresolvable`)
-  instead of silently degrading to read-only.
+- Sandbox/write scope (P7-1, 2026-10-04; hardened by review block B1):
+  a role that declared an Edit/Write tool AND supplied a resolvable
+  ``allowed_write_dir`` runs under ``-s workspace-write`` with the scope's
+  directory roots in ``sandbox_workspace_write.writable_roots`` AND the
+  process cwd pinned to the scope's primary root. Codex workspace-write
+  makes the ENTIRE cwd tree writable and writable_roots only ADD to it
+  (live-CLI-proven), so the cwd pin is what collapses the writable surface
+  to the declared scope union plus the codex-built-in system temp tree;
+  the repository tree is NOT writable under a write-role dispatch
+  (smoke-proven: a probe path inside the repo is rejected with
+  ``Read-only file system``). Reads stay full-disk and codex still
+  discovers the repository AGENTS.md by ancestor walk from the deep cwd
+  (smoke-proven with a git-root instruction file honoured from a nested
+  working directory). Every dispatch without a provable write declaration
+  keeps the exact historical ``-s read-only`` argv and project-root cwd.
+  Within-scope file-level precision stays with the lease-tree
+  ``audit_worker_boundary`` audit — which is now also the entire writable
+  surface, so the audit and the sandbox agree. A declared-but-unresolvable
+  scope fails closed (:class:`CodexWriteScopeUnresolvable`) instead of
+  silently degrading to read-only.
 - Effort mapping: ``POK_LLM_EFFORT`` (official GLM档位 ``low``/``high``/
   ``max``) is forwarded as ``-c model_reasoning_effort=...`` (default
   ``max``).  ``POK_LLM_THINKING_BUDGET`` is not forwarded (codex has no
@@ -189,23 +198,32 @@ def _normalize_write_scope(allowed_write_dir) -> tuple[list[str], list[str]]:
 
 
 def codex_writable_roots(
-    allowed_write_dir, tools=None, *, require_resolvable: bool = False
+    allowed_write_dir, tools=None, *, require_resolvable: bool = False,
+    base_dir=None,
 ) -> list[str]:
     """Resolve the codex directory-level writable roots for one dispatch.
 
     Codex grants writes at DIRECTORY granularity: the workspace (process
-    cwd) plus ``sandbox_workspace_write.writable_roots`` plus the system
-    temp tree. This resolver maps the role's exact write scope onto that
-    coarse surface: every declared directory root, and the PARENT directory
+    cwd) PLUS ``sandbox_workspace_write.writable_roots`` PLUS the system
+    temp tree — the roots are ADDITIVE to the cwd tree, not a replacement
+    (B1 review block, 2026-10-04: a live CLI run wrote inside cwd but
+    outside the declared roots). This resolver therefore only describes the
+    DECLARED scope; :meth:`CodexExecTransport.spawn` separately pins the
+    process cwd to the primary root so the actual writable surface is the
+    declared scope union plus the codex-built-in temp tree — never the
+    repository working tree. It maps the role's exact write scope onto
+    directory roots: every declared directory root, and the PARENT directory
     of every declared exact file. Only roots that exist on disk are
-    returned; file-level precision stays enforced by the existing
-    ``audit_worker_boundary`` contract, which is not relaxed.
+    returned; within-scope file-level precision stays with the lease-tree
+    ``audit_worker_boundary`` audit, which is the only writable surface.
 
     ``tools`` gates on a provable Edit/Write declaration; when omitted or
-    write-free the resolver returns ``[]`` (read-only sandbox). With
-    ``require_resolvable=True`` a declared-but-unresolvable scope raises
-    :class:`CodexWriteScopeUnresolvable` instead of returning ``[]`` so the
-    caller can fail fast rather than silently downgrade.
+    write-free the resolver returns ``[]`` (read-only sandbox). Relative
+    entries resolve against ``base_dir`` (falling back to the process cwd)
+    — a bare relative file name must never widen the scope to an unrelated
+    directory. With ``require_resolvable=True`` a declared-but-unresolvable
+    scope raises :class:`CodexWriteScopeUnresolvable` instead of returning
+    ``[]`` so the caller can fail fast rather than silently downgrade.
     """
 
     if not _declares_write_tools(tools):
@@ -213,9 +231,16 @@ def codex_writable_roots(
     dirs, files = _normalize_write_scope(allowed_write_dir)
     if not dirs and not files:
         return []
+    base = str(base_dir) if base_dir else os.getcwd()
+
+    def _absolute(candidate: str) -> str:
+        if os.path.isabs(candidate):
+            return candidate
+        return os.path.join(base, candidate)
+
     roots: list[str] = []
-    candidates = list(dirs) + [
-        os.path.dirname(str(file)) or "." for file in files
+    candidates = [_absolute(str(dir_)) for dir_ in dirs] + [
+        os.path.dirname(_absolute(str(file))) for file in files
     ]
     for candidate in candidates:
         if not candidate:
@@ -743,13 +768,27 @@ class CodexExecTransport:
     and leaves ``returncode`` set, so exit confirmation
     (``_provider_attempt_exit_confirmed``) works unchanged.
 
-    ``allowed_write_dir`` (P7-1, 2026-10-04) carries the dispatch-declared
-    write scope into the argv: with a provable Edit/Write tool declaration
-    AND a resolvable scope the sandbox becomes ``-s workspace-write`` with
-    the scope's directory roots in ``sandbox_workspace_write.writable_roots``
-    (verified CLI syntax, real-smoke proven). Anything else keeps the exact
-    historical ``-s read-only`` argv. File-level precision remains the
-    ``audit_worker_boundary`` contract, which is not relaxed.
+    ``allowed_write_dir`` (P7-1, 2026-10-04; hardened by review block B1)
+    carries the dispatch-declared write scope into the sandbox surface:
+
+    - argv: with a provable Edit/Write tool declaration AND a resolvable
+      scope the sandbox becomes ``-s workspace-write`` with the scope's
+      directory roots in ``sandbox_workspace_write.writable_roots``
+      (verified CLI syntax, real-smoke proven). Anything else keeps the
+      exact historical ``-s read-only`` argv.
+    - cwd: for a write-role dispatch the process cwd is pinned to the
+      FIRST resolved write root (the lease workspace). Codex's
+      workspace-write sandbox makes the ENTIRE cwd tree writable and
+      writable_roots only ADD to it (B1, live-CLI-proven), so a repo-root
+      cwd would have exposed the whole service checkout — including
+      web/core contracts, ``.git``, and the gitignored pipeline state —
+      to untrusted Worker output while the claude-path PreToolUse write
+      guard does not apply to codex. Pinning the cwd collapses the
+      writable surface to the declared scope union plus the codex-built-in
+      system temp tree; the repository tree is NOT writable. Reads stay
+      full-disk (smoke-proven), and codex still discovers the repository
+      AGENTS.md by ancestor walk from the deep cwd (smoke-proven with a
+      git-root instruction file honoured from a nested working directory).
     """
 
     def __init__(self, full_prompt, options, allowed_write_dir=None):
@@ -758,6 +797,23 @@ class CodexExecTransport:
         self._allowed_write_dir = allowed_write_dir
         self._process = None
         self._argv = None
+
+    def _resolved_write_roots(self) -> list:
+        return codex_writable_roots(
+            self._allowed_write_dir,
+            tools=getattr(self._options, "tools", None),
+            require_resolvable=True,
+            base_dir=_project_root(self._options),
+        )
+
+    def _workspace_cwd(self) -> str:
+        """Process cwd: the PRIMARY write root for write-role dispatches.
+
+        Read-only dispatches keep the historical project root (nothing is
+        writable anyway and the repo-root cwd preserves codex's AGENTS.md
+        discovery exactly as before)."""
+        roots = self._resolved_write_roots()
+        return roots[0] if roots else _project_root(self._options)
 
     def build_argv(self) -> list:
         """Codex exec argv; prompt arrives on stdin (``-``)."""
@@ -768,11 +824,7 @@ class CodexExecTransport:
             "--json",
             "--ephemeral",
         ]
-        write_roots = codex_writable_roots(
-            self._allowed_write_dir,
-            tools=getattr(self._options, "tools", None),
-            require_resolvable=True,
-        )
+        write_roots = self._resolved_write_roots()
         if write_roots:
             argv += ["-s", "workspace-write"]
             # The value side must parse as TOML; json.dumps of a list of
@@ -813,7 +865,12 @@ class CodexExecTransport:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=_project_root(self._options),
+            # B1: the workspace-write sandbox exposes the ENTIRE cwd tree,
+            # so a write-role dispatch pins the cwd to its primary declared
+            # write root (the lease workspace) — the repository tree stays
+            # outside the sandbox write surface. Read-only dispatches keep
+            # the historical project root.
+            cwd=self._workspace_cwd(),
             # Raised StreamReader limit (see _STREAM_LINE_LIMIT): the 64 KiB
             # asyncio default voids the whole stream when one codex JSONL
             # event line (embedded diff / command output) exceeds it.

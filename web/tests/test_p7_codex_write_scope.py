@@ -308,7 +308,7 @@ def test_run_claude_query_invokes_codex_write_scope_preflight(
     monkeypatch.setattr(
         llm_query,
         "_assert_codex_write_scope_ready",
-        lambda role_name, tools, allowed_write_dir: calls.append(
+        lambda role_name, tools, allowed_write_dir, **kwargs: calls.append(
             (role_name, list(tools or []), allowed_write_dir)
         ),
     )
@@ -378,6 +378,143 @@ SANDBOX_REJECTION_IO = """[509#0] The edit target is enforced read-only by the e
 """
 
 
+# ---------------------------------------------------------------------------
+# B1 (review block, 2026-10-04): the sandbox writable surface must converge to
+# the declared write scope — spawn cwd pinned to the primary write root
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_cwd_converges_to_primary_write_root(monkeypatch, tmp_path):
+    """Review-confirmed defect: codex workspace-write makes the ENTIRE cwd
+    tree writable (writable_roots is ADDITIVE, not a replacement — proven by
+    the reviewer's live CLI run writing inside cwd but outside the declared
+    roots). With cwd at the repository root the whole service checkout
+    (web/core contracts, .git, gitignored pipeline state) entered the
+    sandbox write surface while the claude-path PreToolUse write guard does
+    not apply to codex. The fix: for a write-role dispatch the spawn cwd is
+    the FIRST resolved write root (the lease workspace), so the writable
+    surface collapses to the declared scope union plus the codex-built-in
+    system temp tree."""
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: "/opt/codex/bin/codex")
+
+    lease = tmp_path / "lease"
+    second_root = tmp_path / "second_root"
+    lease.mkdir()
+    second_root.mkdir()
+    captured = {}
+
+    class _Proc:
+        pid = 424245
+        returncode = None
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["cwd"] = kwargs.get("cwd")
+        return _Proc()
+
+    monkeypatch.setattr(lcx.asyncio, "create_subprocess_exec", fake_exec)
+
+    transport = lcx.CodexExecTransport(
+        "p",
+        ClaudeAgentOptions(tools=["Bash", "Read", "Edit"]),
+        allowed_write_dir={"dirs": [lease, second_root]},
+    )
+    asyncio.run(transport.spawn())
+    assert captured["cwd"] == _real(lease), (
+        "spawn cwd must be the primary declared write root, not the repo "
+        "working tree (B1: cwd tree is sandbox-writable under "
+        "workspace-write)"
+    )
+    # Both declared roots stay in the writable_roots override (the secondary
+    # root is outside the cwd workspace and needs the explicit grant).
+    value = [
+        a.partition("=")[2]
+        for a in captured["argv"]
+        if a.startswith("sandbox_workspace_write.writable_roots=")
+    ][0]
+    assert json.loads(value) == [_real(lease), _real(second_root)]
+
+
+def test_spawn_cwd_stays_project_root_without_write_scope(monkeypatch, tmp_path):
+    """Guard: read-only dispatches keep the historical project-root cwd —
+    read-only never writes anywhere, and the repo-root cwd preserves codex's
+    AGENTS.md discovery exactly as before B1."""
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: "/opt/codex/bin/codex")
+
+    captured = {}
+
+    class _Proc:
+        pid = 424246
+        returncode = None
+
+    async def fake_exec(*argv, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return _Proc()
+
+    monkeypatch.setattr(lcx.asyncio, "create_subprocess_exec", fake_exec)
+
+    options = ClaudeAgentOptions(tools=["Bash", "Read", "Edit"])
+    transport = lcx.CodexExecTransport("p", options)
+    asyncio.run(transport.spawn())
+    assert captured["cwd"] == lcx._project_root(options)
+
+    read_only_role = lcx.CodexExecTransport(
+        "p", options, allowed_write_dir={"dirs": [tmp_path]}
+    )
+    # tools without Edit/Write: read-only argv AND project-root cwd
+    read_only_role = lcx.CodexExecTransport(
+        "p", ClaudeAgentOptions(tools=["Bash", "Read"]), allowed_write_dir={"dirs": [tmp_path]}
+    )
+    asyncio.run(read_only_role.spawn())
+    assert captured["cwd"] == lcx._project_root(read_only_role._options)
+
+
+def test_writable_roots_relative_paths_resolve_against_base_dir(tmp_path):
+    """O2 (review note): a bare relative file name must resolve against the
+    dispatch base dir, never widen to the process cwd via the former
+    ``dirname(...) or "."`` fallback."""
+    roots = lcx.codex_writable_roots(
+        {"files": ["policy.py"]}, tools=["Edit"], base_dir=str(tmp_path)
+    )
+    assert roots == [_real(tmp_path)]
+    # Relative directory form resolves against base_dir as well.
+    (tmp_path / "nested").mkdir()
+    assert lcx.codex_writable_roots(
+        {"dirs": ["nested"]}, tools=["Edit"], base_dir=str(tmp_path)
+    ) == [_real(tmp_path / "nested")]
+
+
+def test_worker_rejection_scan_reads_only_this_attempt_increment(tmp_path):
+    """O1 (review note): the io log accumulates across attempts; the scan
+    must read only the increment written since this attempt began, so a
+    PREVIOUS attempt's rejection text cannot misclassify a genuinely lazy
+    follow-up attempt as infrastructure."""
+    from agent_workers import _worker_sandbox_rejection_hits
+
+    io = tmp_path / "worker_1_io.txt"
+    io.write_text(SANDBOX_REJECTION_IO, encoding="utf-8")
+    stale_size = io.stat().st_size
+
+    # Nothing appended during this attempt: the stale prefix must NOT match.
+    assert (
+        _worker_sandbox_rejection_hits(
+            "I read the file and decided not to change it.", io, since_offset=stale_size
+        )
+        == []
+    )
+    # Fresh rejection text appended during this attempt DOES match.
+    with io.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "[509#1] apply_patch failed: writing is blocked by read-only sandbox\n"
+        )
+    hits = _worker_sandbox_rejection_hits("BLOCKED", io, since_offset=stale_size)
+    assert hits == ["read-only sandbox"]
+    # Default offset 0 keeps the whole-tail behaviour for other callers.
+    assert _worker_sandbox_rejection_hits("", io)
+
+
 def _lease_tree(tmp_path):
     lease = tmp_path / "lease_workspace"
     lease.mkdir()
@@ -398,15 +535,24 @@ def _patched_query(calls, output):
     return patch("agent_workers.run_claude_query", side_effect=fake_query)
 
 
-def test_zero_change_worker_with_sandbox_rejection_is_infrastructure(
-    tmp_path,
-):
-    """The exact v509 shape: model produced the full patch, the sandbox
-    rejected every write, the lease bytes did not move. This is
-    llm_infrastructure (WorkerInfrastructureError), NOT zero_changes — and
-    the retry loop must not burn the remaining model attempts."""
-    from agent_workers import WorkerInfrastructureError, _run_single_worker
+def _patched_query_writing_io(calls, output, io_file, io_text):
+    """Fake provider call that appends tool-error text to the role io log
+    DURING the attempt — the real timing (_process_stream logs rejected
+    tool results while the stream runs, i.e. after the attempt's offset was
+    recorded, before the zero-change check reads it back)."""
 
+    from unittest.mock import patch
+
+    async def fake_query(prompt, *args, **kwargs):
+        calls.append(prompt)
+        with open(io_file, "a", encoding="utf-8") as handle:
+            handle.write(io_text)
+        return output, 0.0, {}
+
+    return patch("agent_workers.run_claude_query", side_effect=fake_query)
+
+
+def _null_ui():
     class _UI:
         def log_history(self, *_a, **_k):
             return None
@@ -420,19 +566,35 @@ def test_zero_change_worker_with_sandbox_rejection_is_infrastructure(
         def clear_io(self):
             return None
 
-    lease = _lease_tree(tmp_path)
-    logs_dir = tmp_path / "logs"
-    logs_dir.mkdir()
-    (logs_dir / "worker_1_io.txt").write_text(SANDBOX_REJECTION_IO, encoding="utf-8")
+    return _UI()
 
-    calls = []
-    task = {
+
+def _worker_task():
+    return {
         "worker_id": 1,
         "role": "Opponent Modeler",
         "target_files": ["policy.py"],
         "worker_prompt": "Edit the opponent-model term in policy.py.",
         "task_kind": "feature_work",
     }
+
+
+def test_zero_change_worker_with_sandbox_rejection_is_infrastructure(
+    tmp_path,
+):
+    """The exact v509 shape: model produced the full patch, the sandbox
+    rejected every write, the lease bytes did not move. This is
+    llm_infrastructure (WorkerInfrastructureError), NOT zero_changes — and
+    the retry loop must not burn the remaining model attempts."""
+    from agent_workers import WorkerInfrastructureError, _run_single_worker
+
+    lease = _lease_tree(tmp_path)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    io_file = logs_dir / "worker_1_io.txt"
+    io_file.write_text("[509#0] attempt starts\n", encoding="utf-8")
+
+    calls = []
     blocked_output = (
         "**BLOCKED**\n- `apply_patch` attempts failed (`read-only sandbox`)."
         "\n- changed_files: none"
@@ -445,20 +607,20 @@ def test_zero_change_worker_with_sandbox_rejection_is_infrastructure(
         events.append((event_type, severity, {**(data or {}), **extra}))
 
     with (
-        _patched_query(calls, blocked_output),
+        _patched_query_writing_io(calls, blocked_output, io_file, SANDBOX_REJECTION_IO),
         patch("agent_workers.get_logs_dir", return_value=logs_dir),
         patch.object(system_log, "log_system_event", _capture),
     ):
         with pytest.raises(WorkerInfrastructureError) as excinfo:
             asyncio.run(
                 _run_single_worker(
-                    task,
+                    _worker_task(),
                     0,
                     "worker_prompt.md",
                     lease,
                     509,
                     [],
-                    _UI(),
+                    _null_ui(),
                     "",
                     source_v=508,
                 )
@@ -471,6 +633,53 @@ def test_zero_change_worker_with_sandbox_rejection_is_infrastructure(
         category.startswith("pipeline.worker_writes_sandbox_rejected")
         for category, _severity, _fields in events
     )
+
+
+def test_stale_rejection_text_from_earlier_io_does_not_reclassify_laziness(
+    tmp_path,
+):
+    """O1 end-to-end: rejection text that predates THIS attempt (written
+    before the attempt began, e.g. by an earlier different failure path)
+    must not flip a genuinely lazy zero-change attempt into
+    llm_infrastructure."""
+    from agent_workers import _run_single_worker
+
+    lease = _lease_tree(tmp_path)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    # Stale prefix: an old rejection transcript left in the io log.
+    (logs_dir / "worker_1_io.txt").write_text(SANDBOX_REJECTION_IO, encoding="utf-8")
+
+    calls = []
+    recorded = []
+    from unittest.mock import patch
+
+    with (
+        _patched_query(calls, "I read the file and decided not to change it."),
+        patch("agent_workers.get_logs_dir", return_value=logs_dir),
+        patch(
+            "agent_workers._record_worker_failure",
+            side_effect=lambda *args, **kwargs: recorded.append((args, kwargs)),
+        ),
+    ):
+        result = asyncio.run(
+            _run_single_worker(
+                _worker_task(),
+                0,
+                "worker_prompt.md",
+                lease,
+                509,
+                [],
+                _null_ui(),
+                "",
+                source_v=508,
+            )
+        )
+    assert result is False
+    assert recorded[0][1].get("failure_type") == "zero_changes"
+    from evolution_infra import MAX_WORKER_RETRIES
+
+    assert len(calls) == MAX_WORKER_RETRIES
 
 
 def test_zero_change_worker_without_signatures_keeps_retry_contract(tmp_path):

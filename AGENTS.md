@@ -347,31 +347,46 @@ operator-owned in `~/.codex/config.toml` (official GLM Coding Plan page
 `https://open.bigmodel.cn/api/v1`, `wire_api="responses"`,
 `experimental_bearer_token`); `POK_LLM_EFFORT` maps onto codex
 `model_reasoning_effort` (official档位 `low`/`high`/`max`). **Write scopes
-(P7-1, 2026-10-04):** a dispatch that declares an Edit/Write tool AND a
-resolvable `allowed_write_dir` runs `codex exec -s workspace-write` with the
-scope's directory roots in
-`-c sandbox_workspace_write.writable_roots=[...]` (CLI syntax verified by a
-real smoke on the cloud VM: the declared root is writable, a control
-directory outside it — and outside the workspace/temp — stays
-`Read-only file system`); every other dispatch keeps the exact historical
-`-s read-only` argv. The dispatch-declared write scope flows
+(P7-1, 2026-10-04; hardened by review block B1):** a dispatch that declares
+an Edit/Write tool AND a resolvable `allowed_write_dir` runs
+`codex exec -s workspace-write` with the scope's directory roots in
+`-c sandbox_workspace_write.writable_roots=[...]` AND the codex process cwd
+pinned to the scope's PRIMARY root (the lease workspace). The cwd pin is
+load-bearing: codex workspace-write makes the ENTIRE cwd tree writable and
+`writable_roots` only ADDS to it (live-CLI-proven: one command wrote both a
+writable_roots member and a cwd-inside/roots-outside path), so a repo-root
+cwd would have exposed the whole service checkout — `web/core` contracts,
+`.git`, and the gitignored pipeline state — to untrusted Worker output
+while the claude-path PreToolUse write guard does not apply to codex.
+With the pin, the sandbox writable surface is exactly the declared write
+scope's directory union plus the codex-built-in system temp tree; the
+repository tree is NOT writable (smoke-proven: an in-repo probe path is
+rejected `Read-only file system`). Reads stay full-disk, and codex still
+discovers the repository AGENTS.md by ancestor walk from the deep cwd
+(smoke-proven: a git-root instruction file was honoured with cwd four
+levels below it, and a control run without the file showed no effect).
+Every other dispatch keeps the exact historical `-s read-only` argv and
+project-root cwd. The dispatch-declared write scope flows
 `run_claude_query → _run_stream_with_signature_retry(allowed_write_dir=…)
 → llm_query_retry → new_codex_exec_transport`, and
 `_assert_codex_write_scope_ready` (llm_query) fail-fasts — with a
 `pipeline.codex_write_scope_unresolvable` system event — before any
 provider stream when a write-capable role's declared scope resolves to zero
 existing directory roots, so a broken lease can never silently degrade to
-the read-only sandbox that froze v494/v500/v509. Codex grants writes at
-DIRECTORY granularity (workspace + writable_roots + system temp); the
-file-level boundary stays enforced by the existing `audit_worker_boundary`
-contract, which is not relaxed. The Worker zero-change detector
+the read-only sandbox that froze v494/v500/v509. Within-scope file-level
+precision stays with the lease-tree `audit_worker_boundary` audit — which
+is now also the entire writable surface, so the audit and the sandbox
+agree. The Worker zero-change detector
 (`agent_workers`) likewise classifies an unchanged lease whose role output /
-io log carries sandbox write-rejection signatures
+io-log increment for that attempt carries sandbox write-rejection signatures
 (`read-only sandbox` / `Errno 30` / `read-only file system` /
 `rejected by user approval settings`, shared scanner in `worker_boundary`)
 as `llm_infrastructure` (WorkerInfrastructureError, no model-retry burn)
-instead of blaming the model; a crossover accepted as a byte-identical
-parent copy emits `pipeline.crossover_degraded_to_parent_copy` with those
+instead of blaming the model — the scan reads only the bytes appended since
+the attempt began, so a stale transcript from an earlier attempt cannot
+reclassify a later genuinely-lazy attempt; a crossover accepted as a
+byte-identical parent copy emits
+`pipeline.crossover_degraded_to_parent_copy` with those
 markers instead of passing silently. `POK_CODEX_BIN` / `POK_CODEX_MODEL`
 are optional per-dispatch overrides; the key is committed unset in
 `deploy/tencent-cloud/env.runtime` (switching is an orchestration decision,
