@@ -130,6 +130,16 @@ async def lifespan(app: FastAPI):
 
     from evolution_infra import find_current_v
     configure_logging(broadcaster=broadcaster)
+    # Transport preflight: with POK_LLM_TRANSPORT=codex every LLM dispatch
+    # spawns the codex binary, which the committed service PATH does not
+    # necessarily include (~/.local/bin is absent).  Fail startup HERE with
+    # operator guidance instead of burning whole generations on per-role
+    # spawn errors (2026-10-03: v490/v491 abandoned and v492's master slots
+    # lost to a bare FileNotFoundError 'codex').  No-op on the default
+    # claude transport.
+    from llm_query_codex import assert_codex_transport_ready
+
+    assert_codex_transport_ready()
     app_state.bootstrap(find_current_v())
 
     config = app_state.get_config()
