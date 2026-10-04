@@ -367,15 +367,21 @@ def test_report_is_capped_but_total_counts_every_rewrite(
 # ---------------------------------------------------------------------------
 # The audited plan carries the proposal packet (proposal_ensemble) and its
 # derived proposal_binding, whose snapshot_evidence lists contain structured
-# binding objects with int leaves.  The audit flattens them to ``games: 30``
-# lines and attributes them to the pair via cross-object windows.  Those
-# structures are SEALED at acceptance (proposal_id / scout
-# role_result_digest are computed over exactly these bytes), so the
-# normalizer attributes them like the audit but never rewrites them — a
-# post-acceptance rewrite deterministically failed the v488 quality gate
-# with proposal_identity_mismatch / proposal_invocation_result_mismatch for
-# every proposal, and the re-signed digest can never be recomputed.  Stale
-# sealed citations stay byte-exact and the audit keeps rejecting them.
+# binding objects with int leaves.  Those structures are SEALED at acceptance
+# (proposal_id / scout role_result_digest are computed over exactly these
+# bytes), so the normalizer never rewrites them — a post-acceptance rewrite
+# deterministically failed the v488 quality gate with
+# proposal_identity_mismatch / proposal_invocation_result_mismatch for every
+# proposal, and the re-signed digest can never be recomputed.
+#
+# 2026-10-04 audit_scope: the audit no longer flattens the sealed structures
+# into its citable-text view at all.  Both renderers (_flatten_text /
+# _flatten_marked) skip the whole proposal_ensemble / proposal_binding
+# subtree, so the window/alias attribution that used to bind a sealed
+# ``games: 259`` leaf onto a pair row (the false v485/v486/v489 rejections)
+# can no longer fire: the audit grades only the plan's self-authored text,
+# and the sealed statistical authority is reconciled byte-level against the
+# frozen snapshot by validate_sealed_proposal_evidence_precision.
 
 def _v486_style_fixture(monkeypatch, tmp_path):
     """Frozen snapshot shaped like the real v485/v486 rejection: the pair row
@@ -411,10 +417,12 @@ def _sorted_binding(raw):
 def _stale_h2h_binding(key):
     """Binding-shaped object exactly as the packet carries it after the JSON
     round-trip: alphabetically ordered keys (a_wins first, reference second
-    to last), stale counts.  With this order the binding's own ``games``
-    leaf is rendered BEFORE its ``reference`` alias line, so the pair window
-    starting at the alias never sees it — the audit only ever flags what
-    follows the alias."""
+    to last), stale counts, FAKE digests.  Under the pre-audit_scope shared
+    flatten the binding's own ``games`` leaf rendered BEFORE its
+    ``reference`` alias line, so the pair window starting at the alias never
+    saw it — the audit only ever flagged what followed the alias.  Under
+    audit_scope the sealed subtree never renders at all; only the precision
+    validator grades these bytes."""
     return _sorted_binding({
         "a_wins": 11,
         "b_wins": 19,
@@ -440,12 +448,15 @@ def _stale_h2h_binding(key):
 
 def _stale_selection_binding():
     """Real serialized shape from the v486 packet: alphabetically ordered
-    keys with ``games`` FIRST, so the flattened ``games: 259`` line lands
-    inside the preceding h2h binding's pair window (the audit attributes it
-    to the pair row — the exact v485/v486 rejection).  The projection is a
-    long truncated container dump like the real binding, so after the
-    pointer's reference line it swallows the pointer's own aggregate window
-    and nothing beyond the binding is attributed."""
+    keys with ``games`` FIRST, so the pre-audit_scope flattened ``games:
+    259`` line landed inside the preceding h2h binding's pair window (the
+    audit attributed it to the pair row — the exact false v485/v486/v489
+    rejection).  The projection is a long truncated container dump like the
+    real binding, so after the pointer's reference line it swallowed the
+    pointer's own aggregate window and nothing beyond the binding was
+    attributed.  The digests are deliberately fake: this binding is NOT
+    system-derived, so the sealed-evidence precision validator must flag
+    it."""
     projection = json.dumps(
         [
             {"confidence": "confirmed_weakness", "games": 220, "pad": "x" * 40}
@@ -467,16 +478,20 @@ def _stale_selection_binding():
 def test_structured_sealed_binding_objects_are_never_rewritten(
     monkeypatch, tmp_path
 ):
-    """Structured int leaves inside sealed snapshot_evidence stay byte-exact.
+    """Sealed snapshot_evidence leaves stay byte-exact and OUT of the audit.
 
-    The real v486 packet bindings render (alphabetical JSON order) so the
-    selection binding's ``games: 259`` line follows the h2h binding's
-    ``reference`` alias line: the pair window reaches it before its own
-    ``snapshot:`` reference truncates the window, and the audit attributes
-    it to the pair row.  The normalizer attributes it the same way but must
-    NOT rewrite it: these bytes back the sealed proposal_id / scout
-    role_result_digest (v488 quality-gate regression).  The audit outcome is
-    byte-identical with and without normalization.
+    Pre-audit_scope, the real v486 packet bindings rendered (alphabetical
+    JSON order) so the selection binding's ``games: 259`` line followed the
+    h2h binding's ``reference`` alias line: the pair window reached it
+    before its own ``snapshot:`` reference truncated the window, and the
+    audit attributed it to the pair row (a false rejection — every sealed
+    number was system-derived and snapshot-exact).  The normalizer still
+    never rewrites them (v488), and the shared citable-text view now
+    excludes the sealed subtrees entirely, so the audit outcome is
+    byte-identical with and without normalization: no prose-citation
+    rejection.  The stale/fake-digest sealed bindings are instead flagged by
+    validate_sealed_proposal_evidence_precision (fail-closed moved to the
+    byte-level reconciliation, not away).
     """
     import copy
 
@@ -503,21 +518,22 @@ def test_structured_sealed_binding_objects_are_never_rewritten(
     pre_bytes = json.dumps(plan, sort_keys=True, separators=(",", ":"))
     marked_text = evidence_snapshot._flatten_marked(plan, [], 0)[0]
     assert marked_text == evidence_snapshot._flatten_text(plan)
+    # The shared citable-text view renders the sealed subtrees EMPTY: no
+    # binding leaves, no aliases from sealed reference lines.
+    assert "259" not in marked_text
+    assert "snapshot:selection_snapshot.json#/rows" not in marked_text
+    assert stale_h2h["node_sha256"] not in marked_text
 
     pre_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
         plan, 24
     )
-    joined = "; ".join(pre_errors)
-    # One error per packet copy, exactly like the real v486 rejection: the
-    # pair window flags the selection binding's games leaf, not the h2h
-    # binding's own counts (those render before their alias line).
-    assert joined.count("cited games=259") == 2
-    assert "snapshot has games=28" in joined
+    # The audit no longer rejects the plan over sealed bytes: nothing in the
+    # plan's self-authored text cites a wrong number.
+    assert pre_errors == []
 
     report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
 
-    # Nothing was rewritten: the sealed structures stay byte-identical and
-    # the audit keeps rejecting the stale citations (fail-closed).
+    # Nothing was rewritten: the sealed structures stay byte-identical.
     assert json.dumps(plan, sort_keys=True, separators=(",", ":")) == pre_bytes
     assert report["total"] == 0
     assert report["normalizations"] == []
@@ -526,9 +542,6 @@ def test_structured_sealed_binding_objects_are_never_rewritten(
         plan["proposal_ensemble"]["proposals"][0]["snapshot_evidence"],
     ):
         h2h_binding, selection_binding = binding_list
-        # The audit's pair-window attribution still REACHES the selection
-        # binding's games leaf (serialized key order puts ``games`` before
-        # its own snapshot: reference) — it is simply never rewritten.
         assert selection_binding["games"] == 259
         assert h2h_binding["games"] == 30
         assert h2h_binding["a_wins"] == 11
@@ -540,6 +553,15 @@ def test_structured_sealed_binding_objects_are_never_rewritten(
     assert evidence_snapshot.validate_h2h_citations_against_snapshot(
         plan, 24
     ) == pre_errors
+    # Fail-closed moved to the byte-level sealed-evidence reconciliation:
+    # these hand-shaped bindings (fake digests, stale counts) ARE flagged.
+    precision = evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 24
+    )
+    joined_precision = "; ".join(precision)
+    assert "sealed_evidence_node_digest_mismatch" in joined_precision
+    assert f"snapshot:head_to_head.json#/{key}" in joined_precision
+    assert "snapshot:selection_snapshot.json#/rows" in joined_precision
 
 
 def test_mixed_prose_window_follows_pair_attribution(monkeypatch, tmp_path):
@@ -608,8 +630,9 @@ def test_sealed_proposal_structures_are_never_rewritten(monkeypatch, tmp_path):
     proposals, six gate errors, quality gate dead after four ``games``
     leaves were rewritten).  ``role_result_digest`` seals the scout output,
     so a rewritten packet can never be re-signed; the only safe behavior is
-    to leave the sealed bytes untouched and let the audit reject stale
-    citation numbers inside them.
+    to leave the sealed bytes byte-exact.  The audit no longer grades those
+    bytes as prose citations (exclusion view); their statistical authority
+    is reconciled byte-level by the sealed-evidence precision validator.
     """
     import copy
 
@@ -674,8 +697,8 @@ def test_sealed_proposal_structures_are_never_rewritten(monkeypatch, tmp_path):
         _proposal_identity(item)
         for item in plan["proposal_ensemble"]["ordered_proposals"]
     ] == pre_ids
-    # The stale citation numbers inside the sealed structures are left for
-    # the audit to reject — including the shallow-shared binding copy.
+    # The stale citation numbers inside the sealed structures stay put —
+    # including the shallow-shared binding copy.
     assert plan["proposal_binding"]["snapshot_evidence"][1]["games"] == 259
     assert all(
         item["snapshot_evidence"][1]["games"] == 259
@@ -688,10 +711,18 @@ def test_sealed_proposal_structures_are_never_rewritten(monkeypatch, tmp_path):
             ("proposal_ensemble.", "proposal_binding")
         )
     ]
+    # The audit no longer rejects the plan over the sealed bytes: only the
+    # plan's own text is graded, and that text was normalized.
     post_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
         plan, 24
     )
-    assert "; ".join(post_errors).count("cited games=259") == 3
+    assert post_errors == []
+    # The sealed bytes themselves are still fail-closed: the fake-digest
+    # stale bindings are flagged by the byte-level precision validator.
+    precision = evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 24
+    )
+    assert "; ".join(precision).count("sealed_evidence_node_digest_mismatch") >= 3
 
     # The seam stays live OUTSIDE the sealed structures: the prose citation
     # in the very same plan is still normalized to the snapshot row values.
@@ -701,13 +732,17 @@ def test_sealed_proposal_structures_are_never_rewritten(monkeypatch, tmp_path):
     )
 
 
-def test_five_repeated_stale_objects_are_all_left_for_the_audit(
+def test_five_repeated_stale_objects_are_all_left_byte_exact(
     monkeypatch, tmp_path
 ):
     """The same stale binding pair repeated 5 times (packet proposals plus
-    the derived proposal_binding) is left byte-exact at every occurrence —
-    the audit rejects each one (v488: the ensemble/binding bytes back the
-    sealed proposal identities the quality gate re-derives)."""
+    the derived proposal_binding) is left byte-exact at every occurrence
+    (v488: the ensemble/binding bytes back the sealed proposal identities
+    the quality gate re-derives).  The prose-citation audit passes (sealed
+    subtrees are excluded from its citable-text view); the byte-level
+    sealed-evidence precision validator still flags the underlying defect
+    once per distinct reference (deduplicated — five copies of the same
+    wrong binding are one evidence defect)."""
     key = _v486_style_fixture(monkeypatch, tmp_path)
     proposals = [
         {
@@ -732,7 +767,7 @@ def test_five_repeated_stale_objects_are_all_left_for_the_audit(
     pre_errors = evidence_snapshot.validate_h2h_citations_against_snapshot(
         plan, 24
     )
-    assert "; ".join(pre_errors).count("cited games=259") == 5
+    assert pre_errors == []
     pre_bytes = json.dumps(plan, sort_keys=True, separators=(",", ":"))
 
     report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
@@ -750,4 +785,291 @@ def test_five_repeated_stale_objects_are_all_left_for_the_audit(
         plan, 24
     )
     assert post_errors == pre_errors
-    assert "; ".join(post_errors).count("cited games=259") == 5
+    precision = evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 24
+    )
+    joined = "; ".join(precision)
+    # Five copies, two distinct references: each wrong binding is flagged
+    # once per distinct reference+defect, not five noisy duplicates.
+    assert joined.count("snapshot:head_to_head.json#/" + key) >= 1
+    assert joined.count("snapshot:selection_snapshot.json#/rows") >= 1
+    assert "sealed_evidence" in joined
+
+
+# ---------------------------------------------------------------------------
+# Sealed-evidence precision (audit_scope, 2026-10-04)
+# ---------------------------------------------------------------------------
+# The sealed statistical authority is the system re-derived
+# ``snapshot_evidence`` binding the scout acceptance point creates
+# (``_snapshot_reference_evidence_binding`` reads the exact frozen snapshot
+# directory the audit bundle loads).  These tests pin
+# ``validate_sealed_proposal_evidence_precision``: bindings produced by the
+# real producer against the real frozen snapshot reconcile byte-level
+# (pointer resolution + node_sha256 + typed scalars + projection) and the
+# audit passes on the exclusion view; a tampered/re-sealed binding fails
+# BOTH the precision validator and the quality-gate identity re-derivation.
+
+def _snapshot_dir_for(monkeypatch_unused, next_v: int = 24):
+    identity = evidence_snapshot.load_generation_snapshot_identity(next_v)
+    assert identity.get("available"), identity
+    from pathlib import Path
+
+    return Path(identity["manifest_path"]).parent
+
+
+def _system_derived_pair(key: str, snapshot_dir):
+    from agent_master_validation import _snapshot_reference_evidence_binding
+
+    h2h = _snapshot_reference_evidence_binding(
+        f"snapshot:head_to_head.json#/{key}", snapshot_dir
+    )
+    aggregate = _snapshot_reference_evidence_binding(
+        "snapshot:bot_stats.json#/national_cloud_v1", snapshot_dir
+    )
+    assert h2h is not None and aggregate is not None
+    assert h2h["games"] == 28 and aggregate["games"] == 220
+    return h2h, aggregate
+
+
+def test_sealed_precision_accepts_system_derived_bindings(
+    monkeypatch, tmp_path
+):
+    """Bindings the real producer derived from the real frozen snapshot pass
+    every audit leg and the quality-gate identity re-derivation."""
+    import copy
+
+    from agent_master_validation import _proposal_identity
+    from bot_artifact import canonical_digest
+
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    snapshot_dir = _snapshot_dir_for(None)
+    h2h_binding, aggregate_binding = _system_derived_pair(key, snapshot_dir)
+
+    proposal = {
+        "schema_version": "master-proposal-v4",
+        "change_symbol": "policy.py:_choose_intent_mechanism",
+        "snapshot_evidence": [
+            copy.deepcopy(h2h_binding),
+            copy.deepcopy(aggregate_binding),
+        ],
+    }
+    proposal["proposal_id"] = _proposal_identity(proposal)
+    plan = {
+        # No textual aggregate pointer in the plan's own text: the aggregate
+        # corroboration leg must be satisfied by the STRUCTURED citation
+        # reference inside the sealed binding (has_aggregate union).
+        "analysis": (
+            f"{key}: games=28, a_wins=11, b_wins=17, draws=0, "
+            "win_rate=0.3929 (confirmed weakness)."
+        ),
+        "selected_proposal_id": proposal["proposal_id"],
+        "proposal_binding": {
+            "selected_proposal_id": proposal["proposal_id"],
+            "snapshot_evidence": [
+                copy.deepcopy(h2h_binding),
+                copy.deepcopy(aggregate_binding),
+            ],
+        },
+        "proposal_ensemble": {"ordered_proposals": [proposal]},
+    }
+
+    # One shared citable-text view: marked render == plain render, sealed
+    # subtree empty, prose intact.
+    marked_text = evidence_snapshot._flatten_marked(plan, [], 0)[0]
+    assert marked_text == evidence_snapshot._flatten_text(plan)
+    assert "snapshot:bot_stats.json" not in marked_text
+    assert h2h_binding["node_sha256"] not in marked_text
+
+    # Audit legs: prose accuracy, statistical floor (aggregate leg via the
+    # structured citation reference), sealed byte-level precision.
+    assert evidence_snapshot.validate_h2h_citations_against_snapshot(
+        plan, 24
+    ) == []
+    assert evidence_snapshot.statistical_evidence_floor_errors(plan, 24) == []
+    assert evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 24
+    ) == []
+
+    # Normalization is a no-op on snapshot-exact prose and never touches the
+    # sealed bytes.
+    pre_bytes = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+    report = evidence_snapshot.normalize_master_plan_citations(plan, 24)
+    assert report["total"] == 0
+    assert json.dumps(plan, sort_keys=True, separators=(",", ":")) == pre_bytes
+
+    # Quality-gate identity re-derivation over the live ensemble bytes still
+    # matches (the sealed packet was never rewritten).
+    live = plan["proposal_ensemble"]["ordered_proposals"][0]
+    assert _proposal_identity(live) == live["proposal_id"]
+    assert canonical_digest(live)  # digest is computable from live bytes
+
+
+def test_reseal_rewrite_fails_identity_and_precision(monkeypatch, tmp_path):
+    """The v488 temptation — rewrite a stale sealed number to satisfy the
+    audit — fails both gates: the quality-gate identity re-derivation
+    (proposal_id) and the byte-level sealed-evidence precision check.  The
+    only passing state is byte-exact sealed bytes plus the audit exclusion
+    view."""
+    import copy
+
+    from agent_master_validation import _proposal_identity
+
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    snapshot_dir = _snapshot_dir_for(None)
+    h2h_binding, aggregate_binding = _system_derived_pair(key, snapshot_dir)
+    proposal = {
+        "schema_version": "master-proposal-v4",
+        "change_symbol": "policy.py:_choose_intent_mechanism",
+        "snapshot_evidence": [h2h_binding, aggregate_binding],
+    }
+    proposal["proposal_id"] = _proposal_identity(proposal)
+    sealed_role_digest_target = copy.deepcopy(proposal)
+    plan = {
+        "analysis": f"{key}: games=28, a_wins=11, b_wins=17, draws=0.",
+        "selected_proposal_id": proposal["proposal_id"],
+        "proposal_binding": {
+            "selected_proposal_id": proposal["proposal_id"],
+            "snapshot_evidence": [copy.deepcopy(h2h_binding), aggregate_binding],
+        },
+        "proposal_ensemble": {"ordered_proposals": [proposal]},
+    }
+    assert evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 24
+    ) == []
+
+    # Re-seal: rewrite one sealed games leaf (exactly the v488 normalization
+    # shape — 28 -> 30 inside proposal_ensemble).
+    rewritten = copy.deepcopy(plan)
+    rewritten["proposal_ensemble"]["ordered_proposals"][0][
+        "snapshot_evidence"
+    ][0]["games"] = 30
+
+    # Quality gate identity: the re-derived id no longer matches the sealed
+    # proposal_id, and the scout role_result_digest (canonical digest over
+    # the original proposal bytes) can never be recomputed.
+    live = rewritten["proposal_ensemble"]["ordered_proposals"][0]
+    assert _proposal_identity(live) != live["proposal_id"]
+    from bot_artifact import canonical_digest
+
+    assert canonical_digest(live) != canonical_digest(sealed_role_digest_target)
+    # Precision: the tampered scalar no longer reconciles with the frozen
+    # snapshot row (node games=28).
+    precision = evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        rewritten, 24
+    )
+    joined = "; ".join(precision)
+    assert "sealed_evidence_scalar_mismatch" in joined
+    assert "games" in joined
+    assert f"snapshot:head_to_head.json#/{key}" in joined
+
+
+def test_sealed_precision_flags_projection_and_digest_tampering(
+    monkeypatch, tmp_path
+):
+    """Distinct precision defects surface distinct tokens: a rewritten
+    resolved_projection breaks the projection/digest checks even when the
+    typed scalars still match the snapshot row."""
+    import copy
+
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    snapshot_dir = _snapshot_dir_for(None)
+    h2h_binding, aggregate_binding = _system_derived_pair(key, snapshot_dir)
+    tampered = copy.deepcopy(h2h_binding)
+    tampered["resolved_projection"] = tampered["resolved_projection"].replace(
+        '"games":28', '"games":99'
+    )
+    plan = {
+        "analysis": f"{key}: games=28, a_wins=11, b_wins=17, draws=0.",
+        "proposal_binding": {
+            "selected_proposal_id": "abc",
+            "snapshot_evidence": [tampered, aggregate_binding],
+        },
+    }
+    precision = evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 24
+    )
+    joined = "; ".join(precision)
+    assert "sealed_evidence_projection_mismatch" in joined
+    # The projection digest no longer matches the tampered projection bytes.
+    assert "sealed_evidence_projection_digest_mismatch" in joined
+
+
+def test_sealed_precision_rejects_unresolvable_reference(monkeypatch, tmp_path):
+    """A sealed reference that cannot resolve against the frozen bundle is a
+    precision error (fail-closed), never silently ignored."""
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    plan = {
+        "analysis": f"{key}: games=28, a_wins=11, b_wins=17, draws=0.",
+        "proposal_binding": {
+            "selected_proposal_id": "abc",
+            "snapshot_evidence": [
+                {
+                    "reference": (
+                        "snapshot:head_to_head.json#/"
+                        "national_cloud_v404 vs national_cloud_v405"
+                    ),
+                    "node_sha256": "0" * 64,
+                    "resolved_projection": "{}",
+                    "projection_sha256": "1" * 64,
+                    "projection_truncated": False,
+                }
+            ],
+        },
+    }
+    precision = evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 24
+    )
+    joined = "; ".join(precision)
+    assert "sealed_evidence_node_unresolvable" in joined
+    assert "national_cloud_v404" in joined
+
+
+def test_sealed_precision_without_readable_snapshot_is_inert(monkeypatch):
+    """No frozen snapshot: the precision validator returns no errors and the
+    wide-except posture at the dispatch site is unchanged."""
+    import evolution_infra
+
+    monkeypatch.setattr(
+        evolution_infra, "RESULTS_DIR", evolution_infra.RESULTS_DIR.parent / "nope"
+    )
+    plan = {
+        "proposal_binding": {
+            "snapshot_evidence": [
+                {
+                    "reference": "snapshot:bot_stats.json#/x",
+                    "node_sha256": "0" * 64,
+                    "resolved_projection": "{}",
+                    "projection_sha256": "1" * 64,
+                    "projection_truncated": False,
+                }
+            ]
+        }
+    }
+    assert evidence_snapshot.validate_sealed_proposal_evidence_precision(
+        plan, 424242
+    ) == []
+
+
+def test_aggregate_leg_accepts_structured_citation_references(
+    monkeypatch, tmp_path
+):
+    """Keep-regression for the has_aggregate union: when the plan's own text
+    cites no aggregate pointer but the sealed ``proposal_binding`` bindings
+    carry one (the normal case once sealed subtrees leave the citable-text
+    view), the aggregate corroboration leg is satisfied by the STRUCTURED
+    citation reference — the same ``snapshot:(bot_stats|selection_snapshot)
+    .json`` pointer rule the text regex applies."""
+    import copy
+
+    key = _v486_style_fixture(monkeypatch, tmp_path)
+    snapshot_dir = _snapshot_dir_for(None)
+    h2h_binding, aggregate_binding = _system_derived_pair(key, snapshot_dir)
+    plan = {
+        "analysis": f"{key}: games=28, a_wins=11, b_wins=17, draws=0.",
+        "proposal_binding": {
+            "selected_proposal_id": "abc",
+            "snapshot_evidence": [h2h_binding, aggregate_binding],
+        },
+    }
+    assert "snapshot:bot_stats.json" not in evidence_snapshot._flatten_text(plan)
+    assert evidence_snapshot.statistical_evidence_floor_errors(plan, 24) == []

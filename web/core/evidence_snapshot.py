@@ -1000,11 +1000,29 @@ def h2h_snapshot_contract_text(
     return "\n".join(lines)
 
 
-def _flatten_text(value: Any) -> str:
+def _flatten_text(value: Any, path: str = "") -> str:
+    """Render one plan node to the shared citable-text view.
+
+    Sealed proposal structures (``_SEALED_PROPOSAL_STRUCTURE_KEYS``:
+    ``proposal_ensemble`` / ``proposal_binding``) render EMPTY: the plan
+    audit grades only the plan's self-authored text, and the sealed
+    statistical authority is reconciled byte-level by
+    :func:`validate_sealed_proposal_evidence_precision`.  The rendering is
+    byte-identical to :func:`_flatten_marked` (same skip, same joins).
+    """
     if isinstance(value, dict):
-        return "\n".join(f"{key}: {_flatten_text(item)}" for key, item in value.items())
+        lines: list[str] = []
+        for key, item in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if _sealed_subtree_path(child_path):
+                continue
+            lines.append(f"{key}: {_flatten_text(item, child_path)}")
+        return "\n".join(lines)
     if isinstance(value, (list, tuple, set)):
-        return "\n".join(_flatten_text(item) for item in value)
+        return "\n".join(
+            _flatten_text(item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        )
     return str(value or "")
 
 
@@ -1294,12 +1312,24 @@ def statistical_evidence_floor_errors(
     )
     # Aggregate corroboration: H2H rows cap at ~58 games, so the >=200 tier
     # is necessarily a bot_stats.json / selection_snapshot.json citation —
-    # detect the snapshot reference in the plan text.
+    # detect the snapshot reference in the plan text, OR as a STRUCTURED
+    # citation reference from the validated snapshot bindings (audit_scope:
+    # sealed subtrees no longer render into the citable-text view, and the
+    # plan's aggregate corroboration normally lives exactly there — in the
+    # binding the proposal gate itself grades).  Same pointer rule either
+    # way: only the two aggregate files can carry a >=200 row.
     has_aggregate = bool(
         re.search(
             r"snapshot:(?:bot_stats|selection_snapshot)\.json",
             text,
         )
+    ) or any(
+        re.match(
+            r"snapshot:(?:bot_stats|selection_snapshot)\.json",
+            str(reference),
+            re.IGNORECASE,
+        )
+        for reference, _games in citations
     )
     if has_primary and has_aggregate:
         return []
@@ -1463,6 +1493,224 @@ def validate_h2h_citations_against_snapshot(master_plan: Any, next_v: int | str)
 
 
 # ---------------------------------------------------------------------------
+# Sealed-evidence precision (audit_scope, 2026-10-04)
+# ---------------------------------------------------------------------------
+# The sealed proposal structures left the audit's citable-text view, but
+# their ``snapshot_evidence`` bindings remain the generation's statistical
+# authority.  That authority is the binding the scout acceptance point
+# created with the system producer
+# (``agent_master_validation._snapshot_reference_evidence_binding``) against
+# the exact frozen snapshot directory the audit bundle loads, so it can be
+# re-proved byte-level instead of re-litigated through prose-window
+# attribution: resolve the pointer through the same loader, bridge the node
+# bytes with ``node_sha256``, check the typed statistical scalars with the
+# producer's own rule, and re-derive the projection.  Errors merge into the
+# same ``_h2h_citation_errors`` audit list at the dispatch site.
+
+_SEALED_EVIDENCE_SCALAR_FIELDS = ("games", "a_wins", "b_wins", "draws")
+
+
+def _sealed_snapshot_bindings(master_plan: Any) -> list[tuple[str, dict]]:
+    """Collect ``(sealed_root, binding)`` pairs from the two sealed roots.
+
+    ``proposal_ensemble`` (proposals' own ``snapshot_evidence`` lists) and
+    ``proposal_binding`` (the derived selected-proposal copy) are the only
+    sealed carriers; everything else in the plan is self-authored text.
+    """
+    collected: list[tuple[str, dict]] = []
+    if not isinstance(master_plan, dict):
+        return collected
+
+    def _walk(node: Any, root: str) -> None:
+        if isinstance(node, dict):
+            evidence = node.get("snapshot_evidence")
+            if isinstance(evidence, list):
+                for item in evidence:
+                    if isinstance(item, dict):
+                        collected.append((root, item))
+            for child_key, child in node.items():
+                if child_key == "snapshot_evidence":
+                    continue
+                _walk(child, root)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item, root)
+
+    for root_key in ("proposal_ensemble", "proposal_binding"):
+        value = master_plan.get(root_key)
+        if isinstance(value, dict):
+            _walk(value, root_key)
+    return collected
+
+
+def validate_sealed_proposal_evidence_precision(
+    master_plan: Any,
+    next_v: int | str,
+) -> list[str]:
+    """Byte-level precision check on the sealed ``snapshot_evidence`` bindings.
+
+    The sealed structures are excluded from the audit's citable-text view
+    (``_flatten_text`` skips them), so this validator is their fail-closed
+    replacement: every binding must reconcile against the SAME frozen
+    generation evaluation snapshot the audit uses, exactly the way the scout
+    acceptance producer built it:
+
+    - the reference resolves (``snapshot:<strength file>#<locator>`` against
+      the loaded bundle, same ``_pointer_node`` ~1/~0 walk);
+    - ``node_sha256`` equals sha256 over the canonical node bytes (the byte
+      bridge: the binding cannot drift from the frozen file bytes);
+    - the typed statistical scalars (``games``/``a_wins``/``b_wins``/
+      ``draws``) match the node values under the producer's rule
+      (dict nodes bind their own int scalars; list containers bind the
+      strongest row's ``games`` and never W/L scalars —
+      ``agent_master_validation._snapshot_reference_evidence_binding``);
+    - ``resolved_projection`` is the canonical node prefix (1600 chars),
+      ``projection_sha256`` re-derives from it, and ``projection_truncated``
+      matches the truncation boundary.
+
+    Returns error strings only (never raises for plan-shape reasons); an
+    unreadable snapshot returns ``[]`` — the surrounding dispatch keeps its
+    wide-except posture and the prose audit remains the gate.  Identical
+    error strings are deduplicated: five copies of one wrong binding are one
+    evidence defect, not five noisy rows.
+    """
+    errors: list[str] = []
+    seen: set[str] = set()
+    try:
+        bundle = load_generation_evaluation_snapshot(next_v)
+    except Exception:
+        return []
+    if not isinstance(bundle, dict) or not bundle.get("available"):
+        return []
+
+    def _emit(error: str) -> None:
+        if error not in seen:
+            seen.add(error)
+            errors.append(error)
+
+    from agent_master_validation import _STRENGTH_SNAPSHOT_FILENAMES
+
+    for location, binding in _sealed_snapshot_bindings(master_plan):
+        reference = str(binding.get("reference") or "")
+        prefix = "sealed_evidence"
+        if not reference.startswith("snapshot:") or "#" not in reference:
+            _emit(
+                f"{prefix}_reference_invalid[{location}]:{reference[:100]}"
+            )
+            continue
+        filename, _, locator = reference[len("snapshot:"):].partition("#")
+        filename_lower = filename.lower()
+        if (
+            filename_lower not in _STRENGTH_SNAPSHOT_FILENAMES
+            or not locator.startswith("/")
+            or locator == "/"
+        ):
+            _emit(
+                f"{prefix}_reference_invalid[{location}]:{reference[:100]}"
+            )
+            continue
+        node = _pointer_node(bundle, filename_lower, locator)
+        if node is None:
+            _emit(
+                f"{prefix}_node_unresolvable[{location}]:{reference[:100]}"
+            )
+            continue
+        if not isinstance(node, (dict, list)):
+            # The producer binds a strength-bearing row/container only; a
+            # naked scalar/metadata node can never back a sealed binding.
+            _emit(
+                f"{prefix}_node_unresolvable[{location}]:{reference[:100]}"
+            )
+            continue
+        canonical = json.dumps(
+            node,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        node_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if binding.get("node_sha256") != node_digest:
+            _emit(
+                f"{prefix}_node_digest_mismatch[{location}]:{reference}:"
+                f"binding={str(binding.get('node_sha256') or '')[:12]}:"
+                f"snapshot={node_digest[:12]}"
+            )
+        # Typed statistical scalars: the producer's own binding rule.
+        if isinstance(node, dict):
+            for field in _SEALED_EVIDENCE_SCALAR_FIELDS:
+                node_value = node.get(field)
+                node_has = isinstance(node_value, int) and not isinstance(
+                    node_value, bool
+                )
+                bound_value = binding.get(field)
+                bound_has = isinstance(bound_value, int) and not isinstance(
+                    bound_value, bool
+                )
+                if node_has != bound_has or (
+                    node_has and bound_value != node_value
+                ):
+                    _emit(
+                        f"{prefix}_scalar_mismatch[{location}]:{reference}:"
+                        f"{field}:binding="
+                        f"{bound_value if bound_has else '<missing>'}:"
+                        f"snapshot={node_value if node_has else '<absent>'}"
+                    )
+        else:
+            strongest = 0
+            for element in node:
+                if not isinstance(element, dict):
+                    continue
+                value = element.get("games")
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value > strongest
+                ):
+                    strongest = value
+            bound_games = binding.get("games")
+            bound_has = isinstance(bound_games, int) and not isinstance(
+                bound_games, bool
+            )
+            if strongest > 0 and (not bound_has or bound_games != strongest):
+                _emit(
+                    f"{prefix}_scalar_mismatch[{location}]:{reference}:"
+                    f"games:binding="
+                    f"{bound_games if bound_has else '<missing>'}:"
+                    f"snapshot={strongest}"
+                )
+            if bound_has and strongest <= 0:
+                _emit(
+                    f"{prefix}_scalar_mismatch[{location}]:{reference}:"
+                    f"games:binding={bound_games}:snapshot=<absent>"
+                )
+            for field in ("a_wins", "b_wins", "draws"):
+                if isinstance(binding.get(field), int) and not isinstance(
+                    binding.get(field), bool
+                ):
+                    _emit(
+                        f"{prefix}_scalar_mismatch[{location}]:{reference}:"
+                        f"{field}:binding={binding.get(field)}:"
+                        f"snapshot=<container>"
+                    )
+        expected_projection = canonical[:1600]
+        projection = str(binding.get("resolved_projection") or "")
+        if projection != expected_projection:
+            _emit(f"{prefix}_projection_mismatch[{location}]:{reference}")
+        if binding.get("projection_sha256") != hashlib.sha256(
+            projection.encode("utf-8")
+        ).hexdigest():
+            _emit(
+                f"{prefix}_projection_digest_mismatch[{location}]:{reference}"
+            )
+        if binding.get("projection_truncated") != (len(canonical) > 1600):
+            _emit(
+                f"{prefix}_projection_truncation_mismatch"
+                f"[{location}]:{reference}"
+            )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Deterministic citation normalization (pre-audit)
 # ---------------------------------------------------------------------------
 # v451/v485 (2026-09) died at the plan audit because the final Master plan
@@ -1496,18 +1744,37 @@ def _row_int(row: dict, field: str) -> int:
     return int(row.get(field, 0) or 0)
 
 
+def _strength_filename_roles() -> dict[str, str]:
+    """filename -> bundle role for every strength-bearing snapshot file.
+
+    The proposal gate's seven strength files
+    (``agent_master_validation._STRENGTH_SNAPSHOT_FILENAMES``) intersected
+    with this module's ``SNAPSHOT_FILES`` roles.  ``_pointer_node`` resolves
+    any of them (h2h pointers, ratings pointers, action-stat pointers), not
+    just the two aggregate files, so the sealed-evidence precision validator
+    can reconcile every reference class the scout acceptance point binds.
+    """
+    from agent_master_validation import _STRENGTH_SNAPSHOT_FILENAMES
+
+    return {
+        filename: role
+        for role, filename in SNAPSHOT_FILES.items()
+        if filename in _STRENGTH_SNAPSHOT_FILENAMES
+    }
+
+
 def _pointer_node(bundle: dict, filename: str, locator: str) -> object:
-    """Resolve one aggregate pointer against the loaded snapshot bundle.
+    """Resolve one strength-snapshot pointer against the loaded bundle.
 
     Mirrors ``agent_master_validation._snapshot_reference_evidence_binding``
     resolution (same ~1/~0 unescaping, same strongest-row rule for list
     containers) but reads the already-parsed bundle instead of reopening the
-    snapshot files, so normalization and the audit see identical bytes.
+    snapshot files, so normalization, the audit, and the sealed-evidence
+    precision check see identical bytes.  The role mapping covers every
+    strength snapshot file (``_strength_filename_roles``); aggregate pointer
+    REWRITES stay limited to the two aggregate files by their own regex.
     """
-    role = {
-        "bot_stats.json": "bot_stats",
-        "selection_snapshot.json": "selection",
-    }.get(filename.lower())
+    role = _strength_filename_roles().get(filename.lower())
     if role is None:
         return None
     node: object = bundle.get(role)
@@ -1765,14 +2032,38 @@ def _collect_matchup_rewrites(
 # normalization rewrote four snapshot-evidence ``games`` leaves, two of them
 # reached only through the shallow-shared ``proposal_binding`` copies).  A
 # rewritten packet can never be re-signed — ``role_result_digest`` binds the
-# scout output — so the seam must leave these bytes untouched and let the
-# audit reject stale citation numbers inside them.  The proper place to fix
-# stale sealed citations is BEFORE sealing (Scout acceptance); that larger
-# move is future work.
+# scout output — so the seam must leave these bytes untouched.
+#
+# audit_scope (2026-10-04): the sealed structures are also OUT of the shared
+# citable-text view.  Both renderers (``_flatten_text`` / ``_flatten_marked``)
+# skip the whole subtree via ``_sealed_subtree_path``, so the audit's
+# alias-window attribution can no longer bind a sealed ``games`` leaf onto a
+# pair row — the exact false v485/v486/v489 rejections, where every sealed
+# number was system-derived and snapshot-exact but the flattening attributed
+# e.g. a bot_stats ``games=404`` line to the neighboring H2H alias.  The
+# sealed statistical authority is instead reconciled byte-level against the
+# frozen snapshot by ``validate_sealed_proposal_evidence_precision``
+# (pointer resolution + node_sha256 + typed scalars + projection), whose
+# errors merge into the same ``_h2h_citation_errors`` audit list.
+_SEALED_PROPOSAL_STRUCTURE_KEYS = frozenset(
+    {"proposal_ensemble", "proposal_binding"}
+)
 _SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES = (
     "proposal_ensemble.",
     "proposal_binding",
 )
+
+
+def _sealed_subtree_path(path: str) -> bool:
+    """True when ``path`` is rooted at a sealed proposal structure.
+
+    Only the path ROOT matters: a top-level ``proposal_ensemble`` /
+    ``proposal_binding`` key is sealed wherever the plan carries it, while a
+    same-named key nested under another root (e.g. ``tasks[0].notes``)
+    stays self-authored text.
+    """
+    root = str(path or "").split(".", 1)[0].split("[", 1)[0]
+    return root in _SEALED_PROPOSAL_STRUCTURE_KEYS
 
 
 def _flatten_marked(
@@ -1790,11 +2081,11 @@ def _flatten_marked(
     as ``(start, end, parent, key, path, rendered_text)`` so a digit span
     found in the joined text can be mapped back to the exact container slot
     that rendered it (a string leaf -> in-string rewrite; an int leaf -> the
-    int is reassigned).  Leaves under a sealed proposal structure
-    (``_SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES``) still render — the audit's
-    citation windows are computed over that exact joined form — but are NOT
-    recorded, so no rewrite op can ever own their bytes.  The rendering must
-    stay byte-identical to ``_flatten_text``.
+    int is reassigned).  Sealed proposal structures
+    (``_SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES``) are skipped whole — the
+    same ``_sealed_subtree_path`` skip ``_flatten_text`` applies — so no
+    sealed leaf renders and no rewrite op can ever own its bytes.  The
+    rendering stays byte-identical to ``_flatten_text``.
     """
     if isinstance(value, dict):
         lines: list[str] = []
@@ -1802,6 +2093,8 @@ def _flatten_marked(
         for child_key, item in value.items():
             prefix = f"{child_key}: "
             child_path = f"{path}.{child_key}" if path else str(child_key)
+            if _sealed_subtree_path(child_path):
+                continue
             child_text, child_end = _flatten_marked(
                 item, pieces, pos + len(prefix), child_path, value, child_key
             )
@@ -1909,17 +2202,14 @@ def normalize_master_plan_citations(
 
     Runs at the plan-accepted/audit-start seam on the SAME in-memory plan the
     audit then reads, using the SAME frozen generation evidence snapshot the
-    audit validates against (never live results).  The plan is flattened to
-    the byte-identical text ``validate_h2h_citations_against_snapshot`` sees
-    (``_flatten_text``), so every citation the audit can attribute — prose
-    windows AND structured binding objects (``{"games": 259, ...}`` int
-    leaves inside ``proposal_ensemble`` / ``proposal_binding``
-    ``snapshot_evidence`` lists, which the joined text renders as
-    ``games: 259`` lines inside cross-object pair windows) — is ATTRIBUTED
-    with the audit's own attribution priority: numbers inside a pairing
-    window (before its truncating aggregate pointer / next pairing) belong
-    to the pair row, numbers under a resolvable aggregate pointer belong to
-    that pointer's row.  Rules, strictly fail-closed:
+    audit validates against (never live results) and the SAME citable-text
+    view (``_flatten_marked`` renders byte-identically to
+    ``_flatten_text``, sealed proposal subtrees empty in both), so the set
+    of citations this seam can rewrite is a subset of the citations the
+    audit grades: prose windows and unsealed structured objects.  Numbers
+    inside a pairing window (before its truncating aggregate pointer / next
+    pairing) belong to the pair row; numbers under a resolvable aggregate
+    pointer belong to that pointer's row.  Rules, strictly fail-closed:
 
     - An H2H matchup citation is normalized only when it resolves to a real
       snapshot row (both wire directions, shared ``_h2h_pair_versions``
@@ -1930,21 +2220,18 @@ def normalize_master_plan_citations(
       ``snapshot:selection_snapshot.json#/rows...``) has its bound ``games``
       normalized only when the pointer resolves against the bundle; an
       unresolvable pointer is untouched.
-    - Sealed proposal structures are NEVER rewritten, even when the audit's
-      attribution reaches a stale number inside them
-      (``_SEALED_PROPOSAL_STRUCTURE_PATH_PREFIXES``: ``proposal_ensemble`` /
-      ``proposal_binding``, including every ``snapshot_evidence`` int leaf).
-      Their bytes back the sealed ``proposal_id`` and scout
+    - Sealed proposal structures (``_SEALED_PROPOSAL_STRUCTURE_KEYS``:
+      ``proposal_ensemble`` / ``proposal_binding``, including every
+      ``snapshot_evidence`` leaf) render EMPTY in the shared citable-text
+      view, so neither this seam nor the prose audit ever attributes their
+      numbers.  Their bytes back the sealed ``proposal_id`` and scout
       ``role_result_digest`` that the quality gate re-derives from the live
       ensemble, so any post-acceptance rewrite deterministically fails
       ``proposal_identity_mismatch`` / ``proposal_invocation_result_mismatch``
       for every proposal (v488), and a rewritten packet can never be
-      re-signed.  Stale citations inside sealed structures stay byte-exact
-      and the audit keeps rejecting them; the fix for such staleness belongs
-      BEFORE acceptance (normalizing the Scout payload pre-seal), which is
-      future work.  ``node_sha256`` / ``projection_sha256`` /
-      ``resolved_projection`` bytes are never touched either (the audit's
-      patterns cannot match their quoted/hex forms).
+      re-signed.  The sealed statistical authority is instead reconciled
+      byte-level against the frozen snapshot by
+      ``validate_sealed_proposal_evidence_precision`` at the audit site.
     - Every replacement is recorded in the returned report; the audit itself
       is untouched, so a residual rejection still blocks the plan.
 

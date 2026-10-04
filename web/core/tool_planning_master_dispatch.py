@@ -1796,9 +1796,11 @@ async def run_master_impl(args):
     # legally serve as primary evidence) are untouched, the audit logic is
     # untouched, and a residual rejection still blocks the plan.  The sealed
     # proposal structures (proposal_ensemble / proposal_binding) are NEVER
-    # rewritten (v488): their bytes back the sealed proposal_id / scout
-    # role_result_digest the quality gate re-derives, so stale numbers there
-    # stay byte-exact and the audit rejects them.
+    # rewritten (v488) and never render into the audit's citable-text view
+    # (audit_scope, 2026-10-04): their bytes back the sealed proposal_id /
+    # scout role_result_digest the quality gate re-derives, and their
+    # statistical authority is reconciled byte-level against the frozen
+    # snapshot by validate_sealed_proposal_evidence_precision below.
     if not protocol_bootstrap_no_strength:
         _citation_normalization_report = None
         try:
@@ -1866,6 +1868,7 @@ async def run_master_impl(args):
                         h2h_citation_repair_guidance,
                         statistical_evidence_floor_errors,
                         validate_h2h_citations_against_snapshot,
+                        validate_sealed_proposal_evidence_precision,
                     )
                     _h2h_citation_errors = validate_h2h_citations_against_snapshot(data, next_v)
                     # Two-tier statistical evidence bar (sufficiency), kept
@@ -1874,6 +1877,18 @@ async def run_master_impl(args):
                     _h2h_citation_errors = (
                         statistical_evidence_floor_errors(data, next_v)
                         + _h2h_citation_errors
+                    )
+                    # Sealed-evidence precision (audit_scope): the sealed
+                    # proposal structures are excluded from the citation
+                    # views above, so their snapshot_evidence bindings are
+                    # re-proved byte-level against the same frozen snapshot
+                    # (pointer + node_sha256 + typed scalars + projection)
+                    # instead of being graded as prose citations.
+                    _h2h_citation_errors = (
+                        _h2h_citation_errors
+                        + validate_sealed_proposal_evidence_precision(
+                            data, next_v
+                        )
                     )
                     _h2h_repair_guidance = h2h_citation_repair_guidance(
                         next_v,

@@ -72,6 +72,24 @@ support the mechanics of a leak, but matchup win/loss claims must quote the
 snapshot row key and exact `games`, `a_wins`, `b_wins`, and `win_rate`.
 </h2h_verbatim_rule>
 
+<sealed_evidence_scope>
+## Sealed Proposal Evidence (do not grade as prose citations)
+The plan carries the frozen proposal packet (`proposal_ensemble`) and its
+derived `proposal_binding`. Those bytes are sealed provider identities: the
+system re-derives their `proposal_id` / scout `role_result_digest` from the
+live bytes at the quality gate, and their `snapshot_evidence` bindings were
+system-produced against this exact frozen snapshot (node sha256 + typed
+`games`/`a_wins`/`b_wins`/`draws` + resolved projection, reconciled
+byte-level by the deterministic audit). Do NOT read their numbers as prose
+H2H citations, do not flag a sealed binding's counts as "cited games=N,
+snapshot has games=M", and do not reject the plan because a sealed
+projection disagrees with your reading of a matchup row — a sealed binding
+that truly drifted from the frozen snapshot is caught by that structural
+check, not by your narrative comparison. Grade H2H/statistical citations
+only where the plan's own text (`analysis`, `targeted_failure`, `tasks`,
+`measurement_plan`) makes them.
+</sealed_evidence_scope>
+
 <branch_from_semantics>
 ## Branch-From Identity (read before flagging data staleness)
 - This generation's source (parent) version is **v{source_v}**, target is **v{next_v}**.

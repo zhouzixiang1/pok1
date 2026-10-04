@@ -1351,9 +1351,27 @@ rewrites the sealed proposal structures (`proposal_ensemble` /
 scout `role_result_digest` that the quality gate re-derives from the live
 ensemble bytes, so any post-acceptance rewrite deterministically fails
 `proposal_identity_mismatch` / `proposal_invocation_result_mismatch` for
-every proposal (v488), and a rewritten packet can never be re-signed —
-stale citation numbers inside those structures are left byte-exact for the
-audit to reject (fixing such staleness before the seal is future work).
+every proposal (v488), and a rewritten packet can never be re-signed.
+audit_scope (2026-10-04): the audit never grades sealed bytes as prose
+citations. `_flatten_text` and `_flatten_marked` render the whole
+`proposal_ensemble` / `proposal_binding` subtree empty in the ONE shared
+citable-text view (`_sealed_subtree_path`), keeping the
+`_flatten_marked == _flatten_text` identity and the normalization-rewritable
+set a subset of the audit-graded set, so the alias-window misattribution
+that falsely rejected correct system-derived bindings (v485/v486/v489: a
+sealed aggregate `games` leaf — 404/454, byte-exact in its own binding —
+bound onto the neighboring pair row's window) can no longer fire. The
+sealed statistical authority — the scout-acceptance system re-derived
+`snapshot_evidence` binding — is instead re-proved byte-level against the
+same frozen snapshot by `validate_sealed_proposal_evidence_precision`
+(pointer resolution through the same loader, `node_sha256` byte bridge,
+typed games/a_wins/b_wins/draws scalars under the producer's rule,
+projection prefix/digest/truncation; errors merge into the same
+`_h2h_citation_errors` audit list, wide-except posture unchanged), and the
+statistical floor's aggregate leg accepts the structured sealed citation
+reference under the same pointer rule as the text regex (a corrupted or
+unresolvable sealed binding still fails closed). Dual-gate replay on real
+runtime products: `scripts/replay_dual_gate_audit_scope.py`.
 The plan audit and the proposal
 gate share one citation set and one tier/typing rule (shared helpers in
 `agent_master_validation.py`, imported by the audit mirror in
