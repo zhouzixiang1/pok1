@@ -360,3 +360,64 @@ def test_latest_abandon_reason_reads_last_row(monkeypatch):
         llm_saturator._latest_abandon_reason_for_prompt()
         == "prepared_baseline_contract_digest_mismatch"
     )
+
+
+# --- provider-failure pause is tiered by availability category (2026-10-04) --
+#
+# The flat text match paused 600s for EVERY quota/429/unavailable string; the
+# repository contract (web/core/llm_availability_store.py::
+# _AUTO_COOLDOWN_SECONDS) reserves the long pause for a confirmed GLM
+# 1308/quota window, while GLM 1302 / bare-429 / generic unavailable failures
+# are frequency-class pressure with a 120s cooldown. The journal showed two
+# mis-pauses per 20 minutes that stopped the saturator cold on 1302 noise.
+
+GLM_1302_TEXT = (
+    "Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]"
+)
+GLM_1308_TEXT = (
+    "Request rejected (429) · [1308][已达到 5 小时的使用上限。"
+    "您的限额将在 2026-10-03T20:00:00 重置。]"
+)
+
+
+def test_saturator_provider_pause_tiered_1308_long_1302_short(monkeypatch):
+    from llm_availability import QUOTA_429, SERVICE_UNAVAILABLE, classify_llm_availability
+
+    # Contract reuse sanity: the same classifier the orchestrator uses.
+    assert classify_llm_availability(evidence=[GLM_1308_TEXT]).category == QUOTA_429
+    assert (
+        classify_llm_availability(evidence=[GLM_1302_TEXT]).category
+        == SERVICE_UNAVAILABLE
+    )
+
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    llm_saturator._note_saturator_provider_failure(GLM_1302_TEXT)
+    rate_limit_remaining = llm_saturator._saturator_pause_remaining_sec()
+
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    llm_saturator._note_saturator_provider_failure(GLM_1308_TEXT)
+    quota_remaining = llm_saturator._saturator_pause_remaining_sec()
+
+    # Confirmed 1308 quota window keeps the long saturator pause…
+    assert 590.0 <= quota_remaining <= 600.0, quota_remaining
+    # …while 1302 frequency pressure cools down SHORT (120s contract), not
+    # the flat 600s that mis-paused the saturator twice per 20 minutes.
+    assert 100.0 <= rate_limit_remaining <= 120.0, rate_limit_remaining
+
+
+def test_saturator_provider_pause_generic_unavailable_is_short(monkeypatch):
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    llm_saturator._note_saturator_provider_failure(
+        "ClaudeSDKError: API error 529 · provider overloaded / unavailable"
+    )
+    remaining = llm_saturator._saturator_pause_remaining_sec()
+    assert 100.0 <= remaining <= 120.0, remaining
+
+
+def test_saturator_provider_pause_classifies_exception_bodies(monkeypatch):
+    """The production caller passes exception objects; their bodies must go
+    through the same canonical classification as strings."""
+
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
+    assert 100.0 <= llm_saturator._saturator_pause_remaining_sec() <= 120.0

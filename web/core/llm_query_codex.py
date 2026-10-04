@@ -129,6 +129,17 @@ _TOOL_RESULT_PREVIEW_CHARS = 3000
 #: Maximum stderr tail lines retained for provider-error text.
 _STDERR_TAIL_LINES = 20
 
+#: StreamReader limit for the codex exec stdout/stderr pipes.
+#:
+#: The asyncio default (64 KiB) caps ONE JSONL line, and a codex
+#: ``item.completed`` event can embed a large diff or command output: the
+#: 2026-10-04 journal showed four whole one-shot streams voided in 20 minutes
+#: by ``LimitOverrunError: Separator is found, but chunk is longer than
+#: limit``.  8 MiB sits far above any observed event while keeping the
+#: bounded-reader guarantee; :class:`_UnboundedLineReader` additionally
+#: reassembles the (pathological) even-longer line instead of crashing.
+_STREAM_LINE_LIMIT = 8 * 1024 * 1024
+
 #: Markers of a benign codex item-error text. codex emits
 #: "Model metadata for <model> not found. Defaulting to fallback metadata;
 #: this can degrade performance and cause issues." for any non-built-in model
@@ -665,6 +676,10 @@ class CodexExecTransport:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=_project_root(self._options),
+            # Raised StreamReader limit (see _STREAM_LINE_LIMIT): the 64 KiB
+            # asyncio default voids the whole stream when one codex JSONL
+            # event line (embedded diff / command output) exceeds it.
+            limit=_STREAM_LINE_LIMIT,
             # Own process group so timeout/cancel kills the whole tree
             # (codex may wrap provider helpers in child processes).
             start_new_session=True,
@@ -703,9 +718,65 @@ async def _write_stdin(stdin, data: bytes):
         await stdin.wait_closed()
 
 
+class _UnboundedLineReader:
+    """Line reader that survives single lines longer than the StreamReader limit.
+
+    On CPython 3.12 ``StreamReader.readline()`` converts an over-long line
+    into ``ValueError`` AND discards the buffered bytes, so an unhandled
+    raise at the ``codex_query`` read loop voids the entire one-shot stream
+    (2026-10-04 journal: four dead attempts in 20 minutes on
+    ``Separator is found, but chunk is longer than limit``).  This reader
+    uses ``readuntil()`` instead, which raises
+    :class:`asyncio.LimitOverrunError` with the buffer *intact*, then
+    reassembles the remainder of the line out of bounded ``read()`` calls,
+    which never raise on size.  EOF semantics match ``readline()``: an
+    unterminated tail is delivered as the final line, then ``b""``.
+    """
+
+    #: Drain chunk for the overrun path (bytes per ``read()``).
+    _DRAIN_CHUNK = 64 * 1024
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._pending = b""
+
+    async def readline(self) -> bytes:
+        parts = []
+        if self._pending:
+            newline = self._pending.find(b"\n")
+            if newline >= 0:
+                # A carry-over fragment already holds the next complete line.
+                line = self._pending[: newline + 1]
+                self._pending = self._pending[newline + 1 :]
+                return line
+            # The carry-over is a prefix of a line whose remainder the stream
+            # still owns; complete it below.
+            parts.append(self._pending)
+            self._pending = b""
+        while True:
+            try:
+                tail = await self._stream.readuntil(b"\n")
+                return b"".join(parts) + tail
+            except asyncio.IncompleteReadError as exc:
+                # EOF: deliver the unterminated tail, then b"" on next call.
+                return b"".join(parts) + (exc.partial or b"")
+            except asyncio.LimitOverrunError:
+                chunk = await self._stream.read(self._DRAIN_CHUNK)
+                if not chunk:
+                    # EOF mid-line: return the assembled (unterminated) tail.
+                    return b"".join(parts)
+                newline = chunk.find(b"\n")
+                if newline >= 0:
+                    parts.append(chunk[: newline + 1])
+                    self._pending = chunk[newline + 1 :]
+                    return b"".join(parts)
+                parts.append(chunk)
+
+
 async def _drain_stderr(stream, tail: "collections.deque[str]"):
+    reader = _UnboundedLineReader(stream)
     while True:
-        line = await stream.readline()
+        line = await reader.readline()
         if not line:
             return
         tail.append(line.decode("utf-8", "replace").rstrip())
@@ -747,10 +818,11 @@ async def codex_query(prompt=None, *, options=None, transport=None):
         _write_stdin(process.stdin, (prompt or "").encode("utf-8"))
     )
     stderr_task = asyncio.create_task(_drain_stderr(process.stderr, stderr_tail))
+    stdout_reader = _UnboundedLineReader(process.stdout)
     unparseable_lines = 0
     try:
         while True:
-            line = await process.stdout.readline()
+            line = await stdout_reader.readline()
             if not line:
                 break
             stripped = line.strip()

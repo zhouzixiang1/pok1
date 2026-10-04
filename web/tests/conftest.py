@@ -574,6 +574,40 @@ def isolate_state(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_daemon_management, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(_control, "RESULTS_DIR", results_dir)
+
+    # Publication/reap chain (2026-10-04 full-suite failures): these modules
+    # hold ``from evolution_infra import RESULTS_DIR`` VALUE copies, so the
+    # evolution_infra patch above never reached them.  In the live autonomous
+    # checkout the post-publication executor then flocked the REAL results
+    # directory via evaluation_cycle_lock and timed out against the running
+    # daemon (test_post_publication_effect_executor 30s flock timeout).
+    # Companions (tool_bot_management_reap, tool_commit*) read the parent
+    # attribute (_tbm.RESULTS_DIR), so patching the parent covers the chain.
+    import tool_bot_management as _tbm_iso
+    import tool_commit as _tc_iso
+
+    monkeypatch.setattr(_tbm_iso, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(_tc_iso, "RESULTS_DIR", results_dir)
+
+    # Rate-limiter singleton (same failure batch): it binds its state file at
+    # IMPORT time from the real RESULTS_DIR and keeps an in-memory
+    # ``_reset_time`` across tests.  A live GLM 1308 quota block loaded at
+    # import (or set by an earlier test's parse_429) made every
+    # run_claude_query entry point await wait_until_reset() for the real
+    # quota window — timing out ten LLM-role tests at 30s, and _save_state
+    # would have written the REAL file the live service reads.  Point the
+    # singleton at the isolated file and clear any imported/leaked block.
+    # Bare assignment (not monkeypatch) for _reset_time on purpose: the
+    # block must not be restored into the singleton at teardown.
+    import rate_limiter as _rl_iso
+
+    monkeypatch.setattr(
+        _rl_iso.rate_limiter,
+        "_state_file",
+        results_dir / "rate_limit_state.json",
+    )
+    _rl_iso.rate_limiter._reset_time = None
+
     stability_observation.bind_runtime_configuration(app_state.get_config())
 
     # --- 4. Patch route module local constants ---

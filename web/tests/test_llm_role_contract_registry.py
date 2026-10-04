@@ -1299,16 +1299,54 @@ class _ProviderVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _active_tree_python_files(*surfaces):
+    """Iterate ACTIVE-tree .py files for the provider/render scans.
+
+    Excludes ``tests``/``archive`` (as before) and the gitignored runtime
+    artifact tree ``results`` (evidence snapshots, crossover workspaces,
+    quarantined candidate copies).  The runtime tree is not active code:
+    scanning it both blows the 30s test budget in the live autonomous
+    checkout (1.2GB, 200+ directories under web/core/results/) and would
+    grade quarantined/dead candidate bytes as active-tree providers
+    (2026-10-04 full-suite failures).
+    """
+    for surface in surfaces:
+        for path in surface.rglob("*.py"):
+            if (
+                "tests" in path.parts
+                or "archive" in path.parts
+                or "results" in path.parts
+            ):
+                continue
+            yield path
+
+
+def test_active_tree_scan_excludes_runtime_artifacts():
+    """The shared active-tree scan surface must never yield runtime paths.
+
+    The operator checkout itself carries results/system_controls/*.py, so
+    this pins the exclusion independently of any live runtime state.
+    """
+    polluted = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in _active_tree_python_files(ROOT / "web/core", ROOT / "scripts", ROOT / "sever")
+        if "results" in path.parts
+    )
+    assert not polluted, (
+        "active-tree scan surface must exclude the gitignored runtime "
+        f"artifact tree web/core/results/: {polluted[:5]}"
+    )
+
+
 def test_active_tree_provider_scan_covers_aliases_attributes_subpackages_scripts_and_sdk():
     found = set()
-    for surface in (ROOT / "web/core", ROOT / "scripts", ROOT / "sever"):
-        for path in surface.rglob("*.py"):
-            if "tests" in path.parts or "archive" in path.parts:
-                continue
-            relative = path.relative_to(ROOT).as_posix()
-            visitor = _ProviderVisitor(relative)
-            visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
-            found.update(visitor.calls)
+    for path in _active_tree_python_files(
+        ROOT / "web/core", ROOT / "scripts", ROOT / "sever"
+    ):
+        relative = path.relative_to(ROOT).as_posix()
+        visitor = _ProviderVisitor(relative)
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        found.update(visitor.calls)
 
     expected_run_functions = {
         ("web/core/direction_auditor.py", "_run_direction_audit", "run"),
@@ -1350,8 +1388,8 @@ def test_active_render_callers_cannot_reintroduce_caller_owned_full_prompts():
         "rendered_prompt",
     }
     render_calls = []
-    for path in (ROOT / "web/core").rglob("*.py"):
-        if path.name == "llm_query.py" or "tests" in path.parts or "archive" in path.parts:
+    for path in _active_tree_python_files(ROOT / "web/core"):
+        if path.name == "llm_query.py":
             continue
         source = path.read_text(encoding="utf-8")
         assert "ordered_sections" not in source

@@ -664,6 +664,14 @@ def _housekeep_session_files(
 # The pipeline has its own durable availability pause; the saturator only
 # needs to stop burning attempts while the provider is closed.
 _QUOTA_PAUSE_SECONDS = 600.0
+# 2026-10-04 audit P8: the flat text match paused 600s for EVERY quota/429/
+# unavailable string, but the availability-category contract
+# (web/core/llm_availability_store.py::_AUTO_COOLDOWN_SECONDS) reserves the
+# long pause for a confirmed GLM 1308/quota window; GLM 1302 / bare 429 /
+# generic unavailable failures are frequency-class pressure and get the short
+# cooldown the contract prescribes for service_unavailable (120s).  The
+# journal showed two of those 10-minute mis-pauses per 20 minutes.
+_RATE_LIMIT_PAUSE_SECONDS = 120.0
 _FAIL_PAUSE_CAP_SECONDS = 30.0
 _quota_pause_until: float = 0.0
 _fail_pause_until: float = 0.0
@@ -685,15 +693,40 @@ def _log_session_failure(session_id: int, error: object) -> None:
 
 
 def _note_saturator_provider_failure(error: object) -> None:
-    """Pause saturator launches after a quota/availability-class failure."""
+    """Pause saturator launches after a quota/availability-class failure.
+
+    The pause length is tiered by the canonical availability classification
+    (``llm_availability.classify_llm_availability`` — the same pure chain the
+    orchestrator's durable pause uses), not by a second hand-rolled text
+    match: only a confirmed GLM 1308/quota body keeps the long
+    ``_QUOTA_PAUSE_SECONDS`` pause; everything else that trips the provider
+    prefilter — GLM 1302 rate limit, bare 429, generic unavailable — is
+    frequency-class pressure and gets the short 120s cooldown the contract
+    prescribes (``llm_availability_store._AUTO_COOLDOWN_SECONDS``;
+    2026-10-04 audit P8: the flat 600s pause mis-paused the saturator twice
+    per 20 minutes on 1302-class noise).
+    """
     global _quota_pause_until
-    text = str(error or "").lower()
-    if "quota" in text or "429" in text or "unavailable" in text:
-        _quota_pause_until = max(_quota_pause_until, time.time() + _QUOTA_PAUSE_SECONDS)
-        log.warning(
-            "saturator pausing launches for %.0fs after provider "
-            "quota/availability failure", _QUOTA_PAUSE_SECONDS,
-        )
+    text = str(error or "")
+    lowered = text.lower()
+    if not ("quota" in lowered or "429" in lowered or "unavailable" in lowered):
+        return
+    from llm_availability import QUOTA_429, classify_llm_availability
+
+    issue = None
+    if isinstance(error, BaseException):
+        issue = classify_llm_availability(exception=error)
+    if issue is None:
+        issue = classify_llm_availability(evidence=[text])
+    if issue is not None and issue.category == QUOTA_429:
+        pause, reason = _QUOTA_PAUSE_SECONDS, "quota window (1308-class)"
+    else:
+        pause, reason = _RATE_LIMIT_PAUSE_SECONDS, "rate-limit/unavailable cooldown"
+    _quota_pause_until = max(_quota_pause_until, time.time() + pause)
+    log.warning(
+        "saturator pausing launches for %.0fs after provider failure (%s)",
+        pause, reason,
+    )
 
 
 def _note_saturator_launch_success() -> None:

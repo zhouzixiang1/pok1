@@ -551,6 +551,11 @@ class _FakeStdout:
             return b""
         return self._lines.pop(0)
 
+    async def readuntil(self, separator):
+        if not self._lines:
+            raise asyncio.IncompleteReadError(b"", None)
+        return self._lines.pop(0)
+
 
 class _FakeStdin:
     def write(self, data):
@@ -569,6 +574,9 @@ class _FakeStdin:
 class _FakeStderr:
     async def readline(self):
         return b""
+
+    async def readuntil(self, separator):
+        raise asyncio.IncompleteReadError(b"", None)
 
 
 class _FakeProcess:
@@ -859,10 +867,10 @@ def test_codex_nonzero_exit_folds_stderr_tail_into_error_text():
     pending_stderr = [f"provider: {GLM_1308_BODY}"]
 
     class _StderrWithBody(_FakeStderr):
-        async def readline(self):
+        async def readuntil(self, separator):
             if pending_stderr:
                 return (pending_stderr.pop(0) + "\n").encode()
-            return b""
+            raise asyncio.IncompleteReadError(b"", None)
 
     real_spawn = transport.spawn
 
@@ -918,6 +926,10 @@ def test_cancel_kills_process_tree_and_confirms_exit():
 
     class _HangingStdout:
         async def readline(self):
+            await asyncio.Event().wait()  # never resolves
+            return b""  # pragma: no cover
+
+        async def readuntil(self, separator):
             await asyncio.Event().wait()  # never resolves
             return b""  # pragma: no cover
 
@@ -1526,3 +1538,138 @@ def test_sdk_present_import_is_unaffected():
 
     assert lcx._SDK_IMPORT_ERROR is None
     assert lcx.ClaudeSDKError is not None
+
+
+# ---------------------------------------------------------------------------
+# Contract 7: over-long JSONL lines must not void the one-shot stream
+# (2026-10-04 journal: four streams dead in 20 minutes on
+#  "LimitOverrunError: Separator is found, but chunk is longer than limit")
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_passes_stream_reader_limit(monkeypatch):
+    """spawn() must raise the pipe StreamReader limit (asyncio default 64 KiB
+    caps ONE JSONL line; a codex item.completed embedding a large diff exceeds
+    it and kills the whole attempt)."""
+
+    monkeypatch.delenv("POK_CODEX_BIN", raising=False)
+    monkeypatch.setenv("POK_LLM_EFFORT", "max")
+    monkeypatch.delenv("POK_CODEX_MODEL", raising=False)
+    monkeypatch.setattr(lcx.shutil, "which", lambda _name: "/opt/codex/bin/codex")
+
+    captured = {}
+
+    class _Proc:
+        pid = 424244
+        returncode = None
+
+    async def fake_exec(*argv, **kwargs):
+        captured["limit"] = kwargs.get("limit")
+        return _Proc()
+
+    monkeypatch.setattr(lcx.asyncio, "create_subprocess_exec", fake_exec)
+
+    asyncio_run(lcx.CodexExecTransport("p", None).spawn())
+    assert captured["limit"] == lcx._STREAM_LINE_LIMIT
+    assert captured["limit"] >= 8 * 1024 * 1024
+
+
+def test_unbounded_line_reader_reassembles_lines_beyond_reader_limit():
+    """The safe reader reassembles a line longer than the StreamReader limit
+    out of bounded read() calls and keeps subsequent lines intact."""
+
+    overlong_middle = b'{"type":"item.completed","text":"' + b"y" * 500 + b'"}\n'
+
+    async def run():
+        stream = asyncio.StreamReader(limit=200)
+        stream.feed_data(b'{"type":"thread.started","thread_id":"t"}\n')
+        stream.feed_data(overlong_middle)
+        stream.feed_data(b'{"type":"turn.completed"}\n')
+        stream.feed_eof()
+        reader = lcx._UnboundedLineReader(stream)
+        lines = []
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            lines.append(line)
+        return lines
+
+    lines = asyncio_run(run())
+    assert lines == [
+        b'{"type":"thread.started","thread_id":"t"}\n',
+        overlong_middle,
+        b'{"type":"turn.completed"}\n',
+    ]
+
+
+def test_unbounded_line_reader_survives_line_beyond_raised_limit():
+    """Even a line beyond the raised 8 MiB _STREAM_LINE_LIMIT is reassembled
+    instead of raising LimitOverrunError out of the read loop."""
+
+    huge = b'{"type":"item.completed","text":"' + b"z" * (lcx._STREAM_LINE_LIMIT + 4096) + b'"}\n'
+
+    async def run():
+        stream = asyncio.StreamReader(limit=lcx._STREAM_LINE_LIMIT)
+        stream.feed_data(b'{"type":"turn.started"}\n')
+        stream.feed_data(huge)
+        stream.feed_data(b'{"type":"turn.completed"}\n')
+        stream.feed_eof()
+        reader = lcx._UnboundedLineReader(stream)
+        lines = []
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            lines.append(line)
+        return lines
+
+    lines = asyncio_run(run())
+    assert lines == [b'{"type":"turn.started"}\n', huge, b'{"type":"turn.completed"}\n']
+
+
+def test_codex_query_survives_overlong_jsonl_line(monkeypatch, tmp_path):
+    """End-to-end through a REAL subprocess: a >64 KiB codex JSONL event line
+    (embedded agent message) must translate normally instead of voiding the
+    stream with LimitOverrunError (the exact 2026-10-04 journal failure)."""
+
+    big_text = "x" * 300_000  # > 64 KiB asyncio StreamReader default limit
+    events = [
+        {"type": "thread.started", "thread_id": "t"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"id": "item_1", "type": "agent_message", "text": big_text},
+        },
+        {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}},
+    ]
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text(
+        "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
+    )
+    script = tmp_path / "codex"
+    script.write_text(
+        "#!/bin/sh\ncat '%s'\n" % events_file, encoding="utf-8"
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("POK_CODEX_BIN", str(script))
+
+    async def _consume():
+        messages = []
+        async for message in lcx.codex_query(prompt="p", options=None):
+            messages.append(message)
+        return messages
+
+    messages = asyncio_run(_consume())
+    texts = [
+        block.text
+        for m in messages
+        if isinstance(m, AssistantMessage)
+        for block in m.content
+        if isinstance(block, TextBlock)
+    ]
+    assert texts == [big_text]
+    results = [m for m in messages if isinstance(m, ResultMessage)]
+    assert len(results) == 1
+    assert results[0].subtype == "success"
+    assert results[0].result == big_text
