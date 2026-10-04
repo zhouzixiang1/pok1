@@ -46,6 +46,18 @@ import agent_master_proposal_primaries as _pp
 # values such as ``W/L/D bootstrap 95% CI``; all three Scouts and their one
 # schema retry then failed the machine-readable uncertainty contract.
 _PROPOSAL_STRENGTH_SAMPLE_FLOOR = ">=30_complete_matches"
+# 2026-10-04 audit P4: the samples literal was compared with ``==`` and the
+# model kept rewriting it (``>=30``, ``30_complete_matches``, spaced forms),
+# burning every Scout plus its one schema retry on a spelling difference.
+# Semantically equivalent spellings now pass: an optional ``>=`` / ``≥`` /
+# ``at least`` prefix, the floor number 30, and an optional
+# ``complete matches`` suffix with any separator spelling.  This is
+# equivalence, not relaxation: a different predicate (``>30``), a lower
+# floor (``>=29``), or a bare count without prefix or suffix still fails.
+_PROPOSAL_SAMPLES_FLOOR_EQUIVALENT = re.compile(
+    r"(?:(?:>=|≥)\s*|at[\s_-]*least[\s_-]*)30(?:[\s_-]*complete[\s_-]*matches)?"
+    r"|30[\s_-]*complete[\s_-]*matches"
+)
 _PROPOSAL_UNCERTAINTY_PROMPT_VALUE = "wilson_wld_interval"
 
 # Statistical evidence bar (2026-08-16 approved plan, two-tier): a load-bearing
@@ -308,6 +320,7 @@ def format_cited_sample_rejection(
     best_available: int,
     tier: int,
     aggregate_tier: int,
+    refs_written: int | None = None,
 ) -> str:
     """The one shared two-tier rejection token formatter.
 
@@ -316,11 +329,23 @@ def format_cited_sample_rejection(
     so both sides format through this single function. Per-matchup fields let
     the model self-correct: it sees the matchup it cited, that matchup's best
     available row, and the tier that row needs.
+
+    ``refs_written`` distinguishes "no snapshot reference was written at all"
+    from "snapshot-shaped references were written but none resolved to a
+    citable row" (2026-10-04 audit P3): a bare ``cited.0`` told the model it
+    had cited nothing, sending the repair in the wrong direction.  It is
+    rendered only when at least one reference was written and none resolved;
+    callers that cannot count written references (the audit mirror) omit it
+    and their tokens stay byte-identical to the historical form.
     """
+    written_clause = (
+        f".refs_written.{int(refs_written)}" if refs_written else ""
+    )
     return (
         "proposal_cited_sample_too_small"
         f".{matchup}"
-        f".cited.{int(cited)}"
+        + written_clause
+        + f".cited.{int(cited)}"
         f".best_available.{int(best_available)}"
         f".tier.{int(tier)}"
         f".and_aggregate.{int(aggregate_tier)}"
@@ -331,13 +356,18 @@ def format_cited_sample_rejection(
 def _snapshot_evidence_two_tier_errors(
     citations: "list[tuple[str | None, int]]",
     snapshot_dir=None,
+    written_reference_count: int | None = None,
 ) -> list[str]:
     """Compact, charset-safe two-tier verdict for hints/repair feedback.
 
     ``citations`` is a list of ``(reference-or-key, games)`` pairs — the
     validated snapshot bindings of one proposal. Primary (matchup-row)
     tiers anneal per cited matchup; the aggregate tier anneals on the
-    whole-pool max exactly as before.
+    whole-pool max exactly as before. ``written_reference_count`` (the
+    number of snapshot-shaped references the proposal actually wrote)
+    only shapes the rejection token when none of them resolved, so the
+    repair hint can distinguish "wrote nothing" from "wrote but
+    unresolved".
     """
     pool_primary, aggregate_tier = _effective_evidence_tiers(snapshot_dir)
     h2h_rows = _load_head_to_head_rows(snapshot_dir)
@@ -356,6 +386,11 @@ def _snapshot_evidence_two_tier_errors(
             best_available=report["best_available"],
             tier=report["tier"],
             aggregate_tier=aggregate_tier,
+            refs_written=(
+                int(written_reference_count)
+                if written_reference_count and not citations
+                else None
+            ),
         )
     ]
 
@@ -617,6 +652,20 @@ def _proposal_schema_repair_guidance(
             "You used more than 3 snapshot references; the maximum is 3. "
             "Keep only the strongest 1–3 exact validated snapshot JSON pointers."
         )
+    elif any(
+        ".refs_written." in item
+        and item.startswith("proposal_cited_sample_too_small")
+        for item in hints
+    ):
+        add(
+            "Your snapshot-shaped evidence references did not resolve to a "
+            "row in the frozen snapshot. Copy one pointer verbatim from the "
+            "EXACT CITABLE SNAPSHOT ROWS section — the exact form is "
+            "snapshot:<file>.json#/<locator> (e.g. "
+            "snapshot:head_to_head.json#/rows). Do not rewrite the file "
+            "path, merge the repo-relative path form with the pointer form, "
+            "or invent a locator."
+        )
     elif any("proposal_snapshot" in item for item in hints):
         add(
             "Copy one exact validated snapshot JSON pointer (maximum 2)."
@@ -633,8 +682,11 @@ def _proposal_schema_repair_guidance(
             "expected_delta=<0.0<d<=1.0>; samples="
             + _PROPOSAL_STRENGTH_SAMPLE_FLOOR
             + "; uncertainty=" + _PROPOSAL_UNCERTAINTY_PROMPT_VALUE
-            + "; secondary=net_chip_ci\". Never replace literals with "
-            "natural-language W/L/D prose."
+            + "; secondary=net_chip_ci\". Copy the samples= value exactly as "
+            "`" + _PROPOSAL_STRENGTH_SAMPLE_FLOOR + "` — it starts with the "
+            "two characters > and =, and every word is joined by underscores "
+            "with no spaces; do not reformat, respell, or translate it. Never "
+            "replace literals with natural-language W/L/D prose."
         )
     if any("proposal_falsifier" in item for item in hints):
         add(
@@ -957,6 +1009,20 @@ def _parsed_proposal_measurement(value: str) -> dict[str, str] | None:
     return parsed
 
 
+def _proposal_samples_floor_matches(value: str) -> bool:
+    """True when a samples value is semantically the strength sample floor.
+
+    Accepts the canonical ``>=30_complete_matches`` plus its equivalent
+    spellings (see ``_PROPOSAL_SAMPLES_FLOOR_EQUIVALENT``); the value
+    arrives lower-cased and stripped from ``_parsed_proposal_measurement``.
+    """
+
+    return (
+        isinstance(value, str)
+        and _PROPOSAL_SAMPLES_FLOOR_EQUIVALENT.fullmatch(value.strip()) is not None
+    )
+
+
 def _proposal_measurement_contract_valid(value: str, evidence_mode: str) -> bool:
     """Require one machine-readable generation hypothesis, not vague test prose."""
 
@@ -981,7 +1047,7 @@ def _proposal_measurement_contract_valid(value: str, evidence_mode: str) -> bool
         return bool(
             0.0 < expected_delta <= 1.0
             and parsed["primary"] == "complete_70_hand_wld"
-            and parsed["samples"] == _PROPOSAL_STRENGTH_SAMPLE_FLOOR
+            and _proposal_samples_floor_matches(parsed["samples"])
             and uncertainty == _PROPOSAL_UNCERTAINTY_PROMPT_VALUE
             and parsed["secondary"] == "net_chip_ci"
         )
@@ -1103,10 +1169,69 @@ def _fuzzy_resolve_symbol(
     )
 
 
+def _repo_relative_snapshot_path_relative(
+    path_text: str,
+    snapshot_dir: Path | None,
+) -> str | None:
+    """Map a repo-relative snapshot file path onto its snapshot-dir filename.
+
+    The Master prompt renders one frozen snapshot file in two path forms:
+    the canonical pointer (``snapshot:head_to_head.json#/rows``) and the
+    repo-relative ``h2h_relpath`` line rendered by
+    ``h2h_snapshot_contract_text``
+    (``web/core/results/vN/evidence_snapshot/head_to_head.json``).  A model
+    that merges the two forms writes the repo-relative spelling into
+    ``evidence_refs``; that spelling must resolve to the same snapshot file
+    instead of failing the whole reference (2026-10-04 audit P3: the
+    failure cascaded into ``evidence_ref_invalid`` +
+    ``snapshot_evidence_required`` + ``cited.0``).  Only a path whose
+    directory tail aligns with the snapshot directory itself is mapped — an
+    arbitrary ``.json`` path is not.
+    """
+    if snapshot_dir is None:
+        return None
+    cleaned = path_text.strip().replace("\\", "/")
+    if not cleaned or cleaned.startswith("/"):
+        return None
+    parts = [part for part in cleaned.split("/") if part]
+    if len(parts) < 2 or ".." in parts:
+        return None
+    directory_parts, filename = parts[:-1], parts[-1]
+    if not filename.lower().endswith(".json"):
+        return None
+    snap_parts = Path(snapshot_dir).resolve().parts
+    # Largest k >= 1 where the written directory tail aligns with the
+    # snapshot directory tail; the resolved file is still opened only under
+    # the resolved snapshot root below, so this cannot widen the read scope.
+    for k in range(min(len(directory_parts), len(snap_parts)), 0, -1):
+        if tuple(directory_parts[-k:]) == tuple(snap_parts[-k:]):
+            return filename
+    return None
+
+
+def _snapshot_reference_like(text: str) -> bool:
+    """True when a reference text is snapshot-shaped in EITHER prompt form."""
+    if text.startswith("snapshot:"):
+        return True
+    head = text.split("#", 1)[0] if "#" in text else ""
+    return head.strip().lower().endswith(".json")
+
+
 def _validated_snapshot_reference(value: object, snapshot_dir: Path | None) -> str | None:
     text = str(value or "").strip()
-    if not text.startswith("snapshot:") or "#" not in text:
+    if "#" not in text:
         return None
+    if not text.startswith("snapshot:"):
+        # Accept the repo-relative path form the prompt also renders
+        # (h2h_relpath); normalize it onto the canonical pointer form so
+        # both spellings of the same snapshot node validate identically.
+        path_text, locator = text.split("#", 1)
+        relative_name = _repo_relative_snapshot_path_relative(
+            path_text, snapshot_dir
+        )
+        if relative_name is None:
+            return None
+        text = f"snapshot:{relative_name}#{locator}"
     path_text, locator = text[len("snapshot:"):].split("#", 1)
     relative = Path(path_text.strip().replace("\\", "/"))
     if (
@@ -1599,7 +1724,7 @@ def _validated_master_proposal(
                         normalized_ref = f"source:{symbol}"
                         source_ref_symbols.add(symbol)
                 break
-        if not matched_source and text.startswith("snapshot:"):
+        if not matched_source and _snapshot_reference_like(text):
             binding = _snapshot_reference_evidence_binding(text, snapshot_dir)
             if binding is not None:
                 normalized_ref = binding["reference"]
@@ -1908,6 +2033,7 @@ def _master_proposal_projection_hints(
     referenced: set[str] = set()
     normalized_refs: set[str] = set()
     snapshot_ref_count = 0
+    snapshot_like_refs = 0
     snapshot_citations: list[tuple[str | None, int]] = []
     if not isinstance(raw_refs, list) or not 1 <= len(raw_refs) <= 10:
         errors.append("proposal_evidence_refs_shape_invalid")
@@ -1942,7 +2068,8 @@ def _master_proposal_projection_hints(
                             referenced.add(symbol)
                             normalized_ref = f"source:{symbol}"
                     break
-            if not matched_source and text.startswith("snapshot:"):
+            if not matched_source and _snapshot_reference_like(text):
+                snapshot_like_refs += 1
                 binding = _snapshot_reference_evidence_binding(
                     text,
                     snapshot_dir,
@@ -1977,7 +2104,9 @@ def _master_proposal_projection_hints(
         if require_snapshot_evidence:
             errors.extend(
                 _snapshot_evidence_two_tier_errors(
-                    snapshot_citations, snapshot_dir
+                    snapshot_citations,
+                    snapshot_dir,
+                    written_reference_count=snapshot_like_refs,
                 )
             )
     if len(str(data.get("risks") or "").strip()) < 20:

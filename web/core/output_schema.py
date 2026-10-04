@@ -178,6 +178,19 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
         "opponent.showdown_range.adaptation_weight",
         "opponent.showdown_range.showdown_reach_rate",
         "opponent.showdown_range.tightness",
+        # Selection-guard fields the native tracker actually publishes
+        # (bots/national_cloud_v88/national_bot.py showdown_range dict) and
+        # policy.py consumes (bucket_rates/bucket_priors); the reference pack
+        # lists selection_scope/selection_bias_guard/bucket_rates as required
+        # decision-context fields, so a whitelist narrower than the runtime
+        # schema falsely rejected factually correct mechanism prose
+        # (2026-10-04 audit P2; regression:
+        # tests/test_master_false_kill_fixes_20261004.py).
+        "opponent.showdown_range.selection_scope",
+        "opponent.showdown_range.selection_bias_guard",
+        "opponent.showdown_range.bucket_priors",
+        "opponent.showdown_range.bucket_counts",
+        "opponent.showdown_range.bucket_rates",
         "showdown_range",
         "oppo_hands",
     ),

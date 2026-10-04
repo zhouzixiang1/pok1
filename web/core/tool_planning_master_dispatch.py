@@ -54,6 +54,60 @@ from tool_helpers import (
 import tool_planning as _tp  # noqa: E402,F401
 
 
+def _collect_h2h_citation_audit(data, next_v, source_v):
+    """Run the deterministic H2H citation audit chain; fail CLOSED.
+
+    accuracy (``validate_h2h_citations_against_snapshot``), the statistical
+    evidence floor, the sealed-evidence precision check, and the repair
+    guidance share one collector.  An internal exception previously blanked
+    the error list, which the dispatch below treated exactly like an audit
+    pass — an audit crash was indistinguishable from a clean audit
+    (fail-open, 2026-10-04 static audit P5).  Now the exception is recorded
+    as an explicit ``pipeline.h2h_citation_audit_exception`` event and
+    returned as a typed rejection token so the audit blocks instead.
+    """
+    try:
+        from evidence_snapshot import (
+            h2h_citation_repair_guidance,
+            statistical_evidence_floor_errors,
+            validate_h2h_citations_against_snapshot,
+            validate_sealed_proposal_evidence_precision,
+        )
+        errors = validate_h2h_citations_against_snapshot(data, next_v)
+        # Two-tier statistical evidence bar (sufficiency), kept separate from
+        # citation accuracy above: 2026-08-16 audit found 12/12 selected plans
+        # acting on n=4-56 rows.
+        errors = statistical_evidence_floor_errors(data, next_v) + errors
+        # Sealed-evidence precision (audit_scope): the sealed proposal
+        # structures are excluded from the citation views above, so their
+        # snapshot_evidence bindings are re-proved byte-level against the
+        # same frozen snapshot (pointer + node_sha256 + typed scalars +
+        # projection) instead of being graded as prose citations.
+        errors = errors + validate_sealed_proposal_evidence_precision(
+            data, next_v
+        )
+        guidance = h2h_citation_repair_guidance(
+            next_v,
+            errors,
+            source_v=source_v,
+        )
+        return errors, guidance
+    except Exception as exc:
+        _tp.log_system_event(
+            "pipeline.h2h_citation_audit_exception",
+            "error",
+            "Master plan H2H citation audit raised an internal exception; "
+            "failing closed (audit blocked) instead of passing silently",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "exception_type": type(exc).__name__,
+                "exception": str(exc)[:400],
+            },
+        )
+        return (["h2h_citation_audit_failed_closed:" + type(exc).__name__], "")
+
+
 def _audit_rejection_is_pure_evidence_floor(audit_result: dict) -> bool:
     """True when the deterministic audit rejection is ONLY the evidence floor.
 
@@ -1863,41 +1917,9 @@ async def run_master_impl(args):
                 _h2h_repair_guidance = ""
                 audit_result = _tp._protocol_bootstrap_master_audit(data)
             else:
-                try:
-                    from evidence_snapshot import (
-                        h2h_citation_repair_guidance,
-                        statistical_evidence_floor_errors,
-                        validate_h2h_citations_against_snapshot,
-                        validate_sealed_proposal_evidence_precision,
-                    )
-                    _h2h_citation_errors = validate_h2h_citations_against_snapshot(data, next_v)
-                    # Two-tier statistical evidence bar (sufficiency), kept
-                    # separate from citation accuracy above: 2026-08-16 audit
-                    # found 12/12 selected plans acting on n=4-56 rows.
-                    _h2h_citation_errors = (
-                        statistical_evidence_floor_errors(data, next_v)
-                        + _h2h_citation_errors
-                    )
-                    # Sealed-evidence precision (audit_scope): the sealed
-                    # proposal structures are excluded from the citation
-                    # views above, so their snapshot_evidence bindings are
-                    # re-proved byte-level against the same frozen snapshot
-                    # (pointer + node_sha256 + typed scalars + projection)
-                    # instead of being graded as prose citations.
-                    _h2h_citation_errors = (
-                        _h2h_citation_errors
-                        + validate_sealed_proposal_evidence_precision(
-                            data, next_v
-                        )
-                    )
-                    _h2h_repair_guidance = h2h_citation_repair_guidance(
-                        next_v,
-                        _h2h_citation_errors,
-                        source_v=source_v,
-                    )
-                except Exception:
-                    _h2h_citation_errors = []
-                    _h2h_repair_guidance = ""
+                _h2h_citation_errors, _h2h_repair_guidance = (
+                    _collect_h2h_citation_audit(data, next_v, source_v)
+                )
             if not protocol_bootstrap_no_strength and _h2h_citation_errors:
                 audit_result = {
                     "plan_coherent": False,
