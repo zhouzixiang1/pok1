@@ -12,10 +12,26 @@ from llm_availability import (
     QUOTA_RESET_AUTHORITY_FALLBACK,
     QUOTA_RESET_AUTHORITY_PROVIDER,
     SERVICE_UNAVAILABLE,
+    TRANSPORT_UNAVAILABLE,
     classify_llm_availability,
+    service_unavailable_cooldown_seconds,
 )
 import llm_availability_store as store
 import llm_query
+
+
+# --- P1 (2026-10-05): frequency-class cooldown exponential backoff ----------
+
+
+def test_service_unavailable_cooldown_curve_sequence():
+    """Shared curve: cooldown(n) = min(120, 8 * 2**(n-1)), n counted from 1."""
+    assert [service_unavailable_cooldown_seconds(n) for n in range(1, 7)] == [
+        8, 16, 32, 64, 120, 120,
+    ]
+    # Out-of-range counts clamp instead of crashing or exploding.
+    assert service_unavailable_cooldown_seconds(0) == 8
+    assert service_unavailable_cooldown_seconds(-3) == 8
+    assert service_unavailable_cooldown_seconds(99) == 120
 
 
 @pytest.fixture
@@ -110,10 +126,13 @@ def test_transient_pause_auto_resumes_only_after_system_cooldown(isolated_store)
 
     assert state["active"] is True
     assert state["requires_manual_resume"] is False
-    assert store.pause_wait_seconds(state, now=now) == pytest.approx(120.0)
-    assert store.active_llm_pause(now=now + timedelta(seconds=119))["active"] is True
+    # P1 (2026-10-05): the first SERVICE_UNAVAILABLE occurrence now cools down
+    # for the curve base 8s (was a flat 120s); only consecutive recurrences
+    # escalate towards the 120s ceiling.
+    assert store.pause_wait_seconds(state, now=now) == pytest.approx(8.0)
+    assert store.active_llm_pause(now=now + timedelta(seconds=7))["active"] is True
 
-    assert store.active_llm_pause(now=now + timedelta(seconds=120)) is None
+    assert store.active_llm_pause(now=now + timedelta(seconds=8)) is None
     audit = store.load_llm_pause()
     assert audit["active"] is False
     assert audit["resume_source"] == "bounded_cooldown_elapsed"
@@ -132,9 +151,101 @@ def test_status_only_429_persists_as_short_service_cooldown(isolated_store):
     state = store.persist_llm_pause(issue, now=now)
     assert state["category"] == SERVICE_UNAVAILABLE
     assert state["requires_manual_resume"] is False
-    assert store.pause_wait_seconds(state, now=now) == pytest.approx(120.0)
-    assert store.active_llm_pause(now=now + timedelta(seconds=119))["active"] is True
-    assert store.active_llm_pause(now=now + timedelta(seconds=120)) is None
+    # P1 (2026-10-05): first bare-429 occurrence uses the curve base 8s (was a
+    # flat 120s); it must still never become a 5-hour quota wait.
+    assert store.pause_wait_seconds(state, now=now) == pytest.approx(8.0)
+    assert store.active_llm_pause(now=now + timedelta(seconds=7))["active"] is True
+    assert store.active_llm_pause(now=now + timedelta(seconds=8)) is None
+
+
+def test_service_unavailable_recurrence_backs_off_exponentially(isolated_store):
+    """A recurring frequency-class pause escalates along the shared curve.
+
+    The durable 1302 friction repeats every few minutes in production; a flat
+    cooldown re-arms the same short window forever, so each same-category
+    recurrence observed while the pause is still active must extend
+    ``auto_resume_at`` by cooldown(occurrences) (P1, 2026-10-05).
+    """
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    first = store.persist_llm_pause(_service_issue(), now=now)
+    assert first["occurrences"] == 1
+    assert store.pause_wait_seconds(first, now=now) == pytest.approx(8.0)
+
+    second = store.persist_llm_pause(
+        _service_issue(), now=now + timedelta(seconds=4)
+    )
+    assert second["occurrences"] == 2
+    assert store.pause_wait_seconds(second, now=now + timedelta(seconds=4)) == (
+        pytest.approx(16.0)
+    )
+
+    third = store.persist_llm_pause(
+        _service_issue(), now=now + timedelta(seconds=5)
+    )
+    assert third["occurrences"] == 3
+    assert store.pause_wait_seconds(third, now=now + timedelta(seconds=5)) == (
+        pytest.approx(32.0)
+    )
+
+
+def test_service_unavailable_cooldown_resets_after_pause_clears(isolated_store):
+    """After the pause auto-resumes, a later occurrence starts the curve over."""
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    first = store.persist_llm_pause(_service_issue(), now=now)
+    second = store.persist_llm_pause(
+        _service_issue(), now=now + timedelta(seconds=4)
+    )
+    assert second["occurrences"] == 2
+    # auto_resume_at = now+4+16s; let it elapse so the record clears.
+    assert store.active_llm_pause(now=now + timedelta(seconds=4 + 16)) is None
+
+    fresh = store.persist_llm_pause(
+        _service_issue(), now=now + timedelta(seconds=4 + 16 + 1)
+    )
+    assert fresh["occurrences"] == 1
+    assert store.pause_wait_seconds(
+        fresh, now=now + timedelta(seconds=4 + 16 + 1)
+    ) == pytest.approx(8.0)
+
+
+def test_transport_unavailable_keeps_flat_60s_cooldown(isolated_store):
+    """TRANSPORT_UNAVAILABLE is NOT part of the backoff curve: its fixed 60s
+    cooldown (and its recurrence behaviour) must be untouched by P1."""
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    transport_state = {
+        "category": TRANSPORT_UNAVAILABLE,
+        "summary": "connection refused",
+        "retry_policy": "cooldown",
+        "requires_manual_resume": False,
+        "evidence_digest": "t" * 64,
+    }
+    state = store.persist_llm_pause(transport_state, now=now)
+    assert store.pause_wait_seconds(state, now=now) == pytest.approx(60.0)
+
+    recurring = store.persist_llm_pause(
+        transport_state, now=now + timedelta(seconds=1)
+    )
+    assert recurring["occurrences"] == 2
+    # No curve extension for transport: still due at the original now+60s.
+    assert store.pause_wait_seconds(
+        recurring, now=now + timedelta(seconds=1)
+    ) == pytest.approx(59.0)
+
+
+def test_quota_provider_reset_path_unaffected_by_backoff_curve(isolated_store):
+    """A confirmed 1308 with a provider timestamp keeps the provider reset as
+    the sole resume authority; same-category recurrences must not re-derive it
+    from the frequency-class curve (P1 regression, 2026-10-05)."""
+    now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    issue = _quota_issue("2026-07-13T15:00:00+00:00")
+    state = store.persist_llm_pause(issue, now=now)
+    assert state["auto_resume_at"] == state["provider_reset_at"]
+    assert state["auto_resume_at"] == "2026-07-13T15:00:00+00:00"
+
+    recurring = store.persist_llm_pause(
+        _quota_issue("2026-07-13T15:00:00+00:00"), now=now + timedelta(minutes=1)
+    )
+    assert recurring["auto_resume_at"] == "2026-07-13T15:00:00+00:00"
 
 
 def test_1308_without_timestamp_auto_resumes_after_quota_fallback_window(

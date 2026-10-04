@@ -32,6 +32,7 @@ from llm_availability import (
     QUOTA_RESET_AUTHORITY_PROVIDER,
     SERVICE_UNAVAILABLE,
     TRANSPORT_UNAVAILABLE,
+    service_unavailable_cooldown_seconds,
 )
 
 
@@ -41,7 +42,10 @@ PAUSE_FILENAME = "llm_availability_pause.json"
 LOCK_FILENAME = ".llm_availability_pause.lock"
 
 _AUTO_COOLDOWN_SECONDS = {
-    SERVICE_UNAVAILABLE: 120,
+    # SERVICE_UNAVAILABLE is deliberately absent: its cooldown follows the
+    # shared exponential curve ``service_unavailable_cooldown_seconds`` (P1,
+    # 2026-10-05), computed inside the pause lock where the occurrence count
+    # is known. TRANSPORT_UNAVAILABLE keeps its flat fixed window.
     TRANSPORT_UNAVAILABLE: 60,
 }
 _TRUSTED_QUOTA_RESET_AUTHORITIES = frozenset(
@@ -246,7 +250,6 @@ def persist_llm_pause(
         else:
             provider_reset = None
             manual = True
-    cooldown = None if manual else int(_AUTO_COOLDOWN_SECONDS.get(category, 120))
 
     with _PauseLock():
         path = pause_path()
@@ -287,6 +290,22 @@ def persist_llm_pause(
                 current = dict(current)
                 current["last_observed_at"] = _iso(timestamp)
                 current["occurrences"] = int(current.get("occurrences") or 1) + 1
+                # P1 (2026-10-05): a same-category SERVICE_UNAVAILABLE
+                # recurrence observed while the pause is still active extends
+                # its own cooldown along the shared exponential curve, so a
+                # sustained 1302/bare-429 burst backs off instead of
+                # re-arming the same short window forever. QUOTA_429 (the
+                # provider reset timestamp is the sole resume authority) and
+                # TRANSPORT_UNAVAILABLE (fixed 60s) keep their contracts.
+                if category == SERVICE_UNAVAILABLE and not manual:
+                    extended = timestamp + timedelta(
+                        seconds=service_unavailable_cooldown_seconds(
+                            current["occurrences"]
+                        )
+                    )
+                    existing_due = _parse_time(current.get("auto_resume_at"))
+                    if existing_due is None or extended > existing_due:
+                        current["auto_resume_at"] = _iso(extended)
                 if digest != str(current.get("evidence_digest") or ""):
                     current["last_suppressed_category"] = category
                     current["last_suppressed_evidence_digest"] = digest
@@ -302,6 +321,20 @@ def persist_llm_pause(
             int(current.get("occurrences") or 1) + 1
             if current and current.get("active") and current.get("category") == category
             else 1
+        )
+        # P1 (2026-10-05): the cooldown is computed HERE — inside the lock,
+        # after the occurrence count is known — so SERVICE_UNAVAILABLE walks
+        # the shared exponential curve (8 → 16 → ... → 120s) while every other
+        # category keeps its fixed window and QUOTA_429 keeps the provider
+        # reset as its sole resume authority below.
+        cooldown = (
+            None
+            if manual
+            else (
+                service_unavailable_cooldown_seconds(occurrences)
+                if category == SERVICE_UNAVAILABLE
+                else int(_AUTO_COOLDOWN_SECONDS.get(category, 120))
+            )
         )
         auto_resume_at = None
         if not manual:

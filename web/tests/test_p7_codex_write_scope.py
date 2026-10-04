@@ -472,18 +472,90 @@ def test_spawn_cwd_stays_project_root_without_write_scope(monkeypatch, tmp_path)
 
 
 def test_writable_roots_relative_paths_resolve_against_base_dir(tmp_path):
-    """O2 (review note): a bare relative file name must resolve against the
-    dispatch base dir, never widen to the process cwd via the former
-    ``dirname(...) or "."`` fallback."""
-    roots = lcx.codex_writable_roots(
-        {"files": ["policy.py"]}, tools=["Edit"], base_dir=str(tmp_path)
-    )
-    assert roots == [_real(tmp_path)]
-    # Relative directory form resolves against base_dir as well.
+    """O2 (review note) + P6 (2026-10-05): a bare relative FILE name can no
+    longer be resolved at all — its parent directory is the whole base tree
+    (``dirname(base/policy.py) == base``), so under a repo-root base_dir it
+    widened the writable scope to the entire repository (live repro:
+    files=["policy.py"] returned ["/home/ubuntu/pok1"]). The resolver now
+    fails closed with ``CodexWriteScopeUnresolvable``; a directory-qualified
+    relative path or an absolute path is required."""
+    with pytest.raises(lcx.CodexWriteScopeUnresolvable) as excinfo:
+        lcx.codex_writable_roots(
+            {"files": ["policy.py"]}, tools=["Edit"], base_dir=str(tmp_path)
+        )
+    assert "policy.py" in str(excinfo.value)
+    # Relative DIRECTORY form resolves against base_dir as well.
     (tmp_path / "nested").mkdir()
     assert lcx.codex_writable_roots(
         {"dirs": ["nested"]}, tools=["Edit"], base_dir=str(tmp_path)
     ) == [_real(tmp_path / "nested")]
+    # A directory-qualified relative FILE keeps its precise parent root.
+    assert lcx.codex_writable_roots(
+        {"files": ["nested/policy.py"]}, tools=["Edit"], base_dir=str(tmp_path)
+    ) == [_real(tmp_path / "nested")]
+
+
+def test_writable_roots_bare_relative_file_fails_closed_even_without_require(tmp_path):
+    """P6 (2026-10-05): the bare-relative-file rejection is unconditional for
+    write-tool dispatches — it is a scope-widening hazard, not just a
+    resolvability nit, so it must raise even without ``require_resolvable``
+    (the historical default path) instead of silently returning a widened
+    root."""
+    with pytest.raises(lcx.CodexWriteScopeUnresolvable):
+        lcx.codex_writable_roots(
+            {"files": ["policy.py"]}, tools=["Edit"], base_dir=str(tmp_path)
+        )
+    # Absolute file paths are unaffected.
+    absolute = tmp_path / "policy.py"
+    absolute.write_text("x = 1\n", encoding="utf-8")
+    assert lcx.codex_writable_roots(
+        {"files": [str(absolute)]}, tools=["Edit"], base_dir=str(tmp_path)
+    ) == [_real(tmp_path)]
+    # Without write tools the resolver stays read-only ([]).
+    assert (
+        lcx.codex_writable_roots(
+            {"files": ["policy.py"]}, tools=["Bash"], base_dir=str(tmp_path)
+        )
+        == []
+    )
+
+
+def test_writable_roots_dropped_entries_are_visible(tmp_path, caplog):
+    """P6 (2026-10-05): under ``require_resolvable`` a declared-but-missing
+    entry must not vanish silently — the zero-root exception text names the
+    dropped candidates, and a partial drop (some roots survive) is logged so
+    the narrowed surface stays debuggable."""
+    import logging
+
+    with pytest.raises(lcx.CodexWriteScopeUnresolvable) as excinfo:
+        lcx.codex_writable_roots(
+            {"dirs": ["missing_dir"]},
+            tools=["Edit"],
+            base_dir=str(tmp_path),
+            require_resolvable=True,
+        )
+    assert "missing_dir" in str(excinfo.value), (
+        "the unresolvable-scope exception must name the dropped entries; got: "
+        f"{excinfo.value}"
+    )
+
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    with caplog.at_level(logging.WARNING, logger="llm_query_codex"):
+        roots = lcx.codex_writable_roots(
+            {"dirs": ["existing", "also_missing"]},
+            tools=["Edit"],
+            base_dir=str(tmp_path),
+            require_resolvable=True,
+        )
+    assert roots == [_real(existing)]
+    dropped_warnings = [
+        r for r in caplog.records if "also_missing" in r.getMessage()
+    ]
+    assert dropped_warnings, (
+        "a partially-dropped declared scope must be logged even when at "
+        f"least one root survived; got: {[r.getMessage() for r in caplog.records]}"
+    )
 
 
 def test_worker_rejection_scan_reads_only_this_attempt_increment(tmp_path):
@@ -513,6 +585,49 @@ def test_worker_rejection_scan_reads_only_this_attempt_increment(tmp_path):
     assert hits == ["read-only sandbox"]
     # Default offset 0 keeps the whole-tail behaviour for other callers.
     assert _worker_sandbox_rejection_hits("", io)
+
+
+def test_worker_rejection_scan_reads_increment_tail_not_head(tmp_path):
+    """P3 (2026-10-05): the role-io increment begins with the FULL prompt echo
+    (bounded at 700KB upstream), so the sandbox-rejection body inside the
+    trailing ``[TOOL_RESULT]`` lands far beyond the first 256KB of the
+    increment. The scan must read the TAIL of the increment
+    (``seek(max(since_offset, size - 256KB))`` → EOF, the same direction as
+    the crossover file-tail scan in agent_review.py), not a forward 256KB
+    window from the attempt start offset — otherwise a >256KB increment hides
+    the rejection markers and a transport-blocked Worker is misclassified as
+    a lazy model."""
+    from agent_workers import (
+        _WORKER_IO_REJECTION_SCAN_BYTES,
+        _worker_sandbox_rejection_hits,
+    )
+
+    io = tmp_path / "worker_io.txt"
+    io.write_text("stale prior attempt bytes\n", encoding="utf-8")
+    since = io.stat().st_size
+
+    # This attempt's increment: prompt echo larger than the scan bound, with
+    # the rejection body appended at the very end (as [TOOL_RESULT] is).
+    assert _WORKER_IO_REJECTION_SCAN_BYTES < 700 * 1024
+    with io.open("a", encoding="utf-8") as handle:
+        handle.write("P" * (700 * 1024))
+        handle.write(
+            "\n[509#1] apply_patch failed: writing is blocked by read-only "
+            "sandbox (Errno 30)\n"
+        )
+    assert sorted(
+        _worker_sandbox_rejection_hits("", io, since_offset=since)
+    ) == ["errno 30", "read-only sandbox"]
+
+    # The window never reaches BEFORE the attempt start: a stale rejection
+    # transcript written before ``since`` stays invisible even when this
+    # attempt's own increment is tiny.
+    early = tmp_path / "worker_early.txt"
+    early.write_text(SANDBOX_REJECTION_IO, encoding="utf-8")
+    early_size = early.stat().st_size
+    with early.open("a", encoding="utf-8") as handle:
+        handle.write("no rejection in this attempt\n")
+    assert _worker_sandbox_rejection_hits("", early, since_offset=early_size) == []
 
 
 def _lease_tree(tmp_path):

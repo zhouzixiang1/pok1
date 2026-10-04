@@ -88,6 +88,7 @@ import asyncio
 import contextlib
 import collections
 import json
+import logging
 import os
 import shutil
 import signal
@@ -220,10 +221,17 @@ def codex_writable_roots(
     ``tools`` gates on a provable Edit/Write declaration; when omitted or
     write-free the resolver returns ``[]`` (read-only sandbox). Relative
     entries resolve against ``base_dir`` (falling back to the process cwd)
-    — a bare relative file name must never widen the scope to an unrelated
-    directory. With ``require_resolvable=True`` a declared-but-unresolvable
-    scope raises :class:`CodexWriteScopeUnresolvable` instead of returning
-    ``[]`` so the caller can fail fast rather than silently downgrade.
+    — a bare relative FILE name must never widen the scope to an unrelated
+    directory: its parent is the whole base tree (``dirname(base/policy.py)
+    == base``), so under a repo-root base_dir it would silently make the
+    entire repository writable; the resolver therefore fails closed with
+    :class:`CodexWriteScopeUnresolvable` for any write-tool dispatch that
+    declares one (P6, 2026-10-05). With ``require_resolvable=True`` a
+    declared-but-unresolvable scope raises
+    :class:`CodexWriteScopeUnresolvable` instead of returning ``[]`` so the
+    caller can fail fast rather than silently downgrade, and every silently
+    non-existing entry dropped from the roots is named in the exception text
+    (or logged, when at least one root survived).
     """
 
     if not _declares_write_tools(tools):
@@ -233,12 +241,33 @@ def codex_writable_roots(
         return []
     base = str(base_dir) if base_dir else os.getcwd()
 
+    bare_files = sorted(
+        {
+            str(file)
+            for file in files
+            if not os.path.isabs(str(file))
+            and os.path.basename(str(file)) == str(file)
+        }
+    )
+    if bare_files:
+        raise CodexWriteScopeUnresolvable(
+            "codex transport write scope declared bare relative file "
+            f"name(s) {bare_files!r}: a bare file name resolves against "
+            f"base_dir {base!r}, whose whole tree would become writable via "
+            "its parent directory — that widens the declared write scope "
+            "(live repro 2026-10-05: files=['policy.py'] with a repo-root "
+            "base_dir returned the repository root as the writable root). "
+            "Qualify the file with its directory (e.g. "
+            "'lease_dir/policy.py') or declare an absolute path."
+        )
+
     def _absolute(candidate: str) -> str:
         if os.path.isabs(candidate):
             return candidate
         return os.path.join(base, candidate)
 
     roots: list[str] = []
+    dropped: list[str] = []
     candidates = [_absolute(str(dir_)) for dir_ in dirs] + [
         os.path.dirname(_absolute(str(file))) for file in files
     ]
@@ -246,18 +275,26 @@ def codex_writable_roots(
         if not candidate:
             continue
         if not os.path.isdir(candidate):
+            dropped.append(candidate)
             continue
         root = os.path.realpath(candidate)
         if root not in roots:
             roots.append(root)
+    if dropped and require_resolvable:
+        logging.getLogger(__name__).warning(
+            "codex write scope silently narrowed: declared entries resolved "
+            "to non-existing directories and were dropped: %r (surviving "
+            "roots: %r)", dropped, roots,
+        )
     if not roots and require_resolvable:
         raise CodexWriteScopeUnresolvable(
             "codex transport write scope declared but unresolvable: "
             f"dirs={dirs!r} files={files!r} resolve to zero existing "
-            "directory roots; the dispatch cannot build the workspace-write "
-            "writable_roots argv and would silently degrade to the read-only "
-            "sandbox (every provider patch rejected, lease bytes frozen). "
-            "Fix the lease/workspace directory creation or the declared "
+            f"directory roots (dropped non-existing entries: {dropped!r}); "
+            "the dispatch cannot build the workspace-write writable_roots "
+            "argv and would silently degrade to the read-only sandbox "
+            "(every provider patch rejected, lease bytes frozen). Fix the "
+            "lease/workspace directory creation or the declared "
             "allowed_write_dir before dispatching this role."
         )
     return roots

@@ -66,6 +66,30 @@ _GLM_FREQUENCY_MARKERS = (
 )
 _GLM_QUOTA_CODE = "[1308]"
 
+# P1 (2026-10-05): frequency-class failures (GLM 1302, bare 429, generic
+# unavailable) back off exponentially instead of a flat 120s cooldown. An
+# isolated occurrence clears in 8s; only a sustained burst escalates towards
+# the historical 120s ceiling. Shared by both cooldown authorities — the
+# durable availability pause (``llm_availability_store.persist_llm_pause``)
+# and the saturator's non-quota launch pause — so they can never diverge.
+_SERVICE_COOLDOWN_BASE_SECONDS = 8
+_SERVICE_COOLDOWN_CAP_SECONDS = 120
+
+
+def service_unavailable_cooldown_seconds(occurrences: int) -> int:
+    """Cooldown for the ``occurrences``-th consecutive frequency-class failure.
+
+    ``cooldown(n) = min(120, 8 * 2**(n-1))`` with ``n`` counted from 1:
+    8 → 16 → 32 → 64 → 120 → 120 ...  Counts below 1 clamp to 1 (isolated
+    failure) and the curve is capped at the historical 120s ceiling.
+    """
+
+    count = max(1, int(occurrences))
+    return min(
+        _SERVICE_COOLDOWN_CAP_SECONDS,
+        _SERVICE_COOLDOWN_BASE_SECONDS * 2 ** (count - 1),
+    )
+
 _TRANSPORT_ERRNOS = frozenset(
     value
     for value in (
@@ -695,4 +719,5 @@ __all__ = [
     "looks_like_provider_error_envelope",
     "classify_llm_availability",
     "build_llm_pause_state",
+    "service_unavailable_cooldown_seconds",
 ]

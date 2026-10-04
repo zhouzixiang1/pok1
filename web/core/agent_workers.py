@@ -185,6 +185,12 @@ class WorkerInfrastructureError(RuntimeError):
 #: after a zero-change attempt (the role io file accumulates the whole
 #: attempt's tool errors; only the bytes written since the attempt began are
 #: attributable to it, and the scan stays cheap for very large logs).
+#: P3 (2026-10-05): the bound applies to the TAIL of that increment, not its
+#: head — the increment starts with the full prompt echo (bounded at 700KB
+#: upstream in llm_query), so the trailing [TOOL_RESULT] rejection body sits
+#: at the end; a forward window from the attempt offset would cover only the
+#: prompt and miss every marker. The crossover scan (agent_review.py) reads
+#: the same file-tail direction.
 _WORKER_IO_REJECTION_SCAN_BYTES = 256 * 1024
 
 
@@ -200,17 +206,22 @@ def _io_log_size(worker_log_file) -> int:
 def _worker_sandbox_rejection_hits(worker_output, worker_log_file, since_offset=0):
     """Sandbox write-rejection markers in this worker attempt's evidence.
 
-    Scans the provider-visible terminal output plus the io-log bytes written
-    since ``since_offset`` (the attempt's start offset — the log accumulates
-    across attempts, and a PREVIOUS attempt's rejection transcript must not
-    reclassify a later genuinely-lazy attempt as infrastructure; bounded to
-    ``_WORKER_IO_REJECTION_SCAN_BYTES`` from that offset). Returns the
-    distinct matched markers; empty means no transport write rejection is
-    provable (P7-2, 2026-10-04: v494/v500/v509 Workers produced
-    contract-compliant patches that the read-only transport sandbox rejected
-    on every attempt, which the byte-diff zero-change check misread as model
-    laziness). Never raises; a missing/unreadable log simply contributes no
-    text.
+    Scans the provider-visible terminal output plus the TAIL of the io-log
+    bytes written since ``since_offset`` (the attempt's start offset — the
+    log accumulates across attempts, and a PREVIOUS attempt's rejection
+    transcript must not reclassify a later genuinely-lazy attempt as
+    infrastructure). P3 (2026-10-05): the window is the LAST
+    ``_WORKER_IO_REJECTION_SCAN_BYTES`` of the increment
+    (``seek(max(since_offset, size - bound))`` → EOF), matching the
+    crossover file-tail scan direction in agent_review.py — the increment
+    begins with the full prompt echo (up to 700KB), so the trailing
+    ``[TOOL_RESULT]`` rejection body must be read from the end, never forward
+    from the offset. Returns the distinct matched markers; empty means no
+    transport write rejection is provable (P7-2, 2026-10-04: v494/v500/v509
+    Workers produced contract-compliant patches that the read-only transport
+    sandbox rejected on every attempt, which the byte-diff zero-change check
+    misread as model laziness). Never raises; a missing/unreadable log simply
+    contributes no text.
     """
 
     tail = ""
@@ -218,8 +229,9 @@ def _worker_sandbox_rejection_hits(worker_output, worker_log_file, since_offset=
         path = Path(worker_log_file)
         if path.is_file():
             offset = max(0, int(since_offset or 0))
+            size = path.stat().st_size
             with path.open("rb") as handle:
-                handle.seek(offset)
+                handle.seek(max(offset, size - _WORKER_IO_REJECTION_SCAN_BYTES))
                 tail = handle.read(_WORKER_IO_REJECTION_SCAN_BYTES).decode(
                     "utf-8", "replace"
                 )

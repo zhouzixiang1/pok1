@@ -9,6 +9,7 @@ All public symbols are re-exported by llm_query.py for backward compatibility.
 
 import contextlib  # noqa: F401  (preserved verbatim from llm_query.py)
 import json  # noqa: F401  (preserved verbatim from llm_query.py)
+import logging
 import math
 import os
 import re
@@ -389,7 +390,10 @@ def _append_role_io(log_file_path, text):
         on the same correlation key (RC6).
 
     Never raises — logging must not crash the pipeline. Returns silently on any
-    error (the underlying stream processing / return value is unaffected).
+    error (the underlying stream processing / return value is unaffected); a
+    write failure is surfaced as a process-logger WARNING instead of a silent
+    ``except: pass`` so role-IO evidence loss stays operator-visible (P5,
+    2026-10-05).
     """
     try:
         log_file_path = os.fspath(log_file_path)
@@ -431,5 +435,11 @@ def _append_role_io(log_file_path, text):
                 lf.seek(0, os.SEEK_END)
                 lf.write(chunk)
                 lf.flush()
-    except Exception:
-        pass
+    except Exception as exc:
+        # P5 (2026-10-05): still never raises, but role-IO evidence loss
+        # (disk full, permission drift) must be operator-visible — the web
+        # process logs at INFO, so this is a WARNING, not silence.
+        logging.getLogger(__name__).warning(
+            "role-IO append failed for %s: %s: %s",
+            log_file_path, type(exc).__name__, exc,
+        )

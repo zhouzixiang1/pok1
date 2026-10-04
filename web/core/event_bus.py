@@ -41,6 +41,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
+import logging
 import os
 import threading
 import time
@@ -48,6 +49,13 @@ import time
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
+
+#: Write-failure counters for the two _dispatch sinks (P5, 2026-10-05).
+#: Monotonic per process; reset only by reset_for_test for test isolation.
+#: They exist so operators can see ledger loss at a glance and so a persist
+#: failure can never hide behind ``except: pass`` again.
+dispatch_persist_failures = 0
+dispatch_broadcast_failures = 0
 
 #: Severity values the frontend hard-requires (SystemLogTab SEVERITY_CONFIG /
 #: api/types.ts SystemEvent.severity). Anything else would fall back to "info"
@@ -424,20 +432,37 @@ def emit(category, severity, message, *, stage=None, attempt=None, run_id=None,
 
 def _dispatch(event):
     """Persist one canonical event and broadcast the same object over SSE."""
+    global dispatch_persist_failures, dispatch_broadcast_failures
     try:
         from evolution_infra import append_locked_jsonl
         path = _events_file()
         if path is not None:
             append_locked_jsonl(path, event)
-    except Exception:
+    except Exception as exc:
         # Never let logging crash the pipeline — mirror system_log's tolerance.
-        pass
+        # But a silently dropped canonical row (disk full, permission drift)
+        # is ledger loss, so count it and warn through the process logger
+        # (P5, 2026-10-05; was ``except: pass``). Emitting another event from
+        # here would recurse — the warning is process-log only.
+        dispatch_persist_failures += 1
+        logging.getLogger(__name__).warning(
+            "events.jsonl append failed for %s event (drop #%d): %s: %s",
+            event.get("type"), dispatch_persist_failures,
+            type(exc).__name__, exc,
+        )
     try:
         from system_log import broadcast_system_event
 
         broadcast_system_event(event)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Same visibility contract for the SSE leg; the persisted row (when
+        # the append above succeeded) is unaffected.
+        dispatch_broadcast_failures += 1
+        logging.getLogger(__name__).warning(
+            "SSE broadcast failed for %s event (drop #%d): %s: %s",
+            event.get("type"), dispatch_broadcast_failures,
+            type(exc).__name__, exc,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -541,6 +566,7 @@ def apply_context(ctx):
 
 def reset_for_test():
     """Clear all contextvars + caches for test isolation."""
+    global dispatch_persist_failures, dispatch_broadcast_failures
     for cv in (_run_id_cv, _stage_cv, _attempt_cv):
         try:
             cv.set(None)
@@ -558,3 +584,5 @@ def reset_for_test():
         "evaluation_epoch": None,
         "receipt_digest": None,
     })
+    dispatch_persist_failures = 0
+    dispatch_broadcast_failures = 0

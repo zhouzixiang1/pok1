@@ -38,37 +38,103 @@ if str(CORE_DIR) not in sys.path:
 
 # --- P2: showdown_range whitelist must cover the runtime-published leaves ---
 
+#: Frozen copy of the v88 tracker's published ``showdown_range`` field set
+#: (bots/national_cloud_v88/national_bot.py, the "showdown_range" dict).
+#: Used as the fallback when the live bot source is absent (a fresh checkout
+#: starts with an empty ``bots/``), so the anti-drift assertion never silently
+#: skips.
+_FROZEN_V88_SHOWDOWN_FIELDS = frozenset({
+    "schema_version",
+    "samples",
+    "confidence",
+    "adaptation_weight",
+    "showdown_reach_rate",
+    "selection_scope",
+    "selection_bias_guard",
+    "prior_source",
+    "bucket_combo_counts",
+    "bucket_priors",
+    "bucket_counts",
+    "bucket_rates",
+    "tightness",
+    "class_counts",
+    "contexts",
+})
+
+_V88_BOT_SOURCE = (
+    Path(__file__).resolve().parents[2]
+    / "bots" / "national_cloud_v88" / "national_bot.py"
+)
+
+
+def _published_showdown_fields() -> set:
+    """Extract the tracker's live published showdown_range field set.
+
+    Parsed from the v88 ``national_bot.py`` source (every ``"showdown_range"``
+    dict literal) so a future tracker field turns this red the moment it
+    ships; falls back to the frozen copy above when the bot tree is absent.
+    """
+    import ast
+
+    if _V88_BOT_SOURCE.is_file():
+        tree = ast.parse(_V88_BOT_SOURCE.read_text(encoding="utf-8"))
+        fields: set = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values):
+                if (
+                    isinstance(key, ast.Constant)
+                    and key.value == "showdown_range"
+                    and isinstance(value, ast.Dict)
+                ):
+                    fields.update(
+                        sub.value
+                        for sub in value.keys
+                        if isinstance(sub, ast.Constant)
+                        and isinstance(sub.value, str)
+                    )
+        if fields:
+            return fields
+    return set(_FROZEN_V88_SHOWDOWN_FIELDS)
+
 
 def test_showdown_range_whitelist_covers_runtime_published_leaves():
-    """The root-scoped closed-leaf whitelist must mirror what the runtime
-    actually publishes under ``opponent.showdown_range`` (v88 tracker:
-    selection_scope/selection_bias_guard/bucket_priors/bucket_counts/
-    bucket_rates), not a stale narrower subset."""
+    """Anti-drift (P2 follow-up, 2026-10-05): the root-scoped closed-leaf
+    whitelist must be a SUPERSET of the field set the native tracker actually
+    publishes under ``opponent.showdown_range`` (extracted from the v88
+    ``national_bot.py`` source — schema_version/prior_source/
+    bucket_combo_counts/class_counts/contexts were still missing and rejected
+    factually correct shorthand lists with
+    ``proposal_mechanism_root_scoped_unknown_leaf``), not a hand-picked
+    subset of five leaves."""
     import output_schema as os_
 
     aliases = os_.STATE_LEARNING_INTERVENTION_TARGET_ALIASES[
         "opponent.showdown_range"
     ]
-    for leaf in (
-        "selection_scope",
-        "selection_bias_guard",
-        "bucket_priors",
-        "bucket_counts",
-        "bucket_rates",
-    ):
-        qualified = f"opponent.showdown_range.{leaf}"
-        assert qualified in aliases, (
-            f"{qualified} is published by the native tracker and consumed by "
-            "policy.py, but is missing from the root-scoped whitelist — a "
-            "proposal restating the runtime schema is falsely rejected "
-            "(proposal_mechanism_root_scoped_unknown_leaf)"
-        )
+    published = _published_showdown_fields()
+    assert published, "showdown_range field source must never resolve empty"
+    missing = sorted(
+        f"opponent.showdown_range.{leaf}"
+        for leaf in published
+        if f"opponent.showdown_range.{leaf}" not in aliases
+    )
+    assert not missing, (
+        "Fields published by the native tracker (v88 national_bot.py "
+        "showdown_range dict) are missing from the root-scoped whitelist — a "
+        "proposal restating the runtime schema is falsely rejected "
+        f"(proposal_mechanism_root_scoped_unknown_leaf): {missing}"
+    )
 
 
 def test_reference_pack_required_fields_covered_by_intervention_whitelist():
-    """Anti-drift: every root-scoped ``opponent.*`` field the reference pack
-    declares as required must already be a whitelisted child of its root, so
-    a future card that names a new runtime field without syncing
+    """Anti-drift: every field the reference pack declares as required that
+    falls under a governed intervention root — including the non-opponent
+    roots ``deadline`` / ``line.can_donk`` / ``line.can_delayed_probe``
+    (P2 coverage extension, 2026-10-05; was opponent.*-only and missed
+    ``deadline.refinement_monotonic``) — must already be whitelisted, so a
+    future card naming a new runtime field without syncing
     ``STATE_LEARNING_INTERVENTION_TARGET_ALIASES`` turns this test red."""
     import output_schema as os_
     import strategy_reference_pack as srp
@@ -92,12 +158,10 @@ def test_reference_pack_required_fields_covered_by_intervention_whitelist():
         )
         for field in declared:
             field = str(field).strip()
-            if not field.startswith("opponent."):
-                continue
             root = owning_root(field)
-            # Top-level opponent scalars (root "opponent") are not governed by
-            # any root-scoped intervention whitelist; only children of a
-            # governed root are in scope here.
+            # Fields outside every governed root (betting.*, cards.*,
+            # hand.*, legal.*, and top-level opponent scalars) are not
+            # governed by a root-scoped intervention whitelist.
             if root is None:
                 continue
             if field not in whitelist[root]:
@@ -110,17 +174,18 @@ def test_reference_pack_required_fields_covered_by_intervention_whitelist():
 
 
 def test_root_scoped_list_accepts_runtime_showdown_leaves():
-    """Behavioral guard: a root-scoped list naming exactly the five
-    runtime-published showdown leaves must not raise
+    """Behavioral guard: a root-scoped list naming the tracker's FULL
+    published showdown field set (extracted from the v88 source, not a
+    hand-picked subset) must not raise
     proposal_mechanism_root_scoped_unknown_leaf."""
     import agent_master_proposal_primaries as pp
 
+    leaves = ", ".join(sorted(_published_showdown_fields()))
     proposal = {
         "mechanism_target": "opponent.showdown_range",
         "structural_change": (
             "Rebucket the capped showdown posterior through the tracker's "
-            "published guard fields: opponent.showdown_range (selection_scope, "
-            "selection_bias_guard, bucket_priors, bucket_counts, bucket_rates) "
+            f"published fields: opponent.showdown_range ({leaves}) "
             "stay the only touched inputs."
         ),
         "expected_diff": (

@@ -11,6 +11,8 @@ the versions planning actually consumes via focus_v/opponent_v matching.
 import sys
 from pathlib import Path
 
+import pytest
+
 WEB_DIR = Path(__file__).resolve().parents[1]
 CORE_DIR = WEB_DIR / "core"
 if str(CORE_DIR) not in sys.path:
@@ -368,8 +370,10 @@ def test_latest_abandon_reason_reads_last_row(monkeypatch):
 # repository contract (web/core/llm_availability_store.py::
 # _AUTO_COOLDOWN_SECONDS) reserves the long pause for a confirmed GLM
 # 1308/quota window, while GLM 1302 / bare-429 / generic unavailable failures
-# are frequency-class pressure with a 120s cooldown. The journal showed two
-# mis-pauses per 20 minutes that stopped the saturator cold on 1302 noise.
+# are frequency-class pressure that back off along the shared exponential
+# curve (P1, 2026-10-05: min(120, 8*2**(n-1)), streak reset on success or a
+# non-provider failure — was a flat 120s). The journal showed two mis-pauses
+# per 20 minutes that stopped the saturator cold on 1302 noise.
 
 GLM_1302_TEXT = (
     "Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]"
@@ -391,27 +395,31 @@ def test_saturator_provider_pause_tiered_1308_long_1302_short(monkeypatch):
     )
 
     monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
     llm_saturator._note_saturator_provider_failure(GLM_1302_TEXT)
     rate_limit_remaining = llm_saturator._saturator_pause_remaining_sec()
 
     monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
     llm_saturator._note_saturator_provider_failure(GLM_1308_TEXT)
     quota_remaining = llm_saturator._saturator_pause_remaining_sec()
 
     # Confirmed 1308 quota window keeps the long saturator pause…
     assert 590.0 <= quota_remaining <= 600.0, quota_remaining
-    # …while 1302 frequency pressure cools down SHORT (120s contract), not
-    # the flat 600s that mis-paused the saturator twice per 20 minutes.
-    assert 100.0 <= rate_limit_remaining <= 120.0, rate_limit_remaining
+    # …while a FIRST 1302 occurrence cools down for the curve base 8s (P1,
+    # 2026-10-05: was a flat 120s; only consecutive recurrences escalate).
+    assert 0.0 < rate_limit_remaining <= 8.0, rate_limit_remaining
 
 
 def test_saturator_provider_pause_generic_unavailable_is_short(monkeypatch):
     monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
     llm_saturator._note_saturator_provider_failure(
         "ClaudeSDKError: API error 529 · provider overloaded / unavailable"
     )
     remaining = llm_saturator._saturator_pause_remaining_sec()
-    assert 100.0 <= remaining <= 120.0, remaining
+    # P1 (2026-10-05): first frequency-class failure = curve base 8s.
+    assert 0.0 < remaining <= 8.0, remaining
 
 
 def test_saturator_provider_pause_classifies_exception_bodies(monkeypatch):
@@ -419,5 +427,93 @@ def test_saturator_provider_pause_classifies_exception_bodies(monkeypatch):
     through the same canonical classification as strings."""
 
     monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
     llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
-    assert 100.0 <= llm_saturator._saturator_pause_remaining_sec() <= 120.0
+    assert 0.0 < llm_saturator._saturator_pause_remaining_sec() <= 8.0
+
+
+def test_saturator_rate_limit_pause_escalates_along_shared_curve(monkeypatch):
+    """P1 (2026-10-05): consecutive non-quota provider failures back off
+    8 → 16 → 32 → 64 → 120 → 120 along the shared curve, not a flat 120s."""
+    from llm_availability import service_unavailable_cooldown_seconds
+
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
+    import time as _time
+
+    for expected in (8, 16, 32, 64, 120, 120):
+        before = _time.time()
+        llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
+        after = _time.time()
+        assert llm_saturator._quota_pause_until == pytest.approx(
+            min(before, after) + expected, abs=2.0
+        ), (expected, llm_saturator._quota_pause_until - min(before, after))
+    assert llm_saturator._rate_limit_streak == 6
+
+
+def test_saturator_rate_limit_streak_resets_on_launch_success(monkeypatch):
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
+    llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
+    llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
+    assert llm_saturator._rate_limit_streak == 2
+
+    llm_saturator._note_saturator_launch_success()
+    assert llm_saturator._rate_limit_streak == 0
+
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
+    assert llm_saturator._rate_limit_streak == 1
+
+
+def test_saturator_rate_limit_streak_resets_on_nonprovider_failure(monkeypatch):
+    """A failure that is not quota/429/unavailable-shaped (loop bug, cancel,
+    timeout) is not frequency pressure: it must reset the streak and not arm
+    any provider pause."""
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 3)
+    llm_saturator._note_saturator_provider_failure(RuntimeError("syntax error"))
+    assert llm_saturator._rate_limit_streak == 0
+    assert llm_saturator._quota_pause_until == 0.0
+
+
+def test_saturator_quota_pause_prefers_typed_issue_attribute(monkeypatch):
+    """P4 (2026-10-05): LLMAvailabilityBlocked carries its typed
+    LLMAvailabilityIssue on ``.issue``; the exception text alone is only the
+    summary line and loses the 1308 provider body, so the text
+    re-classification missed every confirmed quota window carried by a paused
+    provider boundary (journal 2026-10-05 22:55-23:12: 176x 120s, 0x 600s,
+    7 dead sessions). The typed issue must win even when the exception text
+    alone would NOT classify as quota."""
+
+    from llm_availability import (
+        QUOTA_429,
+        LLMAvailabilityBlocked,
+        LLMAvailabilityIssue,
+        classify_llm_availability,
+    )
+
+    issue = LLMAvailabilityIssue(
+        category=QUOTA_429,
+        summary="provider paused by durable quota record",
+        http_status=429,
+        retry_policy="resume_after_quota_reset",
+        requires_manual_resume=False,
+        evidence_digest="q" * 64,
+        provider_reset_at="2026-10-05T23:00:00+00:00",
+        quota_reset_authority="provider_timestamp",
+    )
+    blocked = LLMAvailabilityBlocked(issue)
+    # Contract sanity: the exception text alone must NOT reclassify as quota —
+    # that is exactly the production hole this test pins.
+    assert classify_llm_availability(exception=blocked) is None or (
+        classify_llm_availability(exception=blocked).category != QUOTA_429
+    )
+
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
+    llm_saturator._note_saturator_provider_failure(blocked)
+    remaining = llm_saturator._saturator_pause_remaining_sec()
+    assert 590.0 <= remaining <= 600.0, remaining
+    # The quota branch must not burn the frequency-class streak.
+    assert llm_saturator._rate_limit_streak == 0

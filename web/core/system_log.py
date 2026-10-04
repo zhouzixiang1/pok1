@@ -46,8 +46,10 @@ def log_system_event(
         emit(event_type, severity, message, **fields)
     except Exception as exc:
         # Logging must never mutate a second fallback ledger or crash business
-        # logic.  The failure remains visible in the process log.
-        logging.getLogger(__name__).debug(
+        # logic.  The failure must stay visible in the process log — the web
+        # process runs at INFO, so a dropped structured event is a WARNING,
+        # not debug noise (P5, 2026-10-05).
+        logging.getLogger(__name__).warning(
             "Structured event emission failed for %s: %s", event_type, exc
         )
 

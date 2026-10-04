@@ -141,7 +141,11 @@ STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS = {
     "delayed_probe": "line.can_delayed_probe",
 }
 STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
-    "deadline": ("deadline",),
+    # P2 follow-up (2026-10-05): the reference pack's equity_ev_anytime card
+    # requires deadline.refinement_monotonic; the anti-drift coverage test now
+    # spans ALL governed roots (deadline / line.can_donk / line.can_delayed_probe,
+    # previously opponent.*-only), so the governed child must be listed.
+    "deadline": ("deadline", "deadline.refinement_monotonic"),
     "opponent.rates": (
         "opponent.rates",
         "opponent.rates.aggression",
@@ -183,7 +187,7 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
         # policy.py consumes (bucket_rates/bucket_priors); the reference pack
         # lists selection_scope/selection_bias_guard/bucket_rates as required
         # decision-context fields, so a whitelist narrower than the runtime
-        # schema falsely rejected factually correct mechanism prose
+        # schema rejects factually correct mechanism prose
         # (2026-10-04 audit P2; regression:
         # tests/test_master_false_kill_fixes_20261004.py).
         "opponent.showdown_range.selection_scope",
@@ -191,6 +195,18 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
         "opponent.showdown_range.bucket_priors",
         "opponent.showdown_range.bucket_counts",
         "opponent.showdown_range.bucket_rates",
+        # P2 follow-up (2026-10-05): the remaining leaves of the v88 published
+        # showdown_range dict — schema_version, prior_source,
+        # bucket_combo_counts, class_counts, contexts — were still missing and
+        # rejected factually correct root-scoped shorthand lists with
+        # proposal_mechanism_root_scoped_unknown_leaf (four live rejections on
+        # 2026-10-05). The anti-drift test now asserts the whitelist is a
+        # superset of the field set extracted from the v88 bot source.
+        "opponent.showdown_range.schema_version",
+        "opponent.showdown_range.prior_source",
+        "opponent.showdown_range.bucket_combo_counts",
+        "opponent.showdown_range.class_counts",
+        "opponent.showdown_range.contexts",
         "showdown_range",
         "oppo_hands",
     ),

@@ -471,7 +471,7 @@ GLM 把两种完全不同的失败都标成 HTTP 429：
 
 分类器（`llm_availability.classify_llm_availability`）按这个顺序处理，多层冗余：
 
-1. **错误码** — `[1302]` / `控制请求频率` / `您的账户已达到速率限制` → `service_unavailable`（120s 冷却）。
+1. **错误码** — `[1302]` / `控制请求频率` / `您的账户已达到速率限制` → `service_unavailable`（频率类指数退避冷却：共享曲线 `cooldown(n)=min(120, 8*2**(n-1))`，首发 8s、活跃 pause 同类复发逐次翻倍、封顶 120s，pause 清除/换代后从 1 重来；2026-10-05 P1，此前为平 120s）。
 2. **配额正文** — `[1308]` 或（`已达到` 且 `使用上限`，且不是 1302）→ `quota_429`。有 `限额将在 … 重置` 时 `quota_reset_authority=provider_timestamp`；1308 没有时间戳时才允许 `quota_window_fallback`（`now + 5h + 60s`，`POK_QUOTA_FALLBACK_WINDOW_SEC`）。
 3. **裸 429** — 仅有 HTTP 429 / `Request rejected (429)` / `too many requests`、没有 1308 正文 → 同样走 `service_unavailable`，**禁止**发明 5 小时等待。
 4. **持久化权威** — 配额暂停必须带 `quota_reset_authority`。缺该字段的历史记录（含把 1302 写成配额的那次）在 `_reconcile_llm_pause` / `persist_llm_pause` 里以 `untrusted_quota_pause_without_reset_authority` 清掉，重启后不会继续睡满 5 小时。
@@ -491,7 +491,12 @@ The system handles true 1308 exhaustion through the singleton `rate_limiter`
 2. **Durable availability pause**: Independently,
    `classify_llm_availability` persists a `quota_429` pause only for a
    confirmed 1308/usage-cap body (see the redundancy list above). GLM 1302
-   and bare 429 persist as `service_unavailable` with a 120s cooldown.
+   and bare 429 persist as `service_unavailable` with the shared
+   frequency-class exponential cooldown
+   (`llm_availability.service_unavailable_cooldown_seconds`:
+   `min(120, 8*2**(occurrences-1))` — 8s on the first occurrence, doubling per
+   same-category recurrence while the pause is still active, reset to 1 after
+   the pause clears; 2026-10-05 P1, previously a flat 120s).
 3. **Pipeline pause**: Once `rate_limiter` has a future reset time,
    `rate_limiter.is_blocked()` returns `True`. The orchestrator loop checks
    this at the top of every cycle (in the orchestrator loop-phase module —
@@ -503,14 +508,16 @@ The system handles true 1308 exhaustion through the singleton `rate_limiter`
    checks before dispatching, so background analysts and direct MCP calls
    cannot bypass the pause.
    **Waitable pauses must not end the orchestrator task.** GLM 1302 / bare 429
-   (`service_unavailable`, 120s) and trusted `quota_429` cool down inside the
+   (`service_unavailable`, exponential backoff 8→120s along the shared curve)
+   and trusted `quota_429` cool down inside the
    generation `while` via `_resume_generation_loop_after_llm_block` (including
    prepare-time roles such as `DEGENERATION_DIAGNOSIS` that raise
    `LLMAvailabilityBlocked` outside `_run_one_cycle`). Only manual
    billing/auth pauses, an unreadable pause store, or shutdown stop the loop.
    Killing the task on 1302 leaves FastAPI saturator occupancy with
    `running=false` and no checkpoint progress (observed 2026-09-10: ~42h of
-   saturator-only spend after a 120s cooldown had already cleared).
+   saturator-only spend after the then-flat 120s cooldown had already cleared;
+   frequency-class cooldowns now back off exponentially 8→120s, 2026-10-05 P1).
 4. **Crash recovery**: The rate-limiter reset timestamp is persisted to
    `web/core/results/rate_limit_state.json`; the availability pause has its
    own durable store. A service restart re-loads **trusted** quota blocks
