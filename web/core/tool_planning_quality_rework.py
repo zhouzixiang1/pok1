@@ -284,13 +284,13 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=''):
     targets = target_files
     is_crossover = bool(ckpt.get('parent2_v')) or master_plan.get('strategy') == 'crossover'
     if is_review_rework:
-        preservation = 'This is a Lead Code Reviewer hard-gate repair. Preserve the current candidate in bots/{bot_name(next_v)}; fix the exact code-quality blocker named by the reviewer. Do not chase secondary notes unless they are required to resolve the primary blocker.'
+        preservation = 'This is a Lead Code Reviewer hard-gate repair. Preserve the current candidate in bots/national_cloud_v{next_v}; fix the exact code-quality blocker named by the reviewer. Do not chase secondary notes unless they are required to resolve the primary blocker.'
         method = "- Read all listed target files and the quoted reviewer feedback before editing.\n- Resolve the primary rejected state coherently. If the feedback offers mutually exclusive paths, choose ONE complete path.\n- Do not leave defined-but-unwired helpers, misleading comments/docstrings, unused imports, or half-restored systems.\n- Keep the candidate's already-passing national protocol/card mapping behavior intact.\n- Run `python3 -m py_compile` on the exact edited file before finishing; system gates own imports and self-tests."
         worker_id = 'auto_review_repair'
         role = 'Algorithmic Logic Architect'
         task_kind = 'crossover_review_repair' if is_crossover else 'review_repair'
     elif is_crossover and stage in {'quality_failed', 'repair_planned', 'rework_running'}:
-        preservation = "This is a crossover quality repair. Preserve the current candidate's crossover behavior in bots/{bot_name(next_v)}; fix only the blocking quality-gate issues unless a tiny local cleanup is required."
+        preservation = "This is a crossover quality repair. Preserve the current candidate's crossover behavior in bots/national_cloud_v{next_v}; fix only the blocking quality-gate issues unless a tiny local cleanup is required."
         method = '- Read the listed target files before editing.\n- For file_size blockers, remove dead/duplicated code or consolidate helper logic; do not weaken strategy by deleting active decisions blindly.\n- For position_semantics blockers, remove local seat derivation and read `decision_context.hand.position`/`acts_first_postflop` plus `decision_context.line.position` directly.\n- Do not change protocol/card mapping behavior outside the named blockers.\n- Leave stderr telemetry honest if touched.'
         worker_id = 'auto_quality_repair'
         role = 'Algorithmic Logic Architect'
