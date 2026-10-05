@@ -451,7 +451,17 @@ def test_saturator_rate_limit_pause_escalates_along_shared_curve(monkeypatch):
     assert llm_saturator._rate_limit_streak == 6
 
 
-def test_saturator_rate_limit_streak_resets_on_launch_success(monkeypatch):
+def test_saturator_rate_limit_streak_decays_on_launch_success(monkeypatch):
+    """P3 (2026-10-05, F10): success no longer zeroes the frequency streak.
+
+    The old contract (zero on any successful launch) is exactly the F10
+    regression: 19:44:20->19:46:07 four successful sessions zeroed a streak
+    of 4 and the cooldown sawtoothed 15/31/30/62s instead of climbing to
+    the 120s cap.  A success inside the 10-minute decay window now halves
+    the streak; only a quiet gap >= the window fully clears it (covered in
+    test_backoff_streak_decay.py).  The fail-streak reset on success is
+    unchanged.
+    """
     monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
     monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
     llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
@@ -459,11 +469,11 @@ def test_saturator_rate_limit_streak_resets_on_launch_success(monkeypatch):
     assert llm_saturator._rate_limit_streak == 2
 
     llm_saturator._note_saturator_launch_success()
-    assert llm_saturator._rate_limit_streak == 0
+    assert llm_saturator._rate_limit_streak == 1  # halved, not zeroed
 
     monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
     llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
-    assert llm_saturator._rate_limit_streak == 1
+    assert llm_saturator._rate_limit_streak == 2
 
 
 def test_saturator_rate_limit_streak_resets_on_nonprovider_failure(monkeypatch):

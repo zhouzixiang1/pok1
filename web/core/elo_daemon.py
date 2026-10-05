@@ -40,6 +40,7 @@ if __name__ == "__main__":
 import elo_daemon_replay_store as _edrs  # noqa: E402,F401  (replay-store cluster)
 import elo_daemon_persistence as _edp  # noqa: E402,F401  (persistence/state-IO cluster)
 import elo_daemon_admission as _eda  # noqa: E402,F401  (internal-match admission cluster)
+from elo_daemon_governor import DaemonWorkerGovernor  # noqa: E402  (P1 dispatch gate)
 
 # Battle Scheduler integration (optional)
 import logging
@@ -1209,6 +1210,45 @@ def _internal_match_job(bot_a, bot_b, path_a, path_b, n_pairs):
     )
 
 
+def _replenish_after_completion(
+    *,
+    match_queue,
+    in_flight,
+    gate,
+    executor,
+    active_bots,
+    ratings,
+    h2h,
+    n_pairs,
+    verbose=False,
+):
+    """Completion-path scheduling: bounded refill + gated dispatch.
+
+    P1/B1 (red-team follow-up, 2026-10-05): the governor gate owns ALL
+    dispatch on this path.  The queue may be refilled whenever it is empty
+    (pure scheduling, bounded by ``gate * 2`` entries — filling costs no
+    parallelism), but a closed gate must never submit a match.  The previous
+    inline ``elif`` refilled and then dispatched one match with no gate
+    check, so after a downshift (or an LLM hard-protection drop) the real
+    match parallelism never decreased and the queue grew without bound
+    (+1 net per completion at gate=1, +3 at gate=2).
+    """
+    if not match_queue:
+        matches = pick_matches(active_bots, h2h, ratings, n_picks=gate * 2)
+        for ma, mb in matches:
+            pa, pb = _safe_bot_path(ma, verbose=verbose), _safe_bot_path(mb, verbose=verbose)
+            if pa is None or pb is None:
+                continue
+            match_queue.append(_internal_match_job(ma, mb, pa, pb, n_pairs))
+    if not (match_queue and executor is not None and len(in_flight) < gate):
+        return
+    job = match_queue.popleft()
+    if job[0] not in active_bots or job[1] not in active_bots:
+        return
+    new_fut = executor.submit(run_single_match, job)
+    in_flight[new_fut] = (job[0], job[1])
+
+
 # A bot directory name in either known namespace (national_v* or
 # national_cloud_v*).  Used by the startup guard to detect a namespace/env
 # mismatch without depending on the prefix-filtered get_active_bots() (which
@@ -1433,8 +1473,17 @@ def main():
         return
 
     # Build initial match queue
+    # P1 (2026-10-05): load-adaptive dispatch gate.  The ProcessPoolExecutor
+    # below keeps its env-capped size (a live pool cannot be resized and
+    # rebuilding it would kill in-flight matches); the governor value
+    # throttles NEW dispatch only, so a downshift lets running 70-hand
+    # matches finish and be admitted naturally (zero sample loss).
+    # ``n_pairs`` stays pinned to ``args.pairs`` for the whole run: pairs is
+    # rating-identity bound (evaluation_data_identity runtime_profile) and
+    # the governor asserts that binding on every adjustment.
+    governor = DaemonWorkerGovernor(n_workers, results_dir=RESULTS_DIR)
     match_queue = deque()
-    matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+    matches = pick_matches(active_bots, h2h, ratings, n_picks=governor.effective_workers * 2)
     for a, b in matches:
         pa, pb = _safe_bot_path(a, verbose=args.verbose), _safe_bot_path(b, verbose=args.verbose)
         if pa is None or pb is None:
@@ -1451,7 +1500,7 @@ def main():
 
     # The daemon owns only current-pool strength scheduling. Precommit and
     # official certification have their own identity-bound direct runners.
-    while len(in_flight) < n_workers and match_queue:
+    while len(in_flight) < governor.effective_workers and match_queue:
         m = match_queue.popleft()
         if m[0] not in active_bots or m[1] not in active_bots:
             continue
@@ -1493,6 +1542,13 @@ def main():
         while running and recovery_count < MAX_POOL_RECOVERIES:
             try:
                 while running:
+                    # P1 (2026-10-05): non-blocking governor tick — reads
+                    # /proc/loadavg + cgroup signals (~microseconds), fully
+                    # throttled to one sample per 30s inside the governor.
+                    # Asserts the n_pairs rating-identity binding on every
+                    # call; a drift fails fast with a typed event and leaves
+                    # the gate untouched.
+                    governor.maybe_adjust(n_pairs=n_pairs)
                     # H4: hot-reload priority signal. If priority_eval.json was
                     # rewritten (new commit), drop queued matches so the next
                     # pick_matches call uses the new priority bot — but ONLY when
@@ -1530,14 +1586,14 @@ def main():
                     if not in_flight:
                         if not match_queue:
                             for ma, mb in pick_matches(
-                                active_bots, h2h, ratings, n_picks=n_workers * 2
+                                active_bots, h2h, ratings, n_picks=governor.effective_workers * 2
                             ):
                                 match_queue.append(
                                     _internal_match_job(
                                         ma, mb, _safe_bot_path(ma, verbose=args.verbose), _safe_bot_path(mb, verbose=args.verbose), n_pairs
                                     )
                                 )
-                        while len(in_flight) < n_workers and match_queue:
+                        while len(in_flight) < governor.effective_workers and match_queue:
                             m = match_queue.popleft()
                             if m[0] not in active_bots or m[1] not in active_bots:
                                 continue
@@ -1631,27 +1687,23 @@ def main():
                             log.warning("Eval round tracking error (non-fatal): %s", er_err)
 
                         # Replenish from the current-pool native match queue.
-                        if match_queue and executor is not None:
-                            m = match_queue.popleft()
-                            if m[0] not in active_bots or m[1] not in active_bots:
-                                continue
-                            new_fut = executor.submit(run_single_match, m)
-                            in_flight[new_fut] = (m[0], m[1])
-                        elif executor is not None:
-                            # Refill queue when empty
-                            matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
-                            for ma, mb in matches:
-                                match_queue.append(
-                                    _internal_match_job(
-                                        ma, mb, _safe_bot_path(ma, verbose=args.verbose), _safe_bot_path(mb, verbose=args.verbose), n_pairs
-                                    )
-                                )
-                            if match_queue:
-                                m = match_queue.popleft()
-                                if m[0] not in active_bots or m[1] not in active_bots:
-                                    continue
-                                new_fut = executor.submit(run_single_match, m)
-                                in_flight[new_fut] = (m[0], m[1])
+                        # P1/B1 (red-team follow-up): the governor gate owns
+                        # ALL completion-path dispatch — the queue may refill
+                        # while empty (bounded by gate*2), but a closed gate
+                        # never submits. The former inline elif dispatched
+                        # unconditionally after refilling, defeating every
+                        # downshift and leaking the queue.
+                        _replenish_after_completion(
+                            match_queue=match_queue,
+                            in_flight=in_flight,
+                            gate=governor.effective_workers,
+                            executor=executor,
+                            active_bots=active_bots,
+                            ratings=ratings,
+                            h2h=h2h,
+                            n_pairs=n_pairs,
+                            verbose=args.verbose,
+                        )
 
                     # Periodic save
                     try:
@@ -1749,7 +1801,7 @@ def main():
                             # so a newly committed bot never entered the queue → 600s eval timeout loop.)
                             if _added_bots:
                                 try:
-                                    _fresh = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                                    _fresh = pick_matches(active_bots, h2h, ratings, n_picks=governor.effective_workers * 2)
                                     _prepended = 0
                                     for _a, _b in _fresh:
                                         if _a in _added_bots or _b in _added_bots:
@@ -1887,7 +1939,7 @@ def main():
                     mp_ctx = _mp.get_context("spawn")
                     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
                     match_queue = deque()
-                    matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
+                    matches = pick_matches(active_bots, h2h, ratings, n_picks=governor.effective_workers * 2)
                     for a, b in matches:
                         pa, pb = _safe_bot_path(a, verbose=args.verbose), _safe_bot_path(b, verbose=args.verbose)
                         if pa is None or pb is None:
@@ -1895,7 +1947,7 @@ def main():
                         match_queue.append(
                             _internal_match_job(a, b, pa, pb, n_pairs)
                         )
-                    while len(in_flight) < n_workers and match_queue:
+                    while len(in_flight) < governor.effective_workers and match_queue:
                         m = match_queue.popleft()
                         fut = executor.submit(run_single_match, m)
                         in_flight[fut] = (m[0], m[1])

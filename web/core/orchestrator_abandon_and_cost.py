@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import orchestrator as _o
 from llm_availability import LLMAvailabilityBlocked
@@ -237,7 +238,29 @@ def _raise_for_llm_availability_tool_result(content) -> None:
         raise control_error
 
 
-async def _honor_active_llm_pause(ui=None, shutdown_mgr=None) -> bool:
+#: P2 (2026-10-05): cadence for ``_resume_generation_loop_after_llm_block``'s
+#: bounded re-query loop while a waitable LLM pause persists.
+_RESUME_RECHECK_INTERVAL_SEC = 5.0
+#: P2: minimum sleep between durable-store re-queries inside one
+#: ``_honor_active_llm_pause`` episode (a zero projected wait must never
+#: busy-spin the loop).
+_REQUERY_MIN_GAP_SEC = 0.5
+#: P2: total wall-clock bound for one ``_honor_active_llm_pause`` wait inside
+#: a single waitable-cooldown episode before it returns the live store state
+#: (the outer resume loop then re-enters it).  Purely a wedged-store guard.
+_HONOR_MAX_REQUERY_SEC = 3600.0
+#: P2: per-episode wait budget ``_resume_generation_loop_after_llm_block``
+#: hands to one ``_honor_active_llm_pause`` call — one cooldown-window
+#: order of magnitude, so the resume loop keeps cadence control of its own
+#: deadline instead of one wedged honor episode consuming all of it.
+_HONOR_EPISODE_BUDGET_SEC = 60.0
+#: P2: total bound for the resume loop as a whole (24h) — beyond it the
+#: orchestrator task ends so the auto-restart supervisor / an operator takes
+#: over instead of an effectively unbounded silent hang.
+_MAX_LLM_BLOCK_RESUME_WAIT_SEC = 86400.0
+
+
+async def _honor_active_llm_pause(ui=None, shutdown_mgr=None, *, max_wait_sec=None) -> bool:
     """Return whether an LLM call may proceed under the durable pause policy.
 
     Deterministic checkpoint routes call this only after they have had a chance
@@ -246,78 +269,100 @@ async def _honor_active_llm_pause(ui=None, shutdown_mgr=None) -> bool:
     system-owned cooldown and then reconcile themselves.
 
     Waitable categories (``service_unavailable`` / GLM 1302, bare 429,
-    ``quota_429``) must not end the ``orchestrator_loop`` task: the generation
-    ``while`` catches ``LLMAvailabilityBlocked`` and calls
-    :func:`_resume_generation_loop_after_llm_block` so saturator-only occupancy
-    cannot replace an exited pipeline.
+    ``quota_429``) must not end the ``orchestrator_loop`` task: after the
+    projected cooldown elapses the durable store is *re-queried* (P2,
+    2026-10-05) and a pause that re-armed or extended itself — sustained 1302
+    pressure walking the 8→120s exponential curve — keeps the caller waiting
+    here.  The previous single ``active_llm_pause() is None`` check leaked a
+    False for exactly those cases and let ``orchestrator_loop`` exit silently
+    with ``ORCH_LLM_AVAILABILITY_BLOCKED_COST`` (-99995.0; F9: four same-day
+    stalls, one 70 minutes long).
     """
 
     state = active_llm_pause()
     if not state:
         return True
-    category = str(state.get("category") or "unknown")
-    evidence_digest = str(state.get("evidence_digest") or "")
-    wait = pause_wait_seconds(state)
-    if wait is None:
-        msg = (
-            f"LLM availability is manually paused ({category}); checkpoint and "
-            "Worker attempt are preserved. Restart with "
-            f"POK_LLM_RESUME_EVIDENCE_DIGEST={evidence_digest} only after the "
-            "provider account/credential condition is resolved."
-        )
-        if ui:
-            ui.log_history(msg, "error")
-            ui.set_status(f"Stopped: LLM unavailable ({category})", is_working=False)
-        _o.log.error(msg)
-        try:
-            _o.log_system_event(
-                "orchestrator.llm_availability_paused",
-                "error",
-                msg,
-                {
-                    "category": category,
-                    "evidence_digest": evidence_digest,
-                    "retry_policy": state.get("retry_policy"),
-                    "operator_action_required": True,
-                },
+    deadline = time.monotonic() + (
+        _HONOR_MAX_REQUERY_SEC
+        if max_wait_sec is None
+        else max(0.0, float(max_wait_sec))
+    )
+    announced_cooldown = False
+    while True:
+        category = str(state.get("category") or "unknown")
+        evidence_digest = str(state.get("evidence_digest") or "")
+        wait = pause_wait_seconds(state)
+        if wait is None:
+            msg = (
+                f"LLM availability is manually paused ({category}); checkpoint and "
+                "Worker attempt are preserved. Restart with "
+                f"POK_LLM_RESUME_EVIDENCE_DIGEST={evidence_digest} only after the "
+                "provider account/credential condition is resolved."
             )
-        except Exception:
-            pass
-        return False
+            if ui:
+                ui.log_history(msg, "error")
+                ui.set_status(f"Stopped: LLM unavailable ({category})", is_working=False)
+            _o.log.error(msg)
+            try:
+                _o.log_system_event(
+                    "orchestrator.llm_availability_paused",
+                    "error",
+                    msg,
+                    {
+                        "category": category,
+                        "evidence_digest": evidence_digest,
+                        "retry_policy": state.get("retry_policy"),
+                        "operator_action_required": True,
+                    },
+                )
+            except Exception:
+                pass
+            return False
 
-    wait = max(0.0, float(wait))
-    if wait > 0:
-        msg = (
-            f"LLM availability cooldown active ({category}); retrying after "
-            f"{wait:.0f}s without consuming a generation/Worker attempt."
-        )
-        if ui:
-            ui.log_history(msg, "warn")
-            ui.set_status(f"LLM cooldown ({category})", is_working=False)
-        _o.log.warning(msg)
-        try:
-            _o.log_system_event(
-                "orchestrator.llm_availability_cooldown",
-                "warn",
-                msg,
-                {
-                    "category": category,
-                    "evidence_digest": evidence_digest,
-                    "wait_seconds": round(wait, 3),
-                    "operator_action_required": False,
-                },
+        wait = max(0.0, float(wait))
+        if wait > 0 and not announced_cooldown:
+            announced_cooldown = True
+            msg = (
+                f"LLM availability cooldown active ({category}); retrying after "
+                f"{wait:.0f}s without consuming a generation/Worker attempt."
             )
-        except Exception:
-            pass
+            if ui:
+                ui.log_history(msg, "warn")
+                ui.set_status(f"LLM cooldown ({category})", is_working=False)
+            _o.log.warning(msg)
+            try:
+                _o.log_system_event(
+                    "orchestrator.llm_availability_cooldown",
+                    "warn",
+                    msg,
+                    {
+                        "category": category,
+                        "evidence_digest": evidence_digest,
+                        "wait_seconds": round(wait, 3),
+                        "operator_action_required": False,
+                    },
+                )
+            except Exception:
+                pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Bounded wedged-store guard: hand the live state back to the
+            # caller; the outer resume loop re-enters this coroutine.
+            return active_llm_pause() is None
+        sleep_for = min(max(wait, _REQUERY_MIN_GAP_SEC), remaining)
         if shutdown_mgr:
             try:
-                await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=wait)
+                await asyncio.wait_for(
+                    shutdown_mgr.wait_for_shutdown(), timeout=sleep_for
+                )
                 return False
             except asyncio.TimeoutError:
                 pass
         else:
-            await asyncio.sleep(wait)
-    return active_llm_pause() is None
+            await asyncio.sleep(sleep_for)
+        state = active_llm_pause()
+        if state is None:
+            return True
 
 
 async def _resume_generation_loop_after_llm_block(
@@ -330,13 +375,22 @@ async def _resume_generation_loop_after_llm_block(
 
     Returns True iff ``orchestrator_loop`` should ``continue`` the generation
     ``while``. False means a manual billing/auth pause, an unreadable pause
-    store, or shutdown — those still end the task.
+    store, shutdown, or the 24h bounded-wait expiry — those still end the
+    task (and the -99995.0 outcome is itself auto-restartable, see
+    ``server.state._is_crash_outcome``).
 
     A missing or already-inactive pause is treated as an elapsed cooldown, not
     as fail-closed stop. On 2026-09-10 a prepare-time ``DEGENERATION_DIAGNOSIS``
     GLM 1302 (``service_unavailable``) raised ``LLMAvailabilityBlocked`` outside
     ``_run_one_cycle``; the outer handler stopped evolution while the FastAPI
     saturator kept spending for ~42 hours after the 120s pause had cleared.
+
+    P2 (2026-10-05, F9): a *waitable* pause that is still active after its
+    projected cooldown no longer ends the task.  This loop re-reads
+    ``active_llm_pause`` on a bounded 5s cadence until the pause clears or
+    shutdown starts, so saturator-only occupancy can never replace an exited
+    pipeline during sustained 1302 pressure.  While the loop waits the
+    saturator heartbeat gate (P7) keeps background packets parked.
     """
 
     if exc is not None:
@@ -344,34 +398,88 @@ async def _resume_generation_loop_after_llm_block(
             _o.persist_llm_pause(exc)
         except Exception as pause_exc:
             _o.log.exception("Failed to persist LLM availability pause: %s", pause_exc)
-    if shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False):
-        return False
-    try:
-        pause_state = _o.load_llm_pause()
-    except Exception as load_exc:
-        _o.log.error("Cannot read LLM availability pause after block: %s", load_exc)
-        return False
-    if pause_state and pause_state.get("active"):
-        allowed = await _o._honor_active_llm_pause(ui, shutdown_mgr)
+    deadline = time.monotonic() + _MAX_LLM_BLOCK_RESUME_WAIT_SEC
+    announced_wait = False
+    while True:
         if shutdown_mgr is not None and getattr(
             shutdown_mgr, "is_shutting_down", False
         ):
             return False
-        return bool(allowed)
-    _o.log.warning(
-        "LLM availability block with no active durable pause; continuing "
-        "the generation loop instead of stopping the orchestrator task"
-    )
-    try:
-        _o.log_system_event(
-            "orchestrator.llm_availability_inactive_continue",
-            "warn",
-            "Waitable LLM pause is inactive; generation loop continues",
-            {"operator_action_required": False},
+        try:
+            pause_state = _o.load_llm_pause()
+        except Exception as load_exc:
+            _o.log.error("Cannot read LLM availability pause after block: %s", load_exc)
+            return False
+        if not (pause_state and pause_state.get("active")):
+            _o.log.warning(
+                "LLM availability block with no active durable pause; continuing "
+                "the generation loop instead of stopping the orchestrator task"
+            )
+            try:
+                _o.log_system_event(
+                    "orchestrator.llm_availability_inactive_continue",
+                    "warn",
+                    "Waitable LLM pause is inactive; generation loop continues",
+                    {"operator_action_required": False},
+                )
+            except Exception:
+                pass
+            return True
+        wait = pause_wait_seconds(pause_state)
+        if wait is None:
+            # Manual billing/auth pause: operator action, never a retry loop.
+            # ``_honor_active_llm_pause`` emits its own manual-pause log/event.
+            await _o._honor_active_llm_pause(ui, shutdown_mgr)
+            return False
+        if not announced_wait:
+            announced_wait = True
+            msg = (
+                "LLM availability cooldown active "
+                f"({pause_state.get('category')}); generation loop waits and "
+                "re-queries the durable pause instead of exiting."
+            )
+            _o.log.warning(msg)
+            try:
+                _o.log_system_event(
+                    "orchestrator.llm_availability_resume_wait",
+                    "warn",
+                    msg,
+                    {
+                        "category": str(pause_state.get("category") or "unknown"),
+                        "operator_action_required": False,
+                    },
+                )
+            except Exception:
+                pass
+        allowed = await _o._honor_active_llm_pause(
+            ui,
+            shutdown_mgr,
+            max_wait_sec=min(
+                _HONOR_EPISODE_BUDGET_SEC,
+                max(0.0, deadline - time.monotonic()),
+            ),
         )
-    except Exception:
-        pass
-    return True
+        if allowed:
+            return True
+        # The pause outlived its projected window (re-armed / extended).  If
+        # this was a shutdown or a manual upgrade, stop; otherwise keep the
+        # bounded 5s re-query cadence.
+        if shutdown_mgr is not None and getattr(
+            shutdown_mgr, "is_shutting_down", False
+        ):
+            return False
+        if active_llm_pause() is None:
+            return True
+        if pause_wait_seconds(active_llm_pause() or {}) is None:
+            return False  # upgraded to a manual pause
+        if time.monotonic() >= deadline:
+            _o.log.error(
+                "LLM availability pause still active after the bounded "
+                "resume wait (%.0fs); ending the generation loop",
+                _MAX_LLM_BLOCK_RESUME_WAIT_SEC,
+            )
+            return False
+        await asyncio.sleep(_RESUME_RECHECK_INTERVAL_SEC)
 
 
 def _is_cycle_infra_error(e, *, is_shutting_down: bool = False) -> bool:

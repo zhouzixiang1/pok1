@@ -272,7 +272,9 @@ def test_resume_helper_glm_1302_waits_then_continues(isolated_cycle, monkeypatch
     assert issue.category == "service_unavailable"
     honored = []
 
-    async def honor(ui=None, shutdown_mgr=None):
+    # P2 (2026-10-05): the production caller now passes a bounded episode
+    # budget through ``max_wait_sec``; the stub signature tracks it.
+    async def honor(ui=None, shutdown_mgr=None, *, max_wait_sec=None):
         honored.append(True)
         return True
 

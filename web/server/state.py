@@ -84,6 +84,16 @@ def _env_int_in_range(name: str, lo: int, hi: int) -> int | None:
 # (>= 1h) resets the counters.
 
 _ORCHESTRATOR_CRASH_OUTCOME = -1.0
+# P2 (2026-10-05): ORCH_LLM_AVAILABILITY_BLOCKED_COST (orchestrator.py:98,
+# -99995.0) is auto-restartable double insurance.  F9 evidence: the waitable
+# 1302 pause path exited the loop silently up to four times in one day
+# (16:29-18:08: 70min zero-flow, ~38M tokens) and only a manual start or a
+# deploy restart recovered it.  The primary fix is the bounded re-query loop
+# in orchestrator_abandon_and_cost; this classification guarantees the
+# supervisor revives the pipeline even if that loop ever leaks the sentinel
+# again.  Mirrored here (not imported) to keep web/server free of a
+# web/core import at module load, exactly like _ORCHESTRATOR_CRASH_OUTCOME.
+_ORCHESTRATOR_LLM_BLOCK_OUTCOME = -99995.0
 
 
 def _env_float_in_range(name: str, default: float, lo: float, hi: float) -> float:
@@ -142,7 +152,10 @@ def _is_crash_outcome(result: object) -> bool:
     return (
         isinstance(result, (int, float))
         and not isinstance(result, bool)
-        and float(result) == _ORCHESTRATOR_CRASH_OUTCOME
+        and float(result) in (
+            _ORCHESTRATOR_CRASH_OUTCOME,
+            _ORCHESTRATOR_LLM_BLOCK_OUTCOME,
+        )
     )
 
 

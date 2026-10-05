@@ -52,12 +52,36 @@ Environment=PORT=8000
 # (build the frontend once; the static receipt is verified at startup).
 ExecStart=/home/ubuntu/pok1/.venv/bin/python web/main.py --host 127.0.0.1 --port 8000 --no-build
 
+# P5 (2026-10-05) optional read-only rating-identity preflight. Runs in
+# WorkingDirectory (.evolution_pok) with --baseline HEAD --head HEAD: the
+# committed diff is empty by construction after a git-sync, so this mode
+# guards the WORKING-TREE leg (B3 red-team fix): any uncommitted staged or
+# unstaged edit inside SEMANTIC_PATHS, or an uncommitted env.runtime pairs
+# change — the af913b91 / 043919c9-class regressions — trips it. The
+# leading '-' makes it ADVISORY: a hit logs the archive-and-reset
+# instruction to the journal without blocking startup, because a
+# legitimate archive-and-reset flow would otherwise be locked out of its
+# own restart. Remove the '-' to enforce. The review-time check (tracking
+# branch vs worktree, run before push) belongs to the operator checkout
+# checklist in deploy/tencent-cloud/README.md.
+ExecStartPre=-/home/ubuntu/pok1/.venv/bin/python scripts/check_rating_identity_predeploy.py --baseline HEAD --head HEAD
+
 # web/main.py spawns elo_daemon.py via start_new_session=True. mixed kills the
-# main process with SIGTERM (daemon gets it via its own session) and the control
-# group on timeout. Give the orchestrator a graceful shutdown window.
+# main process with SIGTERM (daemon gets it via its own session) and the
+# control group on timeout. Give the orchestrator a graceful shutdown window.
+# P6 (2026-10-05, F11) evaluation: with the stop path now granting the daemon
+# a >=30s SIGTERM window plus bounded in-flight LLM-stream drain (120s) in the
+# web app itself, the unit keeps KillMode=mixed (SIGTERM to the main process,
+# then SIGKILL to the whole cgroup on timeout — that cgroup sweep is what
+# reaps leftover bwrap/python3.12 children; do NOT narrow it to KillMode=
+# process). TimeoutStopSec is raised 45 -> 120 so the app's own 120s LLM
+# drain is not racing the unit's SIGKILL: observed 20:35:46 SIGKILL while
+# three saturator jobs were still finalizing, and 19:39:00 six strays sharing
+# the cgroup with the new service. strays escaping the sweep trace to manual
+# pokctl/nohup launches outside systemd, not to this unit.
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=45
+TimeoutStopSec=120
 
 Restart=on-failure
 RestartSec=10

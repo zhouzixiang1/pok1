@@ -682,6 +682,18 @@ _fail_streak: int = 0
 _fail_log_at: float = 0.0
 _fail_unlogged: int = 0
 _rate_limit_streak: int = 0
+#: P3 (2026-10-05, F10): wall-clock stamp of the last frequency-class
+#: (1302/bare-429) failure that bumped ``_rate_limit_streak``.
+_rate_limit_streak_last_failure_ts: float = 0.0
+#: P3: quiet gap that fully clears the frequency streak on a successful
+#: launch.  Shorter gaps only halve it — four successful sessions inside
+#: 107s zeroed a streak of 4 (19:44:20→19:46:07) and restarted the 8s
+#: cooldown sawtooth (orchestrator journal: 15/31/30/62s zig-zag), so a
+#: launched session under sustained pressure is not proof the pressure
+#: is gone.
+_RATE_LIMIT_STREAK_DECAY_SEC = float(
+    os.environ.get("POK_SATURATOR_STREAK_DECAY_SEC", "600")
+)
 
 
 def _log_session_failure(session_id: int, error: object) -> None:
@@ -720,7 +732,7 @@ def _note_saturator_provider_failure(error: object) -> None:
     by a paused-provider boundary (P4, 2026-10-05: journal showed 176x 120s,
     0x 600s and 7 dead sessions in one quota window).
     """
-    global _quota_pause_until, _rate_limit_streak
+    global _quota_pause_until, _rate_limit_streak, _rate_limit_streak_last_failure_ts
     text = str(error or "")
     lowered = text.lower()
     from llm_availability import (
@@ -744,6 +756,7 @@ def _note_saturator_provider_failure(error: object) -> None:
         pause, reason = _QUOTA_PAUSE_SECONDS, "quota window (1308-class)"
     else:
         _rate_limit_streak += 1
+        _rate_limit_streak_last_failure_ts = time.time()
         pause = float(service_unavailable_cooldown_seconds(_rate_limit_streak))
         reason = (
             "rate-limit/unavailable cooldown "
@@ -759,7 +772,20 @@ def _note_saturator_provider_failure(error: object) -> None:
 def _note_saturator_launch_success() -> None:
     global _fail_streak, _rate_limit_streak
     _fail_streak = 0
-    _rate_limit_streak = 0
+    # P3 (2026-10-05, F10): do NOT zero the frequency streak on success.
+    # Decay it instead: a full reset requires a >=10-minute quiet gap since
+    # the last 1302-class failure; anything shorter halves the streak so
+    # sustained pressure still walks the shared exponential curve toward
+    # the 120s cap (the cooldown previously sawtoothed 15/31/30/62s and
+    # the orchestrator's per-cycle wait kept clipping the window edge).
+    if (
+        _rate_limit_streak
+        and time.time() - _rate_limit_streak_last_failure_ts
+        >= _RATE_LIMIT_STREAK_DECAY_SEC
+    ):
+        _rate_limit_streak = 0
+    else:
+        _rate_limit_streak //= 2
 
 
 def _note_saturator_launch_failure(error: object | None = None) -> None:

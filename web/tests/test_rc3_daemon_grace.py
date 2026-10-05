@@ -71,18 +71,28 @@ def test_graceful_exit_no_sigkill(monkeypatch, _isolated):
 
 
 def test_grace_expired_triggers_sigkill_and_log(monkeypatch, _isolated, caplog):
-    """Daemon exceeds grace -> SIGTERM then SIGKILL + warning log naming the 8s window."""
-    # wait(timeout>=8) raises -> simulates daemon not exiting within the 8s grace.
+    """Daemon exceeds grace -> SIGTERM then SIGKILL + warning log naming the window.
+
+    P6 (2026-10-05, F11) raised the grace 8s -> 30s
+    (``_DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC``, env-tunable) and made the
+    warning text dynamic, so this test now asserts the LIVE window value
+    instead of the literal "8s".
+    """
+    grace = daemon_management._DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC
+    # wait(timeout>=grace) raises -> simulates a daemon that never exits
+    # within the grace window (a value just below it also exercises the
+    # boundary regardless of the env override).
     monkeypatch.setattr(daemon_management, "daemon_proc",
-                        _FakeProc(wait_timeout_expires_at=8))
+                        _FakeProc(wait_timeout_expires_at=grace))
     with caplog.at_level(logging.WARNING, logger="pok.infra"):
         daemon_management.stop_daemon()
     sigs = [sig for _, sig in _isolated]
     assert sigs == [signal.SIGTERM, signal.SIGKILL]  # graceful attempt, then force
     assert daemon_management.daemon_proc is None
     msg = " ".join(r.getMessage() or "" for r in caplog.records)
-    assert "8s" in msg and "force killing" in msg, (
-        "expected a SIGKILL warning naming the 8s grace window")
+    expected_window = f"{grace:.0f}s"
+    assert expected_window in msg and "force killing" in msg, (
+        f"expected a SIGKILL warning naming the {expected_window} grace window")
 
 
 def test_pid_record_identity_rejects_pid_reuse(monkeypatch):

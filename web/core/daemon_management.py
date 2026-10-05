@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+from collections import deque
 from pathlib import Path
 import secrets
 import signal
@@ -47,7 +48,14 @@ _daemon_lock = threading.Lock()
 _atexit_registered = False
 _daemon_shutting_down = False
 _DAEMON_OWNER_TOKEN_ENV = "POK_DAEMON_OWNER_TOKEN"
-_DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC = 8.0
+# P6 (2026-10-05, F11): SIGTERM grace before the SIGKILL backstop, shared by
+# stop_daemon (in-memory handle) and orphan termination (PID-file path).
+# 8s clipped in-flight 70-hand matches and save_cycle commits — the stop
+# observed at 20:35:46 force-killed mid-battle; >=30s lets a running match
+# batch reach its natural completion window. Env-tunable.
+_DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC = float(
+    os.environ.get("POK_DAEMON_STOP_GRACE_SEC", "30")
+)
 _DAEMON_FORCE_ORPHAN_TIMEOUT_SEC = 2.0
 
 # The monitor loop used to poll every 3 seconds, and each tick rebuilt the
@@ -102,16 +110,151 @@ def _daemon_exit_metadata(returncode):
     return {"exit_cause": "process_error", "signal": None, "killer_known": False}
 
 
+# P4 (2026-10-05, F13): bounded tail of the daemon subprocess's merged
+# stdout/stderr.  ``_drain_stdout`` previously discarded every line at
+# log.debug, so five consecutive rating-identity crashes left zero bytes of
+# the failing daemon's own output on disk and the cause could only be
+# attributed by an A/B experiment.
+_DAEMON_OUTPUT_TAIL_MAX_LINES = 400
+_daemon_output_tail: "deque[str]" = deque(maxlen=_DAEMON_OUTPUT_TAIL_MAX_LINES)
+
+
+def _reset_daemon_output_tail() -> None:
+    """Drop the buffered daemon output tail (new process, new buffer)."""
+
+    _daemon_output_tail.clear()
+
+
+def _record_daemon_output_line(line: str) -> None:
+    _daemon_output_tail.append(line)
+
+
+def _daemon_output_tail_text() -> str:
+    return "\n".join(_daemon_output_tail)
+
+
+def _persist_daemon_output_tail(proc) -> None:
+    """Append the buffered tail to results/daemon_crash.log on a non-zero exit.
+
+    ``elo_daemon.main`` already writes its own tracebacks there; the
+    subprocess output (argparse errors, startup-guard failures raised before
+    logging is configured, identity-guard messages) was previously lost.
+    """
+
+    try:
+        returncode = proc.poll()
+    except Exception:
+        return
+    if returncode is None or returncode == 0:
+        return
+    tail = _daemon_output_tail_text()
+    try:
+        crash_log = RESULTS_DIR / "daemon_crash.log"
+        crash_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(crash_log, "a", encoding="utf-8") as handle:
+            handle.write(f"\n{'=' * 60}\n")
+            handle.write(
+                f"Daemon stdout/stderr tail at exit "
+                f"(pid={getattr(proc, 'pid', '?')}, rc={returncode}, "
+                f"{time.strftime('%Y-%m-%dT%H:%M:%S')})\n"
+            )
+            handle.write(tail)
+            if tail and not tail.endswith("\n"):
+                handle.write("\n")
+    except OSError:
+        pass
+    try:
+        log_system_event(
+            "daemon.stdout_tail_persisted",
+            "warn",
+            f"Daemon exited rc={returncode}; stdout tail persisted to "
+            "results/daemon_crash.log",
+            {
+                "pid": getattr(proc, "pid", None),
+                "returncode": returncode,
+                "tail_lines": len(_daemon_output_tail),
+            },
+        )
+    except Exception:
+        pass
+
+
 def _drain_stdout(proc):
-    """Drain daemon stdout to prevent pipe buffer deadlock."""
+    """Drain daemon stdout to prevent pipe buffer deadlock.
+
+    Keeps a bounded tail (P4) and persists it to results/daemon_crash.log
+    when the process exits non-zero, instead of discarding every line at
+    log.debug.
+    """
     try:
         while True:
             line = proc.stdout.readline()
             if not line:
                 break
+            _record_daemon_output_line(line.rstrip())
             log.debug("[DAEMON] %s", line.rstrip())
     except (ValueError, OSError):
         pass  # Pipe closed
+    finally:
+        try:
+            _persist_daemon_output_tail(proc)
+        except Exception:
+            pass
+
+
+# P4 (2026-10-05, F8): deterministic daemon failure classes.  A rating
+# identity mismatch re-crashes on every restart by construction — burning
+# five ~20s restart cycles bought nothing (observed ~1.7 minutes of idle
+# crash-loops per incident).  Classify on first sight and stop immediately.
+_DETERMINISTIC_DAEMON_FAILURE_MARKERS = (
+    "evaluationdataidentityerror",
+    "rating daemon runtime profile changed",
+    "authoritative rating evaluator identity changed",
+    "authoritative rating data has no evaluation identity",
+    "evaluation identity manifest",
+    "daemon namespace mismatch",
+)
+
+
+def _deterministic_daemon_failure_class(text: str) -> str | None:
+    """Classify daemon output as a deterministic restart-proof failure."""
+
+    if not text:
+        return None
+    lowered = str(text).lower()
+    if any(marker in lowered for marker in _DETERMINISTIC_DAEMON_FAILURE_MARKERS):
+        return "evaluation_identity"
+    return None
+
+
+# P4 (2026-10-05, F8): after the nanny gives up (stop-loss or deterministic
+# failure) it parks for this interval before re-arming, instead of ending
+# the monitor thread and requiring a full service restart (observed: daemon
+# absent 19:39-20:01, 22 minutes, zero matches until a manual restart).
+_DAEMON_REARM_INTERVAL_SEC = float(
+    os.environ.get("POK_DAEMON_REARM_INTERVAL_SEC", "900")
+)
+
+
+def _wait_for_daemon_rearm(stop_event) -> bool:
+    """Park one re-arm interval; return False only on service shutdown."""
+
+    while True:
+        if stop_event.is_set():
+            return False
+        if stop_event.wait(_DAEMON_REARM_INTERVAL_SEC):
+            return False
+        try:
+            log_system_event(
+                "daemon.auto_restart_rearm_wait",
+                "warn",
+                "Daemon nanny parked after giving up; re-arming now "
+                f"(interval {_DAEMON_REARM_INTERVAL_SEC:.0f}s)",
+                {"rearm_interval_sec": _DAEMON_REARM_INTERVAL_SEC},
+            )
+        except Exception:
+            pass
+        return True
 
 
 # Upper bound on daemon workers. Each worker runs one complete 70-hand native
@@ -522,6 +665,7 @@ def start_daemon(workers=None, pairs=5):
              "workers": workers, "pairs": pairs},
         )
     # Drain daemon stdout to prevent pipe buffer deadlock
+    _reset_daemon_output_tail()  # P4: new process, fresh crash-tail buffer
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
     if not _atexit_registered:
         atexit.register(stop_daemon)
@@ -570,13 +714,12 @@ def stop_daemon():
                 daemon_proc.terminate()
             try:
                 # Graceful shutdown (cancel in-flight native matches + fcntl
-                # save_cycle of ratings/H2H/stats) takes ~2-3s under load; the old
-                # 3s was right at the edge, so daemon frequently hit SIGKILL (rc=-9)
-                # on stop/restart — monitor then logged it as "daemon.crashed" and
-                # auto-restarted (benign but noisy + wastes in-flight battles).
-                # 8s gives comfortable headroom; SIGKILL below is the backstop for a
-                # truly wedged daemon.
-                daemon_proc.wait(timeout=8)
+                # save_cycle of ratings/H2H/stats) takes ~2-3s under load;
+                # P6 (2026-10-05, F11) grants >= 30s by default so a running
+                # 70-hand match batch can finish naturally instead of being
+                # SIGKILLed mid-battle (observed 20:35:46). SIGKILL below is
+                # the backstop for a truly wedged daemon.
+                daemon_proc.wait(timeout=_DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC)
                 rc = getattr(daemon_proc, "returncode", daemon_proc.poll())
                 log_system_event(
                     "daemon.stop_result", "success",
@@ -585,14 +728,18 @@ def stop_daemon():
                      "elapsed_sec": round(time.time() - _stop_t0, 2), "forced": False},
                 )
             except subprocess.TimeoutExpired:
-                log.warning("Daemon did not exit gracefully in 8s — force killing (SIGKILL)")
+                log.warning(
+                    "Daemon did not exit gracefully in %.0fs — force killing (SIGKILL)",
+                    _DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC,
+                )
                 # Group B: record force-kill so rc=-9 events can be attributed to
-                # stop_daemon's 8s backstop (daemon stuck in save_cycle / heavy I/O)
+                # stop_daemon's grace backstop (daemon stuck in save_cycle / heavy I/O)
                 # vs an external SIGKILL / OOM killer.
                 log_system_event(
                     "daemon.force_killed", "warn",
-                    "stop_daemon: daemon did not exit in 8s, sent SIGKILL (rc=-9). "
-                    "Likely stuck in save_cycle fcntl or heavy battle I/O.",
+                    f"stop_daemon: daemon did not exit in "
+                    f"{_DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC:.0f}s, sent SIGKILL "
+                    "(rc=-9). Likely stuck in save_cycle fcntl or heavy battle I/O.",
                     {"pid": daemon_proc.pid if daemon_proc else None},
                 )
                 try:
@@ -1007,6 +1154,44 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                         {"pid": proc.pid, "returncode": rc},
                     )
                 else:
+                    # P4 (2026-10-05, F8): a deterministic rating-identity
+                    # failure re-crashes on every restart by construction.
+                    # Classify on first sight from the persisted output tail,
+                    # stop immediately (no 5-retry burn), park in the re-arm
+                    # wait, and let the typed event carry the class.
+                    _failure_class = _deterministic_daemon_failure_class(
+                        _daemon_output_tail_text()
+                    )
+                    if _failure_class is not None:
+                        with _daemon_lock:
+                            if daemon_proc is proc:
+                                daemon_proc = None
+                        ui.log_history(
+                            "Daemon stopped retrying: deterministic failure "
+                            f"class={_failure_class} (see results/"
+                            "daemon_crash.log)",
+                            "error",
+                        )
+                        log_system_event(
+                            "daemon.deterministic_failure_gave_up",
+                            "error",
+                            "Daemon nanny stopped retrying a deterministic "
+                            f"failure (class={_failure_class}); re-arming "
+                            f"after {_DAEMON_REARM_INTERVAL_SEC:.0f}s",
+                            {
+                                "failure_class": _failure_class,
+                                "returncode": rc,
+                                "pid": proc.pid,
+                                "rearm_interval_sec": _DAEMON_REARM_INTERVAL_SEC,
+                                "crash_tail": "results/daemon_crash.log",
+                            },
+                        )
+                        if not _wait_for_daemon_rearm(stop_event):
+                            break
+                        restart_count = 0
+                        start_daemon(workers=daemon_workers, pairs=daemon_pairs)
+                        stop_event.wait(DAEMON_MONITOR_INTERVAL_SEC)
+                        continue
                     restart_count += 1
                     # Clear stale handle immediately so other callers see the
                     # daemon as dead during the backoff sleep window.
@@ -1019,7 +1204,15 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                     exit_meta = _daemon_exit_metadata(rc)
                     log_system_event("daemon.crashed", "error", f"Daemon failed {restart_count}x, auto-restart stopped",
                                      {"restart_count": restart_count, "returncode": rc, **exit_meta})
-                    break
+                    # P4 (2026-10-05, F8): park and re-arm instead of ending
+                    # the monitor thread — a stopped thread needed a full
+                    # service restart to recover (22min daemon absence).
+                    if not _wait_for_daemon_rearm(stop_event):
+                        break
+                    restart_count = 0
+                    start_daemon(workers=daemon_workers, pairs=daemon_pairs)
+                    stop_event.wait(DAEMON_MONITOR_INTERVAL_SEC)
+                    continue
                 if restart_count > 0:
                     backoff = min(3 * (2 ** (restart_count - 1)), 120)
                     ui.log_history(f"⚠️ Daemon exited (rc={rc}), restarting in {backoff}s (attempt {restart_count})", "warn")

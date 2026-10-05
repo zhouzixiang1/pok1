@@ -2661,6 +2661,41 @@ async def start_evolution(request: Request):
     return await _run_lifecycle_operation(_start_evolution_transaction)
 
 
+#: P6 (2026-10-05, F11): bounded drain of in-flight provider streams before
+#: the control-stop transaction returns.
+_LLM_DRAIN_TIMEOUT_SEC = float(
+    os.environ.get("POK_CONTROL_STOP_LLM_DRAIN_SEC", "120")
+)
+_LLM_DRAIN_POLL_INTERVAL_SEC = 1.0
+
+
+async def _drain_live_llm_streams(
+    timeout_sec: float | None = None,
+) -> dict:
+    """Wait until no provider stream is active, or the bounded window ends.
+
+    Reads the instantaneous global-semaphore occupancy
+    (``llm_concurrency.get_active_stream_count``) on a 1s cadence. The stop
+    transaction calls this after the orchestrator task and rating daemon are
+    down so the HTTP return no longer outruns minutes of orphaned
+    provider-stream finalization (F11: ~4M tokens after the 200).
+    """
+
+    from llm_concurrency import get_active_stream_count
+
+    window = _LLM_DRAIN_TIMEOUT_SEC if timeout_sec is None else float(timeout_sec)
+    deadline = time.monotonic() + window
+    peak = 0
+    while True:
+        active = max(0, int(get_active_stream_count()))
+        peak = max(peak, active)
+        if active <= 0:
+            return {"drained": True, "peak_active": peak, "remaining": 0}
+        if time.monotonic() >= deadline:
+            return {"drained": False, "peak_active": peak, "remaining": active}
+        await asyncio.sleep(_LLM_DRAIN_POLL_INTERVAL_SEC)
+
+
 async def _stop_evolution_transaction() -> dict[str, str]:
     _invalidate_observer_projection_cache()
     app_state.request_shutdown()
@@ -2706,6 +2741,33 @@ async def _stop_evolution_transaction() -> dict[str, str]:
                 "failure": f"{type(exc).__name__}:{str(exc)[:240]}",
             },
         ) from None
+    # P6 (2026-10-05, F11): bounded drain of in-flight provider streams.
+    # A cancelled orchestrator task leaves its owned provider transports
+    # finalizing for minutes (observed 20:36-20:38: three saturator jobs,
+    # ~4M tokens of orphaned streams after the stop already returned 200).
+    drain = await _drain_live_llm_streams()
+    if not drain.get("drained"):
+        _log.warning(
+            "control stop: %s LLM stream(s) still active after the bounded "
+            "drain window (%.0fs); they will finalize unowned",
+            drain.get("remaining"),
+            _LLM_DRAIN_TIMEOUT_SEC,
+        )
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "control.stop_llm_drain_incomplete",
+                "warn",
+                "Bounded LLM stream drain after control stop did not reach zero",
+                {
+                    "remaining": drain.get("remaining"),
+                    "peak_active": drain.get("peak_active"),
+                    "timeout_sec": _LLM_DRAIN_TIMEOUT_SEC,
+                },
+            )
+        except Exception:
+            pass
     _invalidate_observer_projection_cache()
     return {"status": "stopped"}
 

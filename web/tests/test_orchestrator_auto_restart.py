@@ -91,21 +91,40 @@ def test_crash_outcome_restarts_until_normal_terminal(restart_env):
 
 def test_normal_terminal_never_restarts(restart_env):
     from orchestrator import (
-        ORCH_LLM_AVAILABILITY_BLOCKED_COST,
         ORCH_OPERATOR_ACTION_REQUIRED_COST,
     )
 
     async def scenario():
         for outcome in (
             0.0,
-            -99995.0,
             ORCH_OPERATOR_ACTION_REQUIRED_COST,
-            ORCH_LLM_AVAILABILITY_BLOCKED_COST,
             -99997.0,  # any other crash-family sentinel must differ from -1.0
         ):
             result, calls = await _drive([outcome])
             assert result == outcome
             assert calls == [1]
+
+    _run(scenario())
+
+
+def test_llm_availability_block_cost_restarts(restart_env):
+    """P2 (2026-10-05): -99995.0 joins the restartable set (F9 double insurance).
+
+    Previously this file asserted -99995.0 stays stopped; the F9 audit (four
+    same-day silent exits, one 70min zero-flow) reclassified the
+    waitable-pause sentinel as crash-restartable.  The primary fix is the
+    bounded re-query loop in ``orchestrator_abandon_and_cost``; this keeps
+    the supervisor as a second safety net when the loop leaks the sentinel
+    anyway.
+    """
+
+    from orchestrator import ORCH_LLM_AVAILABILITY_BLOCKED_COST
+
+    async def scenario():
+        for outcome in (-99995.0, ORCH_LLM_AVAILABILITY_BLOCKED_COST):
+            result, calls = await _drive([outcome, 7.5])
+            assert result == 7.5
+            assert calls == [1, 2]
 
     _run(scenario())
 

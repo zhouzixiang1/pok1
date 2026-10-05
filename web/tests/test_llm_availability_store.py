@@ -189,7 +189,15 @@ def test_service_unavailable_recurrence_backs_off_exponentially(isolated_store):
 
 
 def test_service_unavailable_cooldown_resets_after_pause_clears(isolated_store):
-    """After the pause auto-resumes, a later occurrence starts the curve over."""
+    """After the recurrence window passes, a later occurrence starts over.
+
+    P3 (2026-10-05, F10) narrowed this contract: a same-category recurrence
+    *inside* the 30-minute sliding window now carries the count (see
+    test_backoff_streak_decay.py::test_occurrences_survive_pause_clear_inside_window
+    — clearing it 1s after resume was exactly the sawtooth that never
+    reached the 120s cap).  Only a recurrence after the window elapses
+    starts the curve over.
+    """
     now = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
     first = store.persist_llm_pause(_service_issue(), now=now)
     second = store.persist_llm_pause(
@@ -200,11 +208,17 @@ def test_service_unavailable_cooldown_resets_after_pause_clears(isolated_store):
     assert store.active_llm_pause(now=now + timedelta(seconds=4 + 16)) is None
 
     fresh = store.persist_llm_pause(
-        _service_issue(), now=now + timedelta(seconds=4 + 16 + 1)
+        _service_issue(),
+        now=now
+        + timedelta(seconds=4 + 16)
+        + timedelta(seconds=store.SERVICE_UNAVAILABLE_RECURRENCE_WINDOW_SEC + 1),
     )
     assert fresh["occurrences"] == 1
     assert store.pause_wait_seconds(
-        fresh, now=now + timedelta(seconds=4 + 16 + 1)
+        fresh,
+        now=now
+        + timedelta(seconds=4 + 16)
+        + timedelta(seconds=store.SERVICE_UNAVAILABLE_RECURRENCE_WINDOW_SEC + 1),
     ) == pytest.approx(8.0)
 
 

@@ -72,8 +72,20 @@ def _billing_issue():
 
 
 def _cool_down(now):
-    """Advance past the (8s base) frequency-class cooldown and reconcile."""
-    return store.active_llm_pause(now=now + timedelta(seconds=9))
+    """Advance past the live record's cooldown window and reconcile.
+
+    P3 (2026-10-05): same-category recurrences inside the 30-minute sliding
+    window now carry ``occurrences`` forward, so the cooldown climbs
+    (8->16->...->120s) across this file's 30s-cadence pauses.  Advancing a
+    fixed 9s only cleared the first occurrence; read the record's own
+    ``auto_resume_at`` instead so the receipt-archive semantics under test
+    stay intact.
+    """
+    record = store.load_llm_pause()
+    due = store._parse_time((record or {}).get("auto_resume_at")) if record else None
+    if due is None:
+        return store.active_llm_pause(now=now + timedelta(seconds=9))
+    return store.active_llm_pause(now=due + timedelta(seconds=1))
 
 
 def test_deferred_worker_resumes_via_overwritten_receipt_history(isolated_store):
@@ -106,9 +118,7 @@ def test_deferred_worker_resumes_via_overwritten_receipt_history(isolated_store)
 
     # Pause B also cools down; the deferred Worker must resume through the
     # archived receipt of pause A.
-    assert store.active_llm_pause(
-        now=BASE + timedelta(seconds=29)
-    ) is None
+    assert _cool_down(BASE) is None
     audit = store.load_llm_pause()
     assert _worker_availability_resume_receipt_errors(deferred, audit) == []
 
@@ -119,7 +129,7 @@ def test_history_without_matching_receipt_still_fails_closed(isolated_store):
     store.persist_llm_pause(
         _service_issue("HTTP 529 later blip"), now=BASE + timedelta(seconds=20)
     )
-    assert store.active_llm_pause(now=BASE + timedelta(seconds=29)) is None
+    assert _cool_down(BASE) is None
     audit = store.load_llm_pause()
 
     stranger = dict(pause_a)

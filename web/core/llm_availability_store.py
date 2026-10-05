@@ -121,6 +121,38 @@ def _parse_time(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+#: P3 (2026-10-05, F10): same-category SERVICE_UNAVAILABLE recurrences inside
+#: this sliding window after an auto-resumed pause carry the ``occurrences``
+#: count forward, so the durable cooldown keeps walking the shared
+#: exponential curve toward the 120s cap instead of sawtoothing from 8s on
+#: every cleared window (orchestrator journal: 15/31/30/62s zig-zag).
+SERVICE_UNAVAILABLE_RECURRENCE_WINDOW_SEC = 1800.0
+
+
+def _recurrence_carries_count(
+    current: dict | None, category: str, timestamp: datetime
+) -> bool:
+    """Whether a new ``category`` record continues the prior occurrence run.
+
+    Same rule as before for an ACTIVE pause (and for every non-
+    SERVICE_UNAVAILABLE category); additionally a just-auto-resumed
+    SERVICE_UNAVAILABLE record whose ``last_observed_at`` is inside the
+    30-minute sliding window also carries the count (P3).
+    """
+
+    if not current or current.get("category") != category:
+        return False
+    if current.get("active"):
+        return True
+    if category != SERVICE_UNAVAILABLE:
+        return False
+    last = _parse_time(current.get("last_observed_at"))
+    if last is None:
+        return False
+    elapsed = (timestamp - last).total_seconds()
+    return 0 <= elapsed <= SERVICE_UNAVAILABLE_RECURRENCE_WINDOW_SEC
+
+
 def _parse_provider_reset_time(value: object) -> datetime | None:
     """Parse an explicit provider timestamp; naive values use host local time."""
 
@@ -384,12 +416,12 @@ def persist_llm_pause(
 
         first_observed_at = (
             current.get("first_observed_at")
-            if current and current.get("active") and current.get("category") == category
+            if _recurrence_carries_count(current, category, timestamp)
             else incoming.get("observed_at") or _iso(timestamp)
         )
         occurrences = (
             int(current.get("occurrences") or 1) + 1
-            if current and current.get("active") and current.get("category") == category
+            if _recurrence_carries_count(current, category, timestamp)
             else 1
         )
         # P1 (2026-10-05): the cooldown is computed HERE — inside the lock,

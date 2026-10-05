@@ -460,13 +460,36 @@ pause file had already auto-resumed. Only billing/auth manual pauses
 
 After verifying tests on this operator checkout (`/home/ubuntu/pok1`):
 
-1. Commit/push to `origin/tencent-cloud-runtime` (operator action).
-2. In `.evolution_pok`: `git pull --ff-only --tags` (Git sync only; never
+1. **Rating-identity preflight (P5, 2026-10-05)** — run BEFORE commit/push:
+
+   ```bash
+   python scripts/check_rating_identity_predeploy.py
+   ```
+
+   It diffs the deployment baseline (default: the current branch's tracking
+   branch, falling back to HEAD) against the **working tree** — committed,
+   staged, AND unstaged tracked changes — for the
+   `evaluation_data_identity.SEMANTIC_PATHS` file set, plus
+   `POK_DAEMON_PAIRS` in `deploy/tencent-cloud/env.runtime` (the workspace
+   file wins over the committed one). Either hit prints
+   `需归档重置评分（evaluation_data_identity）并按文档执行，否则 daemon 将 fail-closed`
+   and exits non-zero: archive-and-reset the ratings first
+   (`scripts/evaluation_data_identity.py`), otherwise the rating daemon
+   crash-loops at startup — two such regressions (043919c9 changed a
+   semantic file, af913b91 changed the pinned pairs) were both discovered
+   only through runtime crashes. Run it BEFORE the push: after
+   `git push` the tracking branch equals HEAD and the committed-diff leg is
+   empty by construction (the working-tree leg still catches later edits,
+   but the review-time signal belongs here). `POK_DAEMON_WORKERS` is
+   intentionally not guarded: it sits outside the rating-identity
+   runtime_profile and may be tuned freely.
+2. Commit/push to `origin/tencent-cloud-runtime` (operator action).
+3. In `.evolution_pok`: `git pull --ff-only --tags` (Git sync only; never
    copy files between checkouts).
-3. `pokctl restart` / `systemctl restart pok-evolution` so `env.runtime`
+4. `pokctl restart` / `systemctl restart pok-evolution` so `env.runtime`
    (`POK_GLOBAL_LLM_CONCURRENCY`, staging tier, Slice 2b flags) is
    reloaded.
-4. Expect operator stability to reset to **0/10** after restart; schedule
+5. Expect operator stability to reset to **0/10** after restart; schedule
    the restart in a generation empty window when possible.
 
 ## What stays out of main
