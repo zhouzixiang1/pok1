@@ -668,6 +668,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                precommit_attempt=None, reset_precommit_attempt=False,
                                precommit_rework_count=None,
                                official_rework_count=None,
+                               quality_rework_round_count=None,
                                timeout_extensions=None, touch_stage_timestamp=False,
                                literature_probe=None, prepare_scope_files=None,
                                clear_reviewer_feedback=False,
@@ -912,6 +913,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_precommit_attempt = precommit_attempt
         existing_precommit_rework_count = precommit_rework_count
         existing_official_rework_count = official_rework_count
+        existing_quality_rework_round_count = quality_rework_round_count
         existing_timeout_extensions = 0
         existing_literature_probe = None
         existing_repo_baseline = None
@@ -954,6 +956,10 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 existing_precommit_rework_count = existing.get("precommit_rework_count", 0)
             if official_rework_count is None:
                 existing_official_rework_count = existing.get("official_rework_count", 0)
+            if quality_rework_round_count is None:
+                existing_quality_rework_round_count = existing.get(
+                    "quality_rework_round_count", 0
+                )
             if timeout_extensions is not None:
                 existing_timeout_extensions = int(timeout_extensions)
             if parent2_v is None:
@@ -1613,6 +1619,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_precommit_rework_count = 0
         if existing_official_rework_count is None:
             existing_official_rework_count = 0
+        if existing_quality_rework_round_count is None:
+            existing_quality_rework_round_count = 0
         run_id = f"{next_v}#{existing_generation_attempt}"
         if not existing_workflow_run_id:
             existing_workflow_run_id = (
@@ -1693,6 +1701,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "precommit_attempt": existing_precommit_attempt,
             "precommit_rework_count": existing_precommit_rework_count,
             "official_rework_count": existing_official_rework_count,
+            "quality_rework_round_count": existing_quality_rework_round_count,
             "timeout_extensions": existing_timeout_extensions,
             "worker_failure_count": existing_failure_count,
             "gate_results": existing_gate_results,

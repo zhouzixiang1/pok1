@@ -283,6 +283,9 @@ def _render_reviewer_provider_prompt(inputs):
     )
     text = text.replace("{version}", str(next_v))
     text = text.replace("{parent_version}", str(source_v))
+    # P3 (2026-10-05): the reviewer's bot directory renders from the ACTIVE
+    # namespace (bot_name), never a hardcoded main-branch prefix.
+    text = text.replace("{bot_name}", bot_name(next_v))
     text = text.replace(
         "{review_semantic_contract}",
         json.dumps(semantic_contract, indent=2, ensure_ascii=False),

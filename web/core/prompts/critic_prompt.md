@@ -44,7 +44,7 @@ precommit gate alone decides measured strategy admission.
 ## Master's Plan:
 {master_plan}
 
-Bot directory: `bots/national_v{version}/`
+Bot directory: `bots/{bot_name}/`
 {critic_lineage_contract}
 
 ## Head-to-Head Context

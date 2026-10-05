@@ -1407,14 +1407,79 @@ def _attach_phase_a_projections(state: dict[str, Any], *, epoch: dict[str, Any] 
     )
 
 
+def _last_evolution_stop_reason() -> dict | None:
+    """P6 (2026-10-05): most recent typed stop reason from the event ledger.
+
+    Scans a bounded tail of ``events.jsonl`` for the last stop-family event
+    (``*_stop`` types, ``orchestrator.crashed``,
+    ``pipeline.evolution_stopped_llm_availability_control``, and the
+    rate-limited ``pipeline.orchestrator_auto_restart`` terminal) so
+    ``/api/control/health`` can show WHY evolution is not running instead of
+    leaving the operator to reconstruct it from journalctl. Returns
+    ``{"reason_code", "ts", "stage", "event_type"}`` or ``None``.
+    """
+
+    try:
+        from orchestrator_stage_routing import _read_structured_events_tail
+    except Exception:
+        return None
+    try:
+        lines = _read_structured_events_tail()
+    except Exception:
+        return None
+    last: dict | None = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "")
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if event_type.endswith("_stop"):
+            pass
+        elif event_type in {
+            "orchestrator.crashed",
+            "pipeline.evolution_stopped_llm_availability_control",
+        }:
+            pass
+        elif (
+            event_type == "pipeline.orchestrator_auto_restart"
+            and str(data.get("status") or "") == "restart_rate_limited"
+        ):
+            pass
+        else:
+            continue
+        reason_code = str(data.get("reason_code") or "") or (
+            str(data.get("error") or "")[:200] or event_type
+        )
+        last = {
+            "reason_code": reason_code,
+            "ts": event.get("ts"),
+            "stage": str(data.get("stage") or "") or None,
+            "event_type": event_type,
+        }
+    return last
+
+
 def _health_summary(status: dict) -> dict:
     task = app_state.task_snapshot()
     daemon = _daemon_health_snapshot()
     pipeline = _read_pipeline_health(status)
     issues = []
+    last_stop = None
     task_active = bool(task.get("present") and task.get("done") is False)
     if not status.get("running"):
         issues.append("evolution_not_running")
+        # P6 (2026-10-05): carry the most recent typed stop reason (code +
+        # timestamp) into the issues list and a typed field.
+        last_stop = _last_evolution_stop_reason()
+        if last_stop is not None:
+            issues.append(
+                "evolution_not_running:last_stop:"
+                f"{last_stop['reason_code']}@{last_stop.get('ts')}"
+            )
     if status.get("running") and not task_active:
         issues.append("orchestrator_task_not_active")
     if task_active and task.get("shutdown_requested"):
@@ -1481,6 +1546,7 @@ def _health_summary(status: dict) -> dict:
     return {
         "overall": overall,
         "issues": issues,
+        "last_evolution_stop": last_stop,
         "status": status,
         "running": status.get("running"),
         "active_generation": status.get("active_generation"),
@@ -2554,10 +2620,17 @@ async def _start_evolution_transaction() -> dict[str, str]:
             raise
 
         from orchestrator import orchestrator_loop
+        # P2 (2026-10-05): restart factory enables the crash-revival supervisor
+        # inside run_evolution_task (crash sentinel -1.0 only, bounded backoff).
         task = asyncio.create_task(run_evolution_task(orchestrator_loop(
             web_ui, shutdown_mgr=shutdown_mgr, no_daemon=not config["daemon_enabled"],
             daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"]),
             owner_id=owner_id,
+            restart_factory=lambda: orchestrator_loop(
+                web_ui, shutdown_mgr=shutdown_mgr,
+                no_daemon=not config["daemon_enabled"],
+                daemon_workers=config["daemon_workers"],
+                daemon_pairs=config["daemon_pairs"]),
         ))
         app_state.set_task(task, owner_id=owner_id)
         _invalidate_observer_projection_cache()

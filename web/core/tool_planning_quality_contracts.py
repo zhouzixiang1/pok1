@@ -1753,6 +1753,7 @@ from tool_planning_quality_repair_targets import (  # noqa: E402,F401
     _precommit_repair_target_files,
     _primary_feedback_file,
     _quality_repair_contracts,
+    _repair_contract_contradictions,
     _review_feedback_items,
     _review_primary_feedback_text,
     _review_repair_target_files,

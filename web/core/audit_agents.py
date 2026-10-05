@@ -255,6 +255,10 @@ def _render_master_plan_audit_provider_prompt(inputs):
         "direction_audit": str(inputs["direction_audit"]),
         "source_v": str(source_v),
         "next_v": str(next_v),
+        # P3 (2026-10-05): the bot directory labels render from the ACTIVE
+        # namespace (bot_name), never a hardcoded main-branch prefix.
+        "source_bot_name": bot_name(source_v),
+        "next_bot_name": bot_name(next_v),
         "h2h_snapshot_contract": str(inputs["h2h_snapshot_contract"]),
         "recent_directions": (
             recent_directions

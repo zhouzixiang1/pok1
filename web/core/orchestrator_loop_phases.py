@@ -46,6 +46,60 @@ _PENDING_DRAFT_TASKS: set = set()
 _PENDING_EVAL_WAIT_DRAFT_TICK_TASKS: set = set()
 
 
+def _emit_llm_availability_control_stop_event(exc):
+    """P6 (2026-10-05): publish the typed availability-control stop reason.
+
+    The 10:29 v511 wedge stopped evolution for hours with the six-code reason
+    and ``receipt_errors`` living only inside the JSON tool result. Mirror the
+    crash branch's ``orchestrator.crashed`` event here so the ledger and the
+    health projection carry the operator-actionable reason. Never raises.
+    """
+
+    try:
+        text = str(exc)
+        reason_code = str(getattr(exc, "reason_code", "") or "")
+        if not reason_code:
+            for code in sorted(_orch._LLM_AVAILABILITY_CONTROL_ERRORS):
+                if code in text:
+                    reason_code = code
+                    break
+        receipt_errors = getattr(exc, "receipt_errors", None)
+        if not isinstance(receipt_errors, list):
+            receipt_errors = []
+        stage = ""
+        workflow_run_id = ""
+        next_v = None
+        source_v = None
+        try:
+            from evolution_core import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+            if isinstance(checkpoint, dict):
+                stage = str(checkpoint.get("stage") or "")
+                workflow_run_id = str(checkpoint.get("workflow_run_id") or "")
+                next_v = checkpoint.get("next_v")
+                source_v = checkpoint.get("source_v")
+        except Exception:
+            pass
+        _orch.log_system_event(
+            "pipeline.evolution_stopped_llm_availability_control",
+            "error",
+            f"Evolution stopped by LLM availability control: {reason_code or text[:200]}",
+            {
+                "reason_code": reason_code,
+                "receipt_errors": [str(item) for item in receipt_errors],
+                "stage": stage,
+                "workflow_run_id": workflow_run_id,
+                "next_v": next_v,
+                "source_v": source_v,
+                "operator_action_required": True,
+                "error": text[:400],
+            },
+        )
+    except Exception:
+        pass
+
+
 async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
                               daemon_pairs, startup_recovery):
     """Phase A: epoch/daemon/task startup + recovery + state init.
@@ -624,6 +678,15 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
         while True:
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 break
+
+            # P7 (2026-10-05): pipeline-liveness heartbeat for the LLM
+            # saturator gate — one beat per cycle keeps
+            # saturator_may_launch from parking on a live pipeline.
+            try:
+                from server.state import app_state
+                app_state.note_pipeline_heartbeat()
+            except Exception:
+                pass
 
             try:
                 # Master-abandon signal drain (top-of-loop safety net).  A Master-
@@ -1609,6 +1672,9 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
         terminal_outcome = _orch.ORCH_LLM_AVAILABILITY_BLOCKED_COST
     except _orch.LLMAvailabilityPauseError as exc:
         _orch._clear_orchestrator_session(reason="llm_availability_state_invalid")
+        # P6 (2026-10-05): publish the typed stop reason (reason code +
+        # receipt errors + stage/run id) into the structured-event ledger.
+        _emit_llm_availability_control_stop_event(exc)
         if ui:
             ui.set_status("Stopped: LLM availability state invalid", is_working=False)
             ui.log_history(str(exc), "error")
@@ -1629,6 +1695,13 @@ async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
             ui.log_history(f"Orchestrator crashed: {e}", "error")
         _orch.log_system_event("orchestrator.crashed", "error", f"Orchestrator crashed: {e}",
                          {"error": str(e)[:200]})
+        # P2 (2026-10-05): stash the crash detail for the auto-restart
+        # supervisor's pipeline.orchestrator_auto_restart events.
+        try:
+            from server.state import app_state
+            app_state.note_orchestrator_crash(e)
+        except Exception:
+            pass
         _orch._clear_orchestrator_session()
         # Preserve checkpoint for crash recovery regardless of error type.
         # The checkpoint stage-tracking allows startup recovery to assess state.

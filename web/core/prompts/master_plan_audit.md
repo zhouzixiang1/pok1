@@ -94,9 +94,9 @@ only where the plan's own text (`analysis`, `targeted_failure`, `tasks`,
 ## Branch-From Identity (read before flagging data staleness)
 - This generation's source (parent) version is **v{source_v}**, target is **v{next_v}**.
 - {branch_from_note}
-- The plan's tasks MUST target only `bots/national_v{next_v}/policy.py`, NOT bots/national_v{source_v}/ or another target artifact.
+- The plan's tasks MUST target only `bots/{next_bot_name}/policy.py`, NOT bots/{source_bot_name}/ or another target artifact.
 - If the plan states, implies, or hardcodes a different target version than v{next_v}, reject it.
-- If the plan targets the parent path `bots/national_v{source_v}/` for worker edits, reject it.
+- If the plan targets the parent path `bots/{source_bot_name}/` for worker edits, reject it.
 - A plan that fixes correctness bugs present in v{source_v} is VALID even if a later lineage already fixed them — evolution branches from v{source_v}.
 - Only reject on grounds of data staleness if the analysis references a version OTHER than v{source_v}. Master plans must not contain `branch_from`; source selection is already decided before Master planning.
 </branch_from_semantics>

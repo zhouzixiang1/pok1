@@ -1722,6 +1722,18 @@ def generic_abandon_block(checkpoint: dict | None, *,
             ("durable_worker_", {"master_planned", "repair_planned", "rework_running"}),
             ("precommit_rework_circuit_breaker", {"precommit_failed", "repair_planned", "rework_running"}),
             ("official_rework_circuit_breaker", {"official_failed", "repair_planned", "rework_running"}),
+            # Quality/review rework livelock double gate (P4, 2026-10-05).
+            # Stage set = the worker_terminal_abandon row plus the
+            # gate-repair-family stages the rework preparation emits these
+            # from (a review rejection writes stage=repair_planned; a
+            # gate_repair retry can still sit at workers_done /
+            # quality_failed / quality_passed / reviewed / critic_checked).
+            # Without these rows both reasons died at
+            # forced_abandon_reason_stage_not_allowed and the route's
+            # one-shot generic fallback hit the forward-only refusal — an
+            # abandoned=False loop re-dispatching execute_workers forever.
+            ("quality_rework_circuit_breaker", {"master_planned", "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "precommit_failed", "repair_planned", "rework_running", "official_failed"}),
+            ("repair_contract_contradictory", {"master_planned", "workers_done", "quality_failed", "quality_passed", "reviewed", "critic_checked", "precommit_failed", "repair_planned", "rework_running", "official_failed"}),
             ("stale_blueprint_rejection", {"selected", "preparing", "prepared", "direction_audited"}),
         )
         allowed = next(

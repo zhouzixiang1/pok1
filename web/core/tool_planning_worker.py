@@ -49,6 +49,7 @@ from evolution_core import (
     check_code_size,
     MAX_PRECOMMIT_REWORK_ROUNDS,
     MAX_OFFICIAL_REWORK_ROUNDS,
+    MAX_QUALITY_REWORK_ROUNDS,
 )
 from tool_helpers import (
     _json_tool_result,

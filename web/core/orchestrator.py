@@ -1172,6 +1172,8 @@ from orchestrator_tool_result_classification import (  # noqa: E402,F401
     _worker_terminal_abandon_reason,
     _is_precommit_rework_circuit_breaker_result,
     _is_official_rework_circuit_breaker_result,
+    _is_quality_rework_circuit_breaker_result,
+    _is_repair_contract_contradictory_result,
     _is_crossover_incompatible_result,
     _is_crossover_llm_exhausted_result,
     _is_master_ensemble_pending_retry,

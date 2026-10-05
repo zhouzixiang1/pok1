@@ -25,6 +25,18 @@ from evolution_infra import (
 )
 
 
+def _active_bot_name(version: int) -> str:
+    """Render a bot identity label from the ACTIVE namespace (P3, 2026-10-05).
+
+    Kept as a tiny module-level seam so prompt renderers never hardcode the
+    main-branch ``national_v`` prefix; tests observe it through ``bot_name``.
+    """
+
+    from bot_namespace import bot_name
+
+    return bot_name(version)
+
+
 def _render_critic_provider_prompt(inputs):
     from llm_query import LLMRenderedMaterial
 
@@ -50,6 +62,8 @@ def _render_critic_provider_prompt(inputs):
         "master_plan": master_plan,
         "version": str(next_v),
         "parent_version": str(source_v),
+        # P3 (2026-10-05): bot directory renders from the ACTIVE namespace.
+        "bot_name": _active_bot_name(next_v),
         "critic_lineage_contract": str(code_evidence["lineage_contract"]),
         "critic_evaluation_steps": str(code_evidence["evaluation_steps"]),
     })
@@ -147,6 +161,10 @@ def _render_crossover_provider_prompt(inputs):
         "parent_a_version": str(parent_a_v),
         "parent_b_version": str(parent_b_v),
         "version": str(target_v),
+        # P3 (2026-10-05): parent identity labels render from the ACTIVE
+        # namespace, never a hardcoded main-branch prefix.
+        "parent_a_label": _active_bot_name(parent_a_v),
+        "parent_b_label": _active_bot_name(parent_b_v),
     })
     text += (
         "\n\n# System-owned Crossover Context\n"
@@ -1153,12 +1171,53 @@ async def _run_crossover(
             # Continue to the next stable attempt id without rerunning it.
             continue
         elif synthesis_effect.get("status") == "deferred":
-            shutil.rmtree(target_dir, ignore_errors=True)
-            return _crossover_projection_failure(
-                "crossover_synthesis_effect",
-                "effect_is_deferred_pending_llm_availability_resume",
-            )
-        else:
+            # P5 (2026-10-05): the effect was deferred by an availability
+            # pause without consuming its attempt budget.  While the pause is
+            # still active, surface a wait signal (never claim/dispatch);
+            # once it cleared, resume the SAME effect and re-dispatch.
+            _pause_still_active = False
+            try:
+                from llm_availability_store import active_llm_pause
+
+                _pause_still_active = active_llm_pause() is not None
+            except Exception:
+                _pause_still_active = False
+            if _pause_still_active:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_projection_failure(
+                    "crossover_synthesis_effect",
+                    "effect_is_deferred_pending_llm_availability_resume",
+                )
+            try:
+                workflow_store.resume_effect(
+                    effect_id,
+                    # The deferral retains a monotonically increasing lease
+                    # epoch, so scoping the causation id with it keeps every
+                    # resume event unique (UNIQUE (run_id, causation_id)).
+                    causation_id=(
+                        f"crossover-synthesis-availability-resume:{effect_id}:"
+                        f"{int(synthesis_effect.get('lease_epoch') or 0)}"
+                    ),
+                )
+                synthesis_effect = workflow_store.effect(effect_id)
+            except Exception as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_projection_failure(
+                    "crossover_synthesis_effect",
+                    "effect_resume_error:"
+                    f"{type(exc).__name__}:{str(exc)[:240]}",
+                )
+            if synthesis_effect.get("status") == "deferred":
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_projection_failure(
+                    "crossover_synthesis_effect",
+                    "effect_resume_did_not_reach_retry_state",
+                )
+        # P5: fresh effects AND resumed deferrals share this claim path (the
+        # pre-P5 ``else:`` only admitted fresh statuses).
+        if synthesis_effect.get("status") not in {
+            "completed", "exhausted", "abandoned", "deferred",
+        }:
             try:
                 synthesis_lease = claim_synthesis_effect(
                     store=workflow_store,
@@ -1221,16 +1280,25 @@ async def _run_crossover(
                         target_dir,
                     ],
                 )
-            except LLMAvailabilityBlocked:
-                # Persist a retryable fenced failure so the active lease cannot
-                # strand resume.  The outer availability pause remains
-                # attempt-neutral at the semantic crossover level.
+            except LLMAvailabilityBlocked as exc:
+                # P5 (2026-10-05): a provider-wide availability pause is not a
+                # crossover execution attempt.  Defer the lease (attempt-
+                # neutral, same semantics as the Worker availability defer)
+                # instead of failing it retryable, so a 1302 storm cannot burn
+                # the 16-lease synthesis budget while no model could run.
                 try:
-                    workflow_store.fail_effect(
+                    workflow_store.defer_effect(
                         effect_id,
                         lease_epoch=synthesis_lease.lease_epoch,
-                        error="llm_availability_blocked",
-                        retryable=True,
+                        reason="llm_availability_blocked",
+                        metadata={
+                            "pause_category": str(
+                                getattr(exc.issue, "category", "") or ""
+                            ),
+                            "evidence_digest": str(
+                                getattr(exc.issue, "evidence_digest", "") or ""
+                            ),
+                        },
                         causation_id=(
                             f"crossover-synthesis-availability:{effect_id}:"
                             f"{synthesis_lease.lease_epoch}"

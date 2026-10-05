@@ -95,14 +95,14 @@ from typing import Dict, List, Tuple
 #: are internal to rollback and never propagate to the caller.
 #:
 #: Breakdown by return-expression type:
-#:   json_tool_result              : 65   (``_tw._json_tool_result({...})``)
+#:   json_tool_result              : 67   (``_tw._json_tool_result({...})``)
 #:   state_blocked                 :  2   (``_tw._state_blocked(...)``)
 #:   project_durable_worker_output :  2   (``await _project_durable_worker_output(...)``)
 #:   project_durable_worker_failure:  2   (``await _project_durable_worker_failure(...)``)
 #:   deferred_activity             :  2   (``_DeferredWorkerActivity(...)``)
 #:   run_durable_effect            :  2   (``await _tw._run_durable_worker_effect(...)``)
 #:   var_return                    :  1   (``return recovery`` -- delegated envelope)
-EXPECTED_WORKER_EXIT_COUNT = 76
+EXPECTED_WORKER_EXIT_COUNT = 78
 
 #: Distinct (return_type, identity) pairs the function can produce. This is the
 #: semantic contract: after the refactor the post-refactor function MUST be
@@ -126,6 +126,9 @@ EXPECTED_WORKER_EXIT_REASONS = {
     "LLM_AVAILABILITY_BLOCKED",
     "LLM_AVAILABILITY_PAUSE_WAS_NOT_PERSISTED",
     "WORKER_AVAILABILITY_RESUME_RECEIPT_INVALID",
+    # --- P4 (2026-10-05): quality/review rework livelock double gate ---
+    "QUALITY_REWORK_CIRCUIT_BREAKER",
+    "REPAIR_CONTRACT_CONTRADICTORY",
     "WORKER_AVAILABILITY_RESUME_FAILED",
     "WORKER_AVAILABILITY_RESUME_INVARIANT_FAILED",
     "WORKER_INFRASTRUCTURE_EXHAUSTED",
@@ -310,6 +313,10 @@ EXIT_PATHS: List[Dict] = [
     {"line": 1765, "type": "json_tool_result", "identity": "LLM_AVAILABILITY_BLOCKED", "next_tool": "", "action": "wait_for_llm_availability", "trigger": "_active_pause is not None (request_or_claim_worker)"},
     {"line": 1789, "type": "json_tool_result", "identity": "LLM_AVAILABILITY_PAUSE_WAS_NOT_PERSISTED", "next_tool": "", "action": "operator_reconcile", "trigger": "_deferred_availability.get('persistence_error')"},
     {"line": 1813, "type": "json_tool_result", "identity": "WORKER_AVAILABILITY_RESUME_RECEIPT_INVALID", "next_tool": "", "action": "operator_reconcile", "trigger": "_resume_receipt_errors"},
+    # --- P4 (2026-10-05): quality/review rework livelock double gate (live
+    # rows; historical line numbers kept only as canonical reference). ---
+    {"line": 1273, "type": "json_tool_result", "identity": "QUALITY_REWORK_CIRCUIT_BREAKER", "next_tool": "", "action": "abandon_generation", "trigger": "_quality_rework_round_gate_payload over MAX_QUALITY_REWORK_ROUNDS"},
+    {"line": 1162, "type": "json_tool_result", "identity": "REPAIR_CONTRACT_CONTRADICTORY", "next_tool": "", "action": "abandon_generation", "trigger": "_repair_contract_contradictions non-empty"},
     {"line": 1847, "type": "json_tool_result", "identity": "WORKER_AVAILABILITY_RESUME_FAILED", "next_tool": "", "action": "operator_reconcile", "trigger": "except Exception as exc (resume)"},
     {"line": 1869, "type": "json_tool_result", "identity": "WORKER_AVAILABILITY_RESUME_INVARIANT_FAILED", "next_tool": "", "action": "operator_reconcile", "trigger": "command_name != 'claim_worker' after resume"},
     {"line": 1881, "type": "project_durable_worker_output", "identity": "project_durable_worker_output", "next_tool": "", "action": "", "trigger": "actor_lock_owned (claim_worker success, lock held)"},
@@ -377,7 +384,7 @@ EXIT_PATHS: List[Dict] = [
 # ---------------------------------------------------------------------------
 
 RETURN_TYPE_COUNTS: Dict[str, int] = {
-    "json_tool_result": 65,
+    "json_tool_result": 67,
     "state_blocked": 2,
     "project_durable_worker_output": 2,
     "project_durable_worker_failure": 2,

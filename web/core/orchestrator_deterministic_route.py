@@ -1761,12 +1761,21 @@ async def _try_deterministic_checkpoint_route(
             _o._is_worker_circuit_breaker_result(data)
             or _o._is_precommit_rework_circuit_breaker_result(data)
             or _o._is_official_rework_circuit_breaker_result(data)
+            or _o._is_quality_rework_circuit_breaker_result(data)
+            or _o._is_repair_contract_contradictory_result(data)
             or worker_terminal_abandon
         ):
             if _o._is_precommit_rework_circuit_breaker_result(data):
                 abandon_reason = "precommit_rework_circuit_breaker"
             elif _o._is_official_rework_circuit_breaker_result(data):
                 abandon_reason = "official_rework_circuit_breaker"
+            elif _o._is_quality_rework_circuit_breaker_result(data):
+                abandon_reason = "quality_rework_circuit_breaker"
+            elif _o._is_repair_contract_contradictory_result(data):
+                # P4(b): the payload's reason token is the durable identity.
+                abandon_reason = str(
+                    data.get("reason_token") or "repair_contract_contradictory"
+                )
             elif _o._is_worker_circuit_breaker_result(data):
                 abandon_reason = "worker_circuit_breaker"
             else:

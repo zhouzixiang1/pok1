@@ -1467,6 +1467,84 @@ def _expected_worker_backend_contract(checkpoint, envelope=None):
     return _worker_backend_contract()
 
 
+#: Bounded FIFO archive read from the pause store's ``resume_receipt_history``
+#: (schema 2). A burst of new pauses overwrites the store's single record
+#: before a deferred Worker resumes; the archived receipts are the only
+#: durable proof that the deferred evidence was reconciled through an
+#: allowed resume path (2026-10-05 wedge fix).
+_RESUME_RECEIPT_HISTORY_SCAN_LIMIT = 8
+
+
+def _resume_receipt_identity_errors(deferred, projection):
+    """Identity-field checks: does this receipt describe the deferred pause?"""
+
+    errors = []
+    for key in ("category", "evidence_digest", "retry_policy", "http_status"):
+        if projection.get(key) != deferred.get(key):
+            errors.append(f"global_pause_resume_receipt_{key}_mismatch")
+    if bool(projection.get("requires_manual_resume")) != bool(
+        deferred.get("requires_manual_resume")
+    ):
+        errors.append("global_pause_resume_receipt_manual_policy_mismatch")
+    if not str(projection.get("resumed_at") or ""):
+        errors.append("global_pause_resume_receipt_timestamp_missing")
+    return errors
+
+
+def _resume_receipt_policy_errors(
+    projection,
+    *,
+    digest: str,
+    manual: bool,
+    require_auto_resume_deadline: bool,
+):
+    """Resume-path policy checks for one receipt projection.
+
+    ``require_auto_resume_deadline`` is False for archived projections: the
+    store does not archive ``auto_resume_at``, and an archived
+    ``resume_source == "bounded_cooldown_elapsed"`` token is already proof the
+    receipt was produced by the system-owned reconcile path (only
+    ``_reconcile_llm_pause`` writes that token, and only once the deadline
+    elapsed). Manual policy is enforced identically for archived receipts.
+    """
+    errors = []
+    resume_source = str(projection.get("resume_source") or "")
+    resume_digest = str(projection.get("resume_evidence_digest") or "")
+    if manual:
+        if resume_source != "operator_evidence_digest":
+            errors.append("manual_pause_operator_receipt_missing")
+        if resume_digest != digest:
+            errors.append("manual_pause_resume_evidence_digest_mismatch")
+    else:
+        if resume_source != "bounded_cooldown_elapsed":
+            errors.append("transient_pause_cooldown_receipt_missing")
+        if resume_digest:
+            errors.append("transient_pause_unexpected_operator_digest")
+        if require_auto_resume_deadline and not str(
+            projection.get("auto_resume_at") or ""
+        ):
+            errors.append("transient_pause_auto_resume_deadline_missing")
+    return errors
+
+
+def _resume_receipt_projection_errors(
+    deferred,
+    projection,
+    *,
+    digest: str,
+    manual: bool,
+    require_auto_resume_deadline: bool,
+):
+    return _resume_receipt_identity_errors(
+        deferred, projection
+    ) + _resume_receipt_policy_errors(
+        projection,
+        digest=digest,
+        manual=manual,
+        require_auto_resume_deadline=require_auto_resume_deadline,
+    )
+
+
 def _worker_availability_resume_receipt_errors(deferred, pause_audit):
     """Validate the global resume receipt against the deferred Worker effect.
 
@@ -1474,6 +1552,13 @@ def _worker_availability_resume_receipt_errors(deferred, pause_audit):
     this effect.  Absence of an active global pause is therefore necessary but
     not sufficient to resume: the inactive audit record must prove that the
     same evidence was reconciled through the allowed manual/cooldown path.
+    Since 2026-10-05 the store also archives the resume receipts of the
+    records a later pause overwrote (``resume_receipt_history``); when the
+    current record does not match, any single archived projection that matches
+    under the same per-record rules authorizes the resume. Manual pauses in
+    the archive still require the exact operator evidence digest, and with no
+    match anywhere the effect stays deferred (fail-closed semantics are
+    unchanged from the single-record contract).
     """
     errors = []
     if not isinstance(deferred, dict) or not deferred:
@@ -1492,33 +1577,61 @@ def _worker_availability_resume_receipt_errors(deferred, pause_audit):
         errors.append("global_pause_resume_receipt_missing")
         return errors
 
+    current_errors = []
     if pause_audit.get("active") is not False:
-        errors.append("global_pause_resume_receipt_not_inactive")
+        current_errors.append("global_pause_resume_receipt_not_inactive")
     if str(pause_audit.get("source") or "") != "llm_availability":
-        errors.append("global_pause_resume_receipt_source_invalid")
-    for key in ("category", "evidence_digest", "retry_policy", "http_status"):
-        if pause_audit.get(key) != deferred.get(key):
-            errors.append(f"global_pause_resume_receipt_{key}_mismatch")
-    if bool(pause_audit.get("requires_manual_resume")) != manual:
-        errors.append("global_pause_resume_receipt_manual_policy_mismatch")
-    if not str(pause_audit.get("resumed_at") or ""):
-        errors.append("global_pause_resume_receipt_timestamp_missing")
+        current_errors.append("global_pause_resume_receipt_source_invalid")
+    current_errors.extend(
+        _resume_receipt_projection_errors(
+            deferred,
+            pause_audit,
+            digest=digest,
+            manual=manual,
+            require_auto_resume_deadline=True,
+        )
+    )
+    if not errors and not current_errors:
+        return []
 
-    resume_source = str(pause_audit.get("resume_source") or "")
-    resume_digest = str(pause_audit.get("resume_evidence_digest") or "")
-    if manual:
-        if resume_source != "operator_evidence_digest":
-            errors.append("manual_pause_operator_receipt_missing")
-        if resume_digest != digest:
-            errors.append("manual_pause_resume_evidence_digest_mismatch")
-    else:
-        if resume_source != "bounded_cooldown_elapsed":
-            errors.append("transient_pause_cooldown_receipt_missing")
-        if resume_digest:
-            errors.append("transient_pause_unexpected_operator_digest")
-        if not str(pause_audit.get("auto_resume_at") or ""):
-            errors.append("transient_pause_auto_resume_deadline_missing")
-    return errors
+    if not errors:
+        history = pause_audit.get("resume_receipt_history")
+        if isinstance(history, list) and history:
+            archived_policy_errors = []
+            for projection in history[-_RESUME_RECEIPT_HISTORY_SCAN_LIMIT:]:
+                if not isinstance(projection, dict):
+                    continue
+                identity_errors = _resume_receipt_identity_errors(
+                    deferred, projection
+                )
+                policy_errors = _resume_receipt_policy_errors(
+                    projection,
+                    digest=digest,
+                    manual=manual,
+                    require_auto_resume_deadline=False,
+                )
+                if not identity_errors and not policy_errors:
+                    # An archived receipt proves this deferred evidence was
+                    # reconciled through an allowed resume path before a
+                    # newer pause overwrote the record.
+                    return []
+                if not identity_errors and not archived_policy_errors:
+                    # Identity matched but the resume path itself was not
+                    # allowed (e.g. a manual pause whose archived receipt lacks
+                    # the operator evidence digest): surface the actionable
+                    # policy tokens instead of a generic archive miss.
+                    archived_policy_errors = policy_errors
+            # Review follow-up: the archive was scanned and nothing matched —
+            # return the fully-assembled list directly so ``current_errors``
+            # appears exactly once (the final ``+ current_errors`` below is
+            # only for the no-archive path).
+            return (
+                errors
+                + current_errors
+                + archived_policy_errors
+                + ["global_pause_resume_receipt_no_archived_match"]
+            )
+    return errors + current_errors
 
 
 @dataclass(frozen=True)

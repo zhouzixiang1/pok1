@@ -428,13 +428,22 @@ async def lifespan(app: FastAPI):
                         )
                 except Exception:
                     raise
+                # P2 (2026-10-05): the restart factory lets run_evolution_task
+                # re-enter the loop after a crash outcome (terminal_outcome
+                # == -1.0) under its bounded backoff / rate limit.
                 task = asyncio.create_task(run_evolution_task(orchestrator_loop(
                     web_ui,
                     shutdown_mgr=shutdown_mgr,
                     no_daemon=not daemon_enabled,
                     daemon_workers=config["daemon_workers"],
                     daemon_pairs=config["daemon_pairs"],
-                ), owner_id=owner_id))
+                ), owner_id=owner_id, restart_factory=lambda: orchestrator_loop(
+                    web_ui,
+                    shutdown_mgr=shutdown_mgr,
+                    no_daemon=not daemon_enabled,
+                    daemon_workers=config["daemon_workers"],
+                    daemon_pairs=config["daemon_pairs"],
+                )))
                 app_state.set_task(task, owner_id=owner_id)
                 register_lifespan_runtime_owner(owner_id)
                 orchestrator_owned = True

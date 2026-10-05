@@ -30,7 +30,7 @@ log substitutes for the signed official Windows EXE certificate.
 ## Master's Original Plan/Tasks:
 {master_plan}
 
-Bot directory: `bots/national_v{version}/`
+Bot directory: `bots/{bot_name}/`
 {review_lineage_contract}
 </context>
 

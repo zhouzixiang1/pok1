@@ -36,10 +36,30 @@ from llm_availability import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Schema 1 records predate ``resume_receipt_history`` (2026-10-05). They stay
+# loadable; the first persist after the upgrade rewrites the store as schema 2
+# and archives the overwritten record's resume receipt into the new history.
+_LEGACY_SCHEMA_VERSIONS = (1,)
 RESUME_ENV = "POK_LLM_RESUME_EVIDENCE_DIGEST"
 PAUSE_FILENAME = "llm_availability_pause.json"
 LOCK_FILENAME = ".llm_availability_pause.lock"
+# Bounded FIFO archive of overwritten resume receipts. A Worker availability
+# deferral freezes the pause projection it deferred on; when a burst of new
+# pauses (e.g. recurring GLM 1302) overwrites the store before the Worker
+# resumes, the archived receipts are the only durable proof that the deferred
+# evidence was reconciled through an allowed resume path.
+RESUME_RECEIPT_HISTORY_CAP = 8
+_RESUME_RECEIPT_PROJECTION_FIELDS = (
+    "category",
+    "evidence_digest",
+    "retry_policy",
+    "http_status",
+    "requires_manual_resume",
+    "resumed_at",
+    "resume_source",
+    "resume_evidence_digest",
+)
 
 _AUTO_COOLDOWN_SECONDS = {
     # SERVICE_UNAVAILABLE is deliberately absent: its cooldown follows the
@@ -145,9 +165,51 @@ def _read_unlocked(path: Path) -> dict | None:
         raise LLMAvailabilityPauseError(
             f"invalid LLM availability pause record: {type(exc).__name__}: {exc}"
         ) from exc
-    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(value, dict) or value.get("schema_version") not in (
+        SCHEMA_VERSION,
+        *_LEGACY_SCHEMA_VERSIONS,
+    ):
         raise LLMAvailabilityPauseError("invalid LLM availability pause schema")
     return value
+
+
+def _resume_receipt_projection(record: dict | None) -> dict | None:
+    """Project an inactive record's resume receipt for the bounded history.
+
+    Only records that actually went through a resume path (``resumed_at`` +
+    ``resume_source`` both present) carry a receipt; anything else returns
+    ``None`` and is never archived. Garbage projections (empty digest or
+    category) are likewise refused so the archive cannot grow an entry that
+    the Worker receipt validator could never match anyway.
+    """
+
+    if not isinstance(record, dict) or record.get("active"):
+        return None
+    if not str(record.get("resumed_at") or ""):
+        return None
+    if not str(record.get("resume_source") or ""):
+        return None
+    if not str(record.get("evidence_digest") or ""):
+        return None
+    if not str(record.get("category") or ""):
+        return None
+    return {key: record.get(key) for key in _RESUME_RECEIPT_PROJECTION_FIELDS}
+
+
+def _carried_resume_receipt_history(record: dict | None) -> list[dict]:
+    """Sanitize and bound the history carried forward from an existing record."""
+
+    if not isinstance(record, dict):
+        return []
+    raw = record.get("resume_receipt_history")
+    if not isinstance(raw, list):
+        return []
+    history = [
+        dict(entry)
+        for entry in raw
+        if isinstance(entry, dict) and _resume_receipt_projection(entry) is not None
+    ]
+    return history[-RESUME_RECEIPT_HISTORY_CAP:]
 
 
 def _write_unlocked(path: Path, value: dict) -> None:
@@ -254,6 +316,13 @@ def persist_llm_pause(
     with _PauseLock():
         path = pause_path()
         current = _read_unlocked(path)
+        # Receipt archive (schema 2): carry the bounded history forward across
+        # every record this store writes, and archive the overwritten record's
+        # resume receipt when it actually went through a resume path. The
+        # suppressed-recurrence branch below rewrites the same record via a
+        # dict copy, so its history is preserved by construction there.
+        resume_history = _carried_resume_receipt_history(current)
+        archived_receipt = _resume_receipt_projection(current)
         if (
             current
             and current.get("active")
@@ -267,6 +336,7 @@ def persist_llm_pause(
             current["resume_source"] = "untrusted_quota_pause_without_reset_authority"
             current["resume_evidence_digest"] = None
             _write_unlocked(path, current)
+            archived_receipt = _resume_receipt_projection(current)
             current = None
         if current and current.get("active"):
             old_priority = _CATEGORY_PRIORITY.get(str(current.get("category")), 0)
@@ -343,6 +413,9 @@ def persist_llm_pause(
                 if category == QUOTA_429 and provider_reset is not None
                 else _iso(timestamp + timedelta(seconds=cooldown))
             )
+        if archived_receipt is not None:
+            resume_history.append(archived_receipt)
+            resume_history = resume_history[-RESUME_RECEIPT_HISTORY_CAP:]
         state = {
             "schema_version": SCHEMA_VERSION,
             "active": True,
@@ -363,6 +436,7 @@ def persist_llm_pause(
             "occurrences": occurrences,
             "auto_resume_at": auto_resume_at,
             "quota_reset_authority": authority or None,
+            "resume_receipt_history": resume_history,
         }
         _write_unlocked(path, state)
         return state

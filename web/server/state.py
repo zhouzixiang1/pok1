@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -69,6 +70,133 @@ def _env_int_in_range(name: str, lo: int, hi: int) -> int | None:
     return value
 
 
+# --- P2 (2026-10-05): crash-revival supervisor around run_evolution_task ------
+#
+# The 06:12 v511 orchestrator crash (``KeyError('bot_name(next_v)')``) ended
+# the one-shot evolution task for ~2h while the service kept burning saturator
+# tokens: nothing re-entered ``orchestrator_loop`` after its crash branch
+# returned ``terminal_outcome == -1.0``.  The supervisor re-enters the loop
+# ONLY for that crash sentinel; every other terminal (operator stop, cost
+# policy, manual pause, recovery blocked, LLM-availability stop) stays
+# stopped.  Backoff is bounded (30s doubling to a 30min cap), a sliding
+# window rate-limits the burst (5 restarts / 30min; beyond that a terminal
+# ``operator_action_required`` event replaces the storm), and a stable run
+# (>= 1h) resets the counters.
+
+_ORCHESTRATOR_CRASH_OUTCOME = -1.0
+
+
+def _env_float_in_range(name: str, default: float, lo: float, hi: float) -> float:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not lo <= value <= hi:
+        return default
+    return value
+
+
+def _restart_initial_backoff_seconds() -> float:
+    return _env_float_in_range(
+        "POK_ORCHESTRATOR_RESTART_INITIAL_BACKOFF_SEC", 30.0, 0.0, 86400.0
+    )
+
+
+def _restart_max_backoff_seconds() -> float:
+    return _env_float_in_range(
+        "POK_ORCHESTRATOR_RESTART_MAX_BACKOFF_SEC", 1800.0, 1.0, 86400.0
+    )
+
+
+def _restart_max_burst() -> int:
+    raw = os.environ.get("POK_ORCHESTRATOR_RESTART_MAX_BURST")
+    try:
+        value = int(raw) if raw else 5
+    except (TypeError, ValueError):
+        value = 5
+    return max(1, value)
+
+
+def _restart_window_seconds() -> float:
+    return _env_float_in_range(
+        "POK_ORCHESTRATOR_RESTART_WINDOW_SEC", 1800.0, 1.0, 86400.0
+    )
+
+
+def _restart_stable_run_seconds() -> float:
+    return _env_float_in_range(
+        "POK_ORCHESTRATOR_RESTART_STABLE_RUN_SEC", 3600.0, 0.0, 86400.0
+    )
+
+
+async def _restart_backoff_sleep(seconds: float) -> None:
+    """Patchable sleep seam so tests never wait a real backoff."""
+
+    await asyncio.sleep(seconds)
+
+
+def _is_crash_outcome(result: object) -> bool:
+    return (
+        isinstance(result, (int, float))
+        and not isinstance(result, bool)
+        and float(result) == _ORCHESTRATOR_CRASH_OUTCOME
+    )
+
+
+def _active_pipeline_stage_label() -> str:
+    """Best-effort stage label from the primary checkpoint (never raises)."""
+
+    try:
+        from evolution_infra import pipeline_state_path
+
+        data = json.loads(
+            Path(pipeline_state_path()).read_text(encoding="utf-8")
+        )
+        if isinstance(data, dict):
+            return str(data.get("stage") or "")
+    except Exception:
+        pass
+    return ""
+
+
+def _emit_orchestrator_restart_event(
+    *,
+    status: str,
+    attempt: int,
+    backoff_s: float,
+    last_error: str,
+    stage: str,
+    owner_id: str | None,
+    operator_action_required: bool = False,
+) -> None:
+    try:
+        from system_log import log_system_event
+
+        log_system_event(
+            "pipeline.orchestrator_auto_restart",
+            "error" if operator_action_required else "warn",
+            (
+                "Orchestrator auto-restart rate-limited; operator action required"
+                if operator_action_required
+                else f"Orchestrator crashed; auto-restarting in {backoff_s:.0f}s"
+            ),
+            {
+                "status": status,
+                "attempt": attempt,
+                "backoff_s": backoff_s,
+                "last_error": last_error,
+                "stage": stage,
+                "owner_id": owner_id,
+                "operator_action_required": operator_action_required,
+            },
+        )
+    except Exception:
+        pass
+
+
 class AppState:
     def __init__(self, config_file=None):
         self._lock = threading.RLock()
@@ -92,6 +220,13 @@ class AppState:
         self._task_snapshot_listeners: list[Callable[[dict], None]] = []
         self._shutdown_mgr: "ShutdownManager | None" = None
         self._shutdown_owner_id: str | None = None
+        # P7 (2026-10-05): pipeline liveness heartbeat for the LLM saturator
+        # gate. Updated once per orchestrator cycle (and once per watchdog
+        # tick while the loop task is alive); read by saturator_may_launch to
+        # park background burns when the pipeline is dead/stopped.
+        self._pipeline_heartbeat_monotonic: float | None = None
+        # P2 (2026-10-05): last orchestrator crash note for restart events.
+        self._last_orchestrator_crash: dict | None = None
         self._load_config()
 
     def to_dict(self) -> dict:
@@ -233,6 +368,48 @@ class AppState:
     def runtime_owner_id(self) -> str | None:
         with self._lock:
             return self._runtime_owner_id
+
+    def shutdown_requested(self) -> bool:
+        """True when the live shutdown manager already requested a stop."""
+
+        with self._lock:
+            mgr = self._shutdown_mgr
+        if mgr is None:
+            return False
+        try:
+            return bool(mgr.is_shutting_down)
+        except Exception:
+            return False
+
+    def note_pipeline_heartbeat(self) -> None:
+        """Record one pipeline-liveness beat (P7 saturator gate)."""
+
+        with self._lock:
+            self._pipeline_heartbeat_monotonic = time.monotonic()
+
+    def pipeline_heartbeat_age_seconds(
+        self, *, now: float | None = None
+    ) -> float | None:
+        """Seconds since the last heartbeat; ``None`` when never recorded."""
+
+        with self._lock:
+            beat = self._pipeline_heartbeat_monotonic
+        if beat is None:
+            return None
+        return max(0.0, (now if now is not None else time.monotonic()) - beat)
+
+    def note_orchestrator_crash(self, error: object) -> None:
+        """Stash the crash detail the restart events republish (P2)."""
+
+        with self._lock:
+            self._last_orchestrator_crash = {
+                "error": str(error)[:500],
+                "at": time.time(),
+            }
+
+    def last_orchestrator_crash(self) -> dict | None:
+        with self._lock:
+            return dict(self._last_orchestrator_crash) if self._last_orchestrator_crash else None
 
     def try_set_running(self, running: bool) -> bool:
         if running:
@@ -605,19 +782,36 @@ class AppState:
 app_state = AppState()
 
 
-async def run_evolution_task(coro, *, owner_id: str | None = None):
+async def run_evolution_task(coro, *, owner_id: str | None = None, restart_factory=None):
     """Run the single owned evolution coroutine and clear its running flag.
 
     The orchestrator has several legitimate early-return paths (for example a
     rejected cost policy).  Keeping this ownership cleanup outside the
     orchestrator makes both lifespan startup and the explicit control route
     publish the same stopped state when any of those paths completes.
+
+    P2 (2026-10-05): with a ``restart_factory`` (both production call sites
+    pass one), a CRASH outcome — exactly ``orchestrator_loop``'s crash-branch
+    sentinel ``terminal_outcome == -1.0`` — re-enters the loop through the
+    factory after a bounded backoff, subject to a sliding-window rate limit
+    (default 5 restarts / 30min). Every other terminal outcome (operator
+    stop, cost policy, manual pause, recovery blocked, LLM-availability
+    stop), cancellation, owner drift, or an in-flight shutdown stays stopped,
+    and ownership cleanup runs exactly once at the true end.
     """
 
     owner_task = asyncio.current_task()
     captured_owner_id = owner_id or app_state.runtime_owner_id()
     try:
-        return await coro
+        result = await coro
+        if restart_factory is not None and _is_crash_outcome(result):
+            result = await _supervise_orchestrator_crash_revival(
+                result,
+                owner_task=owner_task,
+                captured_owner_id=captured_owner_id,
+                restart_factory=restart_factory,
+            )
+        return result
     finally:
         try:
             from llm_query import set_shutdown_manager
@@ -628,3 +822,93 @@ async def run_evolution_task(coro, *, owner_id: str | None = None):
                 owner_task,
                 owner_id=captured_owner_id,
             )
+
+
+async def _supervise_orchestrator_crash_revival(
+    result,
+    *,
+    owner_task,
+    captured_owner_id: str | None,
+    restart_factory,
+):
+    """Re-enter the orchestrator loop after crash outcomes, rate-limited."""
+
+    initial_backoff = _restart_initial_backoff_seconds()
+    max_backoff = max(initial_backoff, _restart_max_backoff_seconds())
+    burst_limit = _restart_max_burst()
+    window_seconds = _restart_window_seconds()
+    stable_run_seconds = _restart_stable_run_seconds()
+
+    backoff_s = initial_backoff
+    restarts: list[float] = []
+    attempt = 0
+
+    def _last_error() -> str:
+        note = app_state.last_orchestrator_crash() or {}
+        return str(note.get("error") or "")
+
+    def _still_owned() -> bool:
+        if app_state.runtime_owner_id() != captured_owner_id:
+            return False
+        return not app_state.shutdown_requested()
+
+    while True:
+        now = time.monotonic()
+        restarts = [stamp for stamp in restarts if now - stamp < window_seconds]
+        if not _still_owned():
+            # Review follow-up: owner drift / shutdown is a fencing outcome,
+            # not a restart-storm stop — emit its own non-terminal status so
+            # the rate-limited operator-action event is never misleading.
+            _emit_orchestrator_restart_event(
+                status="owner_lost_no_restart",
+                attempt=attempt,
+                backoff_s=0.0,
+                last_error=_last_error(),
+                stage=_active_pipeline_stage_label(),
+                owner_id=captured_owner_id,
+            )
+            return result
+        if len(restarts) >= burst_limit:
+            _emit_orchestrator_restart_event(
+                status="restart_rate_limited",
+                attempt=attempt,
+                backoff_s=0.0,
+                last_error=_last_error(),
+                stage=_active_pipeline_stage_label(),
+                owner_id=captured_owner_id,
+                operator_action_required=True,
+            )
+            return result
+
+        attempt += 1
+        _emit_orchestrator_restart_event(
+            status="scheduled",
+            attempt=attempt,
+            backoff_s=backoff_s,
+            last_error=_last_error(),
+            stage=_active_pipeline_stage_label(),
+            owner_id=captured_owner_id,
+        )
+        restarts.append(now)
+        await _restart_backoff_sleep(backoff_s)
+        if not _still_owned():
+            return result
+
+        # The crashed loop's finally cleared the running flag while this
+        # supervisor task stayed alive; re-arm it so health/UI track the
+        # revived loop (guarded by the ownership check above).
+        try:
+            app_state.set_running(True)
+        except Exception:
+            pass
+
+        loop_started = time.monotonic()
+        result = await restart_factory()
+        if not _is_crash_outcome(result):
+            return result
+        if time.monotonic() - loop_started >= stable_run_seconds:
+            # Stable run before the crash: counters and backoff reset.
+            backoff_s = initial_backoff
+            restarts = []
+        else:
+            backoff_s = min(backoff_s * 2, max_backoff)

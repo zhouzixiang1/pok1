@@ -72,6 +72,18 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 return
 
+            # P7 (2026-10-05): the watchdog lives and dies with the
+            # orchestrator loop task (the loop's finally cancels it), so its
+            # tick doubles as a pipeline-liveness beat between cycles — a
+            # long-running generation cycle must not look like a dead
+            # pipeline to the LLM saturator gate.
+            try:
+                from server.state import app_state
+
+                app_state.note_pipeline_heartbeat()
+            except Exception:
+                pass
+
             # Provider session IDs are never persisted.  The in-process owned
             # stream flag supplies liveness without granting history authority.
             if not _o._orchestrator_provider_stream_active:

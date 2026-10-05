@@ -53,8 +53,8 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 </example>
 
 <parents>
-- **Parent A (Alpha)**: `national_v{parent_a_version}` identity label only
-- **Parent B (Beta)**: `national_v{parent_b_version}` identity label only
+- **Parent A (Alpha)**: `{parent_a_label}` identity label only
+- **Parent B (Beta)**: `{parent_b_label}` identity label only
 
 The system appends exact content-addressed readable snapshot paths and one
 lease-isolated writable target path for this attempt. Canonical `bots/` paths

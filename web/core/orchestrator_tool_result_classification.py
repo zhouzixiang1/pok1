@@ -108,6 +108,22 @@ def _is_precommit_rework_circuit_breaker_result(data):
     return str(data.get("error") or "") == "PRECOMMIT_REWORK_CIRCUIT_BREAKER"
 
 
+def _is_quality_rework_circuit_breaker_result(data):
+    """P4(a) (2026-10-05): quality/review rework round ceiling tripped."""
+
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("error") or "") == "QUALITY_REWORK_CIRCUIT_BREAKER"
+
+
+def _is_repair_contract_contradictory_result(data):
+    """P4(b) (2026-10-05): repair contract vs reviewer removal demand."""
+
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("error") or "") == "REPAIR_CONTRACT_CONTRADICTORY"
+
+
 def _is_official_rework_circuit_breaker_result(data):
     if not isinstance(data, dict):
         return False

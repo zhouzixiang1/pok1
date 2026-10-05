@@ -829,6 +829,80 @@ def _min_free_mb() -> int:
         return 512
 
 
+def _pipeline_liveness_threshold_sec() -> float:
+    """P7 (2026-10-05): park the saturator after this long without a beat."""
+
+    try:
+        return max(
+            30.0,
+            float(
+                os.environ.get(
+                    "POK_LLM_SATURATOR_PIPELINE_LIVENESS_SEC", "600"
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return 600.0
+
+
+def _saturator_pipeline_alive(now: float | None = None) -> bool:
+    """Is the evolution pipeline demonstrably alive?
+
+    The orchestrator cycle loop (and its watchdog tick) heartbeat into
+    ``server.state.app_state``; both die with the loop task. A heartbeat
+    older than the liveness threshold therefore means the pipeline is dead
+    or stopped (crash wedge, crash-backoff window, operator stop) and the
+    background saturator must stop burning provider budget. No heartbeat at
+    all (fresh web process, orchestrator never started) fails OPEN: the
+    saturator's historical behavior is preserved until a first beat exists.
+    """
+
+    try:
+        from server.state import app_state
+    except Exception:
+        return True
+    try:
+        age = app_state.pipeline_heartbeat_age_seconds(now=now)
+    except Exception:
+        return True
+    if age is None:
+        return True
+    return age <= _pipeline_liveness_threshold_sec()
+
+
+#: P7: one ``pipeline.saturator_parked_no_pipeline`` event per park episode.
+_pipeline_park_announced = False
+
+
+def _maybe_announce_saturator_pipeline_park(parked_now: bool, detail: str = "") -> None:
+    """Announce a saturator park exactly once per park episode (P7).
+
+    ``parked_now`` is True when this tick's launch refusal reason is
+    ``pipeline_not_alive``. Any non-parked tick re-arms the announcement so
+    the NEXT park is visible again — never one event per packet/tick.
+    """
+
+    global _pipeline_park_announced
+    if not parked_now:
+        _pipeline_park_announced = False
+        return
+    if _pipeline_park_announced:
+        return
+    _pipeline_park_announced = True
+    try:
+        from system_log import log_system_event
+
+        log_system_event(
+            "pipeline.saturator_parked_no_pipeline",
+            "warn",
+            "LLM saturator parked: evolution pipeline not alive "
+            f"({detail or 'heartbeat stale'}); background packets paused until it returns",
+            {"reason": "pipeline_not_alive", "detail": str(detail)[:200]},
+        )
+    except Exception:
+        pass
+
+
 def saturator_may_launch(
     *,
     in_flight: int,
@@ -853,6 +927,10 @@ def saturator_may_launch(
         return False, "soft_cap"
     if _saturator_provider_paused():
         return False, "provider_paused"
+    if not _saturator_pipeline_alive():
+        # P7 (2026-10-05): the wedge case — a dead/stopped pipeline must not
+        # keep burning provider budget on background packets.
+        return False, "pipeline_not_alive"
     try:
         from llm_concurrency import GLOBAL_LLM_CONCURRENCY, llm_semaphore_has_capacity
     except Exception:
@@ -1071,7 +1149,14 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                     last_preempt_at=last_preempt_at,
                 )
                 if not ok:
+                    # P7 (2026-10-05): announce a pipeline park exactly once
+                    # per episode; every non-parked tick re-arms it below.
+                    _maybe_announce_saturator_pipeline_park(
+                        reason == "pipeline_not_alive",
+                        detail=reason,
+                    )
                     break
+                _maybe_announce_saturator_pipeline_park(False)
                 if shutdown_mgr is not None and getattr(shutdown_mgr, "is_shutting_down", False):
                     break
                 session_id += 1

@@ -80,6 +80,133 @@ def _bounded_evidence_extras(evidence: dict, limit: int = 8) -> str:
     return f"; {'; '.join(parts)}" if parts else ""
 
 
+# --- P4(b) (2026-10-05): repair-contract contradiction detection ---------------
+#
+# v511 wedged for 11 rework rounds between two unsatisfiable prompt halves:
+# the system quality contract REQUIRED AST checks whose mechanisms the
+# reviewer feedback simultaneously demanded be REMOVED. Dispatching a Worker
+# on that contract is guaranteed waste; the rework preparation layer refuses
+# it instead (REPAIR_CONTRACT_CONTRADICTORY -> typed abandon/replan).
+
+_REMOVAL_VERB_PATTERN = re.compile(
+    r"\b(remove|removing|removed|delete|deleting|deleted|drop|dropping|"
+    r"eliminate|eliminating|strip|stripping|revert|reverting|undo|undoing|"
+    r"roll\s+back)\b",
+    re.IGNORECASE,
+)
+_REMOVAL_NEGATION_PATTERN = re.compile(
+    r"\b(do\s+not|don't|dont|never|must\s+not|cannot|can't|avoid)\b",
+    re.IGNORECASE,
+)
+_CHECK_STEM_SUFFIXES = (
+    "_line_reachability",
+    "_reachability",
+    "_regression",
+    "_influence",
+)
+
+
+def _mechanism_stems(check: str):
+    """Identity aliases one AST check may appear under in reviewer prose."""
+
+    token = str(check).strip().lower()
+    if not token:
+        return []
+    stems = {token}
+    for suffix in _CHECK_STEM_SUFFIXES:
+        if token.endswith(suffix):
+            stems.add(token[: -len(suffix)])
+    # Reviewer prose spells snake_case mechanisms with spaces; both spellings
+    # of every stem are matchable.
+    spaced = {stem.replace("_", " ") for stem in stems}
+    stems |= spaced
+    return sorted(stems)
+
+
+#: Review follow-up (2026-10-05): attribution runs at the CLAUSE level. A
+#: negation in one clause of a longer line ("the donk branch is fine; do not
+#: touch it. Also remove the delayed_probe shim") must neither hide a real
+#: removal demand in a later clause nor fake one for a mechanism named in a
+#: non-removal clause.
+_CLAUSE_SPLIT_PATTERN = re.compile(r"[.;!?]")
+
+
+def _feedback_removal_demands(reviewer_feedback, checks):
+    """Map each required check to feedback clauses explicitly demanding removal.
+
+    A clause counts only when a removal verb appears in it WITHOUT a preceding
+    negation (``do not remove X`` is a preservation demand), and one of the
+    check's mechanism stems appears as a whole word. Anything short of an
+    explicit removal directive leaves the gate closed (no contradiction).
+    """
+
+    text = str(reviewer_feedback or "")
+    if not text or not checks:
+        return {}
+    demands: dict[str, list[str]] = {}
+    for raw_line in text.splitlines():
+        for raw_clause in _CLAUSE_SPLIT_PATTERN.split(raw_line):
+            clause = raw_clause.strip()
+            if not clause:
+                continue
+            verbs = list(_REMOVAL_VERB_PATTERN.finditer(clause))
+            if not verbs:
+                continue
+            unnegated = False
+            for match in verbs:
+                window = clause[max(0, match.start() - 32) : match.start()]
+                if not _REMOVAL_NEGATION_PATTERN.search(window):
+                    unnegated = True
+                    break
+            if not unnegated:
+                continue
+            lowered = clause.lower()
+            for check in checks:
+                if check in demands:
+                    continue
+                for stem in _mechanism_stems(check):
+                    if re.search(
+                        rf"(?<![a-z0-9_]){re.escape(stem)}(?![a-z0-9_])", lowered
+                    ):
+                        demands[str(check)] = [clause[:400]]
+                        break
+    return demands
+
+
+def _repair_contract_contradictions(tasks, reviewer_feedback=""):
+    """Required AST checks the reviewer feedback explicitly demands removed.
+
+    Returns one ``{"check", "feedback_lines"}`` row per contradictory check,
+    sorted by check name; empty when the repair contract is satisfiable (or
+    when no required checks / no removal demands exist — fail-closed applies
+    to dispatch, never to invention of contradictions).
+    """
+
+    if not isinstance(tasks, list) or not tasks:
+        return []
+    required: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        for source in (
+            task.get("checks_required"),
+            (task.get("repair_contract") or {}).get("required_checks")
+            if isinstance(task.get("repair_contract"), dict)
+            else None,
+        ):
+            for check in source or []:
+                token = str(check).strip()
+                if token and token not in required:
+                    required.append(token)
+    if not required:
+        return []
+    demands = _feedback_removal_demands(reviewer_feedback, required)
+    return [
+        {"check": check, "feedback_lines": lines}
+        for check, lines in sorted(demands.items())
+    ]
+
+
 def _is_precommit_rework_checkpoint(ckpt):
     if not isinstance(ckpt, dict):
         return False

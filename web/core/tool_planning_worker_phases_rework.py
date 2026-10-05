@@ -21,6 +21,77 @@ import tool_planning_worker as _tw
 import tool_planning_worker_durable as _dur
 
 
+def _quality_rework_round_gate_payload(ckpt, rework_kind, *, next_v, source_v, tasks):
+    """P4(a) (2026-10-05): bound quality/review rework rounds.
+
+    Mirrors the precommit/official rework circuit breakers for the
+    quality/review rework family (quality_repair / review_repair /
+    gate_rework and their crossover variants — everything except the
+    precommit/official owners, which keep their own round contracts). The
+    persisted checkpoint field ``quality_rework_round_count`` counts prior
+    rounds; when one more round would exceed
+    ``MAX_QUALITY_REWORK_ROUNDS`` this returns the typed
+    QUALITY_REWORK_CIRCUIT_BREAKER payload for the deterministic route to
+    canonically abandon, else ``None`` (dispatch may proceed).
+    """
+
+    kind = str(rework_kind or "")
+    if _tw._is_precommit_rework_checkpoint(ckpt) or kind == "precommit_repair":
+        return None
+    if _tw._is_official_rework_checkpoint(ckpt) or kind == "official_repair":
+        return None
+    if not any(
+        marker in kind
+        for marker in ("quality_repair", "review_repair", "gate_rework")
+    ):
+        return None
+    prior_rounds = int(ckpt.get("quality_rework_round_count") or 0)
+    if prior_rounds + 1 <= int(_tw.MAX_QUALITY_REWORK_ROUNDS):
+        return None
+    message = (
+        f"QUALITY_REWORK_CIRCUIT_BREAKER: v{next_v} already used "
+        f"{prior_rounds} quality/review repair round(s) "
+        f"(max {_tw.MAX_QUALITY_REWORK_ROUNDS}). Abandon this generation and "
+        "start a fresh direction."
+    )
+    return {
+        "error": "QUALITY_REWORK_CIRCUIT_BREAKER",
+        "message": message,
+        "next_v": next_v,
+        "source_v": source_v,
+        "quality_rework_round_count": prior_rounds,
+        "max_rework_rounds": int(_tw.MAX_QUALITY_REWORK_ROUNDS),
+        "task_targets": sorted(_tw._task_target_filenames(tasks)),
+        "directive": (
+            "Abandon this generation; repeated quality/review repair did not "
+            "converge (the gate contract and the reviewer feedback could not "
+            "be satisfied simultaneously)."
+        ),
+    }
+
+
+def _repair_contract_contradiction_payload(next_v, source_v, contradictions):
+    """P4(b): typed refusal payload for an unsatisfiable repair contract."""
+
+    message = (
+        f"REPAIR_CONTRACT_CONTRADICTORY: v{next_v} repair requires AST checks "
+        "that the reviewer feedback explicitly demands removed "
+        f"({', '.join(row['check'] for row in contradictions)})."
+    )
+    return {
+        "error": "REPAIR_CONTRACT_CONTRADICTORY",
+        "reason_token": "repair_contract_contradictory",
+        "message": message,
+        "next_v": next_v,
+        "source_v": source_v,
+        "contradictions": contradictions,
+        "directive": (
+            "Do not dispatch a Worker on this contract. Abandon/replan: the "
+            "quality gate requires a mechanism the reviewer demanded removed."
+        ),
+    }
+
+
 async def _execute_workers_phase_b_rework_synthesis(actor_lock_owned, checkpoint_tasks, ckpt, durable_worker_envelope, durable_worker_resume, durable_worker_status, next_dir, next_v, reviewer_feedback, source_v, tasks, tasks_provided, worker_workflow):
     """Phase B: architecture-policy identity recovery, prepared-artifact drift"""
     if _tw._checkpoint_architecture_policy_identity_errors(ckpt):
@@ -884,6 +955,7 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
     rework_plan_metadata = None
     precommit_rework_count_for_write = None
     official_rework_count_for_write = None
+    quality_rework_round_count_for_write = None
     mechanical_trim_results = []
     rework_preparation_dir = None
     prepared_candidate_dir = next_dir
@@ -999,6 +1071,11 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
             official_rework_count_for_write = int(
                 ckpt.get("official_rework_count") or 0
             )
+            # P4(a): a resumed durable preparation carries its round count
+            # forward unchanged (the round was already counted at planning).
+            quality_rework_round_count_for_write = int(
+                ckpt.get("quality_rework_round_count") or 0
+            )
             task_kinds = {
                 str(task.get("task_kind") or "")
                 for task in tasks
@@ -1030,6 +1107,69 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
                 "action": "abandon_generation",
                 "message": f"{type(exc).__name__}: {str(exc)[:300]}",
             })
+    # P4(b) (2026-10-05): refuse to dispatch a repair Worker whose contract
+    # is unsatisfiable — the quality gate REQUIRED AST checks for mechanisms
+    # the reviewer feedback explicitly demands removed. This covers both the
+    # frozen-resume and the fresh-rework paths (v511 burned 11 rounds here).
+    if (
+        reviewer_feedback
+        and tasks
+        and ckpt.get("stage") in {
+            "workers_done", "quality_failed", "quality_passed", "reviewed",
+            "critic_checked", "precommit_failed", "official_failed",
+            "repair_planned", "rework_running",
+        }
+    ):
+        _contradiction_kinds = {
+            str(task.get("task_kind") or "")
+            for task in tasks
+            if isinstance(task, dict)
+        }
+        _contradiction_precommit_family = (
+            _tw._is_precommit_rework_checkpoint(ckpt)
+            or "precommit_repair" in " ".join(_contradiction_kinds)
+        )
+        _contradiction_official_family = (
+            _tw._is_official_rework_checkpoint(ckpt)
+            or "official_repair" in " ".join(_contradiction_kinds)
+        )
+        if not _contradiction_precommit_family and not _contradiction_official_family:
+            from tool_planning_quality_repair_targets import (
+                _repair_contract_contradictions,
+            )
+
+            _contradictions = _repair_contract_contradictions(
+                tasks, reviewer_feedback
+            )
+            if _contradictions:
+                _contradiction_payload = _repair_contract_contradiction_payload(
+                    next_v, source_v, _contradictions
+                )
+                try:
+                    _tw.log_system_event(
+                        "pipeline.repair_contract_contradictory",
+                        "error",
+                        _contradiction_payload["message"],
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "stage": ckpt.get("stage"),
+                            "contradictions": _contradictions,
+                        },
+                    )
+                except Exception:
+                    pass
+                # Payload rebuilt inline (not as a variable) so the exit-path
+                # contract keeps a literal error identity.
+                return _tw._json_tool_result({
+                    "error": "REPAIR_CONTRACT_CONTRADICTORY",
+                    "reason_token": "repair_contract_contradictory",
+                    "message": _contradiction_payload["message"],
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "contradictions": _contradictions,
+                    "directive": _contradiction_payload["directive"],
+                })
     if (
         frozen_rework_resume
         and reviewer_feedback
@@ -1109,6 +1249,53 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
             rework_kind = "official_repair"
         is_precommit_rework = rework_kind == "precommit_repair" or _tw._is_precommit_rework_checkpoint(ckpt)
         is_official_rework = rework_kind == "official_repair" or _tw._is_official_rework_checkpoint(ckpt)
+        quality_rework_round_count_for_write = None
+        if not is_precommit_rework and not is_official_rework:
+            # P4(a) (2026-10-05): quality/review rework rounds have their own
+            # ceiling; over it the generation is canonically abandoned instead
+            # of looping on an unsatisfiable contract.
+            _quality_gate_payload = _quality_rework_round_gate_payload(
+                ckpt, rework_kind, next_v=next_v, source_v=source_v, tasks=tasks
+            )
+            if _quality_gate_payload is not None:
+                try:
+                    _tw.log_system_event(
+                        "pipeline.quality_rework_circuit_breaker",
+                        "error",
+                        _quality_gate_payload["message"],
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "stage": ckpt.get("stage"),
+                            "quality_rework_round_count": _quality_gate_payload[
+                                "quality_rework_round_count"
+                            ],
+                            "max_rework_rounds": _quality_gate_payload[
+                                "max_rework_rounds"
+                            ],
+                            "task_targets": _quality_gate_payload.get(
+                                "task_targets"
+                            ),
+                        },
+                    )
+                except Exception:
+                    pass
+                # Payload rebuilt inline (not as a variable) so the exit-path
+                # contract keeps a literal error identity.
+                return _tw._json_tool_result({
+                    "error": "QUALITY_REWORK_CIRCUIT_BREAKER",
+                    "message": _quality_gate_payload["message"],
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "quality_rework_round_count": _quality_gate_payload[
+                        "quality_rework_round_count"
+                    ],
+                    "max_rework_rounds": _quality_gate_payload["max_rework_rounds"],
+                    "directive": _quality_gate_payload["directive"],
+                })
+            quality_rework_round_count_for_write = (
+                int(ckpt.get("quality_rework_round_count") or 0) + 1
+            )
         if is_precommit_rework:
             prior_rework_count = int(ckpt.get("precommit_rework_count") or 0)
             precommit_rework_count_for_write = prior_rework_count + 1
@@ -1202,6 +1389,7 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
                         "source_hash": _tw._complete_artifact_fingerprint(source_dir_r),
                         "precommit_rework_count": precommit_rework_count_for_write,
                         "official_rework_count": official_rework_count_for_write,
+                        "quality_rework_round_count": quality_rework_round_count_for_write,
                     },
                     sort_keys=True,
                     ensure_ascii=False,
@@ -1410,7 +1598,7 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
         if reset_before_rework:
             reviewer_feedback += (
                 f"\n\nNOTE: This is a retry. The code in bots/{_tw.bot_name(next_v)}/ has been ACTUALLY RESET "
-                f"by the system to the exact national_v{source_v} preimage. The source path remains "
+                f"by the system to the exact {_tw.bot_name(source_v)} preimage. The source path remains "
                 f"unreadable to this Worker. Any modifications described in the feedback above no "
                 f"longer exist in the candidate — re-implement them from the injected contract."
             )
@@ -1545,6 +1733,7 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
             worker_failure_count=ckpt.get("worker_failure_count", 0),
             precommit_rework_count=precommit_rework_count_for_write,
             official_rework_count=official_rework_count_for_write,
+            quality_rework_round_count=quality_rework_round_count_for_write,
             repair_baseline_artifact_hash=repair_baseline_artifact_hash,
             expected_checkpoint_revision=int(
                 ckpt.get("checkpoint_revision") or 0
@@ -1570,4 +1759,4 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
                 ),
             })
 
-    return ({"force_sequential_rework": force_sequential_rework, "official_rework_count_for_write": official_rework_count_for_write, "precommit_rework_count_for_write": precommit_rework_count_for_write, "prepared_candidate_dir": prepared_candidate_dir, "quality_skipper_config": quality_skipper_config, "reviewer_feedback": reviewer_feedback, "rework_plan_metadata": rework_plan_metadata, "rework_preparation_dir": rework_preparation_dir},)  # PHASE CONTINUATION (not an exit path)
+    return ({"force_sequential_rework": force_sequential_rework, "official_rework_count_for_write": official_rework_count_for_write, "precommit_rework_count_for_write": precommit_rework_count_for_write, "quality_rework_round_count_for_write": quality_rework_round_count_for_write, "prepared_candidate_dir": prepared_candidate_dir, "quality_skipper_config": quality_skipper_config, "reviewer_feedback": reviewer_feedback, "rework_plan_metadata": rework_plan_metadata, "rework_preparation_dir": rework_preparation_dir},)  # PHASE CONTINUATION (not an exit path)

@@ -206,7 +206,13 @@ def _completed_abandon_tool_result(value):
 
 
 def _raise_for_llm_availability_tool_result(content) -> None:
-    """Turn a durable Worker pause result back into local stream control."""
+    """Turn a durable Worker pause result back into local stream control.
+
+    P6 (2026-10-05): the six-code ``reason_code`` and the payload's
+    ``receipt_errors`` are attached onto the raised exception so the loop's
+    stop branch can emit them into the structured-event ledger (operators
+    previously had to dig the typed reason out of journalctl JSON results).
+    """
 
     payload = _o._tool_result_payload(content)
     error = str(payload.get("error") or "")
@@ -218,9 +224,17 @@ def _raise_for_llm_availability_tool_result(content) -> None:
             "Worker reported LLM availability blocked without a valid durable pause"
         )
     if error in _o._LLM_AVAILABILITY_CONTROL_ERRORS:
-        raise LLMAvailabilityPauseError(
+        control_error = LLMAvailabilityPauseError(
             f"Worker LLM availability control failed closed: {error}"
         )
+        control_error.reason_code = error
+        receipt_errors = payload.get("receipt_errors")
+        control_error.receipt_errors = (
+            [str(item) for item in receipt_errors]
+            if isinstance(receipt_errors, list)
+            else []
+        )
+        raise control_error
 
 
 async def _honor_active_llm_pause(ui=None, shutdown_mgr=None) -> bool:

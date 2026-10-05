@@ -61,7 +61,7 @@ def _render_worker_provider_prompt(inputs):
     base_worker_prompt = (
         "# Lease-Isolated Candidate\n"
         f"The only writable candidate tree for this attempt is `{candidate_path}`. "
-        f"Any older instruction that names `bots/national_v{next_v}` means this "
+        f"Any older instruction that names `bots/{bot_name(next_v)}` means this "
         "lease-isolated tree, never the canonical bot directory. Read, edit, "
         "compile, and probe only this tree; publication is owned by the harness.\n\n"
         + base_worker_prompt
