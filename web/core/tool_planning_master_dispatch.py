@@ -222,6 +222,34 @@ async def run_master_impl(args):
                 source_v = _entry_ckpt["source_v"]
     except Exception:
         pass
+    # Persistent source-parent priority sampling (delivery unblock for
+    # cited_sample_too_small): while this generation grinds through master no
+    # official writer feeds priority_eval.json (prepare's eval_wait intent has
+    # been consumed; the archivist step only runs post-publication), so the H2H
+    # pairings master needs to cite starve below the evidence floor. Re-assert
+    # the aligned source parent into the daemon's priority channel on every
+    # master entry. The writer is fail-soft and defers to any stronger intent
+    # (eval_wait candidate / already-effective source parent).
+    try:
+        from source_parent_priority import assert_source_parent_priority
+        from evolution_infra import RESULTS_DIR
+
+        assert_source_parent_priority(
+            source_v=source_v,
+            next_v=next_v,
+            results_dir=RESULTS_DIR,
+        )
+    except Exception as _spp_exc:
+        try:
+            _tp.log_system_event(
+                "pipeline.source_parent_priority_failed",
+                "warn",
+                "source-parent priority assertion crashed at master entry: "
+                f"{type(_spp_exc).__name__}: {str(_spp_exc)[:180]}",
+                {"next_v": next_v, "source_v": source_v},
+            )
+        except Exception:
+            pass
     _master_entry_ckpt = _tp._matching_checkpoint(next_v, source_v)
     protocol_bootstrap_receipt = (
         (_master_entry_ckpt.get("audit_context") or {}).get("protocol_bootstrap")
