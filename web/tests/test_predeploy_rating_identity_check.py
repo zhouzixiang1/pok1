@@ -225,11 +225,19 @@ def test_real_repo_head_vs_head_catches_uncommitted_semantic_edit():
     worktree that carries an uncommitted SEMANTIC_PATHS edit
     (web/core/elo_daemon.py) — deploying it would crash the daemon with
     ``authoritative rating evaluator identity changed``.  The guard must
-    now catch it.  If this test ever fails because the worktree is fully
-    clean, re-add an uncommitted tweak to a semantic file to keep the
-    probe meaningful, or assert the clean rc=0 path explicitly.
+    catch it.  The probe is self-sufficient: it injects a transient
+    semantic edit itself (byte-restored in finally), so it stays meaningful
+    regardless of the ambient working-tree state (2026-10-06: it silently
+    depended on another workflow's leftover dirty semantic file).
     """
-    result = _run(ROOT, "--baseline", "HEAD", "--head", "HEAD")
-    assert result.returncode != 0
-    assert "web/core/elo_daemon.py" in result.stdout
-    assert "需归档重置评分（evaluation_data_identity）" in result.stdout
+    semantic = ROOT / "web" / "core" / "elo_daemon.py"
+    original = semantic.read_bytes()
+    try:
+        with semantic.open("ab") as fh:
+            fh.write(b"\n# predeploy-probe: transient uncommitted semantic edit for the guard smoke\n")
+        result = _run(ROOT, "--baseline", "HEAD", "--head", "HEAD")
+        assert result.returncode != 0
+        assert "web/core/elo_daemon.py" in result.stdout
+        assert "需归档重置评分（evaluation_data_identity）" in result.stdout
+    finally:
+        semantic.write_bytes(original)
