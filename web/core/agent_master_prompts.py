@@ -159,7 +159,13 @@ def _render_master_proposal_provider_prompt(inputs):
         "expected_observation}, evidence_refs (source:file.py:symbol "
         "for EVERY source_symbols item; "
         + (
-            "1–3 snapshot:relative/file.json#/verified/json/pointer entries"
+            "1–3 snapshot:<bare snapshot filename>#/<verified json pointer> "
+            "entries — e.g. snapshot:head_to_head.json#/<exact H2H row key> "
+            "or snapshot:selection_snapshot.json#/rows; the part between "
+            "snapshot: and # is ONLY the bare filename (never the "
+            "repo-relative web/core/results/... path), and the system "
+            "derives the structured snapshot_evidence block (reference, "
+            "games, a_wins, b_wins, draws) from these pointers"
             if require_snapshot_evidence
             else "snapshot references are forbidden because no strength snapshot exists"
         )

@@ -918,6 +918,31 @@ def exact_citable_rows_preinjection(
                 if source_v is not None
                 else ""
             )
+            # Verbatim pointer-form teaching (2026-10-06): the live
+            # counterfactual rejections (v518/v519, ``refs_written.2.cited.0``)
+            # merged the canonical pointer prefix with the repo-relative
+            # snapshot path the prompt renders elsewhere
+            # (``snapshot:web/core/results/vN/evidence_snapshot/
+            # head_to_head.json#/a vs b``).  The matchup rows above carry the
+            # numbers but no pointer spelling, so give the model one exact,
+            # copyable pointer built from the strongest printed row.  The
+            # line intentionally does not start with ``- snapshot: `` so the
+            # bounded aggregate-pointer rendering keeps its own shape.
+            pointer_teaching: list[str] = []
+            if h2h_block and h2h_entries:
+                example_key = h2h_entries[0][1]
+                pointer_teaching = [
+                    "Matchup pointer form for evidence_refs (the system derives "
+                    "the structured snapshot_evidence block — reference, games, "
+                    "a_wins, b_wins, draws — from the pointer): "
+                    "snapshot:head_to_head.json#/<exact row key as printed "
+                    f"above>. Verbatim example: snapshot:head_to_head.json#/"
+                    f"{example_key} — its games/a_wins/b_wins/draws are exactly "
+                    "the numbers printed on that row line. Between snapshot: and "
+                    "# write ONLY the bare snapshot filename; never prepend "
+                    "web/core/results/... or any directory, and never merge the "
+                    "repo-relative path form with the pointer form."
+                ]
             return "\n".join([
                 "EXACT CITABLE SNAPSHOT ROWS (system-rendered from the frozen "
                 "generation evidence snapshot; the audit validates against this "
@@ -927,6 +952,7 @@ def exact_citable_rows_preinjection(
                 f"{max_h2h_rows}) — when citing a matchup, copy one of these "
                 "rows verbatim:",
                 *h2h_block,
+                *pointer_teaching,
                 aggregate_note,
                 *aggregate_block,
                 "Hard requirement: cite games/wins/draws numbers ONLY as printed "

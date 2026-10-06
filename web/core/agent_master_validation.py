@@ -659,12 +659,21 @@ def _proposal_schema_repair_guidance(
     ):
         add(
             "Your snapshot-shaped evidence references did not resolve to a "
-            "row in the frozen snapshot. Copy one pointer verbatim from the "
-            "EXACT CITABLE SNAPSHOT ROWS section — the exact form is "
-            "snapshot:<file>.json#/<locator> (e.g. "
-            "snapshot:head_to_head.json#/rows). Do not rewrite the file "
-            "path, merge the repo-relative path form with the pointer form, "
-            "or invent a locator."
+            "row in the frozen snapshot. The exact form is "
+            "snapshot:<file>.json#/<locator>: a matchup row is "
+            "snapshot:head_to_head.json#/<exact row key as printed in the "
+            "EXACT CITABLE SNAPSHOT ROWS section> (e.g. "
+            "snapshot:head_to_head.json#/national_cloud_v3 vs "
+            "national_cloud_v7); the aggregate corroboration is "
+            "snapshot:selection_snapshot.json#/rows. Copy one pointer "
+            "verbatim — the system derives the structured snapshot_evidence "
+            "block (reference, games, a_wins, b_wins, draws) from the "
+            "pointer, so the locator must be the exact row key and the "
+            "row's numbers must be copied exactly as printed. Between "
+            "snapshot: and # write ONLY the bare snapshot filename; never "
+            "prepend web/core/results/... or any directory, never merge "
+            "the repo-relative path form with the pointer form, and never "
+            "invent a locator."
         )
     elif any("proposal_snapshot" in item for item in hints):
         add(
@@ -1181,12 +1190,15 @@ def _repo_relative_snapshot_path_relative(
     ``h2h_snapshot_contract_text``
     (``web/core/results/vN/evidence_snapshot/head_to_head.json``).  A model
     that merges the two forms writes the repo-relative spelling into
-    ``evidence_refs``; that spelling must resolve to the same snapshot file
-    instead of failing the whole reference (2026-10-04 audit P3: the
-    failure cascaded into ``evidence_ref_invalid`` +
-    ``snapshot_evidence_required`` + ``cited.0``).  Only a path whose
-    directory tail aligns with the snapshot directory itself is mapped — an
-    arbitrary ``.json`` path is not.
+    ``evidence_refs`` — with OR without the ``snapshot:`` prefix (the
+    prefixed merge killed the live v518/v519 counterfactual proposals on
+    ``refs_written.2.cited.0``; the unprefixed half was the 2026-10-04
+    audit P3 fix) — and both spellings must resolve to the same snapshot
+    file instead of failing the whole reference (which cascaded into
+    ``evidence_ref_invalid`` + ``snapshot_evidence_required`` +
+    ``cited.0``).  Only a path whose directory tail aligns with the
+    snapshot directory itself is mapped — an arbitrary ``.json`` path is
+    not.
     """
     if snapshot_dir is None:
         return None
@@ -1243,6 +1255,25 @@ def _validated_snapshot_reference(value: object, snapshot_dir: Path | None) -> s
     ):
         return None
     root = Path(snapshot_dir).resolve()
+    if not (root / relative).is_file():
+        # The same repo-relative merge also happens WITH the canonical
+        # prefix (2026-10-06, live v518/v519 counterfactual rejections:
+        # ``refs_written.2.cited.0``): the scout pastes the repo-relative
+        # snapshot path rendered by ``h2h_snapshot_contract_text`` after
+        # the ``snapshot:`` prefix
+        # (``snapshot:web/core/results/vN/evidence_snapshot/
+        # head_to_head.json#/a vs b``), a spelling whose direct
+        # snapshot-relative join never exists.  Apply the identical
+        # tail-aligned normalization the unprefixed spelling gets (the
+        # 2026-10-04 audit P3 fix closed only the unprefixed half) so a
+        # pointer that names a real snapshot row is never left uncounted.
+        # The normalized bare filename still resolves only under the
+        # snapshot root below, so this cannot widen the read scope.
+        relative_name = _repo_relative_snapshot_path_relative(
+            path_text, snapshot_dir
+        )
+        if relative_name is not None:
+            relative = Path(relative_name)
     candidate = (root / relative).resolve()
     try:
         candidate.relative_to(root)
