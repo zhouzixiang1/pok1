@@ -40,6 +40,7 @@ if __name__ == "__main__":
 import elo_daemon_replay_store as _edrs  # noqa: E402,F401  (replay-store cluster)
 import elo_daemon_persistence as _edp  # noqa: E402,F401  (persistence/state-IO cluster)
 import elo_daemon_admission as _eda  # noqa: E402,F401  (internal-match admission cluster)
+import elo_daemon_deep_sampling as _edds  # noqa: E402,F401  (P1 deep-sampling lane)
 from elo_daemon_governor import DaemonWorkerGovernor  # noqa: E402  (P1 dispatch gate)
 
 # Battle Scheduler integration (optional)
@@ -593,9 +594,35 @@ def pick_matches(active_bots, h2h, ratings, n_picks=None):
     n_bots = len(active_bots)
     base_max = max(2, n_picks * 2 // n_bots)
 
+    # P1 deep-sampling lane (2026-10-06): focus bots from the live pipeline
+    # checkpoint (active_generation.source_v + crossover parent2_v; newest
+    # published bot when unreadable/invalid) are deep-sampled in BOTH wire
+    # directions until each direction reaches
+    # _edds.DEEP_SAMPLING_DIRECTION_TARGET admitted 70-hand samples.  The
+    # lane self-limits to n_picks - max(1, n_picks // 4) so a breadth floor
+    # always survives, and the fill below iterates non-focus pairs FIRST —
+    # the legacy breadth objective is never starved.  Selection-only change:
+    # the rating-identity runtime_profile bytes are untouched (regression:
+    # tests/test_elo_daemon_deep_sampling.py, production-sourced golden).
+    lane = _edds.lane_selection(
+        active_bots=active_bots,
+        n_picks=n_picks,
+        base_max=base_max,
+        coverage=coverage,
+        priority_fn=priority,
+        priority_bot=priority_bot,
+    )
+
     selected = []
     bot_counts = Counter()
-    for a, b in pairs:
+    for a, b in lane.pairs:
+        selected.append((a, b))
+        bot_counts[a] += 1
+        bot_counts[b] += 1
+    focus_keys = set(lane.focus_pair_keys)
+    breadth_pairs = [p for p in pairs if pair_key(*p) not in focus_keys]
+    breadth_pairs += [p for p in pairs if pair_key(*p) in focus_keys]
+    for a, b in breadth_pairs:
         if len(selected) >= n_picks:
             break
         # Priority bot is exempt from per-bot caps
