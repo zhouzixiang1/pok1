@@ -41,7 +41,6 @@ import logging
 from datetime import datetime
 
 import elo_daemon as _ed
-import elo_daemon_deep_sampling as _edds
 
 # Stable library helpers re-imported here (these are not daemon globals and
 # do not change between runs).  Importing them directly keeps call sites
@@ -468,20 +467,6 @@ def _opponent_coverage(bot, active_bots, h2h):
     return n_opponents / total if total > 0 else 1.0
 
 
-def _merge_deep_sampling_lane_stats(stats):
-    """Copy ``stats`` with the deep-sampling lane counters merged in (P1).
-
-    Write-only observability for the selection lane
-    (``elo_daemon_deep_sampling``): selections / lane picks / transition-event
-    counts snapshot at cycle-save time.  The counters live in memory only and
-    rebuild from zero after a crash, so they add no must-persist state to the
-    evaluation cycle; legacy stats keys pass through untouched.
-    """
-    merged = dict(stats or {})
-    merged["deep_sampling_lane"] = _edds.lane_stats_snapshot()
-    return merged
-
-
 def _current_rating_history_tail(max_rows=10):
     RESULTS_DIR = _ed.RESULTS_DIR
     path = RESULTS_DIR / "rating_history.jsonl"
@@ -627,11 +612,6 @@ def _save_authoritative_evaluation_cycle(
             key: int((value or {}).get("games", 0) or 0)
             for key, value in canonical_h2h.items()
         }
-        # P1 deep-sampling lane (2026-10-06): merge the lane's write-only
-        # observability counters into the published daemon stats.  Counters
-        # are in-memory only — they rebuild as zero after any crash, so this
-        # adds no must-persist state to the evaluation cycle.
-        cycle_stats = _merge_deep_sampling_lane_stats(cycle_stats)
         save_h2h(canonical_h2h)
         save_bot_stats(bot_stats)
         # save_ratings also appends the period history. It runs before the

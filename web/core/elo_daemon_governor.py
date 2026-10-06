@@ -22,11 +22,6 @@ point.  The governor therefore throttles *new* match dispatch only:
   ``GOVERNOR_LOAD1_DOWN_THRESHOLD`` (>=60s sustained), upshift after 3
   consecutive samples below ``GOVERNOR_LOAD1_UP_THRESHOLD``; a single spike
   never acts.  Same-direction actions are >=120s apart.
-* P2 (2026-10-06, operator directive ②/③): the sustained 1-minute load
-  target is 3.0 (doubled ceiling — load may sustainably run at 3.0), the
-  band is [2.5, 3.0], and the env cap rises 3 -> 6 with bounds [1, 6].
-  DOWN semantics (>3.0 twice -> -1) and the LLM hard protection below are
-  unchanged.
 * Bounds: ``[1, env POK_DAEMON_WORKERS]``.  The floor is 1, never 0 —
   Master citations need fresh match samples (2026-10-05:
   ``best_available=2`` starved the v512 channel for 4h20m).
@@ -68,16 +63,11 @@ log = logging.getLogger("pok.daemon.governor")
 GOVERNOR_SAMPLE_INTERVAL_SEC = float(
     os.environ.get("POK_GOVERNOR_SAMPLE_INTERVAL_SEC", "30")
 )
-#: 1-minute load target band: sustained ceiling 3.0, recovery floor 2.5.
-#: P2 (2026-10-06, operator directive ② "负载上限提高一倍——1 分钟 load
-#: 可持续 3.0，对局并发在不影响 LLM 产出下动态调整"): the ceiling stays
-#: cores-1 (4-core host -> 3.0) but is now a *sustainable* target, and the
-#: upshift threshold rises 2.0 -> 2.5 so the governor holds the widened
-#: band [2.5, 3.0] instead of racing back down at the old 2.0 edge.  The
-#: env cap rises 3 -> 6 (deploy/tencent-cloud/env.runtime
-#: POK_DAEMON_WORKERS=6, directive ③ 提高并行), so bounds are [1, 6].
+#: 1-minute load target band ceiling: cores-1 (4-core host -> 3.0).  The
+#: 1-worker + full-speed-LLM working point (load ~1.62) stays inside the
+#: band; the 3-worker saturated point (load 5.5) is pushed outside it.
 GOVERNOR_LOAD1_DOWN_THRESHOLD = 3.0
-GOVERNOR_LOAD1_UP_THRESHOLD = 2.5
+GOVERNOR_LOAD1_UP_THRESHOLD = 2.0
 GOVERNOR_DOWN_CONSECUTIVE = 2
 GOVERNOR_UP_CONSECUTIVE = 3
 GOVERNOR_MIN_ACTION_INTERVAL_SEC = 120.0

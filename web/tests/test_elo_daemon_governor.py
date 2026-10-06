@@ -12,14 +12,6 @@ no dispatch adjustment.
 Evidence: F1 (3-worker saturation loadavg 5.5), F5 (1-worker + full-speed
 LLM steady-state load 1.62), F6 (citation sample starvation -> floor 1),
 operator directive "对局数量应根据机器负载动态调整、LLM 优先".
-
-P2 (2026-10-06, operator directive ②/③ "负载上限提高一倍——1 分钟 load 可
-持续 3.0，对局并发在不影响 LLM 产出下动态调整" + "提高并行"): the band
-widens to [2.5, 3.0] (upshift threshold 2.0 -> 2.5, downshift semantics
-unchanged), the default harness cap mirrors the production
-POK_DAEMON_WORKERS=6, and bounds are [1, 6].  Workers (and the governor's
-internal pick concurrency) are NOT part of the rating identity
-runtime_profile — proven byte-identical below; pairs stays pinned.
 """
 
 from __future__ import annotations
@@ -50,14 +42,9 @@ class FakeClock:
 
 
 class Harness:
-    """One governor wired to fake signal files and a fake journal reader.
+    """One governor wired to fake signal files and a fake journal reader."""
 
-    Default ``env_workers=6`` mirrors the production cap since P2
-    (2026-10-06, operator directive ②/③: deploy/tencent-cloud/env.runtime
-    POK_DAEMON_WORKERS=6; governor bounds [1, 6]).
-    """
-
-    def __init__(self, tmp_path: Path, *, env_workers: int = 6):
+    def __init__(self, tmp_path: Path, *, env_workers: int = 3):
         self.clock = FakeClock()
         self.tmp = tmp_path
         self.events: list[tuple[str, str, dict]] = []
@@ -157,10 +144,10 @@ def harness(tmp_path):
 
 def test_single_spike_does_not_downshift(harness):
     harness.set_load(4.61)  # the 18:30:00 single-point spike must not act
-    assert harness.tick() == 6
+    assert harness.tick() == 3
     harness.set_load(1.5)
-    assert harness.tick() == 6
-    assert harness.gov.effective_workers == 6
+    assert harness.tick() == 3
+    assert harness.gov.effective_workers == 3
     assert harness.decisions() == []
 
 
@@ -169,15 +156,15 @@ def test_two_consecutive_over_threshold_downshifts_once(harness):
     harness.tick()
     harness.set_load(5.5)
     workers = harness.tick()
-    assert workers == 5
-    assert harness.gov.effective_workers == 5
+    assert workers == 2
+    assert harness.gov.effective_workers == 2
     events = harness.decisions()
     assert len(events) == 1
     _, severity, _message, data = events[0]
     assert data["action"] == "down"
     assert data["reason"] == "load_exceeded_hysteresis"
-    assert data["workers_before"] == 6
-    assert data["workers_after"] == 5
+    assert data["workers_before"] == 3
+    assert data["workers_after"] == 2
     assert data["over_threshold_streak"] == 2
 
 
@@ -185,15 +172,15 @@ def test_three_consecutive_below_threshold_upshifts_once(harness):
     harness.set_load(5.5)
     harness.tick()
     harness.set_load(5.5)
-    assert harness.tick() == 5
+    assert harness.tick() == 2
     harness.set_load(1.0)
     harness.tick()
     harness.set_load(1.0)
     harness.tick()
-    assert harness.gov.effective_workers == 5  # two below-samples: no action
+    assert harness.gov.effective_workers == 2  # two below-samples: no action
     harness.set_load(1.0)
     harness.clock.advance(MIN_ACTION_GAP - 3 * SAMPLE_INTERVAL)
-    assert harness.tick() == 6
+    assert harness.tick() == 3
     events = harness.decisions()
     assert events[-1][3]["action"] == "up"
     assert events[-1][3]["reason"] == "below_threshold_resume"
@@ -204,7 +191,7 @@ def test_two_below_samples_do_not_upshift(harness):
     harness.tick()
     harness.set_load(1.0)
     harness.tick()
-    assert harness.gov.effective_workers == 6
+    assert harness.gov.effective_workers == 3
     assert harness.decisions() == []
 
 
@@ -212,27 +199,27 @@ def test_action_min_interval_prevents_oscillation(harness):
     harness.set_load(5.5)
     harness.tick()
     harness.set_load(5.5)
-    assert harness.tick() == 5  # t=60: downshift, last action stamped here
+    assert harness.tick() == 2  # t=60: downshift, last action stamped here
     # Below-threshold samples accumulate the up-streak but stay inside the
     # 120s minimum action interval (t=90/120/150, gap from t=60 is only 90s).
     for _ in range(3):
         harness.set_load(0.5)
         harness.tick()
-    assert harness.gov.effective_workers == 5
+    assert harness.gov.effective_workers == 2
     # Jump well past the 120s gap: the next below-threshold sample acts.
     harness.set_load(0.5)
     harness.clock.advance(MIN_ACTION_GAP)
-    assert harness.tick() == 6
+    assert harness.tick() == 3
 
 
 def test_within_band_resets_streaks(harness):
     harness.set_load(5.5)
     harness.tick()
-    harness.set_load(2.5)  # inside [2.5, 3.0]: resets the over streak
+    harness.set_load(2.5)  # inside [2.0, 3.0]: resets the over streak
     harness.tick()
     harness.set_load(5.5)
     harness.tick()
-    assert harness.gov.effective_workers == 6  # not two consecutive anymore
+    assert harness.gov.effective_workers == 3  # not two consecutive anymore
 
 
 # ── LLM hard protection ───────────────────────────────────────────────────
@@ -256,7 +243,7 @@ def test_llm_protection_first_activity_counts(harness):
 def test_stale_llm_metric_does_not_protect(harness):
     harness.append_metric(timeout_kind="stall", age_sec=gov_mod.LLM_METRICS_WINDOW_SEC + 120.0)
     harness.set_load(1.0)
-    assert harness.tick() == 6
+    assert harness.tick() == 3
 
 
 def test_journal_streak_signal_protects(harness):
@@ -307,10 +294,10 @@ def test_memory_high_growth_downshifts_after_two_samples(harness):
     harness.set_load(1.0)
     harness.set_memory(high_events=3, ratio=0.5)
     harness.tick()
-    assert harness.gov.effective_workers == 6
+    assert harness.gov.effective_workers == 3
     harness.set_memory(high_events=9, ratio=0.5)  # counter grew
     workers = harness.tick()
-    assert workers == 5
+    assert workers == 2
     events = harness.decisions()
     assert events[-1][3]["reason"] == "memory_high"
 
@@ -318,7 +305,7 @@ def test_memory_high_growth_downshifts_after_two_samples(harness):
 def test_memory_usage_ratio_counts_as_pressure(harness):
     harness.set_load(1.0)
     harness.set_memory(high_events=0, ratio=0.99)
-    assert harness.tick() == 5  # single confirmation: live memory pressure
+    assert harness.tick() == 2  # single confirmation: live memory pressure
     assert harness.decisions()[-1][3]["reason"] == "memory_high"
 
 
@@ -330,11 +317,11 @@ def test_persisted_state_resumes_after_restart(tmp_path):
     harness.set_load(5.5)
     harness.tick()
     harness.set_load(5.5)
-    assert harness.tick() == 5
+    assert harness.tick() == 2
     state_file = tmp_path / gov_mod.GOVERNOR_STATE_FILENAME
     assert state_file.is_file()
     revived = DaemonWorkerGovernor(
-        6,
+        3,
         results_dir=tmp_path,
         now=FakeClock(harness.clock() + 60.0),
         loadavg_path=harness.loadavg,
@@ -347,18 +334,16 @@ def test_persisted_state_resumes_after_restart(tmp_path):
         event_sink=lambda *a, **k: None,
         logger=None,
     )
-    assert revived.effective_workers == 5
+    assert revived.effective_workers == 2
 
 
 def test_persisted_state_clamped_into_bounds(tmp_path):
-    # P2 (2026-10-06, operator directive ②/③): bounds are [1, 6] since the
-    # env cap rose to POK_DAEMON_WORKERS=6.
-    for bad in (0, -3, 7, 99):
+    for bad in (0, -3, 99):
         (tmp_path / gov_mod.GOVERNOR_STATE_FILENAME).write_text(
             json.dumps({"effective_workers": bad}), encoding="utf-8"
         )
         revived = DaemonWorkerGovernor(
-            6,
+            3,
             results_dir=tmp_path,
             now=FakeClock(),
             loadavg_path=tmp_path / "loadavg",
@@ -370,13 +355,13 @@ def test_persisted_state_clamped_into_bounds(tmp_path):
             journal_reader=lambda since_sec: "",
             event_sink=lambda *a, **k: None,
         )
-        assert revived.effective_workers == (1 if bad < 1 else 6)
+        assert revived.effective_workers == (1 if bad < 1 else 3)
 
 
 def test_corrupt_state_file_falls_back_to_env_cap(tmp_path):
     (tmp_path / gov_mod.GOVERNOR_STATE_FILENAME).write_text("{not json", encoding="utf-8")
     revived = DaemonWorkerGovernor(
-        6,
+        3,
         results_dir=tmp_path,
         now=FakeClock(),
         loadavg_path=tmp_path / "loadavg",
@@ -388,7 +373,7 @@ def test_corrupt_state_file_falls_back_to_env_cap(tmp_path):
         journal_reader=lambda since_sec: "",
         event_sink=lambda *a, **k: None,
     )
-    assert revived.effective_workers == 6
+    assert revived.effective_workers == 3
 
 
 def test_env_workers_floor_is_one(tmp_path):
@@ -402,10 +387,10 @@ def test_env_workers_floor_is_one(tmp_path):
 
 def test_pairs_binding_violation_fails_fast_without_action(harness):
     harness.set_load(5.5)
-    assert harness.tick(n_pairs=1) == 6  # first sample only
+    assert harness.tick(n_pairs=1) == 3  # first sample only
     harness.set_load(5.5)
     workers = harness.tick(n_pairs=2)  # pairs drifted mid-flight
-    assert workers == 6  # no adjustment applied
+    assert workers == 3  # no adjustment applied
     violation = [e for e in harness.events if "pairs_violation" in e[0]]
     assert violation, "expected a typed pairs-violation event"
     assert violation[0][3]["n_pairs_before"] == 1
@@ -416,13 +401,13 @@ def test_stable_pairs_keeps_governing(harness):
     harness.set_load(5.5)
     harness.tick(n_pairs=1)
     harness.set_load(5.5)
-    assert harness.tick(n_pairs=1) == 5
+    assert harness.tick(n_pairs=1) == 2
 
 
 def test_unreadable_signals_are_neutral(harness):
     harness.loadavg.write_text("garbage", encoding="utf-8")
     harness.set_cpu_pressure(avg10=0.0)
-    assert harness.tick() == 6
+    assert harness.tick() == 3
     assert harness.decisions() == []
 
 
@@ -611,127 +596,6 @@ def test_daemon_replenish_block_delegates_to_extracted_seam():
     assert "_replenish_after_completion(" in source
     # The B1 hole: no unconditional completion-path dispatch remains.
     assert "elif executor is not None:" not in source
-
-
-# ── P2 (2026-10-06): load ceiling doubled — band [2.5, 3.0], env cap 6 ─────
-#
-# 操作员指令②（2026-10-06）: "负载上限提高一倍——1 分钟 load 可持续 3.0，
-# 对局并发在不影响 LLM 产出下动态调整"；指令③: 提高并行。落到 governor：
-# DOWN 语义不变（>3.0 连续 2 次降 1），UP 阈值 2.0 -> 2.5（<2.5 连续 3 次
-# 升 1），env cap POK_DAEMON_WORKERS 3 -> 6（deploy/tencent-cloud/env.runtime），
-# governor 边界 [1, 6]。LLM 硬保护（流停滞/超时 -> 立即降 1）不变。
-
-
-def test_load_below_2_5_upshifts_after_three_samples(tmp_path):
-    """P2 区分性测试：2.4 在旧 UP 阈值 (2.0) 的带内不可升，新语义必须升。
-
-    旧实现下 load=2.4 属带内稳定值（streak 归零），三次 below 不升档；
-    UP 阈值提高到 2.5 后第三次 below 样本必须升 1。
-    """
-    harness = Harness(tmp_path, env_workers=6)
-    harness.set_load(5.5)
-    harness.tick()
-    harness.set_load(5.5)
-    assert harness.tick() == 5  # >3.0 twice: downshift within [1, 6]
-    harness.set_load(2.4)
-    harness.tick()
-    harness.set_load(2.4)
-    assert harness.tick() == 5  # only two below-samples: no action yet
-    harness.set_load(2.4)
-    harness.clock.advance(MIN_ACTION_GAP - 3 * SAMPLE_INTERVAL)
-    assert harness.tick() == 6  # third below-2.5 sample climbs back
-
-
-def test_load_2_5_is_inside_band_not_below(tmp_path):
-    """P2 带下沿锁定：2.5 恰在带内 [2.5, 3.0]（非严格 < 2.5），不升。"""
-    harness = Harness(tmp_path, env_workers=6)
-    harness.set_load(5.5)
-    harness.tick()
-    harness.set_load(5.5)
-    assert harness.tick() == 5
-    for _ in range(2):
-        harness.set_load(2.5)
-        harness.tick()
-    harness.set_load(2.5)
-    harness.clock.advance(MIN_ACTION_GAP - 3 * SAMPLE_INTERVAL)
-    assert harness.tick() == 5  # 2.5 is not below the up threshold
-    assert harness.gov.effective_workers == 5
-
-
-def test_load_exactly_3_0_is_sustainable_no_downshift(tmp_path):
-    """P2 带上沿锁定（操作员指令②"1 分钟 load 可持续 3.0"）：3.0 不降档。"""
-    harness = Harness(tmp_path, env_workers=6)
-    harness.set_load(3.0)
-    harness.tick()
-    harness.set_load(3.0)
-    assert harness.tick() == 6  # 3.0 <= 3.0: sustainable, no downshift
-    assert harness.gov.effective_workers == 6
-    harness.set_load(3.1)
-    harness.tick()
-    harness.set_load(3.1)
-    assert harness.tick() == 5  # >3.0 twice: downshift (unchanged semantics)
-
-
-def test_upshift_stops_at_env_cap_six(tmp_path):
-    """P2 边界 [1, 6]：已在 env cap 6 时低载不越界（也不发事件）。"""
-    harness = Harness(tmp_path, env_workers=6)
-    harness.set_load(1.0)
-    harness.tick()
-    harness.set_load(1.0)
-    harness.tick()
-    harness.set_load(1.0)
-    harness.clock.advance(MIN_ACTION_GAP - 3 * SAMPLE_INTERVAL)
-    assert harness.tick() == 6  # already at cap: clamp holds
-    assert harness.decisions() == []
-
-
-def test_workers_change_keeps_rating_identity_profile_unchanged(tmp_path, monkeypatch):
-    """P2 身份不变性（操作员指令② + 身份约束，2026-10-06）。
-
-    生产同源路径：runtime_profile 由 ``elo_daemon._rating_protocol_config``
-    构造、经 ``ensure_evaluation_data_identity`` 绑进
-    evaluation_data_manifest.json（web/core/elo_daemon.py:1367-1373）。
-    POK_DAEMON_WORKERS 3 -> 6（以及 governor 的 effective_workers /
-    内部选对并发 n_picks）不进入该构造，manifest 摘要必须逐字节不变；
-    n_pairs 改变必须改变 profile 并触发身份错误（检出力对照，也是
-    pairs 禁止运行时修改的原因）。
-    """
-    import evaluation_data_identity as identity
-    from bot_artifact import canonical_digest
-
-    import elo_daemon
-
-    monkeypatch.delenv("POK_NATIONAL_RATING_MATCHES", raising=False)
-    monkeypatch.setenv("POK_DAEMON_WORKERS", "3")
-    profile_workers3 = elo_daemon._rating_protocol_config(n_pairs=1)
-    monkeypatch.setenv("POK_DAEMON_WORKERS", "6")
-    profile_workers6 = elo_daemon._rating_protocol_config(n_pairs=1)
-    # 逐字节不变：生产 digest 函数 + 序列化字节都一致。
-    assert canonical_digest(profile_workers3) == canonical_digest(profile_workers6)
-    assert (
-        json.dumps(profile_workers3, sort_keys=True, ensure_ascii=False)
-        == json.dumps(profile_workers6, sort_keys=True, ensure_ascii=False)
-    )
-
-    results = tmp_path / "results"
-    manifest_3 = identity.ensure_evaluation_data_identity(
-        results, runtime_profile=profile_workers3
-    )
-    # workers=6 的 profile 必须被既有 manifest 原样接受（不触发归档重置）。
-    manifest_6 = identity.ensure_evaluation_data_identity(
-        results, runtime_profile=profile_workers6
-    )
-    assert manifest_6["manifest_digest"] == manifest_3["manifest_digest"]
-
-    # 检出力对照：n_pairs=2 改变 profile，且生产校验必须报身份漂移。
-    profile_pairs2 = elo_daemon._rating_protocol_config(n_pairs=2)
-    assert canonical_digest(profile_pairs2) != canonical_digest(profile_workers6)
-    with pytest.raises(
-        identity.EvaluationDataIdentityError, match="runtime profile changed"
-    ):
-        identity.ensure_evaluation_data_identity(
-            results, runtime_profile=profile_pairs2
-        )
 
 
 def test_governor_never_touches_pairs_identity():
