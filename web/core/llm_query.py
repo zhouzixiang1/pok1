@@ -1972,6 +1972,31 @@ async def run_claude_query(
         except Exception as exc:
             pause_state = None
             persistence_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+        # AIMD 动态并发降档（2026-10-07 修复）：频率类失败的真实流经点在这里。
+        # _process_stream 的 except ClaudeSDKError 已把 1302/裸 429 经
+        # classify_llm_availability 包装成 LLMAvailabilityBlocked（RuntimeError，
+        # 非 ClaudeSDKError 子类）再抛出，llm_query_retry 重试循环里的
+        # except ClaudeSDKError 钩子对它们不可达（生产 0 次触发，降档从未发生）。
+        # 只有 service_unavailable（1302/裸 429/503/529 频率类）计入降档窗口；
+        # quota_429（1308 五小时配额全停）与并发无关，transport/auth/billing
+        # 亦非频率类，均不计。每次 dispatch 的失败恰好流经此处一次——预检
+        # raise_if_llm_paused 在本 try 块之外重放持久化 pause，不会重复计数；
+        # 重试循环的裸 SDK 分支只覆盖未分类错误，与本路径互斥，同样无双计。
+        # 同判定块同步接线 api_concurrency（其 docstring 设计的接入点就是
+        # run_claude_query；重试循环那处从未触发）：legacy 退避层每次频率类
+        # 失败升一级，粒度同为"每 dispatch 恰好一次"。成功路径的
+        # record_llm_outcome(success=True) 恢复计数留在 llm_query_retry，不动。
+        try:
+            from llm_availability import SERVICE_UNAVAILABLE
+
+            if e.issue.category == SERVICE_UNAVAILABLE:
+                from api_concurrency import record_llm_outcome
+                from llm_concurrency import note_llm_rate_limit_failure
+
+                record_llm_outcome(success=False, rate_limited=True)
+                note_llm_rate_limit_failure()
+        except Exception:
+            pass
         _emit_llm_event(
             "pipeline.llm_role_availability_pause_persisted"
             if pause_state

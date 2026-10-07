@@ -45,6 +45,11 @@ def _fresh_aimd_state(monkeypatch, tmp_path):
     monkeypatch.setattr(llm_concurrency, "_AIMD_FAILURE_TS", [])
     monkeypatch.setattr(llm_concurrency, "_AIMD_SUCCESSES", 0)
     monkeypatch.setattr(llm_concurrency, "_AIMD_LAST_LIMIT_CHANGE_TS", None)
+    # The wrapped-dispatch tests exercise the real api_concurrency backoff
+    # level; reset it so the process-level singleton never leaks across files.
+    import api_concurrency
+
+    api_concurrency.reset()
     yield
 
 
@@ -349,6 +354,270 @@ def test_hook_reports_stream_success(monkeypatch, aimd_reported):
     texts, _cost, _usage = _drive_stream(monkeypatch, ok_stream)
     assert texts == ["ok"]
     assert aimd_reported == {"failure": 0, "success": 1}
+
+
+# ---------------------------------------------------------------------------
+# 3b. Production error path (2026-10-07 downshift defect)
+#
+# In production a GLM 1302 arrives as a ClaudeSDKError, but _process_stream's
+# OWN except-ClaudeSDKError handler classifies it via classify_llm_availability
+# and re-raises LLMAvailabilityBlocked — a RuntimeError, NOT a ClaudeSDKError
+# subclass (llm_query_retry.py:682-700). The retry loop's except-ClaudeSDKError
+# AIMD hook (llm_query_retry.py:1208-1222) therefore never sees it: production
+# events.jsonl logged 2293 (service_unavailable, ClaudeSDKError) availability
+# blocks and ZERO keyword-matched raw SDK errors, so the multiplicative
+# downshift never fired while storms hit 13-18 blocks/minute. The
+# frequency-failure report must live where the wrapped error actually flows:
+# run_claude_query's except-LLMAvailabilityBlocked handler (llm_query.py).
+# ---------------------------------------------------------------------------
+
+_GLM_1302_BODY = (
+    "Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]"
+)
+_GLM_1308_BODY = (
+    "Request rejected (429) · [1308][已达到 5 小时的使用上限。"
+    "您的限额将在 2026-10-07 23:59:59 重置。]"
+)
+
+
+class _UI:
+    def log_history(self, *_args, **_kwargs):
+        return None
+
+    def log_io(self, *_args, **_kwargs):
+        return None
+
+    def emit_tool_call(self, *_args, **_kwargs):
+        return None
+
+    def update_cost(self, *_args, **_kwargs):
+        return None
+
+
+def _wrapped_like_production(body, role="SATURATOR STRATEGY RESEARCH"):
+    """Reproduce the exact _process_stream conversion (llm_query_retry.py:682):
+    a ClaudeSDKError carrying the raw provider body is classified by the real
+    LLMAvailabilityTrace and re-raised as LLMAvailabilityBlocked."""
+    from llm_availability import LLMAvailabilityTrace
+
+    blocked = LLMAvailabilityTrace().blocked(
+        role=role, exception=ClaudeSDKError(body)
+    )
+    assert blocked is not None, "production body must classify"
+    return blocked
+
+
+def _archivist_prompt():
+    """Lightest self-contained rendered role prompt (same route as
+    test_llm_zero_tools)."""
+    import cycle_archivist
+    import llm_query
+    from bot_namespace import bot_name, bot_tag
+
+    snapshot = cycle_archivist._cycle_archivist_prompt_projection(
+        {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "bot_name": bot_name(149),
+            "git_tag": bot_tag(149),
+            "publication_identity": {
+                "publication_id": "1" * 64,
+                "commit_oid": "2" * 40,
+                "candidate_artifact_hash": "3" * 64,
+            },
+            "strength_evidence_identity": {"marker": "aimd downshift"},
+            "review_score": 9,
+            "critic_score": 8,
+            "precommit_passed": True,
+            "post_publication_handoff": {
+                "identity_digest": "4" * 64,
+                "publication_id": "1" * 64,
+            },
+        },
+        version=149,
+        source_v=143,
+    )
+    return llm_query.render_llm_prompt(
+        "CYCLE ARCHIVIST",
+        producer=cycle_archivist._render_cycle_archivist_provider_prompt,
+        renderer_inputs={"snapshot": snapshot, "version": 149, "source_v": 143},
+    )
+
+
+@pytest.fixture
+def run_query_env(monkeypatch):
+    """Isolate run_claude_query from cost policy, the pause store, the rate
+    limiter, and the event bus so the availability handler can be driven."""
+    import llm_availability_store
+    import llm_query
+    import orchestrator_cost_policy
+    import rate_limiter
+
+    monkeypatch.setattr(
+        orchestrator_cost_policy,
+        "assert_operator_cost_limit_available",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        llm_availability_store, "raise_if_llm_paused", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        llm_availability_store, "persist_llm_pause", lambda _e: {"ok": True}
+    )
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(llm_query, "_emit_llm_event", lambda *a, **k: None)
+    return llm_query
+
+
+def _run_wrapped_dispatch(llm_query, monkeypatch, body, tmp_path):
+    async def blocked_stream(*_args, **_kwargs):
+        raise _wrapped_like_production(body)
+
+    monkeypatch.setattr(
+        llm_query, "_run_stream_with_signature_retry", blocked_stream
+    )
+    from llm_availability import LLMAvailabilityBlocked
+
+    with pytest.raises(LLMAvailabilityBlocked):
+        asyncio.run(
+            llm_query.run_claude_query(
+                _archivist_prompt(),
+                [],
+                _UI(),
+                "CYCLE ARCHIVIST",
+                str(tmp_path / "aimd_io.txt"),
+            )
+        )
+
+
+def test_three_wrapped_1302_dispatches_halve_the_limit(
+    monkeypatch, tmp_path, run_query_env
+):
+    """The production-shaped failure (Chinese 1302 body -> classify ->
+    LLMAvailabilityBlocked) must drive the real AIMD window: three clustered
+    dispatch failures halve the live limit and persist it."""
+    llm_query = run_query_env
+    for _ in range(3):
+        _run_wrapped_dispatch(llm_query, monkeypatch, _GLM_1302_BODY, tmp_path)
+    assert llm_concurrency.get_capacity() == 6  # 12 -> 6, multiplicative
+    persisted = json.loads(llm_concurrency._aimd_state_path().read_text())
+    assert persisted["limit"] == 6
+
+
+def test_wrapped_1302_counts_exactly_once_per_dispatch(
+    monkeypatch, tmp_path, run_query_env, aimd_reported
+):
+    """One failed dispatch reports exactly one frequency failure — no double
+    counting from the retry loop's raw-SDK hook or anywhere else."""
+    llm_query = run_query_env
+    _run_wrapped_dispatch(llm_query, monkeypatch, _GLM_1302_BODY, tmp_path)
+    assert aimd_reported == {"failure": 1, "success": 0}
+
+
+def test_wrapped_1302_reports_api_concurrency_rate_limit_once(
+    monkeypatch, tmp_path, run_query_env
+):
+    """The same SERVICE_UNAVAILABLE dispatch must also feed the legacy
+    api_concurrency backoff level (agent_workers' get_adaptive_limit) exactly
+    once — its documented wiring point (api_concurrency.py docstring) is
+    run_claude_query; the retry loop's raw-SDK site never fires for classified
+    errors, so this is the only failure feed. The success=True recovery counter
+    stays on the success path (llm_query_retry.py) and is not touched here."""
+    import api_concurrency
+
+    calls = []
+    monkeypatch.setattr(
+        api_concurrency,
+        "record_llm_outcome",
+        lambda success, rate_limited=False: calls.append((success, rate_limited)),
+    )
+    llm_query = run_query_env
+    _run_wrapped_dispatch(llm_query, monkeypatch, _GLM_1302_BODY, tmp_path)
+    assert calls == [(False, True)]  # exactly one, frequency-class failure
+    # A quota-class dispatch shares the same handler but must NOT feed the
+    # backoff level (only SERVICE_UNAVAILABLE counts, same gate as AIMD).
+    _run_wrapped_dispatch(llm_query, monkeypatch, _GLM_1308_BODY, tmp_path)
+    assert calls == [(False, True)]  # unchanged — 1308 excluded
+
+
+def test_wrapped_1308_quota_pause_never_downshifts(
+    monkeypatch, tmp_path, run_query_env
+):
+    """1308 (five-hour usage cap with a provider reset timestamp) classifies as
+    quota_429 — a full stop unrelated to concurrency — and must not enter the
+    frequency window even after many dispatch failures."""
+    llm_query = run_query_env
+    blocked = _wrapped_like_production(_GLM_1308_BODY)
+    assert blocked.issue.category == "quota_429"  # classifier separates 1308
+    for _ in range(5):
+        _run_wrapped_dispatch(llm_query, monkeypatch, _GLM_1308_BODY, tmp_path)
+    assert llm_concurrency.get_capacity() == 12  # untouched
+
+
+def test_pre_dispatch_pause_replay_does_not_count(
+    monkeypatch, tmp_path, run_query_env, aimd_reported
+):
+    """Idempotency: while a durable pause is active, raise_if_llm_paused
+    replays the SAME failure as LLMAvailabilityBlocked before the try block —
+    those replays must not re-enter the window (only fresh dispatch failures
+    observed inside a stream count)."""
+    import llm_availability_store
+
+    llm_query = run_query_env
+
+    def replay_pause(**_kwargs):
+        raise _wrapped_like_production(_GLM_1302_BODY)
+
+    monkeypatch.setattr(llm_availability_store, "raise_if_llm_paused", replay_pause)
+    from llm_availability import LLMAvailabilityBlocked
+
+    with pytest.raises(LLMAvailabilityBlocked):
+        asyncio.run(
+            llm_query.run_claude_query(
+                _archivist_prompt(),
+                [],
+                _UI(),
+                "CYCLE ARCHIVIST",
+                str(tmp_path / "aimd_io.txt"),
+            )
+        )
+    assert aimd_reported == {"failure": 0, "success": 0}
+
+
+def test_wrapped_1302_through_real_process_stream_bypasses_retry_loop_hook(
+    monkeypatch, aimd_reported
+):
+    """Layer characterization: driving the REAL _process_stream (not mocked),
+    the 1302 ClaudeSDKError escapes the retry helper already wrapped as
+    LLMAvailabilityBlocked and is NOT counted at the retry loop's raw-SDK hook
+    — the count belongs to run_claude_query's availability handler above."""
+    import llm_call_metrics
+    import llm_query
+    from llm_availability import LLMAvailabilityBlocked
+
+    def raising_gen():
+        async def _gen():
+            raise ClaudeSDKError(_GLM_1302_BODY)
+            yield  # pragma: no cover - makes this an async generator
+
+        return _gen()
+
+    monkeypatch.setattr(llm_query, "claude_query", lambda *a, **k: raising_gen())
+    monkeypatch.setattr(llm_query, "_emit_llm_event", lambda *a, **k: None)
+    monkeypatch.setattr(
+        llm_call_metrics, "record_llm_call_metrics", lambda **_kw: None
+    )
+
+    async def run():
+        return await llm_query._run_stream_with_signature_retry(
+            "prompt", ClaudeAgentOptions(), "/tmp/none.log", _UI(), "role"
+        )
+
+    with pytest.raises(LLMAvailabilityBlocked) as excinfo:
+        asyncio.new_event_loop().run_until_complete(run())
+    assert excinfo.value.issue.category == "service_unavailable"
+    assert excinfo.value.issue.summary == "provider rate limit; reduce request frequency"
+    # The retry loop's own hook must stay silent on the wrapped path.
+    assert aimd_reported == {"failure": 0, "success": 0}
 
 
 # ---------------------------------------------------------------------------
