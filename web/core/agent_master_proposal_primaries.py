@@ -254,6 +254,13 @@ def _proposal_mechanism_target_errors(
         if alias.startswith(expected + ".")
         and re.fullmatch(r"[a-z_][a-z0-9_]*", alias.rsplit(".", 1)[1])
     }
+    # Compact (separator-free) spellings of the same closed children, so the
+    # list grading and the prose compact scan treat "foldtoraise" as the same
+    # governed leaf as fold_to_raise.
+    compact_child_map = {
+        re.sub(r"[^a-z0-9]+", "", child): child
+        for child in expected_root_children
+    }
 
     def mask_root_scoped_shared_leaves(text: str) -> str:
         """Mask a closed, root-qualified shorthand list for the expected axis.
@@ -267,10 +274,27 @@ def _proposal_mechanism_target_errors(
         such as ``opponent.rates root (aggression, fold_to_raise)`` or
         ``opponent.rates profile (aggression, fold_to_raise)`` is also accepted:
         the connector words do not change ownership and the parenthesized list
-        is still the explicit child set.  Do not accept prose, nested paths,
+        is still the explicit child set.  Markdown decoration (backticks or
+        quotes) around the root or an item, and separator spellings of a leaf
+        inside the list (``fold to raise`` / ``fold-to-raise``), name the same
+        qualified list and are accepted.  Do not accept prose, nested paths,
         values, or a different root inside the parentheses; those remain
         fail-closed and are still scanned for foreign targets below.
         """
+
+        # Decoration stripping before the whitelist match: paired
+        # backticks/quotes wrap the root or list items as Markdown emphasis
+        # (`` `opponent.rates` (`aggression`, `fold_to_raise`) ``), which is
+        # presentation, not semantics.  The pair content is restricted to
+        # identifier-ish characters so a decoration can never span a comma,
+        # a parenthesis, or another list separator.  The replacement pads
+        # both sides with spaces: removing the quotes alone would glue the
+        # neighbours together (``x'fold_to_raise'y`` -> ``xfold_to_raisey``)
+        # and destroy the word boundary the shared-leaf scan depends on.
+        # Space and quote characters normalize identically downstream
+        # (``[^a-z0-9]+`` -> ``_``), so the padded strip is invisible to the
+        # prose scans while still letting the whitelist regex match.
+        text = re.sub(r"([`'\"])([a-z0-9_.\- ]+)\1", r" \2 ", text)
 
         # Allow up to three short alphabetic connector words (e.g. "root",
         # "profile", "values") between the root literal and the opening paren.
@@ -288,16 +312,38 @@ def _proposal_mechanism_target_errors(
             connector = match.group(1) or ""
             body = match.group(2)
             fields = re.split(r"\s*(?:,|\band\b)\s*", body)
-            normalized_fields = [
-                field.strip().strip("`'\"").lower()
-                for field in fields
-            ]
-            if not normalized_fields or any(
-                re.fullmatch(r"[a-z_][a-z0-9_]*", field) is None
-                for field in normalized_fields
-            ):
+            # Grade every item by its separator-normalized form: inside its
+            # root's own list, "fold to raise", "fold-to-raise", and the
+            # compact "foldtoraise" are the same closed leaf as
+            # fold_to_raise (the downstream prose scan treats every one of
+            # those spellings as the shared leaf, and the prompt names all
+            # three as legal inside this exact list).  Both normalized and
+            # compact forms must hit the closed child whitelist exactly; an
+            # identifier-spelled item that is neither known child nor
+            # compact known child keeps the unknown-leaf rejection; any
+            # other item is prose inside the parentheses and leaves the
+            # whole list unmasked for the downstream scan, as before.
+            normalized_fields: list[str] = []
+            unknown_fields: list[str] = []
+            ungradeable = False
+            for field in fields:
+                stripped = field.strip().strip("`'\"").lower()
+                normalized = re.sub(r"[^a-z0-9]+", "_", stripped).strip("_")
+                compact = re.sub(r"[^a-z0-9]+", "", stripped)
+                child = (
+                    normalized
+                    if normalized in expected_root_children
+                    else compact_child_map.get(compact)
+                )
+                if child is not None:
+                    normalized_fields.append(child)
+                elif re.fullmatch(r"[a-z_][a-z0-9_]*", stripped):
+                    unknown_fields.append(normalized)
+                else:
+                    ungradeable = True
+            if ungradeable:
                 return match.group(0)
-            unknown_fields = sorted(set(normalized_fields) - expected_root_children)
+            unknown_fields = sorted(set(unknown_fields))
             if unknown_fields:
                 root_scoped_list_errors.extend(
                     "proposal_mechanism_root_scoped_unknown_leaf:"
@@ -316,12 +362,29 @@ def _proposal_mechanism_target_errors(
                     leaf.lower() in normalized_fields
                     and f"{expected}.{leaf}" in owners
                 ):
+                    # Mask every spelling of the accepted leaf the downstream
+                    # prose scan can flag: separator spellings (underscores,
+                    # spaces, hyphens between its parts) and the compact
+                    # spelling, each with the exact boundaries that scan uses.
+                    leaf_pattern = r"[^a-z0-9]+".join(
+                        re.escape(part) for part in leaf.lower().split("_")
+                    )
                     masked_body = re.sub(
-                        r"(?<![a-z0-9_])" + re.escape(leaf) + r"(?![a-z0-9_])",
+                        r"(?<![a-z0-9_])" + leaf_pattern + r"(?![a-z0-9_])",
                         " ",
                         masked_body,
                         flags=re.IGNORECASE,
                     )
+                    compact_leaf = re.sub(r"[^a-z0-9]+", "", leaf.lower())
+                    if compact_leaf != leaf.lower():
+                        masked_body = re.sub(
+                            r"(?<![a-z0-9])"
+                            + re.escape(compact_leaf)
+                            + r"(?![a-z0-9])",
+                            " ",
+                            masked_body,
+                            flags=re.IGNORECASE,
+                        )
             # Replace the body in-place; also blank the connector words so the
             # downstream unowned-text scan cannot re-introduce a stray token
             # (defensive: connector words are not leaves, but keep the masked

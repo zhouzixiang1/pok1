@@ -910,7 +910,11 @@ def test_schema_repair_guidance_is_targeted_and_negation_safe():
     assert "Rewrite the complete object from scratch" in guidance
     assert "all other decision_context fields are byte-identical" in guidance
     assert "The only executable root for this frozen proposal is opponent.rates" in guidance
-    assert "fold_to_raise" not in guidance
+    # The shared-leaf guidance now carries the prompt-accepted root-scoped
+    # list template verbatim (2026-10-07): the leaf may appear only inside
+    # that qualified example, never as a bare or backticked form.
+    assert "opponent.rates (aggression, fold_to_raise)" in guidance
+    assert "`opponent.rates" not in guidance
     assert "showdown_range" not in guidance
     assert len(guidance.splitlines()) == 2
 

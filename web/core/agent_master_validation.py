@@ -559,12 +559,54 @@ def _proposal_schema_repair_guidance(
             if len(roots) == 1
             else " Use only the root selected by the mapping row."
         )
+        # The example must be rendered from the same allowed_primaries as
+        # root_clause: a hardcoded opponent.rates example beside "the only
+        # executable root is opponent.showdown_range" teaches a copy that
+        # trips the foreign-target and unknown-leaf checks.  Prefer the
+        # root's own namespace-shared leaf (the exact token this retry must
+        # learn to qualify) plus one other known child; roots without a
+        # shared leaf show their first two known children.
+        example_clause = ""
+        if len(roots) == 1:
+            leaves = sorted({
+                alias.rsplit(".", 1)[1]
+                for alias in STATE_LEARNING_INTERVENTION_TARGET_ALIASES.get(
+                    roots[0], ()
+                )
+                if alias.startswith(roots[0] + ".")
+                and re.fullmatch(r"[a-z_][a-z0-9_]*", alias.rsplit(".", 1)[1])
+            })
+            shared = [
+                leaf
+                for leaf, owners in (
+                    STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.items()
+                )
+                if leaf in leaves and f"{roots[0]}.{leaf}" in owners
+            ]
+            if shared:
+                leaves = (
+                    [leaf for leaf in leaves if leaf != shared[0]][:1]
+                    + shared[:1]
+                )
+            if leaves:
+                example_clause = (
+                    ", for example "
+                    + roots[0]
+                    + " ("
+                    + ", ".join(leaves[:2])
+                    + ")"
+                )
         add(
             "Rewrite the complete object from scratch; do not preserve prior "
             "prose. In structural_change, expected_diff, and "
-            "falsifier.intervention, use the selected root literal only, never "
-            "a bare or qualified leaf, confidence field, or another opponent "
-            "path."
+            "falsifier.intervention, write the selected root literal or a "
+            "complete owner-qualified child of it, never a bare leaf, "
+            "confidence field, or another opponent path. A flat root-scoped "
+            "list is equally valid: the exact selected root immediately "
+            "followed by a parenthesized comma-separated list of its known "
+            "child leaves, written without backticks or quotes"
+            + example_clause
+            + "."
             + root_clause
             + " State that all other decision_context fields are byte-identical."
         )
