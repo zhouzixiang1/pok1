@@ -743,3 +743,31 @@ def test_saturator_loop_wires_dynamic_soft_cap():
     assert "get_capacity" in source
     gate_source = inspect.getsource(llm_saturator.saturator_may_launch)
     assert "get_capacity()" in gate_source
+
+
+def test_fast_recovery_pace_below_static_baseline():
+    """Operator direction 2026-10-07: climb back faster after a storm.
+
+    Below the static baseline the raise probe fires after the fast 90s pace,
+    not the cautious 300s exploration pace — a storm's downshift lands far
+    under the sustained level and the slow pace made the dip ~50 minutes.
+    """
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 3}))
+    llm_concurrency._AIMD_LIMIT = None
+    llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS = 1000.0
+    llm_concurrency._AIMD_SUCCESSES = 0
+    for _ in range(4):
+        llm_concurrency.note_llm_stream_success(now=1091.0)  # 91s since change
+    assert llm_concurrency.get_capacity() == 4
+
+
+def test_cautious_pace_returns_at_static_baseline():
+    """Fast recovery is for getting BACK to the static baseline, not for
+    exploring above it: at limit >= static the 300s probe pace applies."""
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 12}))
+    llm_concurrency._AIMD_LIMIT = None
+    llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS = 1000.0
+    llm_concurrency._AIMD_SUCCESSES = 0
+    for _ in range(4):
+        llm_concurrency.note_llm_stream_success(now=1080.0)  # only 80s later
+    assert llm_concurrency.get_capacity() == 12

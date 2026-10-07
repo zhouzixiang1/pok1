@@ -217,7 +217,13 @@ AIMD_MIN_LIMIT = 2
 AIMD_MAX_LIMIT = 32
 AIMD_WINDOW_SEC = 300.0
 AIMD_FAILURE_THRESHOLD = 3
+# Cautious probe pace above the static baseline (where 1302 storms live) and
+# a fast recovery pace below it: a storm's multiplicative decrease lands the
+# limit far under the static value, and the slow probe pace made the dip
+# last ~50 minutes against a provider that historically sustains the static
+# level. Operator direction 2026-10-07: climb back faster.
 AIMD_RAISE_INTERVAL_SEC = 300.0
+AIMD_FAST_RAISE_INTERVAL_SEC = 90.0
 AIMD_RAISE_MIN_SUCCESSES = 4
 
 _AIMD_LOCK = threading.Lock()
@@ -338,10 +344,13 @@ def note_llm_stream_success(now: "float | None" = None) -> None:
     """Report one completed provider stream.
 
     Additive +1 probe when the window is clean, >= AIMD_RAISE_MIN_SUCCESSES
-    successes accumulated, and >= AIMD_RAISE_INTERVAL_SEC since the last
-    limit change. There is no static ceiling on the probe: upshifts are
-    bounded here only by AIMD_MAX_LIMIT — the launch guards (live children
-    count / MemAvailable / cgroup headroom) bound the ACTUAL load.
+    successes accumulated, and long enough since the last limit change:
+    AIMD_FAST_RAISE_INTERVAL_SEC below the static baseline (storm recovery —
+    get back to the sustained level quickly) and AIMD_RAISE_INTERVAL_SEC at or
+    above it (cautious exploration where 1302 storms live). There is no
+    static ceiling on the probe: upshifts are bounded here only by
+    AIMD_MAX_LIMIT — the launch guards (live children count / MemAvailable /
+    cgroup headroom) bound the ACTUAL load.
     """
     global _AIMD_SUCCESSES, _AIMD_LAST_LIMIT_CHANGE_TS
     ts = time.time() if now is None else float(now)
@@ -354,8 +363,14 @@ def note_llm_stream_success(now: "float | None" = None) -> None:
             if _AIMD_LAST_LIMIT_CHANGE_TS is not None
             else float("inf")
         )
+        # Fast recovery below the static baseline, cautious probe above it.
+        interval = (
+            AIMD_FAST_RAISE_INTERVAL_SEC
+            if limit < GLOBAL_LLM_CONCURRENCY
+            else AIMD_RAISE_INTERVAL_SEC
+        )
         if (
-            since_change < AIMD_RAISE_INTERVAL_SEC
+            since_change < interval
             or _AIMD_FAILURE_TS
             or _AIMD_SUCCESSES < AIMD_RAISE_MIN_SUCCESSES
         ):
