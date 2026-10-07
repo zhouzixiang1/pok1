@@ -53,10 +53,17 @@ _PROPOSAL_STRENGTH_SAMPLE_FLOOR = ">=30_complete_matches"
 # ``at least`` prefix, the floor number 30, and an optional
 # ``complete matches`` suffix with any separator spelling.  This is
 # equivalence, not relaxation: a different predicate (``>30``), a lower
-# floor (``>=29``), or a bare count without prefix or suffix still fails.
+# floor (``>=29``), or a count below 30 still fails.  A bare count at or
+# above the floor (``40_complete_matches``) is equivalence too: the samples
+# slot is a floor declaration that downstream strength authorities never
+# read, and a count >= 30 declares at least the floor.  First-attempt
+# scouts kept writing their planned count and burned the single
+# schema-retry budget on this field (233 historical
+# ``proposal_measurement_contract_invalid`` hints).
 _PROPOSAL_SAMPLES_FLOOR_EQUIVALENT = re.compile(
     r"(?:(?:>=|≥)\s*|at[\s_-]*least[\s_-]*)30(?:[\s_-]*complete[\s_-]*matches)?"
     r"|30[\s_-]*complete[\s_-]*matches"
+    r"|(?:3[0-9]|[4-9][0-9]|[1-9][0-9]{2,})(?:[\s_-]*complete[\s_-]*matches)?"
 )
 _PROPOSAL_UNCERTAINTY_PROMPT_VALUE = "wilson_wld_interval"
 

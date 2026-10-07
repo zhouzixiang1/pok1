@@ -476,7 +476,9 @@ def test_measurement_samples_floor_accepts_equivalent_spellings(samples):
     [
         ">30_complete_matches",  # strict >, different predicate
         ">=29_complete_matches",  # below the floor
-        "30",  # bare count is not the >= floor contract
+        # bare "30" moved to the accepted side on 2026-10-07: a bare count
+        # >= 30 is a floor-exceeding equivalence (see
+        # test_master_measurement_samples_floor_20261007.py)
         ">=30_incomplete_matches",
         ">=300_complete_matches",  # not equivalent (different floor)
         "",
