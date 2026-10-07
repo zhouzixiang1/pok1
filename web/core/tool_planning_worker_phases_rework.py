@@ -266,7 +266,132 @@ async def _execute_workers_phase_b_rework_synthesis(actor_lock_owned, checkpoint
                 )
             except Exception:
                 prepared_repair_resume_dir = None
-    if ckpt.get("stage") in rework_stages:
+    # 2026-10-07 (v520/v525): a COMPLETED repair round's work_item survives in
+    # the checkpoint master_plan while the generation advances through the
+    # gate chain.  When a later gate adjudication re-enters
+    # repair_planned/rework_running (run_review's two-verdict rejection writes
+    # stage=repair_planned with a NEW reviewer_feedback), that stale work_item
+    # must not be mistaken for a crashed same-round preparation: the durable
+    # journal holds no envelope for the current cycle (status idle -> command
+    # "prepare"), so the only in-round authority is the checkpoint's canonical
+    # reviewer_feedback.  When the frozen input no longer binds that feedback,
+    # the preparation is SUPERSEDED, not corrupted -- re-plan the repair from
+    # the current feedback below instead of failing the resume comparison
+    # ("frozen Worker preparation input contract drift" canonically abandoned
+    # exactly this way twice).  A same-round resume (crash between the
+    # repair_planned publication and WorkerPrepared) keeps matching feedback
+    # and therefore keeps the strict frozen-resume semantics.
+    superseded_preparation = False
+    if (
+        frozen_rework_resume
+        and not durable_worker_resume
+        and ckpt.get("stage") in {"repair_planned", "rework_running"}
+        and isinstance(checkpoint_work_item, dict)
+        and isinstance(checkpoint_work_item.get("frozen_worker_input"), dict)
+    ):
+        frozen_bound_feedback = str(
+            checkpoint_work_item["frozen_worker_input"].get(
+                "reviewer_feedback"
+            )
+            or ""
+        )
+        current_bound_feedback = str(
+            _tw._checkpoint_rework_feedback(ckpt) or ""
+        )
+        if (
+            frozen_bound_feedback
+            and current_bound_feedback
+            and frozen_bound_feedback != current_bound_feedback
+        ):
+            superseded_preparation = True
+            frozen_rework_resume = False
+            prepared_repair_resume_hash = ""
+            prepared_repair_resume_dir = None
+            # The new round's rework family must be decided by the NEW
+            # adjudication, not by the completed round's residue.  Only
+            # run_review writes repair_planned/rework_running from outside
+            # execute_workers, and its write always carries a fresh review
+            # rejection in the same CAS, so ``gate_results.review.approved is
+            # False`` proves the review verdict owns this round.  In that case
+            # strip the completed round's family attribution from THIS
+            # INVOCATION'S checkpoint view: the stale work_item (kind /
+            # source_stage / route intent) and the superseded precommit
+            # regression receipt would otherwise make
+            # ``_is_precommit_rework_checkpoint`` claim the round, wrap the
+            # reviewer's code-quality blocker into an EV/matchup repair
+            # prompt, and burn the precommit_rework_count budget (the v520/v525
+            # misroute).  Durable bytes are NOT touched: phase C re-freezes a
+            # new work_item below, and the precommit gate rewrites its own
+            # receipt when precommit re-runs.  A genuine precommit rejection
+            # never reaches here (its stage is precommit_failed, and its
+            # same-round resume binds matching feedback), so real precommit
+            # rework keeps its family, prompts, and counters.
+            review_gate = (ckpt.get("gate_results") or {}).get("review")
+            review_rejection_owns_round = (
+                isinstance(review_gate, dict)
+                and review_gate.get("approved") is False
+            )
+            dropped_precommit_receipt = False
+            if review_rejection_owns_round:
+                plan_view = _tw._checkpoint_master_plan(ckpt)
+                ckpt["master_plan"] = {**plan_view, "work_item": {}}
+                gates_view = (
+                    ckpt.get("gate_results")
+                    if isinstance(ckpt.get("gate_results"), dict)
+                    else {}
+                )
+                if (
+                    isinstance(gates_view.get("precommit_eval"), dict)
+                    and gates_view["precommit_eval"].get("passed") is False
+                ):
+                    ckpt["gate_results"] = {
+                        key: value
+                        for key, value in gates_view.items()
+                        if key != "precommit_eval"
+                    }
+                    dropped_precommit_receipt = True
+            try:
+                _tw.log_system_event(
+                    "pipeline.worker_repair_preparation_superseded",
+                    "warn",
+                    (
+                        f"Superseded frozen repair preparation for v{next_v}: "
+                        "the checkpoint repair authority moved to a new round"
+                    ),
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "stage": ckpt.get("stage"),
+                        "superseded_kind": str(
+                            checkpoint_work_item.get("kind") or ""
+                        ),
+                        "drift_fields": ["reviewer_feedback"],
+                        "dropped_prepared_snapshot_hash": str(
+                            checkpoint_work_item.get(
+                                "prepared_snapshot_hash"
+                            )
+                            or ""
+                        ),
+                        "dropped_repair_baseline_artifact_hash": str(
+                            checkpoint_work_item.get(
+                                "repair_baseline_artifact_hash"
+                            )
+                            or ""
+                        ),
+                        "dropped_precommit_receipt": (
+                            dropped_precommit_receipt
+                        ),
+                        "frozen_feedback_digest": _tw.hashlib.sha256(
+                            frozen_bound_feedback.encode("utf-8")
+                        ).hexdigest(),
+                        "current_feedback_digest": _tw.hashlib.sha256(
+                            current_bound_feedback.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                )
+            except Exception:
+                pass
+    if ckpt.get("stage") in rework_stages and not superseded_preparation:
         expected_repair_baseline = _tw._checkpoint_repair_baseline_fingerprint(ckpt)
         # Once repair preparation has been captured and projected into the
         # checkpoint, that immutable artifact is the recovery authority.  The
@@ -328,6 +453,10 @@ async def _execute_workers_phase_b_rework_synthesis(actor_lock_owned, checkpoint
                     "repair file."
                 ),
             })
+    # A superseded preparation skips only the stale baseline recheck above; the
+    # canonical feedback / repair-task authority below must still resolve for
+    # the fresh re-plan.
+    if ckpt.get("stage") in rework_stages:
         canonical_feedback = (
             str(durable_worker_envelope.get("reviewer_feedback") or "")
             if durable_worker_resume
@@ -980,7 +1109,12 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
         existing_prepared_work.get("prepared_snapshot_hash") or ""
     )
     if (
-        durable_worker_status == "idle"
+        # A superseded preparation (phase B re-classified the round because the
+        # frozen input no longer binds the checkpoint's canonical repair
+        # feedback) must not enter this resume validation: it belongs to a
+        # completed prior repair cycle and is re-planned below instead.
+        frozen_rework_resume
+        and durable_worker_status == "idle"
         and ckpt.get("stage") in {"repair_planned", "rework_running"}
         and existing_prepared_snapshot
     ):
@@ -1030,28 +1164,60 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
             ).hexdigest()
             if actual_frozen_input_digest != frozen_worker_input_digest:
                 raise RuntimeError("frozen Worker preparation input digest mismatch")
+            # Observability (2026-10-07): name the drifted fields instead of a
+            # bare token, so a drift abandon says WHAT moved (tasks /
+            # reviewer_feedback / worker_template_hash / ...).
+            frozen_input_drift_fields = []
+            if frozen_worker_input.get("schema_version") != 4:
+                frozen_input_drift_fields.append("schema_version")
+            if frozen_worker_input.get("tasks") != tasks:
+                frozen_input_drift_fields.append("tasks")
             if (
-                frozen_worker_input.get("schema_version") != 4
-                or frozen_worker_input.get("tasks") != tasks
-                or str(frozen_worker_input.get("reviewer_feedback") or "")
+                str(frozen_worker_input.get("reviewer_feedback") or "")
                 != reviewer_feedback
-                or frozen_worker_input.get("worker_template_hash")
-                != _tw.hashlib.sha256(worker_template.encode("utf-8")).hexdigest()
-                or frozen_worker_input.get("backend_contract")
+            ):
+                frozen_input_drift_fields.append("reviewer_feedback")
+            if (
+                frozen_worker_input.get("worker_template_hash")
+                != _tw.hashlib.sha256(
+                    worker_template.encode("utf-8")
+                ).hexdigest()
+            ):
+                frozen_input_drift_fields.append("worker_template_hash")
+            if (
+                frozen_worker_input.get("backend_contract")
                 != _dur._worker_backend_contract()
-                or "worker_execution_context" in frozen_worker_input
-                or not projection_preimage_artifact_hash
-                or not projection_preimage_snapshot_hash
+            ):
+                frozen_input_drift_fields.append("backend_contract")
+            if "worker_execution_context" in frozen_worker_input:
+                frozen_input_drift_fields.append("worker_execution_context")
+            if (
+                not projection_preimage_artifact_hash
                 or frozen_worker_input.get(
                     "projection_preimage_artifact_hash"
                 )
                 != projection_preimage_artifact_hash
+            ):
+                frozen_input_drift_fields.append(
+                    "projection_preimage_artifact_hash"
+                )
+            if (
+                not projection_preimage_snapshot_hash
                 or frozen_worker_input.get(
                     "projection_preimage_snapshot_hash"
                 )
                 != projection_preimage_snapshot_hash
             ):
-                raise RuntimeError("frozen Worker preparation input contract drift")
+                frozen_input_drift_fields.append(
+                    "projection_preimage_snapshot_hash"
+                )
+            if frozen_input_drift_fields:
+                drift_exc = RuntimeError(
+                    "frozen Worker preparation input contract drift: "
+                    + ", ".join(frozen_input_drift_fields)
+                )
+                drift_exc.drift_fields = frozen_input_drift_fields
+                raise drift_exc
             projection_preimage_dir = worker_workflow.artifacts.path_for(
                 projection_preimage_snapshot_hash
             )
@@ -1106,6 +1272,7 @@ async def _execute_workers_phase_c_rework_preparation(actor_lock_owned, ckpt, du
                 "source_v": source_v,
                 "action": "abandon_generation",
                 "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "drift_fields": list(getattr(exc, "drift_fields", [])),
             })
     # P4(b) (2026-10-05): refuse to dispatch a repair Worker whose contract
     # is unsatisfiable — the quality gate REQUIRED AST checks for mechanisms
