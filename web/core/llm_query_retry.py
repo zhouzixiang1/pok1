@@ -1169,6 +1169,12 @@ async def _run_stream_with_signature_retry_attempts(
                 record_llm_outcome(success=True)
             except Exception:
                 pass
+            # AIMD 动态并发（2026-10-07）：真实供应商成功流是升档探针的信号源。
+            try:
+                from llm_concurrency import note_llm_stream_success
+                note_llm_stream_success()
+            except Exception:
+                pass
             return texts, total_cost, total_usage
         except ClaudeSDKError as e:
             last_sdk_err = e
@@ -1206,6 +1212,12 @@ async def _run_stream_with_signature_retry_attempts(
                         or "所有供应商" in _es or "rate limit" in _es or "429" in _es):
                     from api_concurrency import record_llm_outcome
                     record_llm_outcome(success=False, rate_limited=True)
+                    # AIMD 动态并发（2026-10-07）：频率类失败计数驱动乘法降档。
+                    # GLM 1308 配额耗尽除外——那是 5 小时全停、与并发无关，
+                    # 计入只会造成虚假降档（复用下方配额判定函数分流 1302/1308）。
+                    if not _lq._is_quota_exceeded(str(e)):
+                        from llm_concurrency import note_llm_rate_limit_failure
+                        note_llm_rate_limit_failure()
             except Exception:
                 pass
             # GLM 1308 配额耗尽检测：解析重置时间戳到全局 rate_limiter。

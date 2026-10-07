@@ -535,6 +535,26 @@ def isolate_state(tmp_path, monkeypatch):
     # route and helper tests operate on the isolated tag-backed artifact above.
     monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _path: True)
 
+    # --- 1b. Patch llm_concurrency AIMD state (2026-10-07): the provider-result
+    # hooks in llm_query_retry call the real note_* controllers on every
+    # 429-class failure / completed stream, which both resizes the live shared
+    # semaphore and persists llm_aimd_state.json. Without isolation, any test
+    # that drives rate-limit errors through the retry path leaks a learned
+    # limit into later suites (observed: test_llm_saturator_bots children-gate
+    # failures when run after codex-transport 429 tests) and writes the real
+    # web/core/results/llm_aimd_state.json. ---
+    import llm_concurrency
+
+    monkeypatch.setattr(
+        llm_concurrency, "_AIMD_STATE_FILE", results_dir / "llm_aimd_state.json"
+    )
+    monkeypatch.setattr(llm_concurrency, "_AIMD_LIMIT", None)
+    monkeypatch.setattr(llm_concurrency, "_AIMD_FAILURE_TS", [])
+    monkeypatch.setattr(llm_concurrency, "_AIMD_SUCCESSES", 0)
+    monkeypatch.setattr(llm_concurrency, "_AIMD_LAST_LIMIT_CHANGE_TS", None)
+    monkeypatch.setattr(llm_concurrency, "_SHARED_LLM_SEMAPHORE", None)
+    monkeypatch.setattr(llm_concurrency, "_GLOBAL_LLM_SEMAPHORE", None)
+
     # Generic tests run inside a synthetic, already-initialized runtime.  The
     # launch-boundary suite overrides this canonical guard explicitly to cover
     # reset_required, malformed reset evidence, fresh-bootstrap-ready, and

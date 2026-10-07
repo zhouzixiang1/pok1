@@ -51,9 +51,14 @@ def test_legacy_aliases_return_shared_semaphore():
 
 
 def test_semaphore_capacity_matches_config():
-    """The shared semaphore capacity equals GLOBAL_LLM_CONCURRENCY."""
+    """The shared semaphore materializes at the dynamic (AIMD) capacity.
+
+    Since 2026-10-07 the capacity accessor is ``get_capacity()`` — the AIMD
+    controller's live limit (fail-open to GLOBAL_LLM_CONCURRENCY when no
+    ``llm_aimd_state.json`` exists), and the semaphore is created with it.
+    """
     sem = llm_concurrency.get_global_llm_semaphore()
-    assert sem._value == llm_concurrency.GLOBAL_LLM_CONCURRENCY
+    assert sem._value == llm_concurrency.get_capacity()
 
 
 def test_master_proposal_critic_uses_shared_pool():

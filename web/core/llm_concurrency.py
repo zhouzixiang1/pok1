@@ -37,11 +37,14 @@ all return the same shared semaphore, so existing imports keep resolving.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # Total concurrent in-flight LLM streams across ALL roles.
 GLOBAL_LLM_CONCURRENCY = int(os.environ.get("POK_GLOBAL_LLM_CONCURRENCY", "4"))
@@ -71,30 +74,44 @@ class CrossLoopSemaphore:
     wakes the oldest waiter with ``call_soon_threadsafe``, so ASGI saturator
     tasks and private-loop pipeline roles share one cap without binding the
     object to a single loop.
+
+    Since 2026-10-07 the accounting is explicit ``_capacity``/``_holders``
+    with ``_permits`` a derived value ``max(0, _capacity - _holders)``, so
+    the AIMD controller can resize the live pool (:meth:`set_capacity`).
+    A handoff to a parked waiter is granted only while ``_holders <
+    _capacity`` — with resident waiters the pre-change release() transferred
+    the freed permit unconditionally, so a saturated pool could never shrink.
     """
 
     def __init__(self, value: int) -> None:
         if int(value) < 0:
             raise ValueError("semaphore initial value must be >= 0")
-        self._permits = int(value)
+        self._capacity = int(value)
+        self._holders = 0
         self._waiters: deque[_Waiter] = deque()
         self._mutex = threading.RLock()
 
     @property
+    def _permits(self) -> int:
+        """Free permits — derived: never written directly."""
+        with self._mutex:
+            return max(0, self._capacity - self._holders)
+
+    @property
     def _value(self) -> int:
         with self._mutex:
-            return self._permits
+            return max(0, self._capacity - self._holders)
 
     def locked(self) -> bool:
         with self._mutex:
-            return self._permits <= 0
+            return self._capacity - self._holders <= 0
 
     async def acquire(self) -> bool:
         loop = asyncio.get_running_loop()
         waiter: _Waiter | None = None
         with self._mutex:
-            if self._permits > 0:
-                self._permits -= 1
+            if self._holders < self._capacity:
+                self._holders += 1
                 return True
             fut: asyncio.Future = loop.create_future()
             waiter = _Waiter(loop=loop, fut=fut)
@@ -109,10 +126,33 @@ class CrossLoopSemaphore:
 
     def release(self) -> None:
         with self._mutex:
+            self._holders = max(0, self._holders - 1)
             self._wake_locked()
 
+    def set_capacity(self, n: int) -> None:
+        """Resize the pool. Growth wakes exactly ``delta`` waiters (each
+        explicitly consuming one permit, so handoffs cannot drift); a shrink
+        takes effect immediately — excess holders drain naturally and new
+        acquires park until holders drop below the new capacity."""
+        with self._mutex:
+            new_capacity = int(n)
+            if new_capacity < 0:
+                raise ValueError("semaphore capacity must be >= 0")
+            delta = new_capacity - self._capacity
+            self._capacity = new_capacity
+            if delta > 0:
+                for _ in range(delta):
+                    self._wake_locked()
+
+    def adjust_capacity(self, delta: int) -> None:
+        with self._mutex:
+            self.set_capacity(self._capacity + int(delta))
+
     def _wake_locked(self) -> None:
+        """Grant one free slot to the oldest live waiter, if capacity allows."""
         while self._waiters:
+            if self._holders >= self._capacity:
+                return
             waiter = self._waiters.popleft()
             if waiter.fut.done():
                 continue
@@ -121,12 +161,15 @@ class CrossLoopSemaphore:
             except RuntimeError:
                 waiter.dropped = True
                 continue
+            self._holders += 1
             return
-        self._permits += 1
 
     def _deliver(self, waiter: _Waiter) -> None:
         with self._mutex:
             if waiter.dropped or waiter.fut.done():
+                # The scheduled grant is stranded (waiter cancelled in
+                # flight): return the slot and re-offer it.
+                self._holders = max(0, self._holders - 1)
                 self._wake_locked()
                 return
             waiter.fut.set_result(True)
@@ -139,6 +182,9 @@ class CrossLoopSemaphore:
             except ValueError:
                 pass
             if waiter.fut.done() and not waiter.fut.cancelled():
+                # The grant was already delivered but the acquire coroutine
+                # is dying with CancelledError: return the consumed slot.
+                self._holders = max(0, self._holders - 1)
                 self._wake_locked()
                 return
             waiter.dropped = True
@@ -152,10 +198,179 @@ class CrossLoopSemaphore:
         return False
 
 
+# --- AIMD dynamic capacity (2026-10-07) --------------------------------------
+#
+# The static env ceiling (POK_GLOBAL_LLM_CONCURRENCY, 12 since commit
+# 3e6068f7) is a floor to probe PAST, not the real limit: GLM's true 1302
+# frequency wall floats across the day. The controller raises the live
+# semaphore capacity additively while streams succeed and halves it when
+# frequency-class failures (GLM 1302 / bare 429) cluster — >=
+# AIMD_FAILURE_THRESHOLD inside the AIMD_WINDOW_SEC sliding window; isolated
+# failures are tolerated. GLM 1308 quota exhaustion is a five-hour full stop
+# unrelated to concurrency and is filtered at the reporting hook
+# (llm_query_retry), never here. The learned level persists so a restart
+# resumes nearby, and guards never trust it: the saturator's
+# children/MemAvailable/cgroup-headroom gates re-read live machine state at
+# every launch.
+
+AIMD_MIN_LIMIT = 2
+AIMD_MAX_LIMIT = 32
+AIMD_WINDOW_SEC = 300.0
+AIMD_FAILURE_THRESHOLD = 3
+AIMD_RAISE_INTERVAL_SEC = 300.0
+AIMD_RAISE_MIN_SUCCESSES = 4
+
+_AIMD_LOCK = threading.Lock()
+#: Current dynamic limit; None until first recovered from the state file.
+_AIMD_LIMIT: "int | None" = None
+#: Injectable state-file override (tests). None -> <module dir>/results/.
+_AIMD_STATE_FILE: "Path | None" = None
+_AIMD_FAILURE_TS: "list[float]" = []
+_AIMD_SUCCESSES = 0
+#: Last up/down limit change; the raise probe keeps a full interval's
+#: distance from ANY change so a downshift gets provider breathing room.
+_AIMD_LAST_LIMIT_CHANGE_TS: "float | None" = None
+
+_log = logging.getLogger(__name__)
+
+
+def _aimd_state_path() -> Path:
+    if _AIMD_STATE_FILE is not None:
+        return Path(_AIMD_STATE_FILE)
+    # Same directory rate_limiter.py uses (its own local RESULTS_DIR) —
+    # computed locally to avoid any import-order coupling.
+    return Path(__file__).resolve().parent / "results" / "llm_aimd_state.json"
+
+
+def _aimd_save(limit: int) -> None:
+    """Persist the learned level (atomic write, best-effort)."""
+    try:
+        path = _aimd_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, json.dumps({"limit": int(limit)}).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(str(tmp), str(path))
+    except OSError as exc:
+        _log.warning("failed to persist LLM AIMD state: %s", exc)
+
+
+def _aimd_load() -> int:
+    """One-time lazy recovery of the persisted level (fail-open to static)."""
+    global _AIMD_LIMIT
+    if _AIMD_LIMIT is not None:
+        return _AIMD_LIMIT
+    limit = GLOBAL_LLM_CONCURRENCY
+    try:
+        path = _aimd_state_path()
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                recovered = data.get("limit")
+                if isinstance(recovered, int):
+                    limit = max(AIMD_MIN_LIMIT, min(AIMD_MAX_LIMIT, recovered))
+    except (OSError, ValueError, TypeError):
+        limit = GLOBAL_LLM_CONCURRENCY
+    _AIMD_LIMIT = limit
+    return limit
+
+
+def _aimd_apply(limit: int) -> None:
+    """Record, persist, and push a new limit onto the live semaphore."""
+    global _AIMD_LIMIT
+    limit = max(AIMD_MIN_LIMIT, min(AIMD_MAX_LIMIT, int(limit)))
+    previous = _AIMD_LIMIT if _AIMD_LIMIT is not None else limit
+    _AIMD_LIMIT = limit
+    _aimd_save(limit)
+    if _SHARED_LLM_SEMAPHORE is not None:
+        try:
+            _SHARED_LLM_SEMAPHORE.set_capacity(limit)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("failed to resize live LLM semaphore: %s", exc)
+    if limit != previous:
+        _log.info("LLM AIMD dynamic concurrency limit %d -> %d", previous, limit)
+        try:
+            import event_bus
+
+            event_bus.emit(
+                "pipeline.llm_aimd_limit_changed",
+                "info",
+                f"LLM 动态并发 {previous} -> {limit}",
+                previous_limit=previous, limit=limit,
+            )
+        except Exception:
+            pass
+
+
+def get_aimd_limit() -> int:
+    """Current dynamic LLM concurrency limit (recovered lazily, never None)."""
+    with _AIMD_LOCK:
+        return _aimd_load()
+
+
+def note_llm_rate_limit_failure(now: "float | None" = None) -> None:
+    """Report one frequency-class provider failure (GLM 1302 / bare 429).
+
+    >= AIMD_FAILURE_THRESHOLD inside the sliding window -> multiplicative
+    downshift (limit //= 2, floored at AIMD_MIN_LIMIT) and the window
+    restarts. Isolated failures never downshift. 1308 quota bodies must be
+    filtered by the caller — they indicate a usage cap, not congestion.
+    """
+    global _AIMD_FAILURE_TS, _AIMD_SUCCESSES, _AIMD_LAST_LIMIT_CHANGE_TS
+    ts = time.time() if now is None else float(now)
+    with _AIMD_LOCK:
+        limit = _aimd_load()
+        _AIMD_FAILURE_TS.append(ts)
+        _AIMD_FAILURE_TS = [t for t in _AIMD_FAILURE_TS if t >= ts - AIMD_WINDOW_SEC]
+        if len(_AIMD_FAILURE_TS) < AIMD_FAILURE_THRESHOLD:
+            return
+        _AIMD_FAILURE_TS = []
+        _AIMD_SUCCESSES = 0
+        _AIMD_LAST_LIMIT_CHANGE_TS = ts
+        _aimd_apply(max(AIMD_MIN_LIMIT, limit // 2))
+
+
+def note_llm_stream_success(now: "float | None" = None) -> None:
+    """Report one completed provider stream.
+
+    Additive +1 probe when the window is clean, >= AIMD_RAISE_MIN_SUCCESSES
+    successes accumulated, and >= AIMD_RAISE_INTERVAL_SEC since the last
+    limit change. There is no static ceiling on the probe: upshifts are
+    bounded here only by AIMD_MAX_LIMIT — the launch guards (live children
+    count / MemAvailable / cgroup headroom) bound the ACTUAL load.
+    """
+    global _AIMD_SUCCESSES, _AIMD_LAST_LIMIT_CHANGE_TS
+    ts = time.time() if now is None else float(now)
+    with _AIMD_LOCK:
+        limit = _aimd_load()
+        _AIMD_FAILURE_TS[:] = [t for t in _AIMD_FAILURE_TS if t >= ts - AIMD_WINDOW_SEC]
+        _AIMD_SUCCESSES += 1
+        since_change = (
+            ts - _AIMD_LAST_LIMIT_CHANGE_TS
+            if _AIMD_LAST_LIMIT_CHANGE_TS is not None
+            else float("inf")
+        )
+        if (
+            since_change < AIMD_RAISE_INTERVAL_SEC
+            or _AIMD_FAILURE_TS
+            or _AIMD_SUCCESSES < AIMD_RAISE_MIN_SUCCESSES
+        ):
+            return
+        _AIMD_SUCCESSES = 0
+        _AIMD_LAST_LIMIT_CHANGE_TS = ts
+        _aimd_apply(min(AIMD_MAX_LIMIT, limit + 1))
+
+
 def _get_shared_semaphore() -> CrossLoopSemaphore:
     global _SHARED_LLM_SEMAPHORE, _GLOBAL_LLM_SEMAPHORE
     if _SHARED_LLM_SEMAPHORE is None:
-        _SHARED_LLM_SEMAPHORE = CrossLoopSemaphore(GLOBAL_LLM_CONCURRENCY)
+        # Materialize at the AIMD-recovered dynamic limit (fail-open to the
+        # static env ceiling when no state file exists).
+        _SHARED_LLM_SEMAPHORE = CrossLoopSemaphore(get_aimd_limit())
         _GLOBAL_LLM_SEMAPHORE = _SHARED_LLM_SEMAPHORE
     return _SHARED_LLM_SEMAPHORE
 
@@ -210,12 +425,18 @@ def get_active_stream_count() -> int:
     run yet in this process), which is the correct "nothing in flight" value.
     """
     sem = _get_shared_semaphore()
-    return max(0, GLOBAL_LLM_CONCURRENCY - sem._value) if sem else 0
+    return max(0, get_capacity() - sem._value) if sem else 0
 
 
 def get_capacity() -> int:
-    """The configured max concurrent LLM streams."""
-    return GLOBAL_LLM_CONCURRENCY
+    """The current max concurrent LLM streams.
+
+    Dynamic since 2026-10-07: the AIMD controller's live limit (persisted
+    across restarts, fail-open to the static env ceiling). The static
+    ``GLOBAL_LLM_CONCURRENCY`` remains the bootstrap default and the
+    saturator's pipeline-reserve reference.
+    """
+    return get_aimd_limit()
 
 
 def llm_semaphore_has_capacity(n: int = 1) -> bool:

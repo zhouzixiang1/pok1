@@ -841,6 +841,63 @@ def _mem_available_mb() -> int | None:
     return None
 
 
+def _cgroup_memory_headroom_mb(
+    cgroup_file: str = "/proc/self/cgroup",
+    cgroup_root: str = "/sys/fs/cgroup",
+) -> "int | None":
+    """Headroom (MB) inside this service's cgroup v2 ``memory.high``.
+
+    Parses the unified-hierarchy line (``0::<path>``) and reads
+    ``memory.high``/``memory.current`` under the root. Returns None — gate
+    inactive, fail-open — when the cgroup has no numeric limit
+    (``memory.high = max``), is not v2, or any read fails; the MemAvailable
+    gate remains the fallback. Host MemAvailable cannot see pressure inside
+    the service cgroup (deploy fact: pok-evolution.service memory.high =
+    2400 MiB), which is exactly where AIMD upshifts add claude children.
+    """
+    try:
+        raw = Path(cgroup_file).read_text(encoding="utf-8")
+        rel = None
+        for line in raw.splitlines():
+            parts = line.split(":", 2)
+            if len(parts) == 3 and parts[0] == "0" and parts[2].strip():
+                rel = parts[2].strip().strip("/")
+                break
+        if not rel:
+            return None
+        base = Path(cgroup_root) / rel
+        high_raw = (base / "memory.high").read_text(encoding="utf-8").strip()
+        if not high_raw.isdigit():
+            return None  # "max" or unrecognized -> no cgroup limit
+        high_bytes = int(high_raw)
+        cur_bytes = int((base / "memory.current").read_text(encoding="utf-8").strip())
+        return max(0, (high_bytes - cur_bytes) // (1024 * 1024))
+    except (OSError, ValueError):
+        return None
+
+
+def _cgroup_headroom_mb() -> int:
+    """Minimum cgroup headroom (MB) required to launch a new packet."""
+    try:
+        return max(0, int(os.environ.get("POK_LLM_AIMD_CGROUP_HEADROOM_MB", "300")))
+    except (TypeError, ValueError):
+        return 300
+
+
+def saturator_soft_cap(effective_capacity: int, static_capacity: int) -> int:
+    """Saturator in-flight ceiling as a pure function of the dynamic capacity.
+
+    ``max(1, min(env inflight, eff)) + max(0, eff - static)``: below the
+    static cap a global AIMD downshift propagates into background fill; above
+    it every extra dynamic permit also widens the saturator ceiling (the
+    pipeline reserve of static - env permits stays reserved). The saturator's
+    historical env ceiling stops being a hard wall for upshift probes.
+    """
+    env_cap = max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4")))
+    eff = int(effective_capacity)
+    return max(1, min(env_cap, eff)) + max(0, eff - max(1, int(static_capacity)))
+
+
 def _preempt_after_sec() -> float:
     try:
         return max(15.0, float(os.environ.get("POK_LLM_SATURATOR_PREEMPT_AFTER_SEC", "15")))
@@ -958,17 +1015,27 @@ def saturator_may_launch(
         # keep burning provider budget on background packets.
         return False, "pipeline_not_alive"
     try:
-        from llm_concurrency import GLOBAL_LLM_CONCURRENCY, llm_semaphore_has_capacity
+        from llm_concurrency import get_capacity, llm_semaphore_has_capacity
     except Exception:
         return True, "ok"
     if not llm_semaphore_has_capacity(1):
         return False, "no_permit"
-    if _claude_child_count() >= int(GLOBAL_LLM_CONCURRENCY):
+    # RAM-occupancy guard follows the DYNAMIC cap: with AIMD probing past the
+    # static value, a gate pinned to GLOBAL_LLM_CONCURRENCY would refuse every
+    # launch once the limit rises above it. Live /proc read per launch.
+    if _claude_child_count() >= get_capacity():
         return False, "claude_children"
     avail = _mem_available_mb()
     min_free = _min_free_mb()
     if avail is not None and min_free and avail < min_free:
         return False, "low_memory"
+    # Service-cgroup guard (2026-10-07): host MemAvailable cannot see pressure
+    # inside pok-evolution.service's own memory.high; block NEW packets only
+    # (in-flight sessions are never killed here, same as low_memory semantics).
+    cgroup_headroom = _cgroup_memory_headroom_mb()
+    cgroup_min = _cgroup_headroom_mb()
+    if cgroup_headroom is not None and cgroup_min and cgroup_headroom < cgroup_min:
+        return False, "low_memory_cgroup"
     return True, "ok"
 
 
@@ -1155,11 +1222,13 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                     Path(RESULTS_DIR) / "saturator"
                 )
             try:
-                from llm_concurrency import GLOBAL_LLM_CONCURRENCY
+                from llm_concurrency import GLOBAL_LLM_CONCURRENCY, get_capacity
 
-                soft_cap = min(
-                    max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4"))),
-                    int(GLOBAL_LLM_CONCURRENCY),
+                # Follow the AIMD dynamic capacity (2026-10-07): a downshift
+                # propagates into background fill, an upshift probe past the
+                # static cap widens the saturator ceiling by the surplus.
+                soft_cap = saturator_soft_cap(
+                    get_capacity(), int(GLOBAL_LLM_CONCURRENCY)
                 )
             except Exception:
                 soft_cap = max(1, int(os.environ.get("POK_LLM_SATURATOR_MAX_INFLIGHT", "4")))
