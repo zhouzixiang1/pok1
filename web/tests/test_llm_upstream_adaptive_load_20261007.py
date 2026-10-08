@@ -23,6 +23,7 @@ Three layers, mirroring the implementation:
 
 import asyncio
 import json
+import time
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKError
@@ -45,6 +46,7 @@ def _fresh_aimd_state(monkeypatch, tmp_path):
     monkeypatch.setattr(llm_concurrency, "_AIMD_FAILURE_TS", [])
     monkeypatch.setattr(llm_concurrency, "_AIMD_SUCCESSES", 0)
     monkeypatch.setattr(llm_concurrency, "_AIMD_LAST_LIMIT_CHANGE_TS", None)
+    monkeypatch.setattr(llm_concurrency, "_AIMD_APPLY_SEQ", 0)
     # The wrapped-dispatch tests exercise the real api_concurrency backoff
     # level; reset it so the process-level singleton never leaks across files.
     import api_concurrency
@@ -151,17 +153,26 @@ def test_isolated_failures_do_not_downshift():
     assert llm_concurrency.get_capacity() == 12
 
 
-def test_three_failures_in_window_halve_limit_and_clear_window():
+def test_three_failures_in_window_soften_limit_and_clear_window():
+    """Clustered failures soften the limit (F1, 2026-10-08) and clear the window.
+
+    Contract update F1: the downshift is ``limit - max(2, limit // 4)``
+    (>= -25% or -2, whichever is LARGER) instead of the old halving — at the
+    live wall (8-9) halving crashed the limit to 4 on every storm and the
+    sawtooth cost -10.7% overnight throughput. High tiers still unload
+    substantially (12 -> 9); low tiers step shallowly (-2).
+    """
     for ts in (100.0, 105.0, 110.0):
         llm_concurrency.note_llm_rate_limit_failure(now=ts)
-    assert llm_concurrency.get_capacity() == 6
+    assert llm_concurrency.get_capacity() == 9
     # The burst cleared the window: two more isolated failures do nothing...
     llm_concurrency.note_llm_rate_limit_failure(now=130.0)
     llm_concurrency.note_llm_rate_limit_failure(now=135.0)
-    assert llm_concurrency.get_capacity() == 6
-    # ...a THIRD clustered failure halves again.
+    assert llm_concurrency.get_capacity() == 9
+    # ...a THIRD clustered failure softens again (9 // 4 = 2 -> -2, the
+    # shallow low-tier step).
     llm_concurrency.note_llm_rate_limit_failure(now=140.0)
-    assert llm_concurrency.get_capacity() == 3
+    assert llm_concurrency.get_capacity() == 7
 
 
 def test_failures_expire_from_the_sliding_window():
@@ -173,7 +184,9 @@ def test_failures_expire_from_the_sliding_window():
 
 
 def test_downshift_floors_at_two():
-    for round_start in (100.0, 150.0, 200.0, 250.0):
+    # F1 softened step: 12 -> 9 (-3) -> 7 -> 5 -> 3 -> 2, floored at
+    # AIMD_MIN_LIMIT; the floor itself is contract-unchanged.
+    for round_start in (100.0, 150.0, 200.0, 250.0, 300.0):
         for ts in (round_start, round_start + 5, round_start + 10):
             llm_concurrency.note_llm_rate_limit_failure(now=ts)
     assert llm_concurrency.get_capacity() == 2
@@ -181,34 +194,39 @@ def test_downshift_floors_at_two():
 
 def test_success_raises_additively_after_clean_window():
     for ts in (100.0, 105.0, 110.0):
-        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 6
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 9 (F1)
     # 4 successes only 10s after the downshift: not yet — give the provider
     # breathing room for a full raise interval.
     for _ in range(4):
         llm_concurrency.note_llm_stream_success(now=120.0)
-    assert llm_concurrency.get_capacity() == 6
+    assert llm_concurrency.get_capacity() == 9
     # Past the interval with a clean window: the next success probes +1.
     llm_concurrency.note_llm_stream_success(now=500.0)
-    assert llm_concurrency.get_capacity() == 7
+    assert llm_concurrency.get_capacity() == 10
     # A further raise needs fresh successes AND another full interval.
     llm_concurrency.note_llm_stream_success(now=501.0)
-    assert llm_concurrency.get_capacity() == 7
+    assert llm_concurrency.get_capacity() == 10
 
 
 def test_raise_blocked_by_failure_still_inside_window():
     for ts in (100.0, 105.0, 110.0):
-        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 6
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 9 (F1)
     llm_concurrency.note_llm_rate_limit_failure(now=480.0)  # isolated
     for _ in range(6):
         llm_concurrency.note_llm_stream_success(now=501.0)
-    assert llm_concurrency.get_capacity() == 6  # window not clean
+    assert llm_concurrency.get_capacity() == 9  # window not clean
     # The failure ages out of the window; traffic then raises again.
     llm_concurrency.note_llm_stream_success(now=900.0)
-    assert llm_concurrency.get_capacity() == 7
+    assert llm_concurrency.get_capacity() == 10
 
 
 def test_upshift_probes_past_static_cap_and_clamps_at_32():
-    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 31}))
+    # F3: the restarted state file now carries last_change_ts — a missing
+    # clock would conservatively initialize to the load moment and gate the
+    # synthetic-time probe below for one full interval.
+    llm_concurrency._AIMD_STATE_FILE.write_text(
+        json.dumps({"limit": 31, "last_change_ts": 500.0})
+    )
     llm_concurrency._AIMD_LIMIT = None  # simulate a restart
     assert llm_concurrency.get_capacity() == 31  # recovered, past static 12
     # A clean window + traffic keeps probing upward, but never past 32.
@@ -222,9 +240,10 @@ def test_upshift_probes_past_static_cap_and_clamps_at_32():
 
 def test_restart_recovers_persisted_level():
     for ts in (100.0, 105.0, 110.0):
-        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 6
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 9 (F1)
     persisted = json.loads(llm_concurrency._aimd_state_path().read_text())
-    assert persisted["limit"] == 6
+    assert persisted["limit"] == 9
+    assert persisted["last_change_ts"] == 110.0  # F3: the clock persists too
     # Simulate a process restart: all in-memory state gone, file intact.
     llm_concurrency._AIMD_LIMIT = None
     llm_concurrency._AIMD_FAILURE_TS = []
@@ -232,10 +251,10 @@ def test_restart_recovers_persisted_level():
     llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS = None
     llm_concurrency._SHARED_LLM_SEMAPHORE = None
     llm_concurrency._GLOBAL_LLM_SEMAPHORE = None
-    assert llm_concurrency.get_capacity() == 6
+    assert llm_concurrency.get_capacity() == 9
     # The lazily-created semaphore materializes at the recovered level.
     sem = llm_concurrency.get_global_llm_semaphore()
-    assert sem._value == 6
+    assert sem._value == 9
     assert llm_concurrency.get_active_stream_count() == 0
 
 
@@ -256,10 +275,10 @@ def test_capacity_change_propagates_to_live_semaphore():
     sem = llm_concurrency.get_global_llm_semaphore()  # materialized at 12
     assert sem._value == 12
     for ts in (100.0, 105.0, 110.0):
-        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 6
-    assert sem._capacity == 6
-    assert sem._value == 6
-    assert llm_concurrency.get_capacity() == 6
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 9 (F1)
+    assert sem._capacity == 9
+    assert sem._value == 9
+    assert llm_concurrency.get_capacity() == 9
     assert llm_concurrency.get_active_stream_count() == 0
 
 
@@ -279,17 +298,24 @@ def _fake_gen():
     return _gen()
 
 
-def _drive_stream(monkeypatch, process_stream):
-    """Drive the real retry helper with a mocked provider stream."""
+def _drive_stream(monkeypatch, process_stream, metrics_sink=None):
+    """Drive the real retry helper with a mocked provider stream.
+
+    ``metrics_sink`` (optional) replaces the default no-op capture of
+    ``record_llm_call_metrics`` so a test can assert on the recorded kwargs.
+    """
     import llm_query
     import llm_call_metrics
 
     monkeypatch.setattr(llm_query, "claude_query", lambda *a, **k: _fake_gen())
     monkeypatch.setattr(llm_query, "_process_stream", process_stream)
     monkeypatch.setattr(llm_query, "_emit_llm_event", lambda *a, **k: None)
-    monkeypatch.setattr(
-        llm_call_metrics, "record_llm_call_metrics", lambda **_kw: None
-    )
+    if metrics_sink is not None:
+        monkeypatch.setattr(llm_call_metrics, "record_llm_call_metrics", metrics_sink)
+    else:
+        monkeypatch.setattr(
+            llm_call_metrics, "record_llm_call_metrics", lambda **_kw: None
+        )
 
     async def run():
         return await llm_query._run_stream_with_signature_retry(
@@ -489,18 +515,18 @@ def _run_wrapped_dispatch(llm_query, monkeypatch, body, tmp_path):
         )
 
 
-def test_three_wrapped_1302_dispatches_halve_the_limit(
+def test_three_wrapped_1302_dispatches_soften_the_limit(
     monkeypatch, tmp_path, run_query_env
 ):
     """The production-shaped failure (Chinese 1302 body -> classify ->
     LLMAvailabilityBlocked) must drive the real AIMD window: three clustered
-    dispatch failures halve the live limit and persist it."""
+    dispatch failures soften the live limit (F1: 12 -> 9) and persist it."""
     llm_query = run_query_env
     for _ in range(3):
         _run_wrapped_dispatch(llm_query, monkeypatch, _GLM_1302_BODY, tmp_path)
-    assert llm_concurrency.get_capacity() == 6  # 12 -> 6, multiplicative
+    assert llm_concurrency.get_capacity() == 9  # 12 - max(2, 12 // 4)
     persisted = json.loads(llm_concurrency._aimd_state_path().read_text())
-    assert persisted["limit"] == 6
+    assert persisted["limit"] == 9
 
 
 def test_wrapped_1302_counts_exactly_once_per_dispatch(
@@ -771,3 +797,224 @@ def test_cautious_pace_returns_at_static_baseline():
     for _ in range(4):
         llm_concurrency.note_llm_stream_success(now=1080.0)  # only 80s later
     assert llm_concurrency.get_capacity() == 12
+
+
+# ---------------------------------------------------------------------------
+# 5. Red-team audit fixes F1-F6 (2026-10-08)
+# ---------------------------------------------------------------------------
+
+def test_softened_downshift_unloads_hard_at_high_tier():
+    """F1: high tiers still unload SUBSTANTIALLY (-25%): a limit probing at
+    the 32 ceiling drops 8 permits in one storm, not a token -2."""
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 32}))
+    llm_concurrency._AIMD_LIMIT = None
+    for ts in (100.0, 105.0, 110.0):
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)
+    assert llm_concurrency.get_capacity() == 24  # 32 - max(2, 32 // 4)
+
+
+def test_softened_downshift_low_tier_step_is_minus_two():
+    """F1: at the live wall (8-9) the old halving crashed to 4 on every storm;
+    the softened step is -2 there (8 -> 6), keeping the average tier high."""
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 8}))
+    llm_concurrency._AIMD_LIMIT = None
+    for ts in (100.0, 105.0, 110.0):
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)
+    assert llm_concurrency.get_capacity() == 6  # 8 - max(2, 8 // 4) = 8 - 2
+
+
+def test_apply_persistence_runs_outside_the_aimd_lock(monkeypatch):
+    """F2: the state-file fsync (and the events.jsonl append) must NOT run
+    under ``_AIMD_LOCK`` — the locked save blocked ``get_capacity()`` readers
+    for the fsync duration (measured 503-760ms in production)."""
+    import threading
+
+    real_save = llm_concurrency._aimd_save
+    in_save = threading.Event()
+
+    def slow_save(*args, **kwargs):
+        in_save.set()
+        time.sleep(0.3)
+        real_save(*args, **kwargs)
+
+    monkeypatch.setattr(llm_concurrency, "_aimd_save", slow_save)
+
+    def trigger_storm():
+        for i in range(3):
+            llm_concurrency.note_llm_rate_limit_failure(now=100.0 + i)
+
+    worker = threading.Thread(target=trigger_storm)
+    worker.start()
+    try:
+        assert in_save.wait(2.0), "deferred save never started"
+        # While the save is running, a capacity reader must NOT queue behind
+        # it (pre-fix: the save held _AIMD_LOCK, so this read blocked ~0.3s).
+        t0 = time.monotonic()
+        capacity = llm_concurrency.get_capacity()
+        elapsed = time.monotonic() - t0
+        assert capacity == 9  # memory state flipped in-lock already
+        assert elapsed < 0.15, f"get_capacity blocked {elapsed:.3f}s behind the save"
+    finally:
+        worker.join(5.0)
+
+
+def test_stale_apply_persistence_never_overwrites_newer_limit():
+    """F2 anti-reordering: a delayed out-of-lock save from an OLDER apply must
+    not overwrite the newer limit/clock (monotonic apply seq gate)."""
+    first = llm_concurrency._aimd_apply_locked(9, last_change_ts=100.0)
+    second = llm_concurrency._aimd_apply_locked(7, last_change_ts=150.0)
+    # The NEWER apply's persistence completes first...
+    llm_concurrency._aimd_finish_apply(*second)
+    data = json.loads(llm_concurrency._aimd_state_path().read_text())
+    assert data == {"limit": 7, "last_change_ts": 150.0}
+    # ...then the stale first apply arrives late: skipped, file unchanged.
+    llm_concurrency._aimd_finish_apply(*first)
+    data = json.loads(llm_concurrency._aimd_state_path().read_text())
+    assert data == {"limit": 7, "last_change_ts": 150.0}
+
+
+def test_restart_recovers_last_change_ts_clock():
+    """F3: the cautious/fast raise-interval clock persists with the limit, so
+    a restart cannot bypass the cooldown once via since_change=inf."""
+    llm_concurrency._AIMD_STATE_FILE.write_text(
+        json.dumps({"limit": 3, "last_change_ts": 1000.0})
+    )
+    llm_concurrency._AIMD_LIMIT = None
+    assert llm_concurrency.get_capacity() == 3
+    assert llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS == 1000.0
+
+
+def test_recovered_clock_gates_the_first_probe_after_restart():
+    """F3: without clock recovery, since_change=inf let the first post-restart
+    successes probe immediately — the recovered clock must actually gate."""
+    llm_concurrency._AIMD_STATE_FILE.write_text(
+        json.dumps({"limit": 3, "last_change_ts": 1000.0})
+    )
+    llm_concurrency._AIMD_LIMIT = None
+    assert llm_concurrency.get_capacity() == 3
+    # 4 clean successes only 80s after the RECOVERED clock: fast tier is 90s,
+    # so no probe yet (pre-fix: inf bypassed this gate -> limit 4).
+    for _ in range(4):
+        llm_concurrency.note_llm_stream_success(now=1080.0)
+    assert llm_concurrency.get_capacity() == 3
+    # Past the fast interval the same traffic probes.
+    llm_concurrency.note_llm_stream_success(now=1091.0)
+    assert llm_concurrency.get_capacity() == 4
+
+
+def test_missing_clock_conservatively_initializes_to_now():
+    """F3: a legacy state file without last_change_ts initializes the clock to
+    the load moment — a missing clock must not grant an immediate probe."""
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 3}))
+    llm_concurrency._AIMD_LIMIT = None
+    assert llm_concurrency.get_capacity() == 3
+    clock = llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS
+    assert clock is not None and abs(clock - time.time()) < 5.0
+    for _ in range(4):
+        llm_concurrency.note_llm_stream_success(now=clock + 60.0)  # < 90s
+    assert llm_concurrency.get_capacity() == 3
+    llm_concurrency.note_llm_stream_success(now=clock + 91.0)  # 5th success
+    assert llm_concurrency.get_capacity() == 4
+
+
+def test_active_stream_count_reads_real_holders_during_drain():
+    """F4: drain-period observation. A downshift mid-flight leaves more
+    holders than the new capacity; the old gauge max(0, capacity - _value)
+    read min(capacity, holders) — 12 in-flight draining toward 9 showed "9",
+    and a 32-in-flight storm draining to the floor-2 showed "2". The real
+    holders read observes the true occupancy; the drain-complete predicate
+    (active == 0) is unchanged because capacity stays >= AIMD_MIN_LIMIT > 0.
+    """
+    sem = llm_concurrency.get_global_llm_semaphore()  # materialized at 12
+
+    async def scenario():
+        for _ in range(12):
+            await sem.acquire()
+        for ts in (100.0, 101.0, 102.0):
+            llm_concurrency.note_llm_rate_limit_failure(now=ts)  # 12 -> 9
+        assert llm_concurrency.get_active_stream_count() == 12  # real holders
+        for _ in range(12):
+            sem.release()
+        # Drain-complete equivalence: active == 0 exactly when holders == 0.
+        assert llm_concurrency.get_active_stream_count() == 0
+
+    asyncio.run(scenario())
+
+
+def test_downshift_clears_window_and_code_states_it():
+    """F5: the downshift CLEARS the failure window (deliberate design — kept).
+    The fc9edcc8 commit message claimed "the 300s failure window still blocks
+    all probes right after a storm burst", which is false: the window that
+    TRIGGERED the downshift is emptied by it, so the storm's own residue never
+    blocks later probes; post-storm pacing comes only from the last-change
+    cooldown plus freshly accumulated successes. The in-code contract must
+    state the clearing explicitly so the comment never re-asserts the myth."""
+    import inspect
+
+    source = inspect.getsource(llm_concurrency.note_llm_rate_limit_failure)
+    assert "the window CLEARS" in source
+    # Behaviour snapshot of the deliberate clearing:
+    for ts in (100.0, 105.0, 110.0):
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 9
+    assert llm_concurrency._AIMD_FAILURE_TS == []
+    # ...and the cleared window no longer gates the post-storm probe:
+    # 4 successes past the fast interval (9 < static 12) raise immediately.
+    for _ in range(4):
+        llm_concurrency.note_llm_stream_success(now=201.0)
+    assert llm_concurrency.get_capacity() == 10
+
+
+def test_launch_refusal_logging_bounded_by_reason_change(monkeypatch):
+    """F6a: a persistent launch gate (soft_cap / no_permit / low_memory ...)
+    used to refuse in total silence — the inflight curve went flat with no
+    hint of WHY. One bounded log per reason CHANGE; the same reason repeats
+    at most once per 60s."""
+    calls = []
+    monkeypatch.setattr(llm_saturator, "_last_refusal_reason", None)
+    monkeypatch.setattr(llm_saturator, "_last_refusal_log_ts", 0.0)
+    monkeypatch.setattr(
+        llm_saturator.log, "info", lambda msg, *a: calls.append(msg % a if a else msg)
+    )
+
+    llm_saturator._note_saturator_launch_refusal("soft_cap", now=100.0)
+    llm_saturator._note_saturator_launch_refusal("soft_cap", now=110.0)  # <60s: skip
+    assert len(calls) == 1
+    llm_saturator._note_saturator_launch_refusal("no_permit", now=115.0)  # change
+    assert len(calls) == 2
+    llm_saturator._note_saturator_launch_refusal("no_permit", now=174.0)  # 59s: skip
+    assert len(calls) == 2
+    llm_saturator._note_saturator_launch_refusal("no_permit", now=175.0)  # 60s: ok
+    assert len(calls) == 3
+    assert "soft_cap" in calls[0]
+    assert "no_permit" in calls[1]
+
+
+def test_saturator_loop_consumes_refusal_logger():
+    """F6a wiring: the refill loop's ``not ok`` branch must feed the bounded
+    refusal logger (not just the pipeline-park announcer)."""
+    import inspect
+
+    source = inspect.getsource(llm_saturator.run_llm_saturator)
+    assert "_note_saturator_launch_refusal(reason)" in source
+
+
+def test_call_metrics_record_carries_dynamic_capacity(monkeypatch):
+    """F6b: llm_call_metrics.global_concurrency was permanently None — the
+    metrics write point in llm_query_retry never passed a value. It must
+    carry the LIVE dynamic capacity, tracking AIMD moves."""
+    captured = {}
+
+    def sink(**kwargs):
+        captured.update(kwargs)
+
+    async def ok_stream(query_gen, log_file_path, ui, role_name):
+        return (["ok"], 0.0, {}, {})
+
+    _drive_stream(monkeypatch, ok_stream, metrics_sink=sink)
+    assert captured["global_concurrency"] == 12  # the fresh static ceiling
+    # A downshift moves the live capacity; the NEXT record must follow it.
+    for ts in (100.0, 105.0, 110.0):
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)  # -> 9
+    captured.clear()
+    _drive_stream(monkeypatch, ok_stream, metrics_sink=sink)
+    assert captured["global_concurrency"] == 9

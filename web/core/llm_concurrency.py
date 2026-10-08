@@ -102,6 +102,18 @@ class CrossLoopSemaphore:
         with self._mutex:
             return max(0, self._capacity - self._holders)
 
+    @property
+    def holders(self) -> int:
+        """Real occupancy: permits currently held, even above capacity.
+
+        During the drain after a shrink, ``_holders`` legitimately exceeds
+        ``_capacity`` until the excess streams finish; the derived
+        ``_value`` reads 0 there, so only this property observes the true
+        in-flight count (F4, 2026-10-08).
+        """
+        with self._mutex:
+            return self._holders
+
     def locked(self) -> bool:
         with self._mutex:
             return self._capacity - self._holders <= 0
@@ -203,7 +215,10 @@ class CrossLoopSemaphore:
 # The static env ceiling (POK_GLOBAL_LLM_CONCURRENCY, 12 since commit
 # 3e6068f7) is a floor to probe PAST, not the real limit: GLM's true 1302
 # frequency wall floats across the day. The controller raises the live
-# semaphore capacity additively while streams succeed and halves it when
+# semaphore capacity additively while streams succeed and subtracts
+# ``max(2, limit // 4)`` (>= -25% or -2, whichever unloads more — F1,
+# 2026-10-08; the former halving crashed the live wall 8-9 to 4 on every
+# storm and the sawtooth cost -10.7% overnight throughput) when
 # frequency-class failures (GLM 1302 / bare 429) cluster — >=
 # AIMD_FAILURE_THRESHOLD inside the AIMD_WINDOW_SEC sliding window; isolated
 # failures are tolerated. GLM 1308 quota exhaustion is a five-hour full stop
@@ -218,7 +233,7 @@ AIMD_MAX_LIMIT = 32
 AIMD_WINDOW_SEC = 300.0
 AIMD_FAILURE_THRESHOLD = 3
 # Cautious probe pace above the static baseline (where 1302 storms live) and
-# a fast recovery pace below it: a storm's multiplicative decrease lands the
+# a fast recovery pace below it: a storm's decrease lands the
 # limit far under the static value, and the slow probe pace made the dip
 # last ~50 minutes against a provider that historically sustains the static
 # level. Operator direction 2026-10-07: climb back faster.
@@ -235,7 +250,16 @@ _AIMD_FAILURE_TS: "list[float]" = []
 _AIMD_SUCCESSES = 0
 #: Last up/down limit change; the raise probe keeps a full interval's
 #: distance from ANY change so a downshift gets provider breathing room.
+#: Persisted with the limit since 2026-10-08 (F3) so a restart cannot
+#: bypass the cooldown once via since_change=inf.
 _AIMD_LAST_LIMIT_CHANGE_TS: "float | None" = None
+#: Monotonic apply sequence (F2, 2026-10-08): assigned in-lock, checked by
+#: the out-of-lock persistence so a delayed older save can never overwrite
+#: a newer limit/clock.
+_AIMD_APPLY_SEQ = 0
+#: Serializes the out-of-lock atomic state-file replaces (F2): two threads
+#: must never interleave their tmp/replace pairs.
+_AIMD_PERSIST_LOCK = threading.Lock()
 
 _log = logging.getLogger(__name__)
 
@@ -248,15 +272,18 @@ def _aimd_state_path() -> Path:
     return Path(__file__).resolve().parent / "results" / "llm_aimd_state.json"
 
 
-def _aimd_save(limit: int) -> None:
-    """Persist the learned level (atomic write, best-effort)."""
+def _aimd_save(limit: int, last_change_ts: "float | None" = None) -> None:
+    """Persist the learned level and its change clock (atomic, best-effort)."""
     try:
         path = _aimd_state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
+        payload = {"limit": int(limit)}
+        if last_change_ts is not None:
+            payload["last_change_ts"] = float(last_change_ts)
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
-            os.write(fd, json.dumps({"limit": int(limit)}).encode())
+            os.write(fd, json.dumps(payload).encode())
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -266,11 +293,19 @@ def _aimd_save(limit: int) -> None:
 
 
 def _aimd_load() -> int:
-    """One-time lazy recovery of the persisted level (fail-open to static)."""
-    global _AIMD_LIMIT
+    """One-time lazy recovery of the persisted level (fail-open to static).
+
+    F3 (2026-10-08): the persisted ``last_change_ts`` is recovered with the
+    limit so the raise-interval clock survives restarts. A missing clock
+    (legacy state file) conservatively initializes to NOW — the process then
+    waits one full interval before the first upshift probe instead of
+    bypassing the cooldown once via since_change=inf.
+    """
+    global _AIMD_LIMIT, _AIMD_LAST_LIMIT_CHANGE_TS
     if _AIMD_LIMIT is not None:
         return _AIMD_LIMIT
     limit = GLOBAL_LLM_CONCURRENCY
+    recovered_change_ts: "float | None" = None
     try:
         path = _aimd_state_path()
         if path.exists():
@@ -279,24 +314,62 @@ def _aimd_load() -> int:
                 recovered = data.get("limit")
                 if isinstance(recovered, int):
                     limit = max(AIMD_MIN_LIMIT, min(AIMD_MAX_LIMIT, recovered))
+                ts = data.get("last_change_ts")
+                if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+                    recovered_change_ts = float(ts)
     except (OSError, ValueError, TypeError):
         limit = GLOBAL_LLM_CONCURRENCY
+    if _AIMD_LAST_LIMIT_CHANGE_TS is None:
+        _AIMD_LAST_LIMIT_CHANGE_TS = (
+            time.time() if recovered_change_ts is None else recovered_change_ts
+        )
     _AIMD_LIMIT = limit
     return limit
 
 
-def _aimd_apply(limit: int) -> None:
-    """Record, persist, and push a new limit onto the live semaphore."""
-    global _AIMD_LIMIT
+def _aimd_apply_locked(
+    limit: int, last_change_ts: "float | None" = None
+) -> "tuple[int, int, int, float | None]":
+    """In-lock half of an apply (caller holds ``_AIMD_LOCK``): pure memory.
+
+    Flips the module limit, stamps the monotonic apply sequence, and resizes
+    the live semaphore. Returns the deferred out-of-lock work as
+    ``(seq, previous, limit, last_change_ts)`` for :func:`_aimd_finish_apply`.
+    """
+    global _AIMD_LIMIT, _AIMD_APPLY_SEQ
     limit = max(AIMD_MIN_LIMIT, min(AIMD_MAX_LIMIT, int(limit)))
     previous = _AIMD_LIMIT if _AIMD_LIMIT is not None else limit
     _AIMD_LIMIT = limit
-    _aimd_save(limit)
+    _AIMD_APPLY_SEQ += 1
+    seq = _AIMD_APPLY_SEQ
     if _SHARED_LLM_SEMAPHORE is not None:
         try:
             _SHARED_LLM_SEMAPHORE.set_capacity(limit)
         except Exception as exc:  # pragma: no cover - defensive
             _log.warning("failed to resize live LLM semaphore: %s", exc)
+    return seq, previous, limit, last_change_ts
+
+
+def _aimd_finish_apply(
+    seq: int, previous: int, limit: int, last_change_ts: "float | None"
+) -> None:
+    """Out-of-lock half of an apply: the state-file fsync + events.jsonl append.
+
+    F2 (2026-10-08): these used to run under ``_AIMD_LOCK`` and blocked
+    ``get_capacity()`` readers for the fsync + append duration (measured
+    503-760ms in production). Two guards keep the deferred write correct:
+      * the monotonic apply seq — the save/emit only lands while this apply
+        is still the latest one, so an older delayed save can never
+        overwrite a newer limit/clock (out-of-order overwrite);
+      * ``_AIMD_PERSIST_LOCK`` serializes the atomic-replace dances so two
+        threads never interleave their tmp/replace pairs.
+    """
+    with _AIMD_PERSIST_LOCK:
+        with _AIMD_LOCK:
+            stale = seq != _AIMD_APPLY_SEQ
+        if stale:
+            return
+        _aimd_save(limit, last_change_ts)
     if limit != previous:
         _log.info("LLM AIMD dynamic concurrency limit %d -> %d", previous, limit)
         try:
@@ -321,13 +394,26 @@ def get_aimd_limit() -> int:
 def note_llm_rate_limit_failure(now: "float | None" = None) -> None:
     """Report one frequency-class provider failure (GLM 1302 / bare 429).
 
-    >= AIMD_FAILURE_THRESHOLD inside the sliding window -> multiplicative
-    downshift (limit //= 2, floored at AIMD_MIN_LIMIT) and the window
-    restarts. Isolated failures never downshift. 1308 quota bodies must be
-    filtered by the caller — they indicate a usage cap, not congestion.
+    >= AIMD_FAILURE_THRESHOLD inside the sliding window triggers a downshift
+    and the window CLEARS — that clearing is deliberate design (kept
+    2026-10-08, F5): the storm that TRIGGERED the downshift leaves no
+    residue blocking later probes, so post-storm pacing comes from the
+    ``_AIMD_LAST_LIMIT_CHANGE_TS`` cooldown plus freshly accumulated
+    successes, NOT from the old window. (The fc9edcc8 commit message's claim
+    that "the 300s failure window still blocks all probes right after a
+    storm burst" was inaccurate.) Isolated failures never downshift. 1308
+    quota bodies must be filtered by the caller — they indicate a usage cap,
+    not congestion.
+
+    Downshift step (F1, 2026-10-08): ``limit - max(2, limit // 4)`` — unload
+    at least 25% or 2 permits, whichever is MORE, floored at AIMD_MIN_LIMIT.
+    The former ``limit // 2`` halving crashed the live wall (8-9) to 4 on
+    every storm; the softened step keeps low tiers shallow (-2, fast to
+    climb back) while high tiers still unload substantially (32 -> 24).
     """
     global _AIMD_FAILURE_TS, _AIMD_SUCCESSES, _AIMD_LAST_LIMIT_CHANGE_TS
     ts = time.time() if now is None else float(now)
+    deferred = None
     with _AIMD_LOCK:
         limit = _aimd_load()
         _AIMD_FAILURE_TS.append(ts)
@@ -337,7 +423,11 @@ def note_llm_rate_limit_failure(now: "float | None" = None) -> None:
         _AIMD_FAILURE_TS = []
         _AIMD_SUCCESSES = 0
         _AIMD_LAST_LIMIT_CHANGE_TS = ts
-        _aimd_apply(max(AIMD_MIN_LIMIT, limit // 2))
+        deferred = _aimd_apply_locked(
+            max(AIMD_MIN_LIMIT, limit - max(2, limit // 4)), last_change_ts=ts
+        )
+    if deferred is not None:
+        _aimd_finish_apply(*deferred)
 
 
 def note_llm_stream_success(now: "float | None" = None) -> None:
@@ -347,13 +437,17 @@ def note_llm_stream_success(now: "float | None" = None) -> None:
     successes accumulated, and long enough since the last limit change:
     AIMD_FAST_RAISE_INTERVAL_SEC below the static baseline (storm recovery —
     get back to the sustained level quickly) and AIMD_RAISE_INTERVAL_SEC at or
-    above it (cautious exploration where 1302 storms live). There is no
-    static ceiling on the probe: upshifts are bounded here only by
-    AIMD_MAX_LIMIT — the launch guards (live children count / MemAvailable /
-    cgroup headroom) bound the ACTUAL load.
+    above it (cautious exploration where 1302 storms live). "Clean window"
+    means no NEW failures since the last downshift CLEARED it — the window
+    CLEARS on the downshift it triggered (see note_llm_rate_limit_failure),
+    so the triggering storm's own residue never blocks the recovery probes.
+    There is no static ceiling on the probe: upshifts are bounded here only
+    by AIMD_MAX_LIMIT — the launch guards (live children count / MemAvailable
+    / cgroup headroom) bound the ACTUAL load.
     """
     global _AIMD_SUCCESSES, _AIMD_LAST_LIMIT_CHANGE_TS
     ts = time.time() if now is None else float(now)
+    deferred = None
     with _AIMD_LOCK:
         limit = _aimd_load()
         _AIMD_FAILURE_TS[:] = [t for t in _AIMD_FAILURE_TS if t >= ts - AIMD_WINDOW_SEC]
@@ -369,15 +463,18 @@ def note_llm_stream_success(now: "float | None" = None) -> None:
             if limit < GLOBAL_LLM_CONCURRENCY
             else AIMD_RAISE_INTERVAL_SEC
         )
-        if (
+        if not (
             since_change < interval
             or _AIMD_FAILURE_TS
             or _AIMD_SUCCESSES < AIMD_RAISE_MIN_SUCCESSES
         ):
-            return
-        _AIMD_SUCCESSES = 0
-        _AIMD_LAST_LIMIT_CHANGE_TS = ts
-        _aimd_apply(min(AIMD_MAX_LIMIT, limit + 1))
+            _AIMD_SUCCESSES = 0
+            _AIMD_LAST_LIMIT_CHANGE_TS = ts
+            deferred = _aimd_apply_locked(
+                min(AIMD_MAX_LIMIT, limit + 1), last_change_ts=ts
+            )
+    if deferred is not None:
+        _aimd_finish_apply(*deferred)
 
 
 def _get_shared_semaphore() -> CrossLoopSemaphore:
@@ -428,19 +525,22 @@ def get_llm_semaphore_for_role(
 
 
 def get_active_stream_count() -> int:
-    """Approximate count of currently in-use LLM permits (capacity - available).
+    """Count of currently in-use LLM permits — the semaphore's real holders.
 
-    This is an instantaneous read of ``capacity - semaphore._value``. It is an
-    approximation: a permit that was just released but not yet reacquired by a
-    queued acquirer momentarily reads as free. The dashboard polls every few
-    seconds, so transient under-counts wash out and the gauge tracks real
-    utilization accurately for monitoring purposes.
+    F4 (2026-10-08): this used to read ``max(0, capacity - _value)`` which
+    equals ``min(capacity, holders)`` and UNDER-COUNTED the drain period
+    after a downshift — with the capacity softened to 2 while 32 streams
+    were still in flight, the gauge showed 2. Reading the real holders
+    observes the true occupancy; the drain-complete predicate
+    (``active == 0``) is unchanged because capacity never drops below
+    AIMD_MIN_LIMIT (2), so ``min(capacity, holders) == 0`` exactly when
+    ``holders == 0``.
 
     Returns 0 if the semaphore has never been instantiated (no LLM call has
     run yet in this process), which is the correct "nothing in flight" value.
     """
     sem = _get_shared_semaphore()
-    return max(0, get_capacity() - sem._value) if sem else 0
+    return sem.holders if sem else 0
 
 
 def get_capacity() -> int:

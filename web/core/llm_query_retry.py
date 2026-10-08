@@ -1063,6 +1063,16 @@ async def _run_stream_with_signature_retry_attempts(
                 from llm_call_metrics import record_llm_call_metrics
                 _um = _lq._usage_metadata(usage) if usage else {}
                 _rd = stream_metrics.get("result_diag") or {}
+                # F6b (2026-10-08): global_concurrency was permanently None —
+                # this write point never passed a value. Record the LIVE
+                # dynamic capacity (AIMD limit) so offline analysis can group
+                # throughput by the concurrency actually in effect.
+                try:
+                    from llm_concurrency import get_capacity
+
+                    _capacity_now = get_capacity()
+                except Exception:
+                    _capacity_now = None
                 record_llm_call_metrics(
                     call_id=billing_call_id,
                     attempt=sdk_attempt,
@@ -1105,6 +1115,7 @@ async def _run_stream_with_signature_retry_attempts(
                     message_count=stream_metrics.get("message_count"),
                     assistant_message_count=stream_metrics.get("assistant_message_count"),
                     log_file=_lq._role_log_basename(log_file_path),
+                    global_concurrency=_capacity_now,
                 )
             except Exception:
                 pass

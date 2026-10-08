@@ -956,6 +956,34 @@ def _saturator_pipeline_alive(now: float | None = None) -> bool:
 #: P7: one ``pipeline.saturator_parked_no_pipeline`` event per park episode.
 _pipeline_park_announced = False
 
+#: F6a (2026-10-08): bounded launch-refusal logging. A persistent gate
+#: (soft_cap / no_permit / claude_children / low_memory ...) used to refuse
+#: in total silence — the inflight curve went flat with no hint of WHY.
+#: One log line per reason CHANGE; the same reason repeats at most once
+#: per _REFUSAL_LOG_MIN_INTERVAL_SEC (the refill loop ticks every 0.5s).
+_last_refusal_reason: "str | None" = None
+_last_refusal_log_ts: float = 0.0
+_REFUSAL_LOG_MIN_INTERVAL_SEC = 60.0
+
+
+def _note_saturator_launch_refusal(reason: str, *, now: "float | None" = None) -> None:
+    """Bounded visibility for saturator launch refusals (F6a, 2026-10-08).
+
+    A NEW refusal reason logs immediately; the SAME reason repeats at most
+    once per _REFUSAL_LOG_MIN_INTERVAL_SEC so a persistent gate leaves one
+    trace per minute instead of one per refill tick.
+    """
+    global _last_refusal_reason, _last_refusal_log_ts
+    ts = time.time() if now is None else float(now)
+    if (
+        reason == _last_refusal_reason
+        and (ts - _last_refusal_log_ts) < _REFUSAL_LOG_MIN_INTERVAL_SEC
+    ):
+        return
+    _last_refusal_reason = reason
+    _last_refusal_log_ts = ts
+    log.info("saturator launch refused: %s", reason)
+
 
 def _maybe_announce_saturator_pipeline_park(parked_now: bool, detail: str = "") -> None:
     """Announce a saturator park exactly once per park episode (P7).
@@ -1244,6 +1272,9 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                     last_preempt_at=last_preempt_at,
                 )
                 if not ok:
+                    # F6a (2026-10-08): bounded reason-change logging — a
+                    # persistent gate used to refuse in total silence.
+                    _note_saturator_launch_refusal(reason)
                     # P7 (2026-10-05): announce a pipeline park exactly once
                     # per episode; every non-parked tick re-arms it below.
                     _maybe_announce_saturator_pipeline_park(
