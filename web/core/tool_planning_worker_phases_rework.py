@@ -1006,6 +1006,17 @@ async def _execute_workers_phase_b_rework_synthesis(actor_lock_owned, checkpoint
             ),
         })
 
+    # R3 second line of defense note (F2 fix, adversarial audit 2026-10-09):
+    # unsatisfiable constants-only Tuner repair contracts — including
+    # frozen-resume tasks built by the pre-fix substring pin — are flipped
+    # on the DISPATCH COPY inside
+    # ``tool_planning_worker_durable._dispatch_tasks_from_envelope``,
+    # deliberately NOT here. Flipping ``tasks`` in this band mutated them
+    # before Phase C's frozen-input drift comparison
+    # (``frozen_worker_input.get("tasks") != tasks``) and turned every
+    # frozen rework resume into a DURABLE_REPAIR_PREPARATION_UNAVAILABLE
+    # abandon — the opposite of "flip instead of refuse".
+
     # B6 (2026-06-30): redundant-call guard. execute_workers is NOT idempotent —
     # a redundant call (no reviewer_feedback) when workers already ran resets code
     # from source + re-runs every Worker-LLM (the single most expensive pipeline

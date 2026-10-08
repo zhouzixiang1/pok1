@@ -330,12 +330,17 @@ def _recent_directions_for_audit() -> str:
 
 def _render_worker_cot_provider_prompt(inputs):
     from llm_query import LLMRenderedMaterial
+    from worker_role_policy import (
+        render_role_boundary_rules,
+        role_policy_digest,
+    )
 
-    expected = {
+    required = {
         "task", "worker_role", "worker_task", "worker_output_evidence",
         "code_diff", "diff_metadata",
     }
-    if not isinstance(inputs, dict) or set(inputs) != expected:
+    allowed = required | {"role_boundary_rules"}
+    if not isinstance(inputs, dict) or not required <= set(inputs) <= allowed:
         raise ValueError("Worker CoT renderer input contract mismatch")
     task = inputs["task"]
     if not isinstance(task, dict):
@@ -354,6 +359,15 @@ def _render_worker_cot_provider_prompt(inputs):
     )
     worker_output = evidence["output_excerpt"]
     code_diff = str(inputs["code_diff"])
+    # R2 (2026-10-08): the role boundary rules section renders from the
+    # authoritative worker_role_policy table for THIS task's role. The
+    # optional-input form keeps renderer replays of receipts stored before
+    # the field existed working; when absent the rules still render from
+    # the task, never from a static prompt enumeration.
+    role_boundary_rules = str(
+        inputs.get("role_boundary_rules")
+        or render_role_boundary_rules(task.get("role", "Worker"))
+    )
     template = (
         Path(__file__).resolve().parent / "prompts" / "worker_cot_check.md"
     ).read_text(encoding="utf-8")
@@ -363,6 +377,7 @@ def _render_worker_cot_provider_prompt(inputs):
         "worker_output": worker_output[-3000:],
         "code_diff": code_diff,
         "diff_metadata": str(inputs["diff_metadata"]),
+        "role_boundary_rules": role_boundary_rules,
     })
 
     return LLMRenderedMaterial(
@@ -393,6 +408,7 @@ def _render_worker_cot_provider_prompt(inputs):
             "diff_metadata_digest": hashlib.sha256(
                 str(inputs["diff_metadata"]).encode("utf-8")
             ).hexdigest(),
+            "role_policy_digest": role_policy_digest(),
         },
     )
 
@@ -1352,6 +1368,7 @@ async def _run_worker_cot_check(
 
         log_file = get_logs_dir(next_v) / f"worker_{w_id}_cot_audit_io.txt"
         from llm_query import render_llm_prompt
+        from worker_role_policy import render_role_boundary_rules
 
         cot_role = f"WORKER_COT_CHECK_{w_id}"
         rendered_prompt = render_llm_prompt(
@@ -1367,6 +1384,9 @@ async def _run_worker_cot_check(
                 "code_diff": code_diff,
                 "diff_metadata": (
                     "\n".join(diff_metadata) or "- no target file metadata"
+                ),
+                "role_boundary_rules": render_role_boundary_rules(
+                    task.get("role", "Worker")
                 ),
             },
         )

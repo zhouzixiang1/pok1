@@ -516,6 +516,34 @@ async def _project_durable_worker_failure(worker_workflow, state):
     })
 
 
+def _dispatch_tasks_from_envelope(envelope):
+    """Dispatch-copy of a frozen Worker envelope's tasks (R3, F2 fix 2026-10-09).
+
+    The envelope bytes and every frozen-input digest (Phase C's
+    ``frozen_worker_input.get("tasks") != tasks`` drift comparison,
+    ``_worker_execution_task_digest``, checkpoint contracts) must keep
+    seeing the ORIGINAL planned tasks. The repair-contract satisfiability
+    flip happens ONLY on this dispatch copy, immediately before
+    ``_execute_workers`` consumes it — that covers BOTH dispatch paths
+    (fresh rework preparation and frozen/durable resume) including old
+    pre-fix tuner repair contracts that a resumed checkpoint may still
+    carry, without ever introducing frozen-input drift (which used to
+    abandon the generation) and without bypassing the second line of
+    defense. Non-repair innovation tasks are returned untouched.
+    """
+    tasks = _tw.deepcopy(envelope.get("tasks") or [])
+    from worker_role_policy import enforce_repair_contract_satisfiability
+
+    try:
+        next_v = int(envelope.get("next_v") or 0) or None
+    except (TypeError, ValueError):
+        next_v = None
+    return [
+        enforce_repair_contract_satisfiability(task, next_v)
+        for task in tasks
+    ]
+
+
 async def _run_durable_worker_effect(
     worker_workflow,
     envelope,
@@ -533,7 +561,7 @@ async def _run_durable_worker_effect(
 
     next_v = int(envelope["next_v"])
     source_v = int(envelope["source_v"])
-    tasks = _tw.deepcopy(envelope.get("tasks") or [])
+    tasks = _dispatch_tasks_from_envelope(envelope)
     reviewer_feedback = str(envelope.get("reviewer_feedback") or "")
     policy = _tw.deepcopy(envelope.get("execution_policy") or {})
     contract = envelope.get("checkpoint_contract") or {}

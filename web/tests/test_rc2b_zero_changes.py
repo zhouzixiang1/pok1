@@ -4,7 +4,6 @@ from agent_workers import (
     _classify_target_change,
     _classify_target_change_for_worker,
     _compose_worker_task_prompt,
-    _cot_inconsistency_blocks_task,
     _must_change_rels_for_task,
 )
 
@@ -71,26 +70,86 @@ def test_must_change_files_retains_strict_policy_contract():
     assert _must_change_rels_for_task(task, 268) == ["policy.py"]
 
 
-def test_cot_inconsistency_blocks_repair_tasks_only():
-    assert _cot_inconsistency_blocks_task({"task_kind": "quality_repair"})
-    assert _cot_inconsistency_blocks_task({"task_kind": "precommit_repair"})
-    assert not _cot_inconsistency_blocks_task({"task_kind": "feature_work", "worker_prompt": "add a new idea"})
+def test_cot_repair_discrepancies_require_confirmed_lead_to_block():
+    # Root fix 2026-10-08: an LLM CoT verdict is a LEAD, never direct
+    # enforcement. A repair task with plain claim-vs-diff discrepancies no
+    # longer hard-blocks (the old repair-marker one-vote veto); only a
+    # deterministically confirmed lead blocks.
+    import worker_role_policy as wrp
+
+    def _facts(added_lines=(), changed=True):
+        return {
+            "policy.py": {
+                "before_present": True,
+                "after_present": True,
+                "changed": changed,
+                "numbers_only": not changed,
+                "added_lines": list(added_lines),
+            }
+        }
+
+    for task_kind in ("quality_repair", "precommit_repair"):
+        task = {"task_kind": task_kind, "role": "Algorithmic Logic Architect",
+                "target_files": ["policy.py"]}
+        verdict = wrp.review_worker_cot_lead(
+            task,
+            {
+                "cot_consistent": False,
+                "discrepancies": ["Claimed a rewrite but the diff is smaller."],
+            },
+            _facts(changed=True),
+        )
+        assert verdict.block is False
+        assert verdict.advisory_notes
+
+    feature_task = {"task_kind": "feature_work", "role": "Expert Coder 1",
+                    "target_files": ["policy.py"]}
+    assert wrp.review_worker_cot_lead(
+        feature_task,
+        {"cot_consistent": False,
+         "discrepancies": ["Summary omitted one low-level arithmetic rationale."]},
+        _facts(changed=True),
+    ).block is False
 
 
-def test_cot_inconsistency_blocks_undisclosed_runtime_side_effects_for_any_task():
-    feature_task = {"task_kind": "feature_work", "worker_prompt": "add a new idea"}
-    assert _cot_inconsistency_blocks_task(feature_task, {
+def test_cot_undisclosed_runtime_side_effects_block_only_with_diff_evidence():
+    # Side-effect leads now need deterministic diff confirmation: an added
+    # line carrying a side-effect token blocks for ANY task kind; the same
+    # claim without diff evidence is downgraded to advisory.
+    import worker_role_policy as wrp
+
+    def _facts(added_lines):
+        return {
+            "policy.py": {
+                "before_present": True,
+                "after_present": True,
+                "changed": True,
+                "numbers_only": False,
+                "added_lines": list(added_lines),
+            }
+        }
+
+    feature_task = {"task_kind": "feature_work", "worker_prompt": "add a new idea",
+                    "role": "Expert Coder 1", "target_files": ["policy.py"]}
+    side_effect_claim = {
         "discrepancies": [
             "Worker added _sys.stderr.write telemetry inside estimate_preflop_strength "
             "but did not disclose this runtime side-effect."
         ],
-    })
-    assert _cot_inconsistency_blocks_task(feature_task, {
+    }
+    debug_claim = {
         "focus_areas": ["Undisclosed debug logging path added to hot decision code."],
-    })
-    assert not _cot_inconsistency_blocks_task(feature_task, {
-        "discrepancies": ["Summary omitted one low-level arithmetic rationale."],
-    })
+    }
+    guilty_diff = _facts(["    _sys.stderr.write('telemetry')"])
+    clean_diff = _facts(["    strength = base * 1.05"])
+
+    assert wrp.review_worker_cot_lead(feature_task, side_effect_claim, guilty_diff).block is True
+    assert wrp.review_worker_cot_lead(
+        feature_task, debug_claim, _facts(["    logging.info('debug')"])
+    ).block is True
+    downgraded = wrp.review_worker_cot_lead(feature_task, side_effect_claim, clean_diff)
+    assert downgraded.block is False
+    assert downgraded.downgrade_reasons
 
 
 def test_file_scoped_quality_repair_omits_global_feedback():

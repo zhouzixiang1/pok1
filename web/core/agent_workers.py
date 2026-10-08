@@ -8,7 +8,6 @@ there is only one worker task.
 
 import json
 import os
-import re
 import shutil
 import asyncio
 import hashlib
@@ -795,81 +794,172 @@ def _target_change_failures_for_worker(task, task_idx, next_dir, next_v,
     return invalid_targets, unchanged
 
 
-_COT_RUNTIME_SIDE_EFFECT_RE = re.compile(
-    r"(stderr|stdout|sys\.stderr|_sys\.stderr|telemetry|debug|logging|"
-    r"print\(|runtime\s+side[- ]effect|side[- ]effect|unconditional\s+log)",
-    re.IGNORECASE,
-)
-
-_COT_TASK_MISMATCH_RE = re.compile(
-    r"(assigned\s+task|task\s+was|task\s+steps?|diff|changed_functions|"
-    r"worker'?s\s+changed|actual\s+surface\s+area).{0,240}"
-    r"(performs?\s+none|none\s+of\s+these|does\s+not\s+implement|"
-    r"not\s+implemented|revers(?:e|es|ed|ing)|inverted|opposite|"
-    r"omits?|omitting|undisclosed|larger\s+and\s+more\s+invasive)",
-    re.IGNORECASE | re.DOTALL,
-)
+_COT_LEAD_NOTE_BUDGET = 6
 
 
-def _cot_inconsistency_text(cot) -> str:
-    if not isinstance(cot, dict):
-        return ""
-    parts = []
-    for key in ("discrepancies", "focus_areas"):
-        value = cot.get(key)
-        if isinstance(value, (list, tuple)):
-            parts.extend(str(item) for item in value)
-        elif value:
-            parts.append(str(value))
-    return "\n".join(parts)
+def _worker_diff_facts(task, task_idx, next_dir, next_v, worker_snapshots):
+    """Assemble deterministic per-file diff facts for CoT lead review (R1).
 
-
-def _cot_inconsistency_has_runtime_side_effect(cot):
-    """Return True when CoT found an undisclosed runtime/logging side effect."""
-    text = _cot_inconsistency_text(cot)
-    return bool(text and _COT_RUNTIME_SIDE_EFFECT_RE.search(text))
-
-
-def _cot_inconsistency_is_task_mismatch(cot):
-    """Return True when CoT proves the worker did not perform its assignment."""
-    text = _cot_inconsistency_text(cot)
-    return bool(text and _COT_TASK_MISMATCH_RE.search(text))
-
-
-def _cot_inconsistency_blocks_task(task, cot=None):
-    """Hard-block repair mismatches and undisclosed runtime side effects.
-
-    Normal innovation workers can surface reviewer focus areas without forcing an
-    immediate retry. Repair tasks are different: their whole purpose is to
-    resolve exact blockers, so a claim-vs-diff mismatch is actionable failure.
-    Runtime side effects are also different: hidden stderr/stdout/debug/telemetry
-    changes can pollute match logs or affect timing, so they must be disclosed in
-    the worker output or reverted regardless of task kind. Severe task-mismatch
-    evidence such as reversing the assignment or omitting the actual edited
-    surface is also a hard failure even for non-repair feature work.
+    Builds ``{rel: {before_present, after_present, changed, numbers_only,
+    added_lines}}`` from the same per-worker pre-run snapshots and candidate
+    files the CoT audit's diff uses — no new IO surface. The facts feed the
+    deterministic reviewer in ``worker_role_policy.review_worker_cot_lead``,
+    which is the only path through which an LLM CoT verdict can influence
+    blocking (2026-10-08 root fix: the LLM audit is a lead producer, never
+    an executor).
     """
-    if _cot_inconsistency_has_runtime_side_effect(cot):
-        return True
-    if _cot_inconsistency_is_task_mismatch(cot):
-        return True
-    text = " ".join([
-        str(task.get("task_kind", "")),
-        str(task.get("worker_id", "")),
-        str(task.get("role", "")),
-        str(task.get("worker_prompt", task.get("instruction", "")))[:1000],
-    ]).lower()
-    return any(marker in text for marker in (
-        "quality_repair",
-        "precommit_repair",
-        "review_repair",
-        "reviewer_repair",
-        "official_repair",
-        "repair_planned",
-        "review rejection",
-        "file_size(",
-        "position_semantics(",
-        "protected_contract",
-    ))
+    from worker_role_policy import diff_added_lines
+    from tool_helpers import _numbers_only_changed
+
+    facts = {}
+    snapshots = worker_snapshots or {}
+    for target in task.get("target_files", []):
+        rel = _target_rel(target, next_v)
+        if not rel:
+            continue
+        snapshot_key = (task_idx, rel)
+        before_present = snapshot_key in snapshots
+        before = snapshots.get(snapshot_key, "")
+        after_exists, after_content = _target_file_content(next_dir / rel)
+        after_present = bool(after_exists)
+
+        def _comparable(value, present):
+            if not present:
+                return ("missing", None)
+            if isinstance(value, bytes):
+                return ("bytes", value)
+            return ("text", str(value))
+
+        changed = _comparable(before, before_present) != _comparable(
+            after_content, after_present
+        )
+
+        numbers_only = None
+        added_lines = []
+        if (
+            changed
+            and before_present
+            and after_present
+            and isinstance(before, str)
+            and isinstance(after_content, str)
+        ):
+            numbers_only = _numbers_only_changed(str(before), str(after_content))
+            added_lines = diff_added_lines(str(before), str(after_content))
+        elif changed:
+            # Binary/undecodable content changed — provably not a
+            # numbers-only edit, so it counts as structural evidence.
+            numbers_only = False
+        facts[rel] = {
+            "before_present": before_present,
+            "after_present": after_present,
+            "changed": bool(changed),
+            "numbers_only": numbers_only,
+            "added_lines": added_lines,
+        }
+    return facts
+
+
+def _emit_worker_cot_lead_downgraded(worker_id, next_v, source_v, verdict, cot):
+    """Record that an LLM CoT lead was downgraded to advisory by review."""
+    try:
+        from system_log import log_system_event
+
+        summary = "; ".join(
+            str(item)[:200] for item in (
+                list(verdict.advisory_notes[:2])
+                or [
+                    str(item)[:200]
+                    for item in (cot.get("discrepancies") or [])[:2]
+                ]
+            )
+        )
+        log_system_event(
+            "pipeline.worker_cot_lead_downgraded",
+            "warn",
+            (
+                f"Worker {worker_id} CoT lead downgraded to advisory for "
+                f"v{next_v}: {summary}"
+            ),
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "worker_id": worker_id,
+                "downgrade_reasons": list(verdict.downgrade_reasons[:6]),
+                "lead_kinds": list(verdict.lead_kinds[:6]),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _emit_worker_cot_lead_enforced(worker_id, next_v, source_v, verdict):
+    """Record that a CoT lead was deterministically confirmed and enforced."""
+    try:
+        from system_log import log_system_event
+
+        log_system_event(
+            "pipeline.worker_cot_lead_enforced",
+            "error",
+            (
+                f"Worker {worker_id} CoT lead confirmed by deterministic "
+                f"review for v{next_v}: {verdict.reason}"
+            ),
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "worker_id": worker_id,
+                "reason": verdict.reason,
+            },
+        )
+    except Exception:
+        pass
+
+
+def _handle_worker_cot_inconsistency(
+    task, task_idx, cot, next_v, source_v, next_dir, worker_snapshots,
+    ui, audit_focus_areas, *, task_skipper=None,
+):
+    """Deterministically re-review one inconsistent Worker CoT verdict.
+
+    Root fix (2026-10-08): the LLM CoT audit is a lead producer with NO
+    direct block/rollback authority. Its verdict blocks and rolls back this
+    task only when ``worker_role_policy.review_worker_cot_lead`` confirms
+    the lead against the task role and the per-worker diff facts (real
+    Tuner escape, diff-confirmed runtime side effect, or provably-unchanged
+    targets). Every unconfirmed lead is downgraded to advisory: recorded
+    into ``audit_focus_areas`` (the Reviewer consumes them; they also flow
+    into repair feedback) and never rolled back, never counted as
+    enforcement. Returns True when the task was blocked and rolled back.
+    """
+    from worker_role_policy import review_worker_cot_lead
+
+    worker_id = task.get("worker_id", task_idx + 1)
+    diff_facts = _worker_diff_facts(
+        task, task_idx, next_dir, next_v, worker_snapshots
+    )
+    verdict = review_worker_cot_lead(task, cot, diff_facts)
+    if not verdict.block:
+        audit_focus_areas.extend(
+            str(item) for item in cot.get("focus_areas", []) or []
+        )
+        audit_focus_areas.extend(verdict.advisory_notes[:_COT_LEAD_NOTE_BUDGET])
+        _emit_worker_cot_lead_downgraded(worker_id, next_v, source_v, verdict, cot)
+        return False
+
+    override = _cot_inconsistency_override_reason(
+        task, task_skipper, worker_id, next_v, source_v, ui,
+    )
+    if override:
+        return False
+    audit_focus_areas.extend(
+        str(item) for item in cot.get("focus_areas", []) or []
+    )
+    _reset_target_files_to_source(
+        task, source_v, next_dir, next_v,
+        baseline_snapshots=worker_snapshots, task_idx=task_idx,
+    )
+    _emit_worker_cot_lead_enforced(worker_id, next_v, source_v, verdict)
+    return True
 
 
 def _cot_inconsistency_override_reason(task, task_skipper, worker_id, next_v, source_v, ui):
@@ -1594,20 +1684,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     worker_output_evidence=worker_outputs.get(0),
                 )
                 if not cot.get("cot_consistent", True):
-                    if _cot_inconsistency_blocks_task(tasks[0], cot):
-                        override = _cot_inconsistency_override_reason(
-                            tasks[0], task_skipper, tasks[0].get("worker_id", 1),
-                            next_v, source_v, ui,
-                        )
-                        if not override:
-                            audit_focus_areas.extend(cot.get("focus_areas", []))
-                            _reset_target_files_to_source(
-                                tasks[0], source_v, next_dir, next_v,
-                                baseline_snapshots=worker_snapshots, task_idx=0,
-                            )
-                            ok = False
-                    else:
-                        audit_focus_areas.extend(cot.get("focus_areas", []))
+                    if _handle_worker_cot_inconsistency(
+                        tasks[0], 0, cot, next_v, source_v, next_dir,
+                        worker_snapshots, ui, audit_focus_areas,
+                        task_skipper=task_skipper,
+                    ):
+                        ok = False
             except LLMAvailabilityBlocked:
                 raise
             except WorkerCoTEvidenceError as e:
@@ -1749,20 +1831,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     worker_output_evidence=worker_outputs.get(i),
                 )
                 if not cot.get("cot_consistent", True):
-                    if _cot_inconsistency_blocks_task(task, cot):
-                        override = _cot_inconsistency_override_reason(
-                            task, task_skipper, task.get("worker_id", i + 1),
-                            next_v, source_v, ui,
-                        )
-                        if not override:
-                            audit_focus_areas.extend(cot.get("focus_areas", []))
-                            _reset_target_files_to_source(
-                                task, source_v, next_dir, next_v,
-                                baseline_snapshots=worker_snapshots, task_idx=i,
-                            )
-                            any_failed = True
-                    else:
-                        audit_focus_areas.extend(cot.get("focus_areas", []))
+                    if _handle_worker_cot_inconsistency(
+                        task, i, cot, next_v, source_v, next_dir,
+                        worker_snapshots, ui, audit_focus_areas,
+                        task_skipper=task_skipper,
+                    ):
+                        any_failed = True
             except LLMAvailabilityBlocked:
                 raise
             except WorkerCoTEvidenceError as e:
@@ -1865,20 +1939,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                 worker_output_evidence=worker_outputs.get(i),
             )
             if not cot.get("cot_consistent", True):
-                if _cot_inconsistency_blocks_task(task, cot):
-                    override = _cot_inconsistency_override_reason(
-                        task, task_skipper, task.get("worker_id", i + 1),
-                        next_v, source_v, ui,
-                    )
-                    if not override:
-                        audit_focus_areas.extend(cot.get("focus_areas", []))
-                        _reset_target_files_to_source(
-                            task, source_v, next_dir, next_v,
-                            baseline_snapshots=worker_snapshots, task_idx=i,
-                        )
-                        return False, worker_snapshots, audit_focus_areas
-                else:
-                    audit_focus_areas.extend(cot.get("focus_areas", []))
+                if _handle_worker_cot_inconsistency(
+                    task, i, cot, next_v, source_v, next_dir,
+                    worker_snapshots, ui, audit_focus_areas,
+                    task_skipper=task_skipper,
+                ):
+                    return False, worker_snapshots, audit_focus_areas
         except LLMAvailabilityBlocked:
             raise
         except WorkerCoTEvidenceError as e:

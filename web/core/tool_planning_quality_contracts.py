@@ -47,6 +47,10 @@ from output_schema import (
     RuntimeContract,
 )
 from tool_helpers import _target_rel
+from worker_role_policy import (
+    emit_repair_role_reassigned,
+    repair_contract_flip_decision,
+)
 import tool_planning_quality_rework as _qc
 
 
@@ -1465,6 +1469,31 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
         role = "Scope Boundary Repair Architect"
     else:
         role = "Algorithmic Logic Architect"
+    # R3 (2026-10-08): dispatch-time satisfiability precheck. A
+    # constants-only Tuner contract over a structural blocker family, a
+    # multi-file must-change list, or structural-work evidence is
+    # unsatisfiable from birth (constants-only guidance × smallest
+    # structural correction × must_change); flip it to an Architect-family
+    # role BEFORE the prompt is built so the contract the Worker sees is
+    # satisfiable by construction. Genuine numeric-rollback evidence (a
+    # deterministic constant-class marker) keeps its Tuner.
+    _role_flip = repair_contract_flip_decision(
+        role=role,
+        blocker=contract.get("blocker"),
+        evidence=evidence,
+        must_change_files=[filename],
+    )
+    if not _role_flip.satisfiable and _role_flip.flip_role:
+        emit_repair_role_reassigned(
+            {
+                "worker_id": f"auto_quality_repair_gate_{suffix}",
+                "role": role,
+                "repair_contract": contract,
+            },
+            _role_flip,
+            next_v,
+        )
+        role = _role_flip.flip_role
     reachability_guidance = ""
     if "reachability" in str(evidence).lower():
         reachability_guidance = (

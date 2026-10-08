@@ -43,6 +43,7 @@ from output_schema import (
     RuntimeContract,
 )
 from tool_helpers import _target_rel
+from worker_role_policy import classify_repair_role_hint
 
 import tool_planning_quality_contracts as _qc  # for intra-companion + stay-behind refs
 
@@ -1655,18 +1656,19 @@ def _feedback_quality_contracts(feedback):
             "file": rel,
             "evidence": evidence,
         }
-        lower = evidence.lower()
-        if (
-            rel == "policy.py"
-            and (
-                "hyperparameter tuner" in lower
-                or "role boundary" in lower
-                or "existing numeric" in lower
-                or "existing constant" in lower
-                or "threshold" in lower
-            )
-        ):
-            contract["role_hint"] = "tuner"
+        # R3 (2026-10-08): the role hint is evidence-driven, not substring-
+        # pinned. The old five-substring test ('hyperparameter tuner' /
+        # 'role boundary' / 'existing numeric' / 'existing constant' /
+        # 'threshold') converted any threshold-mentioning structural
+        # blocker into a constants-only Tuner contract (v525: 'threshold'
+        # on 33 feedback lines) which then died deterministically in
+        # hyperparameter_boundary_violation. Only a deterministic
+        # constant-class marker or an explicit revert-the-numeric-constant
+        # instruction pins the Tuner role now.
+        if rel == "policy.py":
+            role_hint = classify_repair_role_hint(evidence)
+            if role_hint:
+                contract["role_hint"] = role_hint
         if _qc._scope_drift_feedback_files(evidence) and _qc._has_scope_drift_marker(evidence):
             contract["role_hint"] = "scope_revert"
         contracts.append(contract)
