@@ -44,6 +44,7 @@ both caller and callee now live in this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import tool_planning_worker as _tw
@@ -1500,7 +1501,172 @@ def _expected_worker_backend_contract(checkpoint, envelope=None):
 #: before a deferred Worker resumes; the archived receipts are the only
 #: durable proof that the deferred evidence was reconciled through an
 #: allowed resume path (2026-10-05 wedge fix).
-_RESUME_RECEIPT_HISTORY_SCAN_LIMIT = 8
+#: F-A (2026-10-09): raised 8 -> 64 in lockstep with the store's
+#: ``RESUME_RECEIPT_HISTORY_CAP`` so the scan always covers the whole
+#: archive; ``_resume_receipt_scan_limit`` additionally takes the max with
+#: the live store constant, so the two can never drift apart silently.
+_RESUME_RECEIPT_HISTORY_SCAN_LIMIT = 64
+
+
+def _resume_receipt_scan_limit() -> int:
+    try:
+        from llm_availability_store import RESUME_RECEIPT_HISTORY_CAP as _cap
+
+        return max(_RESUME_RECEIPT_HISTORY_SCAN_LIMIT, int(_cap))
+    except Exception:
+        return _RESUME_RECEIPT_HISTORY_SCAN_LIMIT
+
+
+def _snapshot_now(now) -> "datetime":
+    value = now or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+#: F-M2 (2026-10-09 re-review): the system event emitted whenever the
+#: suppressed-evidence chain (not a resume receipt) is what authorizes a
+#: deferred Worker effect to resume.  Precedent:
+#: ``pipeline.crossover_degraded_to_parent_copy`` (agent_review.py).
+WORKER_RESUME_SNAPSHOT_AUTHORIZED_EVENT = (
+    "pipeline.worker_resume_snapshot_authorized"
+)
+
+
+def _suppressed_evidence_chain_authorization(
+    deferred,
+    pause_audit,
+    *,
+    now: "datetime",
+):
+    """Store-held suppressed-evidence authorization for a deferred resume.
+
+    F-H (2026-10-09 re-review — the decisive v532 root cause).  The real
+    incident shape is *suppressed divergence*, not receipt eviction: the
+    Worker exception path freezes ``exc.pause_state()`` (the INCOMING
+    projection: ``observed_at``, no ``auto_resume_at``) and then persists it;
+    when the store already holds an ACTIVE same-category record the persist
+    takes the suppressed-recurrence branch, the store KEEPS the old record
+    digest, and the frozen digest only ever lands in
+    ``last_suppressed_evidence_digest``.  The frozen digest therefore never
+    becomes a record digest and never has a matching resume receipt — no
+    archive cap can fix that, and the incident-time archive (2 receipts) was
+    nowhere near full.
+
+    The store itself, however, still holds the proof: the suppression marker
+    pair (``last_suppressed_category`` +
+    ``last_suppressed_evidence_digest``) on the inactive audit record, and —
+    once that record is itself replaced — on its archived receipt projection
+    (the marker is carried into ``resume_receipt_history`` entries).  That
+    chain is *structurally bound to the frozen digest* (F-M1): a forged or
+    unrelated digest never matches any marker, so unlike the removed
+    capacity-based lane it cannot authorize anything the store never held.
+
+    Authorization is deliberately narrow and fail-closed:
+
+    * the deferred pause must be transient (non-manual) — manual pauses keep
+      requiring an exact operator evidence receipt, in the archive or in the
+      current record;
+    * the live audit record must exist and be inactive (an active pause
+      blocks earlier, at the claim boundary; re-checked here so this branch
+      can never bypass it);
+    * the frozen digest must match the suppression marker chain (current
+      record first, then every retained archived receipt projection) with an
+      equal category — the structural binding;
+    * the deferral snapshot's system-owned resume horizon (see
+      ``llm_availability_store.system_resume_horizon``) must have elapsed.
+
+    Returns the authorization descriptor (dict) on success, else ``None``.
+    """
+
+    if not isinstance(deferred, dict) or not deferred:
+        return None
+    if bool(deferred.get("requires_manual_resume")):
+        return None
+    if not isinstance(pause_audit, dict) or not pause_audit:
+        return None
+    if pause_audit.get("active") is not False:
+        return None
+    digest = str(deferred.get("evidence_digest") or "")
+    category = str(deferred.get("category") or "")
+    if not digest or not category:
+        return None
+    try:
+        from llm_availability_store import system_resume_horizon
+
+        horizon = system_resume_horizon(deferred)
+    except Exception:
+        return None
+    if horizon is None or now < horizon:
+        return None
+
+    history = pause_audit.get("resume_receipt_history")
+    entries = [entry for entry in history if isinstance(entry, dict)] if isinstance(
+        history, list
+    ) else []
+
+    def _marker_matches(record) -> bool:
+        return (
+            str(record.get("last_suppressed_evidence_digest") or "") == digest
+            and str(record.get("last_suppressed_category") or "") == category
+        )
+
+    matched_where = None
+    if _marker_matches(pause_audit):
+        matched_where = "current"
+    else:
+        # Newest-first: a later storm record replaces the suppressed record,
+        # so its marker survives only inside the archived receipt projection.
+        for projection in reversed(entries):
+            if _marker_matches(projection):
+                matched_where = "archived"
+                break
+    if matched_where is None:
+        return None
+    return {
+        "authorization_shape": "suppressed_evidence_chain",
+        "evidence_digest": digest,
+        "category": category,
+        "horizon": horizon.astimezone(timezone.utc).isoformat(),
+        "archive_depth": len(entries),
+        "matched_record": matched_where,
+    }
+
+
+def _emit_worker_resume_snapshot_authorized(authorization, *, effect_id=None):
+    """F-M2 (2026-10-09 re-review): publish one audit event for a snapshot
+    (suppressed-evidence) resume authorization.
+
+    The three authorization lanes were previously byte-indistinguishable in
+    the journal/events/log surface.  Receipt-based lanes are already audited
+    through the store's own records; this event marks the lane that exists
+    ONLY in the deferral snapshot + store-held suppression markers.  Best
+    effort: an observability failure must never break the resume itself.
+    """
+
+    if not isinstance(authorization, dict):
+        return
+    try:
+        from system_log import log_system_event
+
+        log_system_event(
+            WORKER_RESUME_SNAPSHOT_AUTHORIZED_EVENT,
+            "warn",
+            "Deferred Worker availability resume authorized through the "
+            "suppressed-evidence chain (no resume receipt exists for this "
+            f"digest by construction); effect_id={effect_id or 'unknown'}",
+            {
+                "effect_id": effect_id,
+                "evidence_digest": authorization.get("evidence_digest"),
+                "category": authorization.get("category"),
+                "authorization_shape": authorization.get("authorization_shape"),
+                "archive_depth": authorization.get("archive_depth"),
+                "horizon": authorization.get("horizon"),
+                "matched_record": authorization.get("matched_record"),
+            },
+        )
+    except Exception:
+        pass
 
 
 def _resume_receipt_identity_errors(deferred, projection):
@@ -1573,8 +1739,19 @@ def _resume_receipt_projection_errors(
     )
 
 
-def _worker_availability_resume_receipt_errors(deferred, pause_audit):
+def _worker_availability_resume_validation(
+    deferred,
+    pause_audit,
+    *,
+    now: datetime | None = None,
+):
     """Validate the global resume receipt against the deferred Worker effect.
+
+    Returns ``(errors, authorization)``: ``errors`` empty means the resume is
+    authorized; ``authorization`` is a descriptor dict when the authorizing
+    lane is the store-held *suppressed-evidence chain* (F-M2 audit trail) and
+    ``None`` for the ordinary receipt lanes (current record / archived
+    receipt), which are already audited through the store's own records.
 
     The Worker journal is the authority for *which* provider failure suspended
     this effect.  Absence of an active global pause is therefore necessary but
@@ -1587,11 +1764,29 @@ def _worker_availability_resume_receipt_errors(deferred, pause_audit):
     the archive still require the exact operator evidence digest, and with no
     match anywhere the effect stays deferred (fail-closed semantics are
     unchanged from the single-record contract).
+
+    F-H (2026-10-09 re-review, v532 root cause — suppressed divergence): the
+    Worker exception path freezes ``exc.pause_state()`` and persists it onto
+    an ACTIVE same-category record, which takes the store's
+    suppressed-recurrence branch: the store keeps the old digest and the
+    frozen digest only lands in ``last_suppressed_evidence_digest``.  Such a
+    frozen digest structurally NEVER has a resume receipt (any cap is
+    irrelevant; the incident-time archive held 2 receipts).  The third
+    authorization lane therefore matches the frozen digest against the
+    store-held suppression marker chain (current record + archived receipt
+    projections), requires the deferral snapshot's system-owned resume
+    horizon to have elapsed, and does NOT require the archive to be full —
+    the binding is the digest match itself (F-M1: the earlier capacity-based
+    lane authorized forged digests against a full archive and was removed).
+    Genuine mismatches — a manual pause without the operator digest, a
+    horizon that has not elapsed, an active audit record, a digest absent
+    from the marker chain — still fail closed with the same error tokens.
     """
     errors = []
     if not isinstance(deferred, dict) or not deferred:
-        return ["worker_deferred_availability_missing"]
+        return ["worker_deferred_availability_missing"], None
 
+    timestamp = _snapshot_now(now)
     digest = str(deferred.get("evidence_digest") or "")
     category = str(deferred.get("category") or "")
     manual = bool(deferred.get("requires_manual_resume"))
@@ -1603,7 +1798,7 @@ def _worker_availability_resume_receipt_errors(deferred, pause_audit):
         errors.append("worker_deferred_category_missing")
     if not isinstance(pause_audit, dict) or not pause_audit:
         errors.append("global_pause_resume_receipt_missing")
-        return errors
+        return errors, None
 
     current_errors = []
     if pause_audit.get("active") is not False:
@@ -1620,13 +1815,13 @@ def _worker_availability_resume_receipt_errors(deferred, pause_audit):
         )
     )
     if not errors and not current_errors:
-        return []
+        return [], None
 
     if not errors:
+        archived_policy_errors = []
         history = pause_audit.get("resume_receipt_history")
         if isinstance(history, list) and history:
-            archived_policy_errors = []
-            for projection in history[-_RESUME_RECEIPT_HISTORY_SCAN_LIMIT:]:
+            for projection in history[-_resume_receipt_scan_limit():]:
                 if not isinstance(projection, dict):
                     continue
                 identity_errors = _resume_receipt_identity_errors(
@@ -1642,13 +1837,22 @@ def _worker_availability_resume_receipt_errors(deferred, pause_audit):
                     # An archived receipt proves this deferred evidence was
                     # reconciled through an allowed resume path before a
                     # newer pause overwrote the record.
-                    return []
+                    return [], None
                 if not identity_errors and not archived_policy_errors:
                     # Identity matched but the resume path itself was not
                     # allowed (e.g. a manual pause whose archived receipt lacks
                     # the operator evidence digest): surface the actionable
                     # policy tokens instead of a generic archive miss.
                     archived_policy_errors = policy_errors
+        # F-H: no receipt can exist for a suppressed freeze — the remaining
+        # durable proof is the store-held suppression marker chain, which is
+        # structurally bound to the frozen digest (F-M1).
+        authorization = _suppressed_evidence_chain_authorization(
+            deferred, pause_audit, now=timestamp
+        )
+        if authorization is not None:
+            return [], authorization
+        if isinstance(history, list) and history:
             # Review follow-up: the archive was scanned and nothing matched —
             # return the fully-assembled list directly so ``current_errors``
             # appears exactly once (the final ``+ current_errors`` below is
@@ -1658,8 +1862,28 @@ def _worker_availability_resume_receipt_errors(deferred, pause_audit):
                 + current_errors
                 + archived_policy_errors
                 + ["global_pause_resume_receipt_no_archived_match"]
-            )
-    return errors + current_errors
+            ), None
+    return errors + current_errors, None
+
+
+def _worker_availability_resume_receipt_errors(
+    deferred,
+    pause_audit,
+    *,
+    now: datetime | None = None,
+):
+    """Errors-only projection of ``_worker_availability_resume_validation``.
+
+    Kept as the historical entry point (parent re-export in
+    ``tool_planning_worker`` plus the audit replay tooling); the
+    ``wait_for_llm_availability`` path uses the full validation so it can
+    emit the F-M2 authorization event.
+    """
+
+    errors, _authorization = _worker_availability_resume_validation(
+        deferred, pause_audit, now=now
+    )
+    return errors
 
 
 @dataclass(frozen=True)

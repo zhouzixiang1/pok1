@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import threading
 import time
@@ -79,11 +80,28 @@ def _env_int_in_range(name: str, lo: int, hi: int) -> int | None:
 # ONLY for that crash sentinel; every other terminal (operator stop, cost
 # policy, manual pause, recovery blocked, LLM-availability stop) stays
 # stopped.  Backoff is bounded (30s doubling to a 30min cap), a sliding
-# window rate-limits the burst (5 restarts / 30min; beyond that a terminal
-# ``operator_action_required`` event replaces the storm), and a stable run
+# window rate-limits the burst (5 restarts / 30min), and a stable run
 # (>= 1h) resets the counters.
+#
+# F-B (2026-10-09, v532 wedge): the rate-limited stop is no longer terminal
+# and silent.  It alarms through the orchestrator logger (app.log) and the
+# webui ``log_history`` — the 05:28:34 ``restart_rate_limited`` stop wrote
+# only events.jsonl (event_bus dispatch has no app.log sink) and sat unseen
+# for 3.1h — and then enters a slow-retry lane: one alarmed restart attempt
+# per ``POK_ORCHESTRATOR_RESTART_SLOW_RETRY_SEC`` (default 1800s), still
+# counted in the sliding window and still guarded by the burst limit.  Owner
+# drift, shutdown, and every non-crash terminal never enter the lane.
+#
+# F-M3 (2026-10-09 re-review): the lane re-arms ``running`` before every
+# park sleep (the parked supervisor still owns the runtime) and re-checks it
+# at every wake — a bare ``stop_running`` (no shutdown/cancel) during the
+# park therefore ends the supervisor with ``stopped_no_restart`` instead of
+# silently reviving 30 minutes later.  The alarm copy documents the
+# Stop-then-Start contract: while parked, POST /start answers 409
+# already_owned; the operator path is a full Stop first, then Start.
 
 _ORCHESTRATOR_CRASH_OUTCOME = -1.0
+_ORCH_LOG = logging.getLogger("pok.orchestrator")
 # P2 (2026-10-05): ORCH_LLM_AVAILABILITY_BLOCKED_COST (orchestrator.py:98,
 # -99995.0) is auto-restartable double insurance.  F9 evidence: the waitable
 # 1302 pause path exited the loop silently up to four times in one day
@@ -142,10 +160,41 @@ def _restart_stable_run_seconds() -> float:
     )
 
 
+def _restart_slow_retry_seconds() -> float:
+    """F-B (2026-10-09): cadence of the post-rate-limit slow-retry lane."""
+
+    return _env_float_in_range(
+        "POK_ORCHESTRATOR_RESTART_SLOW_RETRY_SEC", 1800.0, 0.0, 86400.0
+    )
+
+
 async def _restart_backoff_sleep(seconds: float) -> None:
     """Patchable sleep seam so tests never wait a real backoff."""
 
     await asyncio.sleep(seconds)
+
+
+def _alert_orchestrator_restart_stop(message: str) -> None:
+    """Publish one supervisor alarm beyond events.jsonl (F-B, 2026-10-09).
+
+    ``_emit_orchestrator_restart_event`` reaches only the event ledger and
+    dashboard SSE; the 05:28:34 ``restart_rate_limited`` stop was therefore
+    invisible in app.log and the webui history for 3.1h.  This helper mirrors
+    the alarm into the orchestrator logger (app.log, ERROR) and the injected
+    webui ``log_history``.  Both sinks are best-effort: an observability
+    failure must never raise into the restart supervisor.
+    """
+
+    try:
+        _ORCH_LOG.error(message)
+    except Exception:
+        pass
+    try:
+        from tool_helpers import _get_ui
+
+        _get_ui().log_history(message, "error")
+    except Exception:
+        pass
 
 
 def _is_crash_outcome(result: object) -> bool:
@@ -811,6 +860,19 @@ async def run_evolution_task(coro, *, owner_id: str | None = None, restart_facto
     stop, cost policy, manual pause, recovery blocked, LLM-availability
     stop), cancellation, owner drift, or an in-flight shutdown stays stopped,
     and ownership cleanup runs exactly once at the true end.
+
+    F-B (2026-10-09): the sliding-window limit no longer ends the supervisor.
+    It alarms through app.log and the webui history, then parks in a
+    slow-retry lane (one alarmed attempt per
+    ``POK_ORCHESTRATOR_RESTART_SLOW_RETRY_SEC``, default 30min) that stays
+    under the same sliding-window counters; owner loss during the lane still
+    ends the supervisor without a further restart.
+
+    F-M3 (2026-10-09 re-review): while parked, the lane re-arms ``running``
+    before each sleep and verifies it at each wake — a bare
+    ``stop_running`` during the park is honored as an operator stop
+    (``stopped_no_restart``, no revival), so the Stop-then-Start contract
+    documented in the alarm copy actually holds.
     """
 
     owner_task = asyncio.current_task()
@@ -851,6 +913,7 @@ async def _supervise_orchestrator_crash_revival(
     burst_limit = _restart_max_burst()
     window_seconds = _restart_window_seconds()
     stable_run_seconds = _restart_stable_run_seconds()
+    slow_interval = _restart_slow_retry_seconds()
 
     backoff_s = initial_backoff
     restarts: list[float] = []
@@ -891,7 +954,107 @@ async def _supervise_orchestrator_crash_revival(
                 owner_id=captured_owner_id,
                 operator_action_required=True,
             )
-            return result
+            # F-B (2026-10-09): alarm app.log + webui (events.jsonl alone sat
+            # unseen for 3.1h), then park in the slow-retry lane instead of
+            # ending the supervisor terminally.
+            # F-M3 (2026-10-09 re-review): the alarm documents the
+            # Stop-then-Start contract — while the supervisor is parked its
+            # wrapper task stays alive, so POST /start answers 409
+            # already_owned; the operator path is a full Stop (shutdown +
+            # cancel) first, then Start.
+            _alert_orchestrator_restart_stop(
+                "编排器自动重启已达滑动窗口上限（"
+                f"{burst_limit} 次 / {window_seconds:.0f}s），停止快速重启，"
+                f"进入 {slow_interval:.0f}s 慢速重试道；last_error="
+                f"{_last_error() or 'unknown'}。停车期间 Start 会因 wrapper "
+                "存活返回 409 already_owned；如需人工处置请先完整 Stop（含 "
+                "shutdown+cancel）再 Start。"
+            )
+            stable = False
+            while True:
+                # F-M3 (2026-10-09 re-review): re-arm the runtime intent
+                # before every park sleep.  The crashed loop's finally clears
+                # ``running`` after every attempt; while the supervisor is
+                # parked it still owns the runtime, so the flag must say so —
+                # and an external ``stop_running`` during the sleep (a bare
+                # stop without shutdown/cancel) then becomes observable as a
+                # False ``running`` at the wake gate below, instead of a
+                # silent revival 30 minutes later.
+                try:
+                    if not app_state.to_dict().get("running"):
+                        app_state.set_running(True)
+                except Exception:
+                    pass
+                await _restart_backoff_sleep(slow_interval)
+                if not _still_owned():
+                    _emit_orchestrator_restart_event(
+                        status="owner_lost_no_restart",
+                        attempt=attempt,
+                        backoff_s=0.0,
+                        last_error=_last_error(),
+                        stage=_active_pipeline_stage_label(),
+                        owner_id=captured_owner_id,
+                    )
+                    return result
+                if app_state.to_dict().get("running") is False:
+                    # F-M3: a bare stop_running cleared the runtime intent
+                    # while parked — that is an operator stop decision, not a
+                    # crash artifact (the re-arm above restored the flag
+                    # after the last crash).  End the supervisor without a
+                    # revival so the Stop-then-Start contract holds.
+                    _emit_orchestrator_restart_event(
+                        status="stopped_no_restart",
+                        attempt=attempt,
+                        backoff_s=0.0,
+                        last_error=_last_error(),
+                        stage=_active_pipeline_stage_label(),
+                        owner_id=captured_owner_id,
+                    )
+                    return result
+                now = time.monotonic()
+                restarts = [
+                    stamp for stamp in restarts if now - stamp < window_seconds
+                ]
+                if len(restarts) >= burst_limit:
+                    # Counter protection still applies inside the slow lane:
+                    # a (mis)configured cadence faster than the window keeps
+                    # the effect parked until the stamps age out.  Each wait
+                    # here is a full slow interval, so this never spins.
+                    continue
+                attempt += 1
+                _emit_orchestrator_restart_event(
+                    status="slow_retry_scheduled",
+                    attempt=attempt,
+                    backoff_s=slow_interval,
+                    last_error=_last_error(),
+                    stage=_active_pipeline_stage_label(),
+                    owner_id=captured_owner_id,
+                )
+                _alert_orchestrator_restart_stop(
+                    "编排器慢速重试：重启尝试 #" f"{attempt}（每 "
+                    f"{slow_interval:.0f}s 一次，受监督器计数保护）；last_error="
+                    f"{_last_error() or 'unknown'}"
+                )
+                restarts.append(now)
+                try:
+                    app_state.set_running(True)
+                except Exception:
+                    pass
+                loop_started = time.monotonic()
+                result = await restart_factory()
+                if not _is_crash_outcome(result):
+                    return result
+                if time.monotonic() - loop_started >= stable_run_seconds:
+                    # Stable run before the crash inside the slow lane:
+                    # re-arm the ordinary fast lane with reset counters.
+                    stable = True
+                    break
+                # Crashed again quickly: stay in the slow lane, alarm and
+                # wait out the next interval.
+            if stable:
+                backoff_s = initial_backoff
+                restarts = []
+                continue
 
         attempt += 1
         _emit_orchestrator_restart_event(

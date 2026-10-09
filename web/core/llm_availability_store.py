@@ -49,7 +49,16 @@ LOCK_FILENAME = ".llm_availability_pause.lock"
 # pauses (e.g. recurring GLM 1302) overwrites the store before the Worker
 # resumes, the archived receipts are the only durable proof that the deferred
 # evidence was reconciled through an allowed resume path.
-RESUME_RECEIPT_HISTORY_CAP = 8
+# F-A (2026-10-09, v532 wedge): raised 8 -> 64. The 05:01-05:32 GLM storm
+# archived 8 rapid resumes and evicted the receipt of the evidence a deferred
+# Worker effect still held, wedging every revival on
+# ``no_archived_match``. 64 covers a sustained same-day storm; the durable
+# validator additionally authorizes through the suppressed-evidence chain
+# (store-held ``last_suppressed_evidence_digest`` markers — see
+# ``tool_planning_worker_durable``), which unlike the receipts is structurally
+# bound to the frozen digest, so the archive is defense-in-depth rather than
+# a single point of failure.
+RESUME_RECEIPT_HISTORY_CAP = 64
 _RESUME_RECEIPT_PROJECTION_FIELDS = (
     "category",
     "evidence_digest",
@@ -59,6 +68,16 @@ _RESUME_RECEIPT_PROJECTION_FIELDS = (
     "resumed_at",
     "resume_source",
     "resume_evidence_digest",
+    # F-H (2026-10-09 re-review): a suppressed recurrence's evidence digest
+    # never becomes a record digest (the suppression branch keeps the old
+    # record and only marks the incoming digest), so no resume receipt can
+    # ever exist for it.  Carrying the suppression marker into the archived
+    # receipt projection keeps that store-held proof durable across record
+    # replacement and archive churn (the Worker validator's suppressed
+    # evidence chain scans these markers; see
+    # ``tool_planning_worker_durable``).
+    "last_suppressed_category",
+    "last_suppressed_evidence_digest",
 )
 
 _AUTO_COOLDOWN_SECONDS = {
@@ -650,6 +669,63 @@ def pause_wait_seconds(state: dict, *, now: datetime | None = None) -> float | N
     return max(0.0, (due_at - timestamp).total_seconds())
 
 
+def system_resume_horizon(projection: dict) -> datetime | None:
+    """Latest instant a system-owned resume path can still hold a pause live.
+
+    F-A (2026-10-09, v532 receipt-eviction wedge).  Given a *deferral-time*
+    pause projection — the frozen ``availability`` record inside a deferred
+    Worker effect — return the conservative upper bound of the system-owned
+    resume deadline for that pause, or ``None`` when the projection can never
+    self-authorize a resume (manual pause, no time basis, unknown category).
+
+    Exact deadline first: a projection frozen from the reconciled store record
+    (claim-boundary deferral) carries ``auto_resume_at``.  Exception-path
+    deferrals freeze ``pause_state()`` *before* it is persisted, so those carry
+    only ``observed_at`` (plus ``provider_reset_at`` for quota); the fallback
+    is the category's deadline bound: every cooldown arming rule for that
+    category produces a first-armed deadline at or before
+    ``observed_at + bound`` (the service curve is capped at 120s for every
+    occurrence count, transport is a fixed 60s, trusted quota resets at the
+    provider timestamp).  A same-category recurrence can slide a *live*
+    record's deadline past that bound, but only while the record stays the
+    active one; the durable validator requires the live audit record to be
+    inactive before any snapshot authorization, so a slid deadline implies a
+    later system-owned resume already elapsed.
+    """
+
+    if not isinstance(projection, dict):
+        return None
+    if bool(projection.get("requires_manual_resume")):
+        # Manual pauses resume only through the operator evidence digest;
+        # they never self-authorize from a deferral-time snapshot.
+        return None
+    exact = _parse_time(projection.get("auto_resume_at"))
+    if exact is not None:
+        return exact
+    category = str(projection.get("category") or "")
+    if category == QUOTA_429:
+        # Trusted quota pauses carry the provider reset timestamp and it is
+        # their sole resume authority; anything else must not self-authorize.
+        # F-L (2026-10-09 re-review): parse with the store's authoritative
+        # host-local rule (``_parse_provider_reset_time``), not the naive->UTC
+        # ``_parse_time`` — on a UTC+8 host the old read skewed the horizon
+        # by the whole timezone offset against every persisted record.
+        return _parse_provider_reset_time(projection.get("provider_reset_at"))
+    observed = _parse_time(projection.get("observed_at"))
+    if observed is None:
+        return None
+    if category == SERVICE_UNAVAILABLE:
+        # Any occurrence count: cooldown(8) already saturates the 120s cap.
+        return observed + timedelta(
+            seconds=service_unavailable_cooldown_seconds(8)
+        )
+    if category == TRANSPORT_UNAVAILABLE:
+        return observed + timedelta(
+            seconds=_AUTO_COOLDOWN_SECONDS[TRANSPORT_UNAVAILABLE]
+        )
+    return None
+
+
 __all__ = [
     "LLMAvailabilityPauseError",
     "RESUME_ENV",
@@ -663,4 +739,5 @@ __all__ = [
     "persist_llm_pause",
     "reconcile_llm_pause",
     "raise_if_llm_paused",
+    "system_resume_horizon",
 ]

@@ -37,6 +37,34 @@ import tool_planning_worker_durable as _dur
 import tool_planning_worker_phases_rework as _phr
 
 
+def _worker_resume_receipt_gate(durable_worker_state, deferred, pause_audit):
+    """Resume-receipt gate for ``wait_for_llm_availability`` (single pass).
+
+    Wraps ``_dur._worker_availability_resume_validation`` so the validation
+    runs exactly once per call: the errors flow to the blocked result as
+    before, and when the authorizing lane is the store-held
+    suppressed-evidence chain (no resume receipt exists for that digest by
+    construction) the F-M2 audit event
+    ``pipeline.worker_resume_snapshot_authorized`` is emitted with the
+    effect_id / frozen digest / authorization shape / archive depth /
+    horizon.  Ordinary receipt-lane authorizations return ``None`` and emit
+    nothing — they are already audited through the store's own records.
+    """
+
+    errors, authorization = _dur._worker_availability_resume_validation(
+        deferred, pause_audit
+    )
+    if authorization is not None:
+        try:
+            _dur._emit_worker_resume_snapshot_authorized(
+                authorization,
+                effect_id=(durable_worker_state or {}).get("effect_id"),
+            )
+        except Exception:
+            pass
+    return errors
+
+
 async def _execute_workers_phase_a_preamble(args, actor_lock_owned):
     """Phase A: arg validation, checkpoint resolution, system-bootstrap guard,"""
     _t0 = _tw.time.time()
@@ -361,7 +389,8 @@ async def _execute_workers_phase_a_preamble(args, actor_lock_owned):
                         "and reconcile the pause record before resuming."
                     ),
                 })
-            _resume_receipt_errors = _dur._worker_availability_resume_receipt_errors(
+            _resume_receipt_errors = _worker_resume_receipt_gate(
+                durable_worker_state,
                 _deferred_availability,
                 _pause_audit,
             )

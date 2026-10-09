@@ -13,8 +13,11 @@ Contract:
   ``ORCH_*_COST`` sentinels and ``0.0``) never restart.
 * Bounded backoff: 30s initial, doubling per crash, capped at 30min.
 * Sliding-window rate limit: at most 5 restarts per 30min window; beyond it
-  a terminal ``pipeline.orchestrator_auto_restart`` event with
-  ``operator_action_required=true`` replaces the storm.
+  a ``pipeline.orchestrator_auto_restart`` event with
+  ``operator_action_required=true`` alarms app.log + the webui history and
+  parks the supervisor in a slow-retry lane (one alarmed attempt per
+  ``POK_ORCHESTRATOR_RESTART_SLOW_RETRY_SEC``, default 30min, still counted
+  and window-guarded) instead of ending it (F-B, 2026-10-09).
 * A stable run (>= 1h) before the crash resets the counter/backoff.
 * Every retry emits ``pipeline.orchestrator_auto_restart`` with
   attempt/backoff_s/last_error/stage; cancellation and owner drift stop the
@@ -149,9 +152,38 @@ def test_backoff_doubles_per_crash_and_caps(restart_env):
     _run(scenario())
 
 
-def test_sliding_window_rate_limit_emits_terminal_event(restart_env):
-    monkeypatch = restart_env
+def test_sliding_window_rate_limit_alarms_then_slow_retries(restart_env, monkeypatch):
+    """F-B (2026-10-09): the burst limit parks, it no longer terminates.
+
+    Pre-FB this asserted ``result == -1.0`` with the supervisor finished;
+    the 05:28:34 v532 stop then sat silently for 3.1h.  The branch now emits
+    the same ``restart_rate_limited`` operator-action event AND recovers
+    through the window-guarded slow-retry lane.
+    """
     monkeypatch.setenv("POK_ORCHESTRATOR_RESTART_MAX_BURST", "2")
+    monkeypatch.setenv("POK_ORCHESTRATOR_RESTART_WINDOW_SEC", "30")
+    monkeypatch.setenv("POK_ORCHESTRATOR_RESTART_SLOW_RETRY_SEC", "5")
+
+    class _FakeClock:
+        def __init__(self):
+            self._now = 1000.0
+
+        def monotonic(self):
+            return self._now
+
+        def time(self):
+            return self._now
+
+        def advance(self, seconds):
+            self._now += seconds
+
+    clock = _FakeClock()
+    monkeypatch.setattr(state_module, "time", clock)
+
+    async def fake_sleep(seconds):
+        clock.advance(seconds)
+
+    monkeypatch.setattr(state_module, "_restart_backoff_sleep", fake_sleep)
 
     events = []
     import system_log
@@ -165,17 +197,21 @@ def test_sliding_window_rate_limit_emits_terminal_event(restart_env):
     )
 
     async def scenario():
-        result, calls = await _drive([-1.0, -1.0, -1.0])
-        # Two restarts were allowed; the third crash is terminal.
-        assert calls == [1, 2, 3]
-        assert result == -1.0
+        result, calls = await _drive([-1.0, -1.0, -1.0, 0.0])
+        # Two fast restarts were allowed; the third crash parks the
+        # supervisor; the slow lane's guarded attempt then recovers.
+        assert calls == [1, 2, 3, 4]
+        assert result == 0.0
         assert app_state.to_dict()["running"] is False
-        terminal = [e for e in events if e["type"] == "pipeline.orchestrator_auto_restart"]
-        assert terminal, events
-        assert terminal[-1]["data"].get("operator_action_required") is True
-        assert terminal[-1]["data"].get("status") == "restart_rate_limited"
 
     _run(scenario())
+    restart_events = [e for e in events if e["type"] == "pipeline.orchestrator_auto_restart"]
+    assert restart_events, events
+    terminal = [e for e in restart_events if e["data"].get("status") == "restart_rate_limited"]
+    assert terminal
+    assert terminal[-1]["data"].get("operator_action_required") is True
+    statuses = [e["data"].get("status") for e in restart_events]
+    assert "slow_retry_scheduled" in statuses
 
 
 def test_every_retry_emits_restart_event_with_stage(restart_env, monkeypatch, tmp_path):

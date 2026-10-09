@@ -14,9 +14,9 @@ Contract (fail-closed semantics unchanged):
 
 * ``persist_llm_pause`` archives the overwritten record's resume receipt
   (only when the record is inactive AND carries ``resumed_at`` +
-  ``resume_source``) into a bounded ``resume_receipt_history`` (cap 8, FIFO)
-  on the new record; the store schema moves 1 -> 2 and v1 records without
-  the field still load.
+  ``resume_source``) into a bounded ``resume_receipt_history`` (cap 64
+  since the 2026-10-09 F-A fix, FIFO) on the new record; the store schema
+  moves 1 -> 2 and v1 records without the field still load.
 * The validator accepts a deferred effect when either the current audit
   record matches (unchanged) OR any history projection matches under the
   same per-record rules.  A manual pause in history still requires
@@ -216,7 +216,9 @@ def test_history_manual_pause_with_operator_digest_passes(isolated_store):
 def test_resume_receipt_history_is_bounded_fifo(isolated_store):
     seen = []
     moment = BASE
-    for index in range(10):
+    # F-A (2026-10-09): the cap rose 8 -> 64; drive one archive cycle past
+    # the new cap so the FIFO bound itself stays proven.
+    for index in range(66):
         pause = store.persist_llm_pause(
             _service_issue(f"HTTP 529 blip {index}"), now=moment
         )
@@ -227,11 +229,11 @@ def test_resume_receipt_history_is_bounded_fifo(isolated_store):
     audit = store.load_llm_pause()
     history = audit.get("resume_receipt_history")
     assert isinstance(history, list)
-    assert len(history) == 8
-    # Ten pauses archive nine receipts (the tenth is still the live record);
-    # FIFO keeps the newest eight, evicting the oldest receipt and the pause
-    # that was never overwritten.
-    assert [entry["evidence_digest"] for entry in history] == seen[1:9]
+    assert len(history) == 64
+    # Sixty-six pauses archive sixty-five receipts (the sixty-sixth is still
+    # the live record); FIFO keeps the newest sixty-four, evicting the
+    # oldest receipt and the pause that was never overwritten.
+    assert [entry["evidence_digest"] for entry in history] == seen[1:65]
 
 
 def test_v1_record_without_history_loads_and_upgrades(isolated_store):
