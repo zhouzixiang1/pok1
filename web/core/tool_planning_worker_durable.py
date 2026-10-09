@@ -1561,6 +1561,13 @@ def _suppressed_evidence_chain_authorization(
     chain is *structurally bound to the frozen digest* (F-M1): a forged or
     unrelated digest never matches any marker, so unlike the removed
     capacity-based lane it cannot authorize anything the store never held.
+    R1/R2 (2026-10-09 round-3 audit): the marker is a bounded *history list*
+    (``last_suppressed_records`` — every genuinely suppressed digest, not
+    just the newest), and an ACTIVE marker-bearing record discarded by a
+    higher-priority overwrite (1302 storm -> 1308 quota escalation)
+    contributes a ``suppressed_marker_eviction`` archive projection, so the
+    chain keeps every suppressed digest durable across same-window double
+    freezes and priority-replacement alike.
 
     Authorization is deliberately narrow and fail-closed:
 
@@ -1606,10 +1613,31 @@ def _suppressed_evidence_chain_authorization(
     ) else []
 
     def _marker_matches(record) -> bool:
-        return (
+        if (
             str(record.get("last_suppressed_evidence_digest") or "") == digest
             and str(record.get("last_suppressed_category") or "") == category
-        )
+        ):
+            return True
+        # R1 (2026-10-09 round-3 audit): the marker is a bounded history list
+        # (``last_suppressed_records``), so an earlier freezer survives a later
+        # same-window freeze.  Scan every entry on the current record AND on
+        # each archived projection — receipt projections carry the list, and
+        # ``suppressed_marker_eviction`` projections (R2: an ACTIVE record
+        # discarded by a higher-priority overwrite) flatten it.  The binding
+        # stays structural: only digests the store genuinely suppressed are
+        # ever written into any of these surfaces, so a forged or unrelated
+        # digest still matches nothing at any depth.
+        entries = record.get("last_suppressed_records")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if (
+                    str(entry.get("evidence_digest") or "") == digest
+                    and str(entry.get("category") or "") == category
+                ):
+                    return True
+        return False
 
     matched_where = None
     if _marker_matches(pause_audit):
@@ -1658,7 +1686,14 @@ def _emit_worker_resume_snapshot_authorized(authorization, *, effect_id=None):
             {
                 "effect_id": effect_id,
                 "evidence_digest": authorization.get("evidence_digest"),
-                "category": authorization.get("category"),
+                # R3 (2026-10-09 round-3 audit): ``category`` is a reserved
+                # key on the persisted surface — ``log_system_event`` pops it
+                # (``event_bus.emit``'s first positional parameter is named
+                # ``category`` = the event type) and the bus then backfills
+                # the event type into ``data["category"]``.  The pause
+                # category must travel under ``pause_category`` or it never
+                # reaches events.jsonl (verified against the real bus).
+                "pause_category": authorization.get("category"),
                 "authorization_shape": authorization.get("authorization_shape"),
                 "archive_depth": authorization.get("archive_depth"),
                 "horizon": authorization.get("horizon"),

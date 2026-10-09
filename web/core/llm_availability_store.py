@@ -59,6 +59,23 @@ LOCK_FILENAME = ".llm_availability_pause.lock"
 # bound to the frozen digest, so the archive is defense-in-depth rather than
 # a single point of failure.
 RESUME_RECEIPT_HISTORY_CAP = 64
+#: R1 (2026-10-09 round-3 adversarial audit): the suppression marker is a
+#: bounded *history list*, not a single last-write-wins slot.  Two Worker
+#: effects freezing different digests inside one ACTIVE record's cooldown
+#: window used to leave the first freezer's digest with no durable trace
+#: anywhere (the scalar slot was overwritten before any receipt projection
+#: existed), wedging its deferred resume fail-closed forever.  The scalar pair
+#: below stays as the "newest suppressed entry" backward-compat projection;
+#: every genuinely suppressed digest also lands in
+#: ``last_suppressed_records`` (FIFO, deduped by digest, capped here).  The
+#: bound must cover the largest live LLM concurrency: each in-flight stream
+#: can freeze a distinct digest (sha256 over category+statuses+evidence)
+#: into one ACTIVE window, and the AIMD controller may raise the live
+#: concurrency to AIMD_MAX_LIMIT (32, llm_concurrency.py) — 34 covers that
+#: ceiling plus margin.  Deeper same-window storms keep the newest entries
+#: and the oldest beyond that bound have no durable trace by construction
+#: (fail-closed, like receipt FIFO).
+SUPPRESSED_MARKER_HISTORY_CAP = 34
 _RESUME_RECEIPT_PROJECTION_FIELDS = (
     "category",
     "evidence_digest",
@@ -75,9 +92,12 @@ _RESUME_RECEIPT_PROJECTION_FIELDS = (
     # receipt projection keeps that store-held proof durable across record
     # replacement and archive churn (the Worker validator's suppressed
     # evidence chain scans these markers; see
-    # ``tool_planning_worker_durable``).
+    # ``tool_planning_worker_durable``).  R1 (round-3): the bounded marker
+    # list rides along so every suppressed digest — not just the newest —
+    # survives into the archive.
     "last_suppressed_category",
     "last_suppressed_evidence_digest",
+    "last_suppressed_records",
 )
 
 _AUTO_COOLDOWN_SECONDS = {
@@ -247,19 +267,128 @@ def _resume_receipt_projection(record: dict | None) -> dict | None:
     return {key: record.get(key) for key in _RESUME_RECEIPT_PROJECTION_FIELDS}
 
 
+def _suppressed_marker_entries(record: dict | None) -> list[dict]:
+    """Ordered ``{"category", "evidence_digest"}`` markers a record suppressed.
+
+    Normalizes the legacy scalar pair plus the bounded
+    ``last_suppressed_records`` list into one ordered view (oldest -> newest),
+    dropping malformed items and deduplicating by digest.  The scalar pair is
+    the newest entry, so appending it last preserves recency order when both
+    surfaces disagree.  Only digests the store genuinely suppressed ever
+    appear here: entries are written solely by the suppression branch (and the
+    eviction projection derived from it) — never from caller-supplied input.
+    """
+
+    if not isinstance(record, dict):
+        return []
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    def _push(category: object, digest: object) -> None:
+        digest_text = str(digest or "")
+        category_text = str(category or "")
+        if not digest_text or not category_text or digest_text in seen:
+            return
+        seen.add(digest_text)
+        entries.append({"category": category_text, "evidence_digest": digest_text})
+
+    raw_list = record.get("last_suppressed_records")
+    if isinstance(raw_list, list):
+        for item in raw_list:
+            if isinstance(item, dict):
+                _push(item.get("category"), item.get("evidence_digest"))
+    _push(
+        record.get("last_suppressed_category"),
+        record.get("last_suppressed_evidence_digest"),
+    )
+    return entries
+
+
+def _suppressed_marker_eviction_projection(record: dict | None) -> dict | None:
+    """R2 (2026-10-09 round-3 audit): flatten a discarded ACTIVE record's
+    suppression markers into ONE bounded archive projection.
+
+    A higher-priority pause (the realistic 1302 storm -> 1308 quota
+    escalation) replaces the ACTIVE record outright; the receipt projection
+    refuses ACTIVE records (they never went through a resume path), so without
+    this eviction projection the markers the record held would evaporate and
+    every deferred Worker effect holding one of those digests would wedge
+    fail-closed with no automatic recovery lane.  Flattening into the archive
+    (rather than forward-carrying ``last_suppressed_*`` onto the new record)
+    keeps the field semantics per-record — the scalar pair keeps meaning
+    "newest digest suppressed while THAT record was live" instead of
+    mis-attributing the storm's suppressions to the quota record that
+    suppressed nothing — and keeps marker lifetime under the same bounded,
+    FIFO, auditable 64-slot surface as resume receipts instead of chaining it
+    to unbounded future record generations (each replacement forwarding the
+    union would let a marker outlive any bound tied to the actual suppression
+    event).  An eviction entry deliberately carries no ``resumed_at`` /
+    ``resume_source``, so the receipt-lane validator can never authorize
+    through it; only the structurally digest-bound marker chain reads it.
+    """
+
+    if not isinstance(record, dict) or not record.get("active"):
+        return None
+    markers = _suppressed_marker_entries(record)[-SUPPRESSED_MARKER_HISTORY_CAP:]
+    if not markers:
+        return None
+    newest = markers[-1]
+    return {
+        "archive_kind": "suppressed_marker_eviction",
+        "category": str(record.get("category") or ""),
+        "evidence_digest": str(record.get("evidence_digest") or ""),
+        "last_observed_at": record.get("last_observed_at"),
+        "last_suppressed_category": newest["category"],
+        "last_suppressed_evidence_digest": newest["evidence_digest"],
+        "last_suppressed_records": markers,
+    }
+
+
+def _carried_eviction_entry(entry: dict) -> dict | None:
+    """Sanitize one history entry of the eviction kind for carry-forward."""
+
+    if str(entry.get("archive_kind") or "") != "suppressed_marker_eviction":
+        return None
+    markers = _suppressed_marker_entries(entry)[-SUPPRESSED_MARKER_HISTORY_CAP:]
+    if not markers:
+        return None
+    newest = markers[-1]
+    return {
+        "archive_kind": "suppressed_marker_eviction",
+        "category": str(entry.get("category") or ""),
+        "evidence_digest": str(entry.get("evidence_digest") or ""),
+        "last_observed_at": entry.get("last_observed_at"),
+        "last_suppressed_category": newest["category"],
+        "last_suppressed_evidence_digest": newest["evidence_digest"],
+        "last_suppressed_records": markers,
+    }
+
+
 def _carried_resume_receipt_history(record: dict | None) -> list[dict]:
-    """Sanitize and bound the history carried forward from an existing record."""
+    """Sanitize and bound the history carried forward from an existing record.
+
+    R2 (round-3): the bounded history carries TWO entry kinds — resume
+    receipts (as before) and ``suppressed_marker_eviction`` projections
+    (markers of an ACTIVE record discarded by a higher-priority overwrite).
+    Anything else (or a marker-less/garbage eviction shape) is dropped.
+    """
 
     if not isinstance(record, dict):
         return []
     raw = record.get("resume_receipt_history")
     if not isinstance(raw, list):
         return []
-    history = [
-        dict(entry)
-        for entry in raw
-        if isinstance(entry, dict) and _resume_receipt_projection(entry) is not None
-    ]
+    history: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        receipt = _resume_receipt_projection(entry)
+        if receipt is not None:
+            history.append(receipt)
+            continue
+        eviction = _carried_eviction_entry(entry)
+        if eviction is not None:
+            history.append(eviction)
     return history[-RESUME_RECEIPT_HISTORY_CAP:]
 
 
@@ -430,6 +559,22 @@ def persist_llm_pause(
                 if digest != str(current.get("evidence_digest") or ""):
                     current["last_suppressed_category"] = category
                     current["last_suppressed_evidence_digest"] = digest
+                    # R1 (2026-10-09 round-3 audit): the scalar slot is
+                    # last-write-wins, so a second Worker freeze with a
+                    # different digest inside the SAME cooldown window used to
+                    # erase the first freezer's only durable trace.  Keep every
+                    # genuinely suppressed digest (deduped by digest,
+                    # recency-refreshed) in a bounded FIFO list the suppressed
+                    # evidence chain validator scans.
+                    markers = [
+                        item
+                        for item in _suppressed_marker_entries(current)
+                        if item["evidence_digest"] != digest
+                    ]
+                    markers.append({"category": category, "evidence_digest": digest})
+                    current["last_suppressed_records"] = markers[
+                        -SUPPRESSED_MARKER_HISTORY_CAP:
+                    ]
                 _write_unlocked(path, current)
                 return current
 
@@ -466,7 +611,17 @@ def persist_llm_pause(
             )
         if archived_receipt is not None:
             resume_history.append(archived_receipt)
-            resume_history = resume_history[-RESUME_RECEIPT_HISTORY_CAP:]
+        # R2 (2026-10-09 round-3 audit): this branch DISCARDS the loaded record
+        # (higher-priority overwrite — e.g. 1302 storm escalating to a 1308
+        # quota).  An ACTIVE record never has a resume receipt, so without an
+        # explicit eviction projection its suppression markers would evaporate
+        # here.  Flatten them into ONE bounded archive entry; marker-less
+        # ACTIVE records add nothing (the F-M1 fail-closed contract for a
+        # superseded record's own digest is unchanged).
+        evicted_markers = _suppressed_marker_eviction_projection(current)
+        if evicted_markers is not None:
+            resume_history.append(evicted_markers)
+        resume_history = resume_history[-RESUME_RECEIPT_HISTORY_CAP:]
         state = {
             "schema_version": SCHEMA_VERSION,
             "active": True,

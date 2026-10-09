@@ -161,10 +161,21 @@ def _restart_stable_run_seconds() -> float:
 
 
 def _restart_slow_retry_seconds() -> float:
-    """F-B (2026-10-09): cadence of the post-rate-limit slow-retry lane."""
+    """F-B (2026-10-09): cadence of the post-rate-limit slow-retry lane.
+
+    R4 (2026-10-09 round-3 audit): the lower bound is 1.0s — the same floor
+    convention as ``_restart_max_backoff_seconds`` / ``_restart_window_seconds``
+    (an out-of-range value falls back to the default instead of being
+    clamped).  A configured ``0`` used to be accepted and turned the parked
+    slow lane into a ~100k-iterations/s cooperative busy-spin of zero-length
+    sleeps while the sliding-window counters were saturated; ≥ 1.0s bounds
+    the parked loop to at most one wake per second, which still lets
+    operators shorten the cadence for diagnostics (60.0 would forbid that
+    without adding any protection the 1.0s floor does not already give).
+    """
 
     return _env_float_in_range(
-        "POK_ORCHESTRATOR_RESTART_SLOW_RETRY_SEC", 1800.0, 0.0, 86400.0
+        "POK_ORCHESTRATOR_RESTART_SLOW_RETRY_SEC", 1800.0, 1.0, 86400.0
     )
 
 
@@ -1019,7 +1030,11 @@ async def _supervise_orchestrator_crash_revival(
                     # Counter protection still applies inside the slow lane:
                     # a (mis)configured cadence faster than the window keeps
                     # the effect parked until the stamps age out.  Each wait
-                    # here is a full slow interval, so this never spins.
+                    # here is a full slow interval, and that interval is
+                    # floored at 1.0s by ``_restart_slow_retry_seconds``
+                    # (R4, 2026-10-09 round-3: a 0-value cadence used to
+                    # spin this loop on zero-length sleeps), so this lane
+                    # cannot busy-spin.
                     continue
                 attempt += 1
                 _emit_orchestrator_restart_event(
