@@ -928,6 +928,46 @@ def _pipeline_liveness_threshold_sec() -> float:
         return 600.0
 
 
+def _restart_fill_inflight_cap() -> int:
+    """Bounded in-flight ceiling while an orchestrator revival is scheduled.
+
+    2026-10-10 (w3 wedge_suppression residual ①): the saturator used to be
+    hard-coupled to pipeline-task aliveness — ANY orchestrator death parked
+    the background lane too, so a deterministic crash-loop amplified into
+    3h08m of zero LLM dispatch while the supervisor was sleeping toward a
+    scheduled revival the whole time. While a revival IS scheduled (crash
+    backoff / slow-retry park), allow at most this many in-flight packets —
+    every other gate (permits, claude children, RAM, cgroup headroom, quota
+    pacing) still applies. ``0`` restores the old hard park.
+    """
+
+    try:
+        return max(
+            0, int(os.environ.get("POK_LLM_SATURATOR_RESTART_FILL_INFLIGHT", "1"))
+        )
+    except (TypeError, ValueError):
+        return 1
+
+
+def _orchestrator_restart_pending_seconds(now: "float | None" = None) -> "float | None":
+    """Seconds until the supervisor's next scheduled revival; None = none.
+
+    Mirrors ``_saturator_pipeline_alive``'s fail-open import posture. Uses
+    the monotonic clock internally (the marker is a monotonic deadline);
+    ``now`` is only for tests.
+    """
+
+    try:
+        from server.state import app_state
+    except Exception:
+        return None
+    try:
+        kwargs = {"now": now} if now is not None else {}
+        return app_state.orchestrator_restart_pending_seconds(**kwargs)
+    except Exception:
+        return None
+
+
 def _saturator_pipeline_alive(now: float | None = None) -> bool:
     """Is the evolution pipeline demonstrably alive?
 
@@ -1041,7 +1081,37 @@ def saturator_may_launch(
     if not _saturator_pipeline_alive():
         # P7 (2026-10-05): the wedge case — a dead/stopped pipeline must not
         # keep burning provider budget on background packets.
-        return False, "pipeline_not_alive"
+        # 2026-10-10 (w3 ①) refinement: a stale heartbeat while the crash
+        # supervisor has a revival SCHEDULED (backoff / slow-retry sleep) is
+        # not a wedge — the pipeline is between lives, not dead. Keep a
+        # bounded fill lane open (cap via _restart_fill_inflight_cap) so the
+        # provider lane stays warm; an operator stop, an owner-lost
+        # supervisor, or a marker older than the liveness threshold (a
+        # defensive bound against a missed clear) still parks hard.
+        restart_cap = _restart_fill_inflight_cap()
+        pending = _orchestrator_restart_pending_seconds()
+        if (
+            restart_cap <= 0
+            or pending is None
+            or pending < -_pipeline_liveness_threshold_sec()
+        ):
+            return False, "pipeline_not_alive"
+        if in_flight >= restart_cap:
+            return False, "restart_fill_soft_cap"
+    # 5h quota pacing (2026-10-10, w2/w4/w5): clamp the mean opportunistic
+    # rate to POK_LLM_QUOTA_WINDOW_BUDGET_TOKENS / POK_LLM_QUOTA_WINDOW_SEC.
+    # The saturator is the over-saturation lane — left unchecked it
+    # front-loads the whole 5h provider window (16-40M tok/h), punches
+    # through GLM 1308, and the resulting quota pause then zeroes EVERY
+    # lane for the window tail. Pipeline roles are never gated here.
+    # Fail-open: any accounting failure must not park the pipeline's fill.
+    try:
+        from llm_concurrency import quota_pacer_opportunistic_block
+
+        if quota_pacer_opportunistic_block() is not None:
+            return False, "quota_pacing"
+    except Exception:
+        pass
     try:
         from llm_concurrency import get_capacity, llm_semaphore_has_capacity
     except Exception:

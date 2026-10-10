@@ -232,5 +232,22 @@ def record_llm_call_metrics(
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
         with open(path, "a", encoding="utf-8") as f:
             f.write(line)
+        # 5h quota pacing (2026-10-10): this is the single seam every
+        # completed provider attempt (claude AND codex transports) flows
+        # through, so it is also the burn-accounting feed for the rolling
+        # quota pacer in llm_concurrency (saturator rate clamp). Same
+        # best-effort contract as the rest of this function: never affects
+        # the dispatch path. The record's durable (call_id, attempt) identity
+        # dedupes against the restart seed — note call_id alone is NOT
+        # unique per row: signature-retry attempts reuse it.
+        try:
+            from llm_concurrency import note_llm_call_tokens
+
+            call_key = None
+            if record["call_id"]:
+                call_key = (str(record["call_id"]), int(record["attempt"]))
+            note_llm_call_tokens(total_tok, ts=now, call_key=call_key)
+        except Exception:
+            pass
     except Exception:
         pass

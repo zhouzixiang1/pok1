@@ -530,6 +530,22 @@ def _reap_tmp_and_stale_locks(results_dir: Path, *, max_age_sec: float = 3600.0)
         except OSError:
             continue
         if name.endswith(".tmp") or name.endswith(".hygiene.tmp"):
+            # 2026-10-10 (w6 disk_hygiene_tmp_race): a FRESH .tmp is almost
+            # certainly an in-flight atomic publish, not garbage. The
+            # checkpoint writer's _atomic_publish_state_text
+            # (evolution_infra_state_io.py) creates
+            # ``.<name>.<uuid>.tmp`` with O_EXCL, writes+fsyncs, then
+            # os.replace()s it — the whole sequence spans milliseconds. The
+            # unconditional unlink here raced exactly that window on
+            # 2026-10-10 05:59:32 (hygiene freed 21.4MB in the same minute
+            # the writer's os.replace raised ENOENT and crashed the
+            # orchestrator, losing a precommit_failed checkpoint write).
+            # Gate .tmp reaping on the same max_age_sec staleness the lock
+            # branch below already uses: an actively-written tmp (mtime now)
+            # is skipped; a leftover from a crashed writer is >1h old and
+            # still reaped.
+            if not stale:
+                continue
             freed += _rm(child)
             removed += 1
             continue

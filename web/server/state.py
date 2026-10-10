@@ -298,6 +298,15 @@ class AppState:
         # tick while the loop task is alive); read by saturator_may_launch to
         # park background burns when the pipeline is dead/stopped.
         self._pipeline_heartbeat_monotonic: float | None = None
+        # 2026-10-10 (w3 wedge_suppression residual ①): monotonic deadline of
+        # the NEXT scheduled orchestrator revival while the crash-restart
+        # supervisor sleeps in a backoff / slow-retry window. The pipeline
+        # heartbeat is necessarily stale during those sleeps (the loop task is
+        # dead), and the old hard coupling parked the LLM saturator for the
+        # whole wedge — 3h08m of zero dispatch while a revival WAS scheduled.
+        # The saturator reads this marker to allow bounded background fill
+        # during the window (see llm_saturator.saturator_may_launch).
+        self._orchestrator_restart_deadline_monotonic: float | None = None
         # P2 (2026-10-05): last orchestrator crash note for restart events.
         self._last_orchestrator_crash: dict | None = None
         self._load_config()
@@ -470,6 +479,42 @@ class AppState:
         if beat is None:
             return None
         return max(0.0, (now if now is not None else time.monotonic()) - beat)
+
+    def note_orchestrator_restart_pending(self, delay_seconds: float) -> None:
+        """Mark that the crash-restart supervisor will revive the loop soon.
+
+        Called by ``_supervise_orchestrator_crash_revival`` right before each
+        backoff / slow-retry sleep. ``delay_seconds`` is that sleep's length;
+        the stored value is the monotonic deadline of the scheduled revival.
+        """
+
+        with self._lock:
+            self._orchestrator_restart_deadline_monotonic = (
+                time.monotonic() + max(0.0, float(delay_seconds))
+            )
+
+    def clear_orchestrator_restart_pending(self) -> None:
+        """Drop the revival marker (loop revived, or the supervisor exited)."""
+
+        with self._lock:
+            self._orchestrator_restart_deadline_monotonic = None
+
+    def orchestrator_restart_pending_seconds(
+        self, *, now: float | None = None
+    ) -> "float | None":
+        """Seconds until the scheduled revival; ``None`` when none scheduled.
+
+        The value may be slightly negative when the deadline just passed and
+        the revival is in flight (the marker is cleared immediately before
+        the restart factory runs); consumers treat a small negative as
+        "still pending" and apply their own staleness bound.
+        """
+
+        with self._lock:
+            deadline = self._orchestrator_restart_deadline_monotonic
+        if deadline is None:
+            return None
+        return deadline - (now if now is not None else time.monotonic())
 
     def note_orchestrator_crash(self, error: object) -> None:
         """Stash the crash detail the restart events republish (P2)."""
@@ -891,12 +936,19 @@ async def run_evolution_task(coro, *, owner_id: str | None = None, restart_facto
     try:
         result = await coro
         if restart_factory is not None and _is_crash_outcome(result):
-            result = await _supervise_orchestrator_crash_revival(
-                result,
-                owner_task=owner_task,
-                captured_owner_id=captured_owner_id,
-                restart_factory=restart_factory,
-            )
+            try:
+                result = await _supervise_orchestrator_crash_revival(
+                    result,
+                    owner_task=owner_task,
+                    captured_owner_id=captured_owner_id,
+                    restart_factory=restart_factory,
+                )
+            finally:
+                # 2026-10-10 (w3 ①): whichever way the supervisor exits
+                # (revival, owner loss, operator stop, rate-limit return),
+                # no revival may stay "scheduled" — the saturator's bounded
+                # backoff fill must end with the supervisor.
+                app_state.clear_orchestrator_restart_pending()
         return result
     finally:
         try:
@@ -996,6 +1048,11 @@ async def _supervise_orchestrator_crash_revival(
                         app_state.set_running(True)
                 except Exception:
                     pass
+                # 2026-10-10 (w3 ①): a revival IS scheduled (this parked
+                # lane retries every interval) — let the saturator know so
+                # its bounded backoff fill keeps the provider lane warm
+                # instead of parking for the whole wedge.
+                app_state.note_orchestrator_restart_pending(slow_interval)
                 await _restart_backoff_sleep(slow_interval)
                 if not _still_owned():
                     _emit_orchestrator_restart_event(
@@ -1055,6 +1112,10 @@ async def _supervise_orchestrator_crash_revival(
                     app_state.set_running(True)
                 except Exception:
                     pass
+                # 2026-10-10 (w3 ①): revival is running NOW — drop the
+                # scheduled-revival marker before the loop starts beating its
+                # own heartbeat again.
+                app_state.clear_orchestrator_restart_pending()
                 loop_started = time.monotonic()
                 result = await restart_factory()
                 if not _is_crash_outcome(result):
@@ -1081,6 +1142,11 @@ async def _supervise_orchestrator_crash_revival(
             owner_id=captured_owner_id,
         )
         restarts.append(now)
+        # 2026-10-10 (w3 ①): the heartbeat is stale for this whole sleep (the
+        # crashed loop's task is dead) yet a revival IS scheduled — publish
+        # the deadline so the saturator can run its bounded backoff fill
+        # instead of parking (the 05:41-08:49 wedge: 3h08m zero dispatch).
+        app_state.note_orchestrator_restart_pending(backoff_s)
         await _restart_backoff_sleep(backoff_s)
         if not _still_owned():
             return result
@@ -1093,6 +1159,9 @@ async def _supervise_orchestrator_crash_revival(
         except Exception:
             pass
 
+        # 2026-10-10 (w3 ①): revival is running NOW — drop the marker before
+        # the loop's own heartbeat makes it moot.
+        app_state.clear_orchestrator_restart_pending()
         loop_started = time.monotonic()
         result = await restart_factory()
         if not _is_crash_outcome(result):

@@ -651,3 +651,340 @@ class _PipelinePrioritySemaphore:
     @property
     def _value(self) -> int:
         return self._sem._value
+
+
+# --- 5h rolling-window quota pacing (2026-10-10, w2/w4/w5 root cause) -------
+#
+# GLM's coding-plan 1308 error caps usage over a rolling ~5h window
+# (~178M tokens of observed window capacity). Unpaced dispatch burned
+# 16-40M tok/h (avg ~34M/h) — the saturator kept every permit filled — so
+# the window front-loaded, punched through the provider cap, and the
+# rate_limiter + durable quota_429 pause then LEGITIMATELY parked all
+# dispatch for the window tail (observed: whole zero-token hours at
+# 18:42-19:55, 14-16:00, 00:24-01:57). The fix is pacing, not more
+# retry: clamp the mean OPPORTUNISTIC dispatch rate (the saturator lane)
+# to POK_LLM_QUOTA_WINDOW_BUDGET_TOKENS / POK_LLM_QUOTA_WINDOW_SEC. With
+# the committed production values (150M / 18000s = 30M tok/h) the pace
+# still clears the 20M/h hourly KPI while leaving ~16% headroom under the
+# observed cap, so the window tail no longer collapses to zero.
+#
+# Multi-scale rolling check: the trailing-1h spend must stay under
+# budget/5 (kills the "front-load 34M/h then starve" sawtooth) and the
+# trailing-window spend under the full budget (belt-and-braces, and the
+# binding scale for burn seeded from history older than an hour). The
+# accounting basis is llm_call_metrics.jsonl ``total_tokens``
+# (input+output) — the same basis the incident windows were measured on.
+# Pipeline roles (Master/Workers/gates) are NEVER gated here: they are the
+# product work; if their burn alone exceeds the budget, that is a
+# capacity decision, not something to silently starve.
+
+_QUOTA_PACER_DEFAULT_WINDOW_SEC = 18000.0
+
+#: Wall-clock stamp of this process's module load. The seed dedupes against
+#: it, NOT against singleton-materialization time: the singleton is created
+#: lazily (possibly after the first in-process call already appended its
+#: metrics row), so a construction-time boot stamp would classify that row
+#: as "pre-boot" and double-book the burn. Module load ≈ process start, and
+#: every row this process writes lands after it — and because the hook
+#: imports this module lazily, a first record written BEFORE the import
+#: would land before this stamp, so the seed (file) and the hook (memory)
+#: could both count it; the (call_id, attempt) dedupe below closes that
+#: last seam exactly once either way.
+_QUOTA_MODULE_LOAD_TS = time.time()
+
+
+def _quota_window_budget_tokens() -> int:
+    """Token budget for the rolling pace window; ``0`` disables the pacer."""
+
+    raw = os.environ.get("POK_LLM_QUOTA_WINDOW_BUDGET_TOKENS", "0")
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _quota_window_sec() -> float:
+    raw = os.environ.get("POK_LLM_QUOTA_WINDOW_SEC", "")
+    try:
+        value = float(raw) if raw else _QUOTA_PACER_DEFAULT_WINDOW_SEC
+    except (TypeError, ValueError):
+        return _QUOTA_PACER_DEFAULT_WINDOW_SEC
+    return max(600.0, value)
+
+
+class QuotaPacer:
+    """Rolling-window token burn account with a mean-rate clamp.
+
+    Records ``(ts, tokens)`` spend events (one per completed provider
+    attempt, fed by llm_call_metrics.record_llm_call_metrics) and answers
+    whether the OPPORTUNISTIC lane (saturator) may launch right now. The
+    process-start seed replays the durable metrics tail so a restart does
+    not reset the clamp mid-window — without it, a fresh process would
+    happily re-burn the window the old process already spent.
+    """
+
+    #: Bounded event history (a 5h window holds ~150-500 calls; 4096 is a
+    #: generous cap that still bounds memory on pathological churn).
+    _MAX_EVENTS = 4096
+    #: Seeding reads at most this many bytes/lines of the metrics tail.
+    _SEED_MAX_BYTES = 8 << 20
+    _SEED_MAX_LINES = 6000
+    #: Seen-key set cap (coarse clear-on-overflow; see _register_call_key_locked).
+    _MAX_CALL_KEYS = 2 * _MAX_EVENTS
+    #: The short pace scale (trailing-1h mean-rate line).
+    SHORT_SCALE_SEC = 3600.0
+
+    def __init__(self, boot_ts: "float | None" = None) -> None:
+        self._lock = threading.Lock()
+        self._events: "deque[tuple[float, int]]" = deque()
+        # Composite (call_id, attempt) keys of already-counted records, so a
+        # row that is BOTH in the durable metrics tail AND notified by the
+        # in-process hook is counted exactly once (the lazy-import first-row
+        # seam). ``call_id`` alone is NOT unique per record — signature-retry
+        # attempts reuse it (llm_query_retry.py creates one billing_call_id
+        # per retry loop) — so the attempt number is part of the key.
+        self._seen_call_keys: "set[tuple] | None" = set()
+        # Default to the module-load stamp (see _QUOTA_MODULE_LOAD_TS): the
+        # seed must exclude rows written by THIS process, whose hook events
+        # arrive in memory instead.
+        self._boot_ts = (
+            _QUOTA_MODULE_LOAD_TS if boot_ts is None else float(boot_ts)
+        )
+        self._seeded = False
+
+    # -- accounting ---------------------------------------------------------
+
+    def note_usage(
+        self,
+        tokens: int,
+        ts: "float | None" = None,
+        call_key: "tuple | None" = None,
+    ) -> None:
+        """Record one completed provider attempt's token spend (wall clock).
+
+        ``call_key`` is the durable identity of the metrics record (the
+        ``(call_id, attempt)`` pair from llm_call_metrics). A key already
+        counted — by this hook or by the restart seed — is skipped, so a
+        record cannot double-book the burn. Callers without an identity
+        pass None and are always counted.
+        """
+
+        try:
+            tok = int(tokens)
+        except (TypeError, ValueError):
+            return
+        if tok <= 0:
+            return
+        when = time.time() if ts is None else float(ts)
+        self._ensure_seeded()
+        with self._lock:
+            if call_key is not None:
+                if call_key in self._seen_call_keys:
+                    return
+                self._register_call_key_locked(call_key)
+            self._events.append((when, tok))
+            self._prune_locked(when)
+
+    def _register_call_key_locked(self, call_key: "tuple") -> None:
+        seen = self._seen_call_keys
+        if seen is None:
+            return
+        if len(seen) >= self._MAX_CALL_KEYS:
+            # Coarse bounded-memory reset: ids are unique per record, so a
+            # replay this ancient losing dedupe is harmless (the boot seam
+            # the set exists for is always within a few keys of construction).
+            seen.clear()
+        seen.add(call_key)
+
+    def spend_in_window(self, seconds: float, now: "float | None" = None) -> int:
+        """Tokens spent in the trailing ``seconds`` window."""
+
+        when = time.time() if now is None else float(now)
+        cutoff = when - max(0.0, float(seconds))
+        with self._lock:
+            return sum(tok for ts, tok in self._events if ts >= cutoff)
+
+    def _prune_locked(self, now: float) -> None:
+        window = _quota_window_sec()
+        events = self._events
+        while events and events[0][0] < now - window:
+            events.popleft()
+        overflow = len(events) - self._MAX_EVENTS
+        for _ in range(max(0, overflow)):
+            events.popleft()
+
+    # -- gating -------------------------------------------------------------
+
+    def opportunistic_blocked_scale(self, now: "float | None" = None) -> "float | None":
+        """The pace scale (seconds) whose rate line is exhausted, else None.
+
+        ``None`` means the opportunistic lane may launch: either the pacer
+        is disabled (budget 0) or every scale's trailing spend is strictly
+        below its share of the budget.
+        """
+
+        budget = _quota_window_budget_tokens()
+        if budget <= 0:
+            return None
+        # Seed lazily here too (not only in note_usage): the saturator may
+        # gate before the first in-process call records usage, and without
+        # the seed a fresh process would gate on an empty burn account —
+        # exactly the restart-resets-the-clamp hole the seed exists to close.
+        self._ensure_seeded()
+        window = _quota_window_sec()
+        when = time.time() if now is None else float(now)
+        rate = float(budget) / window  # tokens/sec mean-rate line
+        for scale in (self.SHORT_SCALE_SEC, window):
+            span = min(scale, window)
+            if self.spend_in_window(span, now=when) >= rate * span:
+                return span
+        return None
+
+    def snapshot(self, now: "float | None" = None) -> dict:
+        """Observability projection (UI/tests); never a gate input."""
+
+        when = time.time() if now is None else float(now)
+        window = _quota_window_sec()
+        blocked = self.opportunistic_blocked_scale(now=when)
+        return {
+            "budget_tokens": _quota_window_budget_tokens(),
+            "window_sec": window,
+            "spend_1h_tokens": self.spend_in_window(self.SHORT_SCALE_SEC, now=when),
+            "spend_window_tokens": self.spend_in_window(window, now=when),
+            "opportunistic_blocked_scale_sec": blocked,
+        }
+
+    # -- restart seeding ----------------------------------------------------
+
+    def _ensure_seeded(self) -> None:
+        with self._lock:
+            if self._seeded:
+                return
+            self._seeded = True
+        self._seed_from_metrics_file()
+
+    def _seed_from_metrics_file(self) -> None:
+        path = _quota_pacer_metrics_path()
+        if path is None:
+            return
+        for ts, tok, key in self._read_metrics_tail_events(Path(path)):
+            with self._lock:
+                if key is not None:
+                    self._register_call_key_locked(key)
+                self._events.append((ts, tok))
+        with self._lock:
+            # Hook events are all newer than the seed cutoff (< boot_ts; the
+            # epoch_ts == boot_ts rounding edge is left to the hook), but
+            # sort anyway so a racing first note_usage cannot disorder the
+            # deque; maxlen keeps the NEWEST events under the cap.
+            self._events = deque(
+                sorted(self._events), maxlen=self._MAX_EVENTS
+            )
+
+    def _read_metrics_tail_events(self, path: Path) -> "list[tuple[float, int, tuple | None]]":
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                if size > self._SEED_MAX_BYTES:
+                    handle.seek(max(0, size - self._SEED_MAX_BYTES))
+                    handle.readline()  # drop the partial leading line
+                raw = handle.read()
+        except OSError:
+            return []
+        cutoff = min(self._boot_ts, time.time()) - _quota_window_sec()
+        events: "list[tuple[float, int, tuple | None]]" = []
+        for line in raw.splitlines()[-self._SEED_MAX_LINES :]:
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    continue
+                ts = record.get("epoch_ts")
+                tok = record.get("total_tokens")
+                if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+                    continue
+                if not isinstance(tok, int) or tok <= 0:
+                    continue
+                if float(ts) < cutoff:
+                    continue
+                if float(ts) >= self._boot_ts:
+                    # Post-boot rows belong to THIS process's hook events
+                    # (epoch_ts is round(now, 3), so a raw now straddling
+                    # the boot stamp resolves to the hook either way — the
+                    # >= keeps the rounding edge single-counted); counting
+                    # them here too would double-book the burn.
+                    continue
+                key = None
+                call_id = record.get("call_id")
+                attempt = record.get("attempt")
+                if call_id and isinstance(attempt, int):
+                    key = (str(call_id), attempt)
+                events.append((float(ts), int(tok), key))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+        return events
+
+
+#: Injectable metrics-file override (tests); None -> llm_call_metrics default.
+_QUOTA_METRICS_FILE_OVERRIDE: "Path | None" = None
+
+
+def _quota_pacer_metrics_path() -> "Path | None":
+    if _QUOTA_METRICS_FILE_OVERRIDE is not None:
+        return Path(_QUOTA_METRICS_FILE_OVERRIDE)
+    try:
+        from llm_call_metrics import _metrics_file
+
+        return _metrics_file()
+    except Exception:
+        return None
+
+
+_QUOTA_PACER: "QuotaPacer | None" = None
+_QUOTA_PACER_LOCK = threading.Lock()
+
+
+def get_quota_pacer() -> QuotaPacer:
+    """Process-wide burn account (single writer lane, seeded lazily)."""
+
+    global _QUOTA_PACER
+    with _QUOTA_PACER_LOCK:
+        if _QUOTA_PACER is None:
+            _QUOTA_PACER = QuotaPacer()
+        return _QUOTA_PACER
+
+
+def reset_quota_pacer_for_tests() -> None:
+    """Drop the singleton so a test can start from a clean burn account."""
+
+    global _QUOTA_PACER
+    with _QUOTA_PACER_LOCK:
+        _QUOTA_PACER = None
+
+
+def note_llm_call_tokens(
+    tokens: int,
+    ts: "float | None" = None,
+    call_key: "tuple | None" = None,
+) -> None:
+    """Burn-accounting hook: one completed provider attempt's tokens.
+
+    Called from llm_call_metrics.record_llm_call_metrics — the single seam
+    every successful claude/codex attempt already flows through — with the
+    record's durable ``(call_id, attempt)`` identity so a row the restart
+    seed already replayed cannot double-book. Best-effort: pacing
+    accounting must never affect the dispatch path.
+    """
+
+    try:
+        get_quota_pacer().note_usage(tokens, ts=ts, call_key=call_key)
+    except Exception:
+        pass
+
+
+def quota_pacer_opportunistic_block(now: "float | None" = None) -> "float | None":
+    """Saturator-facing gate: blocked pace scale in seconds, else None."""
+
+    try:
+        return get_quota_pacer().opportunistic_blocked_scale(now=now)
+    except Exception:
+        return None
