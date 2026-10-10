@@ -246,7 +246,14 @@ def record_llm_call_metrics(
             call_key = None
             if record["call_id"]:
                 call_key = (str(record["call_id"]), int(record["attempt"]))
-            note_llm_call_tokens(total_tok, ts=now, call_key=call_key)
+            # 2026-10-10 pacer calibration: forward the cache dimension
+            # (inert at the default weight 0.0) alongside the base tokens.
+            note_llm_call_tokens(
+                total_tok,
+                ts=now,
+                call_key=call_key,
+                cache_tokens=cache_read + cache_write,
+            )
         except Exception:
             pass
     except Exception:

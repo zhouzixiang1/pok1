@@ -469,6 +469,20 @@ class AppState:
         with self._lock:
             self._pipeline_heartbeat_monotonic = time.monotonic()
 
+    def runtime_task_alive(self) -> bool:
+        """True when a registered evolution task exists and is not done.
+
+        Read-only liveness accessor for the watchdog heartbeat gate
+        (2026-10-10 red-team issue 1): a beat may only refresh the
+        saturator's liveness view while the supervised loop task is
+        actually alive — a leaked watchdog tick after the loop task died
+        must not keep a dead pipeline looking alive.
+        """
+
+        with self._lock:
+            task = self._evolution_task
+        return task is not None and not task.done()
+
     def pipeline_heartbeat_age_seconds(
         self, *, now: float | None = None
     ) -> float | None:
@@ -900,6 +914,69 @@ class AppState:
 app_state = AppState()
 
 
+def _note_escaped_orchestrator_exception(exc: BaseException) -> float:
+    """Crash-mark an exception that escaped the orchestrator loop entirely.
+
+    2026-10-10 phase-A escape guard: an exception leaking out of
+    ``orchestrator_loop`` (phase A has no crash branch of its own until the
+    guard in ``orchestrator_loop_phases``) or out of a ``restart_factory``
+    re-entry used to kill the ``run_evolution_task`` wrapper task silently —
+    no crash note, no ``orchestrator.crashed`` event, no further revivals.
+    Route it into the same path the loop's own crash branch feeds: note the
+    crash (the revival supervisor's ``pipeline.orchestrator_auto_restart``
+    events read it), alarm through the structured ledger, clear the running
+    flag, and return the crash sentinel so the EXISTING bounded-backoff
+    supervisor schedules the next restart. Never raises.
+    """
+
+    try:
+        app_state.note_orchestrator_crash(exc)
+    except Exception:
+        pass
+    try:
+        from system_log import log_system_event
+
+        log_system_event(
+            "orchestrator.crashed",
+            "error",
+            f"Orchestrator crashed: {exc}",
+            {
+                "error": str(exc)[:200],
+                "escape": "run_evolution_task",
+            },
+        )
+    except Exception:
+        pass
+    try:
+        app_state.set_running(False)
+    except Exception:
+        pass
+    return _ORCHESTRATOR_CRASH_OUTCOME
+
+
+async def _await_restart_factory_crash_guarded(restart_factory):
+    """``await restart_factory()`` with the 2026-10-10 escape guard.
+
+    An exception from the re-entered loop must not end the supervisor task:
+    it is converted into the crash sentinel (after crash-marking) so the
+    supervisor's existing bounded backoff loop schedules the next revival —
+    the same handling a ``-1.0`` return gets. Cancellation still propagates
+    (operator stop / shutdown stays a clean end).
+
+    2026-10-10 red-team issue 2: ``SystemExit`` is classified as a crash and
+    converted here too (it previously escaped the ``except Exception`` net).
+    ``KeyboardInterrupt`` is deliberately NOT caught — an operator's
+    interactive stop must always propagate.
+    """
+
+    try:
+        return await restart_factory()
+    except asyncio.CancelledError:
+        raise
+    except (SystemExit, Exception) as exc:
+        return _note_escaped_orchestrator_exception(exc)
+
+
 async def run_evolution_task(coro, *, owner_id: str | None = None, restart_factory=None):
     """Run the single owned evolution coroutine and clear its running flag.
 
@@ -934,7 +1011,21 @@ async def run_evolution_task(coro, *, owner_id: str | None = None, restart_facto
     owner_task = asyncio.current_task()
     captured_owner_id = owner_id or app_state.runtime_owner_id()
     try:
-        result = await coro
+        try:
+            result = await coro
+        except asyncio.CancelledError:
+            raise
+        except (SystemExit, Exception) as exc:
+            # 2026-10-10 phase-A escape guard: only a supervised runtime
+            # (restart_factory present) converts an escaped exception into
+            # the crash path; unsupervised callers keep the historical
+            # raise (their task ends with the exception, as before).
+            # 2026-10-10 red-team issue 2: SystemExit is classified as a
+            # crash and takes this same path (KeyboardInterrupt is never
+            # caught — operator interactive stops must propagate).
+            if restart_factory is None:
+                raise
+            result = _note_escaped_orchestrator_exception(exc)
         if restart_factory is not None and _is_crash_outcome(result):
             try:
                 result = await _supervise_orchestrator_crash_revival(
@@ -1117,7 +1208,12 @@ async def _supervise_orchestrator_crash_revival(
                 # own heartbeat again.
                 app_state.clear_orchestrator_restart_pending()
                 loop_started = time.monotonic()
-                result = await restart_factory()
+                # 2026-10-10 escape guard: a re-entered loop that raises
+                # (instead of returning a crash sentinel) becomes a crash
+                # outcome here so this lane keeps its bounded retry cadence.
+                result = await _await_restart_factory_crash_guarded(
+                    restart_factory
+                )
                 if not _is_crash_outcome(result):
                     return result
                 if time.monotonic() - loop_started >= stable_run_seconds:
@@ -1163,7 +1259,8 @@ async def _supervise_orchestrator_crash_revival(
         # the loop's own heartbeat makes it moot.
         app_state.clear_orchestrator_restart_pending()
         loop_started = time.monotonic()
-        result = await restart_factory()
+        # 2026-10-10 escape guard: same crash conversion as the slow lane.
+        result = await _await_restart_factory_crash_guarded(restart_factory)
         if not _is_crash_outcome(result):
             return result
         if time.monotonic() - loop_started >= stable_run_seconds:

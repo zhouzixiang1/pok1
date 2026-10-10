@@ -757,6 +757,28 @@ def test_cgroup_headroom_env_override(monkeypatch):
     monkeypatch.setattr(llm_saturator, "_min_free_mb", lambda: 512)
     monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 0)
     monkeypatch.setenv("POK_LLM_AIMD_CGROUP_HEADROOM_MB", "500")
+    # 2026-10-10 gradient (w6): headroom 400 with hard floor 500 now sits in
+    # the soft band [soft_floor=150, 500) — a bounded low-memory lane admits
+    # up to POK_LLM_SATURATOR_LOW_MEMORY_INFLIGHT (default 1) in-flight
+    # packets instead of the pre-gradient hard refusal. The cap still binds:
+    monkeypatch.delenv(
+        "POK_LLM_SATURATOR_MEMORY_SOFT_FLOOR_MB", raising=False
+    )
+    monkeypatch.delenv("POK_LLM_SATURATOR_LOW_MEMORY_INFLIGHT", raising=False)
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=8)
+    assert (ok, reason) == (True, "ok")
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=1, soft_cap=8)
+    assert (ok, reason) == (False, "low_memory_cgroup_soft")
+    # Disabling the soft lane (cap 0) restores the pre-gradient hard refusal
+    # across the whole band.
+    monkeypatch.setenv("POK_LLM_SATURATOR_LOW_MEMORY_INFLIGHT", "0")
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=8)
+    assert (ok, reason) == (False, "low_memory_cgroup_soft")
+    # Below the soft floor the gate still refuses hard, exactly as before.
+    monkeypatch.setattr(
+        llm_saturator, "_cgroup_memory_headroom_mb", lambda **_kw: 100
+    )
+    monkeypatch.delenv("POK_LLM_SATURATOR_LOW_MEMORY_INFLIGHT", raising=False)
     ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=8)
     assert (ok, reason) == (False, "low_memory_cgroup")
 

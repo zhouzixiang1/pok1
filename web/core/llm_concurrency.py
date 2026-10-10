@@ -712,6 +712,31 @@ def _quota_window_sec() -> float:
     return max(600.0, value)
 
 
+def _quota_cache_weight() -> float:
+    """Weight of cache tokens in the pace line (2026-10-10 calibration).
+
+    ``POK_LLM_QUOTA_CACHE_WEIGHT`` (default 0.0): cache_read_input_tokens +
+    cache_creation_input_tokens are added to the weighted window spend at
+    this weight. The DEFAULT caliber is deliberately wider than the
+    historical one: the ledger books every completed provider attempt row
+    that carries usage — successful AND failed (``success=False``) rows
+    alike (the 2026-10-10 blind-spot fix; failure rows with real token burn
+    previously escaped accounting and silently under-counted the window).
+    At the default weight 0.0 those rows still enter as their plain
+    input+output ``total_tokens`` only, with no cache contribution; the
+    provider's true 5h usage unit is unknown, so the cache weight is raised
+    only after the dual-caliber snapshots carried on
+    ``pipeline.llm_quota_exceeded_detected`` events are calibrated against
+    a real 1308.
+    """
+    raw = os.environ.get("POK_LLM_QUOTA_CACHE_WEIGHT", "")
+    try:
+        value = float(raw) if raw else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, value)
+
+
 class QuotaPacer:
     """Rolling-window token burn account with a mean-rate clamp.
 
@@ -736,7 +761,12 @@ class QuotaPacer:
 
     def __init__(self, boot_ts: "float | None" = None) -> None:
         self._lock = threading.Lock()
-        self._events: "deque[tuple[float, int]]" = deque()
+        # (ts, base_tokens, cache_tokens): base is the historical
+        # input+output-only total_tokens; cache is
+        # cache_read_input_tokens + cache_creation_input_tokens. The gate
+        # consumes base + weight*cache (weight default 0.0 == historical
+        # behavior exactly); spend_in_window stays the base-only caliber.
+        self._events: "deque[tuple[float, int, int]]" = deque()
         # Composite (call_id, attempt) keys of already-counted records, so a
         # row that is BOTH in the durable metrics tail AND notified by the
         # in-process hook is counted exactly once (the lazy-import first-row
@@ -759,6 +789,7 @@ class QuotaPacer:
         tokens: int,
         ts: "float | None" = None,
         call_key: "tuple | None" = None,
+        cache_tokens: int = 0,
     ) -> None:
         """Record one completed provider attempt's token spend (wall clock).
 
@@ -766,14 +797,21 @@ class QuotaPacer:
         ``(call_id, attempt)`` pair from llm_call_metrics). A key already
         counted — by this hook or by the restart seed — is skipped, so a
         record cannot double-book the burn. Callers without an identity
-        pass None and are always counted.
+        pass None and are always counted. ``cache_tokens`` (2026-10-10
+        calibration) is the record's cache_read+cache_creation tokens; it
+        only influences the weighted caliber (``_quota_cache_weight``) and
+        is inert at the default weight 0.0.
         """
 
         try:
             tok = int(tokens)
         except (TypeError, ValueError):
             return
-        if tok <= 0:
+        try:
+            cache_tok = int(cache_tokens)
+        except (TypeError, ValueError):
+            cache_tok = 0
+        if tok <= 0 and cache_tok <= 0:
             return
         when = time.time() if ts is None else float(ts)
         self._ensure_seeded()
@@ -782,7 +820,7 @@ class QuotaPacer:
                 if call_key in self._seen_call_keys:
                     return
                 self._register_call_key_locked(call_key)
-            self._events.append((when, tok))
+            self._events.append((when, tok, cache_tok))
             self._prune_locked(when)
 
     def _register_call_key_locked(self, call_key: "tuple") -> None:
@@ -797,12 +835,39 @@ class QuotaPacer:
         seen.add(call_key)
 
     def spend_in_window(self, seconds: float, now: "float | None" = None) -> int:
-        """Tokens spent in the trailing ``seconds`` window."""
+        """Tokens spent in the trailing ``seconds`` window (base caliber).
+
+        The base caliber is the historical input+output-only total_tokens
+        sum — unchanged by the 2026-10-10 cache dimension.
+        """
 
         when = time.time() if now is None else float(now)
         cutoff = when - max(0.0, float(seconds))
         with self._lock:
-            return sum(tok for ts, tok in self._events if ts >= cutoff)
+            return sum(tok for ts, tok, _cache in self._events if ts >= cutoff)
+
+    def spend_weighted_in_window(
+        self, seconds: float, now: "float | None" = None
+    ) -> float:
+        """Window spend with cache tokens weighted by ``_quota_cache_weight``.
+
+        This is the caliber the pace lines consume. At the default weight
+        0.0 it is numerically identical to ``spend_in_window``.
+        """
+
+        weight = _quota_cache_weight()
+        if weight <= 0.0:
+            return float(self.spend_in_window(seconds, now=now))
+        when = time.time() if now is None else float(now)
+        cutoff = when - max(0.0, float(seconds))
+        with self._lock:
+            return float(
+                sum(
+                    tok + weight * cache
+                    for ts, tok, cache in self._events
+                    if ts >= cutoff
+                )
+            )
 
     def _prune_locked(self, now: float) -> None:
         window = _quota_window_sec()
@@ -836,7 +901,7 @@ class QuotaPacer:
         rate = float(budget) / window  # tokens/sec mean-rate line
         for scale in (self.SHORT_SCALE_SEC, window):
             span = min(scale, window)
-            if self.spend_in_window(span, now=when) >= rate * span:
+            if self.spend_weighted_in_window(span, now=when) >= rate * span:
                 return span
         return None
 
@@ -852,6 +917,46 @@ class QuotaPacer:
             "spend_1h_tokens": self.spend_in_window(self.SHORT_SCALE_SEC, now=when),
             "spend_window_tokens": self.spend_in_window(window, now=when),
             "opportunistic_blocked_scale_sec": blocked,
+            # 2026-10-10 calibration dimension (default weight 0.0 keeps the
+            # with-cache caliber identical to the base one).
+            "cache_weight": _quota_cache_weight(),
+            "spend_1h_tokens_with_cache": int(
+                round(self.spend_weighted_in_window(self.SHORT_SCALE_SEC, now=when))
+            ),
+            "spend_window_tokens_with_cache": int(
+                round(self.spend_weighted_in_window(window, now=when))
+            ),
+        }
+
+    def dual_caliber_snapshot(self, now: "float | None" = None) -> dict:
+        """Both cache calibers of the window spend, for 1308 calibration.
+
+        Attached to every ``pipeline.llm_quota_exceeded_detected`` event:
+        the provider's 5h usage unit is unknown (observed ~178M ceiling vs
+        the 150M budget, both currently no-cache input+output totals), so
+        the next real 1308 can compare the provider's own reset-time
+        accounting against BOTH ledgers and pin the true unit — after which
+        ``POK_LLM_QUOTA_CACHE_WEIGHT`` can be set from evidence.
+        """
+
+        when = time.time() if now is None else float(now)
+        window = _quota_window_sec()
+        return {
+            "budget_tokens": _quota_window_budget_tokens(),
+            "window_sec": window,
+            "cache_weight": _quota_cache_weight(),
+            "spend_1h_tokens_without_cache": self.spend_in_window(
+                self.SHORT_SCALE_SEC, now=when
+            ),
+            "spend_window_tokens_without_cache": self.spend_in_window(
+                window, now=when
+            ),
+            "spend_1h_tokens_with_cache": int(
+                round(self.spend_weighted_in_window(self.SHORT_SCALE_SEC, now=when))
+            ),
+            "spend_window_tokens_with_cache": int(
+                round(self.spend_weighted_in_window(window, now=when))
+            ),
         }
 
     # -- restart seeding ----------------------------------------------------
@@ -867,11 +972,11 @@ class QuotaPacer:
         path = _quota_pacer_metrics_path()
         if path is None:
             return
-        for ts, tok, key in self._read_metrics_tail_events(Path(path)):
+        for ts, tok, cache_tok, key in self._read_metrics_tail_events(Path(path)):
             with self._lock:
                 if key is not None:
                     self._register_call_key_locked(key)
-                self._events.append((ts, tok))
+                self._events.append((ts, tok, cache_tok))
         with self._lock:
             # Hook events are all newer than the seed cutoff (< boot_ts; the
             # epoch_ts == boot_ts rounding edge is left to the hook), but
@@ -881,7 +986,9 @@ class QuotaPacer:
                 sorted(self._events), maxlen=self._MAX_EVENTS
             )
 
-    def _read_metrics_tail_events(self, path: Path) -> "list[tuple[float, int, tuple | None]]":
+    def _read_metrics_tail_events(
+        self, path: Path
+    ) -> "list[tuple[float, int, int, tuple | None]]":
         try:
             size = path.stat().st_size
             with path.open("rb") as handle:
@@ -892,7 +999,7 @@ class QuotaPacer:
         except OSError:
             return []
         cutoff = min(self._boot_ts, time.time()) - _quota_window_sec()
-        events: "list[tuple[float, int, tuple | None]]" = []
+        events: "list[tuple[float, int, int, tuple | None]]" = []
         for line in raw.splitlines()[-self._SEED_MAX_LINES :]:
             try:
                 record = json.loads(line)
@@ -913,12 +1020,28 @@ class QuotaPacer:
                     # >= keeps the rounding edge single-counted); counting
                     # them here too would double-book the burn.
                     continue
+                # Cache dimension (2026-10-10): failure rows and retried
+                # attempts (attempt > 0) are accounted exactly like any
+                # other row that carries usage — the seed has never
+                # filtered on success/attempt and must keep not doing so.
+                cache_tok = 0
+                for cache_field in (
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ):
+                    cache_val = record.get(cache_field)
+                    if (
+                        isinstance(cache_val, int)
+                        and not isinstance(cache_val, bool)
+                        and cache_val > 0
+                    ):
+                        cache_tok += cache_val
                 key = None
                 call_id = record.get("call_id")
                 attempt = record.get("attempt")
                 if call_id and isinstance(attempt, int):
                     key = (str(call_id), attempt)
-                events.append((float(ts), int(tok), key))
+                events.append((float(ts), int(tok), cache_tok, key))
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
         return events
@@ -965,20 +1088,39 @@ def note_llm_call_tokens(
     tokens: int,
     ts: "float | None" = None,
     call_key: "tuple | None" = None,
+    cache_tokens: int = 0,
 ) -> None:
     """Burn-accounting hook: one completed provider attempt's tokens.
 
     Called from llm_call_metrics.record_llm_call_metrics — the single seam
-    every successful claude/codex attempt already flows through — with the
-    record's durable ``(call_id, attempt)`` identity so a row the restart
-    seed already replayed cannot double-book. Best-effort: pacing
+    every claude/codex attempt row (successful AND failed-with-usage)
+    flows through — with the record's durable ``(call_id, attempt)``
+    identity so a row the restart seed already replayed cannot double-book.
+    ``cache_tokens`` carries the row's cache dimension for the weighted
+    caliber (inert at the default weight 0.0). Best-effort: pacing
     accounting must never affect the dispatch path.
     """
 
     try:
-        get_quota_pacer().note_usage(tokens, ts=ts, call_key=call_key)
+        get_quota_pacer().note_usage(
+            tokens, ts=ts, call_key=call_key, cache_tokens=cache_tokens
+        )
     except Exception:
         pass
+
+
+def quota_pacer_dual_caliber_snapshot(now: "float | None" = None) -> "dict | None":
+    """Both cache calibers of the pacer's window spend, or None on failure.
+
+    Consumed by the ``pipeline.llm_quota_exceeded_detected`` emission sites
+    (llm_query_retry) so every real 1308 carries the with-cache and
+    without-cache ledger snapshots for provider-unit calibration.
+    """
+
+    try:
+        return get_quota_pacer().dual_caliber_snapshot(now=now)
+    except Exception:
+        return None
 
 
 def quota_pacer_opportunistic_block(now: "float | None" = None) -> "float | None":

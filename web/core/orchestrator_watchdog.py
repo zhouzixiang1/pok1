@@ -54,6 +54,12 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
       - this process owns an active orchestrator provider stream
       - The checkpoint stage is in the recoverable set
       - No stage change for > WATCHDOG_TIMEOUT seconds
+
+    The liveness heartbeat below is BOUND to the runtime state (2026-10-10
+    red-team issue 1): no beat when the registered evolution loop task is
+    dead/done or the runtime running flag is False. A leaked watchdog tick
+    (a phase-A crash before the loop's reclamation could cancel it) must
+    never refresh the saturator's view of a dead pipeline as alive.
     """
     from evolution_infra import WATCHDOG_TIMEOUT
     from evolution_core import read_pipeline_checkpoint
@@ -77,10 +83,18 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
             # tick doubles as a pipeline-liveness beat between cycles — a
             # long-running generation cycle must not look like a dead
             # pipeline to the LLM saturator gate.
+            #
+            # 2026-10-10 red-team issue 1: the beat is BOUND to the runtime
+            # state. When the registered evolution loop task is dead/done or
+            # the runtime running flag is False (phase-A crash guard,
+            # supervisor backoff window), a leaked watchdog tick must NOT
+            # refresh the saturator's liveness view — that misjudgment kept
+            # a dead pipeline looking alive.
             try:
                 from server.state import app_state
 
-                app_state.note_pipeline_heartbeat()
+                if app_state.running and app_state.runtime_task_alive():
+                    app_state.note_pipeline_heartbeat()
             except Exception:
                 pass
 

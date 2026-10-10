@@ -644,6 +644,11 @@ class Slice2bActivation:
                 # producer may seal the next candidate.
                 if ledger.is_terminal(candidate_id):
                     coordinator.note_terminal(candidate_id=candidate_id)
+                    # 2026-10-10 bounded-container fix: also drop this
+                    # candidate's in-memory registers (snapshot dict,
+                    # factory closure, finished task) — the persisted
+                    # lifecycle is the source of truth from here on.
+                    self.release_terminal_candidate(candidate_id)
 
         target_loop = loop
         if target_loop is None:
@@ -718,6 +723,35 @@ class Slice2bActivation:
 
     def consumer_task(self, candidate_id: str) -> asyncio.Task | None:
         return self._consumer_tasks.get(candidate_id)
+
+    def release_terminal_candidate(self, candidate_id: str) -> bool:
+        """Drop this candidate's in-memory registers once terminal (2026-10-10).
+
+        The four per-candidate registries (``_consumer_tasks`` /
+        ``_sealed_snapshots`` / ``_dispatch_clocks`` /
+        ``_scheduled_factories``) used to be write-only —
+        ``AheadCoordinator.note_terminal`` fired the wake event but nothing
+        ever popped, so every sealed candidate's full snapshot dict +
+        factory closure + finished Task stayed reachable for the process
+        lifetime (production keeps slice2b off today; this bounds the
+        containers for any future enablement). The PERSISTED lifecycle
+        remains the source of truth for every later reader (the promotion
+        barrier checks ``ledger.snapshot`` alongside ``_sealed_snapshots``;
+        the zombie reaper returns early on ``ledger.is_terminal``;
+        ``recover_at_boot`` rehydrates only non-terminal rows), so dropping
+        the in-memory copies at terminal is invisible to them. Returns True
+        when the registers were dropped.
+        """
+        try:
+            if not self.ledger.is_terminal(candidate_id):
+                return False
+        except Exception:
+            return False
+        self._consumer_tasks.pop(candidate_id, None)
+        self._sealed_snapshots.pop(candidate_id, None)
+        self._dispatch_clocks.pop(candidate_id, None)
+        self._scheduled_factories.pop(candidate_id, None)
+        return True
 
     # -- boot recovery (re-launch consumers for sealed-but-unresolved
     #    candidates after a process restart) --------------------------------
@@ -945,11 +979,18 @@ class Slice2bActivation:
         """
 
         await self.ensure_consumer_running(candidate_id)
-        return await self.coordinator.wait_for_promotion_readiness(
+        entry = await self.coordinator.wait_for_promotion_readiness(
             candidate_id=candidate_id,
             poll_interval=poll_interval,
             timeout=timeout,
         )
+        # 2026-10-10 bounded-container fix: the barrier only returns on a
+        # terminal lifecycle row — drop the in-memory registers (covers
+        # terminal paths that bypassed the consumer task's finally, e.g.
+        # the zombie reaper's ledger.reject). Idempotent with the task
+        # finally's own release.
+        self.release_terminal_candidate(candidate_id)
+        return entry
 
 
 # ---------------------------------------------------------------------------

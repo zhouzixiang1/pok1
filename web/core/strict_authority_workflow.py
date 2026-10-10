@@ -254,6 +254,27 @@ def _consume_observed_provider_results(results: Iterable[Any]) -> None:
             _OBSERVED_PROVIDER_RESULTS.pop(id(item), None)
 
 
+def release_observed_provider_results(results: Iterable[Any]) -> None:
+    """Release observed-result registrations for a capture scope that ended.
+
+    2026-10-10 bounded-container fix: ``_consume_observed_provider_results``
+    pops entries only on ``complete_provider_call``'s fully-validated success
+    path, so any attempt that died before that point (schema rejection,
+    timeout, cancellation, availability block, fenced completion) leaked its
+    ``id(result) -> (invocation_id, effect_id)`` rows forever. The
+    ``run_claude_query`` strict-capture ``finally`` calls this with the
+    capture's results once the scope ends, making the dict bounded by the
+    in-flight strict streams instead of by strict-role failure count.
+    Idempotent and never validated against: entries a successful
+    ``complete_provider_call`` already consumed are simply absent, and a
+    stale id can never satisfy a LATER call's (invocation_id, effect_id)
+    match because those are unique per invocation.
+    """
+    with _OBSERVED_PROVIDER_RESULTS_LOCK:
+        for item in results:
+            _OBSERVED_PROVIDER_RESULTS.pop(id(item), None)
+
+
 def _store() -> WorkflowStore:
     from evolution_infra import RESULTS_DIR
 

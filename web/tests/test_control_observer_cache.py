@@ -621,7 +621,12 @@ def test_control_health_maps_expected_authority_drift_to_retryable_503(
     current_key[0] = "content-b"
     started = time.monotonic()
     unavailable = client.get("/api/control/health")
-    assert time.monotonic() - started < 0.1
+    # Fail-closed 503 must NOT queue behind the in-flight (blocked) build —
+    # the builder above can hold its slot for up to 2s (old_release.wait
+    # timeout). 0.5s still proves the changed-key read answers immediately
+    # instead of parking behind that build, while tolerating CI scheduling
+    # jitter that made the old absolute 0.1s bound flaky under load.
+    assert time.monotonic() - started < 0.5
     assert unavailable.status_code == 503
     assert unavailable.headers["Retry-After"] == "1"
     assert unavailable.json()["detail"] == {

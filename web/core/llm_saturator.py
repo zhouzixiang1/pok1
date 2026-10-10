@@ -852,8 +852,9 @@ def _cgroup_memory_headroom_mb(
     inactive, fail-open — when the cgroup has no numeric limit
     (``memory.high = max``), is not v2, or any read fails; the MemAvailable
     gate remains the fallback. Host MemAvailable cannot see pressure inside
-    the service cgroup (deploy fact: pok-evolution.service memory.high =
-    2400 MiB), which is exactly where AIMD upshifts add claude children.
+    the service cgroup (deploy fact: pok-evolution.service memory.high was
+    2400 MiB, raised to 2700 MiB on 2026-10-10), which is exactly where AIMD
+    upshifts add claude children.
     """
     try:
         raw = Path(cgroup_file).read_text(encoding="utf-8")
@@ -882,6 +883,43 @@ def _cgroup_headroom_mb() -> int:
         return max(0, int(os.environ.get("POK_LLM_AIMD_CGROUP_HEADROOM_MB", "300")))
     except (TypeError, ValueError):
         return 300
+
+
+def _cgroup_memory_soft_floor_mb() -> int:
+    """Soft floor (MB) of the gradient cgroup-headroom gate (2026-10-10, w6).
+
+    The flat 300 MB floor refused EVERY launch through the observed
+    76-minute sub-300 MB headroom window (zero packets emitted while permits
+    sat free). Between this floor (``POK_LLM_SATURATOR_MEMORY_SOFT_FLOOR_MB``,
+    default 150 MB) and the hard floor ``_cgroup_headroom_mb`` the gate now
+    degrades to a bounded low-memory lane (see ``_low_memory_inflight_cap``)
+    instead of parking; below the floor it refuses exactly as before. The
+    floor is clamped to the hard minimum so a floor configured ABOVE the
+    minimum can never tighten the ``headroom >= min`` behavior.
+    """
+    try:
+        floor = max(0, int(os.environ.get(
+            "POK_LLM_SATURATOR_MEMORY_SOFT_FLOOR_MB", "150"
+        )))
+    except (TypeError, ValueError):
+        floor = 150
+    return min(floor, _cgroup_headroom_mb())
+
+
+def _low_memory_inflight_cap() -> int:
+    """In-flight packet ceiling while headroom sits in the gradient band.
+
+    ``POK_LLM_SATURATOR_LOW_MEMORY_INFLIGHT`` (default 1): at most this many
+    in-flight saturator packets while cgroup headroom is at/above the soft
+    floor but below the hard floor. ``0`` disables the soft lane (the band
+    then refuses, i.e. the pre-gradient hard gate).
+    """
+    try:
+        return max(
+            0, int(os.environ.get("POK_LLM_SATURATOR_LOW_MEMORY_INFLIGHT", "1"))
+        )
+    except (TypeError, ValueError):
+        return 1
 
 
 def saturator_soft_cap(effective_capacity: int, static_capacity: int) -> int:
@@ -1130,10 +1168,21 @@ def saturator_may_launch(
     # Service-cgroup guard (2026-10-07): host MemAvailable cannot see pressure
     # inside pok-evolution.service's own memory.high; block NEW packets only
     # (in-flight sessions are never killed here, same as low_memory semantics).
+    # Gradient (2026-10-10, w6): with MemoryHigh now 2700M, sub-300MB headroom
+    # windows are common under real burn — the flat floor parked the whole
+    # lane for 76 straight minutes. Between the soft floor and the hard floor
+    # degrade to a bounded low-memory lane; below the soft floor refuse
+    # exactly as before.
     cgroup_headroom = _cgroup_memory_headroom_mb()
     cgroup_min = _cgroup_headroom_mb()
-    if cgroup_headroom is not None and cgroup_min and cgroup_headroom < cgroup_min:
-        return False, "low_memory_cgroup"
+    if cgroup_headroom is not None and cgroup_min:
+        if cgroup_headroom < _cgroup_memory_soft_floor_mb():
+            return False, "low_memory_cgroup"
+        if (
+            cgroup_headroom < cgroup_min
+            and in_flight >= _low_memory_inflight_cap()
+        ):
+            return False, "low_memory_cgroup_soft"
     return True, "ok"
 
 

@@ -2096,6 +2096,21 @@ async def run_claude_query(
     finally:
         if strict_provider_token is not None:
             _STRICT_PROVIDER_RESULTS.reset(strict_provider_token)
+            # 2026-10-10 bounded-container fix: pop this capture's
+            # observed-result registrations. On the success path
+            # complete_provider_call already consumed them (idempotent
+            # no-op); on every failure/timeout/cancel path the entries used
+            # to leak into _OBSERVED_PROVIDER_RESULTS forever.
+            try:
+                from strict_authority_workflow import (
+                    release_observed_provider_results,
+                )
+
+                release_observed_provider_results(
+                    (strict_provider_capture or {}).get("results", [])
+                )
+            except Exception:
+                pass
         _project_strict_authority_state(
             strict_authority_owner,
             strict_authority,

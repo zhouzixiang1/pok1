@@ -38,6 +38,7 @@ import contextlib
 import hashlib
 import json
 import re
+import sys
 import time
 import uuid
 
@@ -650,6 +651,17 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             if _lq._is_quota_exceeded(str(e)):
                 from rate_limiter import rate_limiter
                 rate_limiter.parse_429(str(e))
+                # 2026-10-10 calibration: attach the pacer's dual-caliber
+                # window spend (with/without cache tokens) so the next real
+                # 1308 can pin the provider's 5h usage unit against the
+                # ledger. Best-effort — never blocks the pause path.
+                try:
+                    from llm_concurrency import (
+                        quota_pacer_dual_caliber_snapshot,
+                    )
+                    _pacer_window_spend = quota_pacer_dual_caliber_snapshot()
+                except Exception:
+                    _pacer_window_spend = None
                 _lq._emit_llm_event(
                     "pipeline.llm_quota_exceeded_detected", "error",
                     (
@@ -661,6 +673,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                     elapsed_sec=round(time.time() - stream_started_at, 2),
                     messages_seen=message_count,
                     exception_type=type(e).__name__,
+                    pacer_window_spend=_pacer_window_spend,
                     reset_time=(
                         rate_limiter.reset_time_str()
                         if rate_limiter.is_blocked() else None
@@ -901,6 +914,93 @@ def _record_completed_billing_attempt(
     return billed_cost, billed_usage
 
 
+def _record_failed_attempt_metrics(
+    *,
+    role_name,
+    billing_call_id,
+    attempt,
+    billing_results,
+    attempt_started_at,
+    metrics_recorded,
+    error,
+    model,
+) -> None:
+    """(2026-10-10 pacer calibration c) Metrics row for a FAILED attempt.
+
+    The burn ledger used to see only attempts that returned successfully:
+    ``record_llm_call_metrics`` ran on the success path alone, so an attempt
+    that died AFTER its ResultMessage carried usage (availability block,
+    timeout, hard SDK error, cancellation) never entered the pacer — even
+    though the provider had already processed (and quota-charged) its
+    tokens. When a failed attempt's SDK ResultMessages are observable in
+    ``billing_results`` (``_LLM_BILLING_RESULTS``, appended the moment a
+    ResultMessage arrives in ``_process_stream``), write one
+    ``success=False`` row carrying that usage; the pacer hook and the
+    restart seed account such rows exactly like success rows (no
+    success/attempt filter, keyed on the same ``(call_id, attempt)``
+    identity, so no double-booking with the success row — the two paths are
+    mutually exclusive). Attempts without observable usage write nothing
+    ("若带 usage 字段" — nothing to account). Best-effort like every metrics
+    write: never raises into the dispatch path.
+    """
+
+    import llm_query as _lq
+
+    if metrics_recorded:
+        return
+    if error is None:
+        # No exception in flight at scope exit: the attempt did NOT fail
+        # (e.g. the success-path metrics write silently no-opped); writing
+        # a failure row here would double-represent a live attempt.
+        return
+    results = [item for item in (billing_results or []) if item is not None]
+    if not results:
+        return
+    usage = None
+    cost = 0.0
+    for result in results:
+        result_cost = getattr(result, "total_cost_usd", None)
+        if result_cost is not None:
+            try:
+                cost += float(result_cost)
+            except (TypeError, ValueError):
+                pass
+        usage = _merge_billing_usage(usage, getattr(result, "usage", None))
+    _um = _lq._usage_metadata(usage) if usage else {}
+    has_usage = any(
+        _um.get(field)
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
+    if not has_usage:
+        return
+    try:
+        from llm_call_metrics import record_llm_call_metrics
+
+        record_llm_call_metrics(
+            call_id=billing_call_id,
+            attempt=attempt,
+            max_attempts=_SIGNATURE_MAX_ATTEMPTS,
+            role=role_name,
+            model=model,
+            total_elapsed_sec=time.time() - float(attempt_started_at),
+            input_tokens=_um.get("input_tokens"),
+            output_tokens=_um.get("output_tokens"),
+            cache_creation_input_tokens=_um.get("cache_creation_input_tokens"),
+            cache_read_input_tokens=_um.get("cache_read_input_tokens"),
+            cost_usd=(cost if cost > 0 else None),
+            success=False,
+            error_type=(type(error).__name__ if error is not None else None),
+            error_message=(str(error)[:500] if error is not None else None),
+        )
+    except Exception:
+        pass
+
+
 def _raise_signature_retry_total_timeout(role_name, log_file_path):
     import llm_query as _lq
 
@@ -1039,6 +1139,10 @@ async def _run_stream_with_signature_retry_attempts(
         billing_results = []
         billing_token = _lq._LLM_BILLING_RESULTS.set(billing_results)
         _attempt_start = time.time()
+        # 2026-10-10 pacer calibration (c): flipped right after the success
+        # metrics row lands; a False at scope exit means the attempt died
+        # before recording and _record_failed_attempt_metrics gets its turn.
+        _attempt_metrics_recorded = False
         try:
             if semaphore is not None:
                 async with semaphore:
@@ -1117,6 +1221,7 @@ async def _run_stream_with_signature_retry_attempts(
                     log_file=_lq._role_log_basename(log_file_path),
                     global_concurrency=_capacity_now,
                 )
+                _attempt_metrics_recorded = True
             except Exception:
                 pass
             total_cost += attempt_cost
@@ -1239,6 +1344,17 @@ async def _run_stream_with_signature_retry_attempts(
                 if _lq._is_quota_exceeded(str(e)):
                     from rate_limiter import rate_limiter
                     rate_limiter.parse_429(str(e))
+                    # 2026-10-10 calibration: dual-caliber window spend
+                    # snapshot (same field as the outer-handler site).
+                    try:
+                        from llm_concurrency import (
+                            quota_pacer_dual_caliber_snapshot,
+                        )
+                        _pacer_window_spend = (
+                            quota_pacer_dual_caliber_snapshot()
+                        )
+                    except Exception:
+                        _pacer_window_spend = None
                     _lq._emit_llm_event(
                         "pipeline.llm_quota_exceeded_detected", "error",
                         (
@@ -1248,6 +1364,7 @@ async def _run_stream_with_signature_retry_attempts(
                         role=role_name,
                         sdk_attempt=sdk_attempt + 1,
                         max_attempts=_SIGNATURE_MAX_ATTEMPTS,
+                        pacer_window_spend=_pacer_window_spend,
                         reset_time=(
                             rate_limiter.reset_time_str()
                             if rate_limiter.is_blocked() else None
@@ -1268,6 +1385,29 @@ async def _run_stream_with_signature_retry_attempts(
                 pass
             raise  # non-signature SDK error, or signature retries exhausted
         finally:
+            # 2026-10-10 pacer calibration (c): a failed attempt whose
+            # ResultMessages are already observable in billing_results gets
+            # its usage into the burn ledger (success=False row) before the
+            # billing scope resets. sys.exc_info()[1] carries the in-flight
+            # exception when the finally runs on a propagation path (None on
+            # the success/continue paths, which are already recorded).
+            try:
+                _record_failed_attempt_metrics(
+                    role_name=role_name,
+                    billing_call_id=billing_call_id,
+                    attempt=sdk_attempt,
+                    billing_results=billing_results,
+                    attempt_started_at=_attempt_start,
+                    metrics_recorded=_attempt_metrics_recorded,
+                    error=sys.exc_info()[1],
+                    model=(
+                        _cx.codex_metrics_model()
+                        if _codex_transport
+                        else getattr(options, "model", None)
+                    ),
+                )
+            except Exception:
+                pass
             _lq._LLM_BILLING_RESULTS.reset(billing_token)
             try:
                 # The transport is unique to this attempt. If generator cleanup

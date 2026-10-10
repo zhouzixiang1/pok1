@@ -30,6 +30,8 @@ so test monkeypatches on ``orchestrator.<name>`` keep working at call time.
 
 from __future__ import annotations
 
+import inspect
+
 import orchestrator as _orch
 
 # Strong references for fire-and-forget draft-prepare tasks.  Without holding
@@ -100,10 +102,208 @@ def _emit_llm_availability_control_stop_event(exc):
         pass
 
 
+#: Phase-A orphaned-task registry (2026-10-10 red-team issue 1). A watchdog
+#: task whose ``create_task`` call exploded AFTER the event loop had already
+#: registered the Task has no owner handle anywhere in the body's locals —
+#: record the recovered orphan here so the phase-A crash reclamation can
+#: still await its exit before the ``-1.0`` sentinel is returned.
+_PHASE_A_ORPHANED_TASKS: set = set()
+
+
+def _cancel_phase_a_orphan_task_by_coro(coro):
+    """Recover a task ``create_task`` registered but never returned.
+
+    A fault between the loop scheduling the freshly constructed Task and
+    ``create_task`` returning it to the caller (the red-team T4 window)
+    orphans the task: it keeps running with no handle that any ``finally``
+    could reach. Recover it by coroutine identity — only a task running OUR
+    exact coroutine object is touched, never unrelated loop work. Returns
+    the cancelled task, or ``None`` when no orphan was found.
+    """
+
+    try:
+        pending = list(_orch.asyncio.all_tasks())
+    except Exception:
+        return None
+    for task in pending:
+        try:
+            if task.done() or task.get_coro() is not coro:
+                continue
+            task.cancel()
+            return task
+        except Exception:
+            continue
+    return None
+
+
+def _spawn_phase_a_watchdog_task(ui, shutdown_mgr, recovery_stops_launch):
+    """Spawn the phase-A watchdog task with an explosion-safe handoff.
+
+    If ``create_task`` itself raises after the loop already registered the
+    Task, the orphan is cancelled and stashed in ``_PHASE_A_ORPHANED_TASKS``
+    (the phase-A crash reclamation awaits it) before the exception
+    propagates into the phase-A escape guard.
+    """
+
+    coro = (
+        _orch.asyncio.sleep(0)
+        if recovery_stops_launch
+        else _orch._watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
+    )
+    try:
+        return _orch.asyncio.create_task(coro)
+    except BaseException:
+        orphan = _cancel_phase_a_orphan_task_by_coro(coro)
+        if orphan is not None:
+            _PHASE_A_ORPHANED_TASKS.add(orphan)
+        raise
+
+
+async def _reclaim_phase_a_background_resources(
+    *,
+    branch_guard_task=None,
+    stability_maintenance_task=None,
+    watchdog_task=None,
+    runtime_hard_stop_event=None,
+    daemon_stop=None,
+    daemon_was_started=False,
+):
+    """Finally-style reclamation for a propagating phase-A body (2026-10-10).
+
+    Phase B's ``finally`` cancels the branch-guard / stability-maintenance /
+    watchdog tasks, stops the daemon monitor thread, and (on branch drift)
+    the daemon subprocess — but a crash escaping the phase-A body used to
+    skip all of it: the three background tasks stayed pending, the monitor
+    thread kept polling, the daemon subprocess survived, and the leaked
+    watchdog kept heartbeating the saturator's liveness gate for a pipeline
+    whose loop task was already dead. This helper mirrors phase B's finally
+    for every resource phase A owns. Best-effort by design: no cleanup step
+    may raise past the original exception.
+    """
+
+    orphans = list(_PHASE_A_ORPHANED_TASKS)
+    _PHASE_A_ORPHANED_TASKS.clear()
+    for task in (
+        branch_guard_task,
+        stability_maintenance_task,
+        watchdog_task,
+        *orphans,
+    ):
+        if task is None:
+            continue
+        try:
+            if not task.done():
+                task.cancel()
+                await task
+        except _orch.asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+    if runtime_hard_stop_event is not None:
+        try:
+            runtime_hard_stop_event.set()
+        except Exception:
+            pass
+    if daemon_stop is not None:
+        try:
+            daemon_stop.set()
+        except Exception:
+            pass
+    if daemon_was_started:
+        try:
+            _orch.log_system_event(
+                "orchestrator.phase_a_crash_cleanup",
+                "warn",
+                "Phase-A crash: reclaiming background tasks and the daemon "
+                "started this attempt",
+                {},
+            )
+        except Exception:
+            pass
+        # Same off-loop contract as phase B's finally (stop_daemon can block
+        # on the daemon grace backstop). ``inspect.isawaitable`` keeps test
+        # seams that stub ``run_blocking_isolated`` with a plain callable
+        # working — the call still happens, only the await is skipped.
+        try:
+            from evolution_core import stop_daemon
+
+            outcome = _orch.run_blocking_isolated(
+                stop_daemon,
+                thread_name_prefix="phase-a-crash-daemon-stop",
+            )
+            if inspect.isawaitable(outcome):
+                await outcome
+        except Exception as exc:
+            _orch.log.debug("Phase-A crash daemon stop failed: %s", exc)
+
+
 async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
                               daemon_pairs, startup_recovery):
     """Phase A: epoch/daemon/task startup + recovery + state init.
-    Returns (ctx,) to continue, or a bare value to early-exit."""
+    Returns (ctx,) to continue, or a bare value to early-exit.
+
+    2026-10-10 escape guard: phase A historically had only ~11 local tries
+    and no overall net, so an exception escaping its straight-line body
+    (startup recovery, branch-guard task creation, daemon bootstrap, ...)
+    bypassed phase B's crash sentinel entirely — no ``orchestrator.crashed``
+    marker, no crash-note for the revival supervisor, no auto-restart, and
+    the saturator hard-parked on the dead pipeline. The guard below mirrors
+    phase B's crash branch (orchestrator.crashed event + crash note +
+    session clear + running=False) and returns the same ``-1.0`` crash
+    sentinel so the EXISTING crash-revival supervisor in
+    ``server.state.run_evolution_task`` schedules the bounded auto-restart.
+    Normal control flow is untouched: every legitimate early-exit value
+    (None / 5) still returns as-is, and cancellation still propagates.
+
+    2026-10-10 red-team issue 2: ``SystemExit`` is classified as a crash and
+    routed through this same fallback (it previously escaped the
+    ``except Exception`` net with zero crash events). ``KeyboardInterrupt``
+    is deliberately NOT caught — an operator's interactive stop must always
+    propagate.
+    """
+    try:
+        return await _loop_phase_a_setup_body(
+            ui, shutdown_mgr, no_daemon, daemon_workers, daemon_pairs,
+            startup_recovery,
+        )
+    except _orch.asyncio.CancelledError:
+        # Cancellation is operator/shutdown intent, not a crash: preserve
+        # the historical propagation (the wrapper task ends cancelled).
+        raise
+    except (SystemExit, Exception) as e:
+        if ui:
+            try:
+                ui.log_history(f"Orchestrator crashed: {e}", "error")
+            except Exception:
+                pass
+        try:
+            _orch.log_system_event(
+                "orchestrator.crashed", "error", f"Orchestrator crashed: {e}",
+                {"error": str(e)[:200], "phase": "a_setup"},
+            )
+        except Exception:
+            pass
+        # P2-style crash note for the auto-restart supervisor's
+        # pipeline.orchestrator_auto_restart events.
+        try:
+            from server.state import app_state
+            app_state.note_orchestrator_crash(e)
+        except Exception:
+            pass
+        try:
+            _orch._clear_orchestrator_session(reason="phase_a_crash")
+        except Exception:
+            pass
+        try:
+            from server.state import app_state
+            app_state.set_running(False)
+        except Exception as cleanup_error:
+            _orch.log.debug("Phase-A crash cleanup error: %s", cleanup_error)
+        return -1.0
+
+
+async def _loop_phase_a_setup_body(ui, shutdown_mgr, no_daemon, daemon_workers,
+                                   daemon_pairs, startup_recovery):
     """Orchestrator entry point — three-phase generation loop.
 
     Args:
@@ -319,90 +519,116 @@ async def _loop_phase_a_setup(ui, shutdown_mgr, no_daemon, daemon_workers,
     except Exception:
         pass
 
+    # Resource-owning section (2026-10-10 red-team issue 1): everything from
+    # the first background-task creation to the ``(ctx,)`` handoff is wrapped
+    # so an exception escaping it (or a cancellation) runs the SAME
+    # finally-style reclamation phase B's finally performs — cancel the three
+    # background tasks (branch guard / stability maintenance / watchdog, plus
+    # any watchdog orphan whose create_task exploded), stop the daemon
+    # monitor thread, and stop the daemon subprocess phase A started. Without
+    # this, a phase-A crash leaked all of them across every revival while the
+    # outer guard's ``-1.0`` sentinel kept the supervisor restarting.
     _branch_guard_task = None
     _stability_maintenance_task = None
     _runtime_hard_stop_event = _orch.asyncio.Event()
-    if not recovery_stops_launch and _orch._runtime_branch_guard_enabled():
-        _branch_guard_task = _orch.asyncio.create_task(
-            _orch._runtime_branch_guard_coroutine(
-                ui,
-                shutdown_mgr,
-                expected_branch=EVOLUTION_BRANCH,
-                expected_head=_expected_runtime_head,
-                owner_task=_orch.asyncio.current_task(),
-                hard_stop_event=_runtime_hard_stop_event,
-            )
-        )
-        _orch.log_system_event(
-            "repo.runtime_branch_guard_started",
-            "info",
-            "Runtime branch guard started",
-            {
-                "expected_branch": EVOLUTION_BRANCH,
-                "expected_head": _expected_runtime_head,
-                "current_branch": _runtime_identity.get("branch", ""),
-                "current_head": _runtime_identity.get("head", ""),
-                "check_interval": _orch.RUNTIME_BRANCH_GUARD_INTERVAL,
-            },
-        )
-    if not recovery_stops_launch:
-        _stability_maintenance_task = _orch.asyncio.create_task(
-            _orch._stability_projection_maintenance_coroutine(shutdown_mgr),
-            name="stability-observation-maintenance",
-        )
-
-    # Start daemon only after recovery authority permits the workflow.
     _daemon_stop = None
-    if not no_daemon and not recovery_stops_launch:
-        from evolution_core import start_daemon, daemon_monitor_thread
-        import threading
-        try:
-            start_daemon(workers=daemon_workers, pairs=daemon_pairs)
-        except Exception as e:
-            if ui:
-                ui.log_history(f"Daemon start failed: {e}", "error")
-            _orch.log.error("Daemon start failed: %s", e)
-            no_daemon = True
-        if not no_daemon:
-            _daemon_stop = threading.Event()
-            monitor = threading.Thread(
-                target=daemon_monitor_thread,
-                args=(ui, _daemon_stop, daemon_workers, daemon_pairs),
-                daemon=True,
+    _watchdog_task = None
+    _daemon_was_started = False
+    _phase_a_resources_handed_off = False
+    try:
+        if not recovery_stops_launch and _orch._runtime_branch_guard_enabled():
+            _branch_guard_task = _orch.asyncio.create_task(
+                _orch._runtime_branch_guard_coroutine(
+                    ui,
+                    shutdown_mgr,
+                    expected_branch=EVOLUTION_BRANCH,
+                    expected_head=_expected_runtime_head,
+                    owner_task=_orch.asyncio.current_task(),
+                    hard_stop_event=_runtime_hard_stop_event,
+                )
             )
-            monitor.start()
-            if ui:
-                ui.log_history("Daemon started.", "info")
+            _orch.log_system_event(
+                "repo.runtime_branch_guard_started",
+                "info",
+                "Runtime branch guard started",
+                {
+                    "expected_branch": EVOLUTION_BRANCH,
+                    "expected_head": _expected_runtime_head,
+                    "current_branch": _runtime_identity.get("branch", ""),
+                    "current_head": _runtime_identity.get("head", ""),
+                    "check_interval": _orch.RUNTIME_BRANCH_GUARD_INTERVAL,
+                },
+            )
+        if not recovery_stops_launch:
+            _stability_maintenance_task = _orch.asyncio.create_task(
+                _orch._stability_projection_maintenance_coroutine(shutdown_mgr),
+                name="stability-observation-maintenance",
+            )
 
-    log_file = _orch.LOGS_DIR / f"orchestrator_{_orch.time.strftime('%Y%m%d_%H%M%S')}.txt"
-    gen_count = 0
-    consecutive_prep_fails = 0
+        # Start daemon only after recovery authority permits the workflow.
+        if not no_daemon and not recovery_stops_launch:
+            from evolution_core import start_daemon, daemon_monitor_thread
+            import threading
+            try:
+                start_daemon(workers=daemon_workers, pairs=daemon_pairs)
+            except Exception as e:
+                if ui:
+                    ui.log_history(f"Daemon start failed: {e}", "error")
+                _orch.log.error("Daemon start failed: %s", e)
+                no_daemon = True
+            if not no_daemon:
+                _daemon_was_started = True
+                _daemon_stop = threading.Event()
+                monitor = threading.Thread(
+                    target=daemon_monitor_thread,
+                    args=(ui, _daemon_stop, daemon_workers, daemon_pairs),
+                    daemon=True,
+                )
+                monitor.start()
+                if ui:
+                    ui.log_history("Daemon started.", "info")
 
-    # Launch background watchdog coroutine to detect stuck pipelines
-    _watchdog_task = _orch.asyncio.create_task(
-        _orch.asyncio.sleep(0)
-        if recovery_stops_launch
-        else _orch._watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
-    )
-    terminal_outcome = 0.0
-    consecutive_canonical_abandons = 0
-    canonical_abandon_target = None
+        log_file = _orch.LOGS_DIR / f"orchestrator_{_orch.time.strftime('%Y%m%d_%H%M%S')}.txt"
+        gen_count = 0
+        consecutive_prep_fails = 0
 
-    return ({
-        'log_file': log_file,
-        'operator_cost_policy': operator_cost_policy,
-        '_branch_guard_task': _branch_guard_task,
-        '_stability_maintenance_task': _stability_maintenance_task,
-        '_runtime_hard_stop_event': _runtime_hard_stop_event,
-        '_daemon_stop': _daemon_stop,
-        '_watchdog_task': _watchdog_task,
-        'gen_count': gen_count,
-        'recovery': recovery,
-        'consecutive_prep_fails': consecutive_prep_fails,
-        'consecutive_canonical_abandons': consecutive_canonical_abandons,
-        'canonical_abandon_target': canonical_abandon_target,
-        'terminal_outcome': terminal_outcome,
-    },)
+        # Launch background watchdog coroutine to detect stuck pipelines.
+        # The watchdog's liveness heartbeat is bound to this loop task (see
+        # orchestrator_watchdog) so a leaked tick can never keep marking a
+        # dead pipeline alive for the saturator.
+        _watchdog_task = _spawn_phase_a_watchdog_task(
+            ui, shutdown_mgr, recovery_stops_launch
+        )
+        terminal_outcome = 0.0
+        consecutive_canonical_abandons = 0
+        canonical_abandon_target = None
+
+        _phase_a_resources_handed_off = True
+        return ({
+            'log_file': log_file,
+            'operator_cost_policy': operator_cost_policy,
+            '_branch_guard_task': _branch_guard_task,
+            '_stability_maintenance_task': _stability_maintenance_task,
+            '_runtime_hard_stop_event': _runtime_hard_stop_event,
+            '_daemon_stop': _daemon_stop,
+            '_watchdog_task': _watchdog_task,
+            'gen_count': gen_count,
+            'recovery': recovery,
+            'consecutive_prep_fails': consecutive_prep_fails,
+            'consecutive_canonical_abandons': consecutive_canonical_abandons,
+            'canonical_abandon_target': canonical_abandon_target,
+            'terminal_outcome': terminal_outcome,
+        },)
+    finally:
+        if not _phase_a_resources_handed_off:
+            await _reclaim_phase_a_background_resources(
+                branch_guard_task=_branch_guard_task,
+                stability_maintenance_task=_stability_maintenance_task,
+                watchdog_task=_watchdog_task,
+                runtime_hard_stop_event=_runtime_hard_stop_event,
+                daemon_stop=_daemon_stop,
+                daemon_was_started=_daemon_was_started,
+            )
 
 
 async def _loop_phase_b_generation_loop(ctx, ui, shutdown_mgr, no_daemon,
