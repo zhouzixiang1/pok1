@@ -1143,6 +1143,15 @@ async def _run_stream_with_signature_retry_attempts(
         # metrics row lands; a False at scope exit means the attempt died
         # before recording and _record_failed_attempt_metrics gets its turn.
         _attempt_metrics_recorded = False
+        # 2026-10-11 pacer symmetry (b): the signature-retry ``continue``
+        # leaves the except handler, so the finally below observes
+        # ``sys.exc_info()[1] is None`` (py3 clears the handled exception
+        # when the except block is exited, including via ``continue``).
+        # Without stashing the in-flight error here, a usage-bearing failed
+        # attempt that RETRIES (rather than propagates) would never get its
+        # ``success=False`` metrics row and the pacer would under-count the
+        # window burn — the raise path recorded it, the retry path did not.
+        _attempt_pending_error = None
         try:
             if semaphore is not None:
                 async with semaphore:
@@ -1320,6 +1329,10 @@ async def _run_stream_with_signature_retry_attempts(
                 await _signature_retry_sleep(
                     _backoff, role_name, log_file_path
                 )
+                # 2026-10-11 pacer symmetry (b): stash the in-flight error —
+                # the finally runs after this ``continue`` leaves the except
+                # handler, where sys.exc_info()[1] is already None.
+                _attempt_pending_error = e
                 continue
             # 自适应并发:非 signature 的 SDK error(可能含 503 熔断/overloaded/429)上报降并发
             try:
@@ -1389,8 +1402,13 @@ async def _run_stream_with_signature_retry_attempts(
             # ResultMessages are already observable in billing_results gets
             # its usage into the burn ledger (success=False row) before the
             # billing scope resets. sys.exc_info()[1] carries the in-flight
-            # exception when the finally runs on a propagation path (None on
-            # the success/continue paths, which are already recorded).
+            # exception when the finally runs on a propagation path. On the
+            # RETRY-continue path it is None (the except handler was left
+            # via ``continue``), so the stashed _attempt_pending_error — set
+            # in the signature-retry branch before continuing — supplies the
+            # error instead (2026-10-11 pacer symmetry (b); the success path
+            # and the empty-output retry stay excluded via
+            # metrics_recorded=True / error None).
             try:
                 _record_failed_attempt_metrics(
                     role_name=role_name,
@@ -1399,7 +1417,7 @@ async def _run_stream_with_signature_retry_attempts(
                     billing_results=billing_results,
                     attempt_started_at=_attempt_start,
                     metrics_recorded=_attempt_metrics_recorded,
-                    error=sys.exc_info()[1],
+                    error=sys.exc_info()[1] or _attempt_pending_error,
                     model=(
                         _cx.codex_metrics_model()
                         if _codex_transport

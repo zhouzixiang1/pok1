@@ -225,6 +225,15 @@ async def lifespan(app: FastAPI):
     async def _memory_heartbeat(interval_sec: float = 600.0) -> None:
         import logging as _mem_log
 
+        # Selective malloc_trim (2026-10-11 heap work): when
+        # POK_MALLOC_TRIM_INTERVAL_SEC > 0 the 1s tick below drives
+        # libc.malloc_trim(0) on that cadence (web/core/malloc_trim.py;
+        # default 0 = fully disabled, and every libc failure degrades
+        # silently). The interval is read once per heartbeat start: it is a
+        # process-launch env, and re-parsing it every second buys nothing.
+        from malloc_trim import malloc_trim_interval_sec, maybe_malloc_trim
+
+        trim_interval_sec = malloc_trim_interval_sec()
         heartbeat_log = _mem_log.getLogger("pok.memory")
         warn_mb = 1536
         while not (
@@ -253,6 +262,13 @@ async def lifespan(app: FastAPI):
                     and getattr(shutdown_mgr, "is_shutting_down", False)
                 ):
                     break
+                if trim_interval_sec > 0:
+                    # Best-effort periodic trim; cheap no-op inside the
+                    # interval window, silent no-op on any libc failure.
+                    try:
+                        maybe_malloc_trim(interval_sec=trim_interval_sec)
+                    except Exception:
+                        pass
                 await asyncio.sleep(1.0)
 
     memory_task = asyncio.create_task(_memory_heartbeat())

@@ -41,6 +41,27 @@ from testclient_compat import backend_options_for_testclient
 # Import server.app to create module-level broadcaster and web_ui
 # (some endpoints do `from server.app import web_ui` inside handlers)
 import server.app  # noqa: F401
+
+# Isolation guarantee (2026-10-11, cross-file singleton-leak root cause): the
+# orchestrator/companion import cluster must be fully imported BEFORE any test
+# runs. Two hazards exist when its first import happens inside a test:
+#   (a) a companion imported first (e.g. ``orchestrator_stage_routing`` via
+#       control.py's lazy /health read) raises a circular ImportError inside
+#       orchestrator.py's bottom re-export block; Python then removes
+#       ``orchestrator`` from sys.modules but companion modules that completed
+#       during the partial run (``orchestrator_abandon_and_cost``) survive
+#       forever holding ``_o`` -> the DEAD partial orchestrator object, so
+#       later ``orchestrator`` imports bind a DIFFERENT module and
+#       ``monkeypatch.setattr(orchestrator, ...)`` never reaches the code the
+#       moved bodies execute (observed: test_epoch_launch_guard poisoned
+#       test_orchestrator_cost_policy with a foreign ``log_system_event``).
+#   (b) orchestrator.py's ``from system_log import log_system_event`` snapshot
+#       binds whatever ``system_log.log_system_event`` is at first-import
+#       time — if a test's monkeypatch is active in that window, the test
+#       lambda is captured permanently.
+# Eagerly importing here (before any test/fixture can patch anything) closes
+# both windows for every test file, regardless of collection order.
+import orchestrator  # noqa: F401,E402  (isolation import; see above)
 from bot_namespace import (
     ACTIVE_BOT_PREFIX,
     ACTIVE_TAG_PREFIX,

@@ -1006,11 +1006,18 @@ class QuotaPacer:
                 if not isinstance(record, dict):
                     continue
                 ts = record.get("epoch_ts")
-                tok = record.get("total_tokens")
                 if not isinstance(ts, (int, float)) or isinstance(ts, bool):
                     continue
-                if not isinstance(tok, int) or tok <= 0:
-                    continue
+                tok = record.get("total_tokens")
+                if isinstance(tok, bool) or not isinstance(tok, int):
+                    # Cache-only rows (2026-10-11 hook/seed symmetry): a
+                    # record whose usage carries ONLY cache fields is
+                    # written with ``"total_tokens": None``
+                    # (record_llm_call_metrics stores ``total_tok or None``)
+                    # and the in-process hook DOES account it (note_usage
+                    # records (0, cache)). Keep parsing for the cache leg
+                    # instead of dropping the row the hook counted.
+                    tok = 0
                 if float(ts) < cutoff:
                     continue
                 if float(ts) >= self._boot_ts:
@@ -1036,6 +1043,12 @@ class QuotaPacer:
                         and cache_val > 0
                     ):
                         cache_tok += cache_val
+                # Symmetric admission with note_usage: a row enters the
+                # ledger when EITHER leg carries tokens (cache-only rows
+                # included); a fully-empty row is skipped exactly like a
+                # zero/zero hook event.
+                if tok <= 0 and cache_tok <= 0:
+                    continue
                 key = None
                 call_id = record.get("call_id")
                 attempt = record.get("attempt")

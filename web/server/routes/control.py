@@ -1420,6 +1420,18 @@ def _last_evolution_stop_reason() -> dict | None:
     """
 
     try:
+        # Import-order guard (2026-10-11, cross-file module-poison root cause):
+        # this read-only /health seam is reachable in a process where
+        # ``orchestrator`` has never been imported (view-only / reset-required
+        # server). Importing the companion FIRST makes the circular pair fail:
+        # orchestrator_stage_routing's module-level ``import orchestrator as _o``
+        # starts orchestrator.py, whose bottom ``from orchestrator_stage_routing
+        # import (...)`` then hits a partially-initialized companion and raises
+        # ImportError — leaving permanently-stale companion ``_o`` bindings (a
+        # dead partial orchestrator object) that later crash cost/abandon
+        # accounting. Importing ``orchestrator`` first initializes the cluster
+        # in the safe order (identical weight: the companion imports it anyway).
+        import orchestrator  # noqa: F401
         from orchestrator_stage_routing import _read_structured_events_tail
     except Exception:
         return None

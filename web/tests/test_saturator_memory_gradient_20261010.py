@@ -17,6 +17,13 @@ Contract (``llm_saturator.saturator_may_launch``):
 * headroom < soft floor: refused ``low_memory_cgroup`` exactly as before.
 * A soft floor configured above the hard floor is clamped to the hard
   floor, so the ``headroom >= hard floor`` behavior can never tighten.
+
+2026-10-11 update: soft-band admission additionally charges the admitted
+stream's own RSS (``POK_LLM_SATURATOR_STREAM_RSS_MB``, default 250 MB) —
+``headroom - STREAM_RSS >= SOFT_FLOOR - OVERSHOOT``. That dimension has its
+own dated suite (``test_saturator_band_rss_admission_20261011.py``); this
+file pins it to ``STREAM_RSS_MB=0`` so the lane-mechanics contract above
+(three tiers, inflight cap, clamping) keeps its original arithmetic.
 """
 
 from __future__ import annotations
@@ -37,6 +44,10 @@ def _isolate_gates(monkeypatch):
     monkeypatch.delenv("POK_LLM_AIMD_CGROUP_HEADROOM_MB", raising=False)
     monkeypatch.delenv("POK_LLM_SATURATOR_MEMORY_SOFT_FLOOR_MB", raising=False)
     monkeypatch.delenv("POK_LLM_SATURATOR_LOW_MEMORY_INFLIGHT", raising=False)
+    # 2026-10-11: pin the stream-RSS charge to 0 so this file keeps testing
+    # the 2026-10-10 lane mechanics in isolation (see module docstring).
+    monkeypatch.setenv("POK_LLM_SATURATOR_STREAM_RSS_MB", "0")
+    monkeypatch.delenv("POK_LLM_SATURATOR_BAND_OVERSHOOT_MB", raising=False)
     # Keep the permit/child gates permissive by default; individual tests
     # tighten them explicitly.
     monkeypatch.setattr(llm_concurrency, "llm_semaphore_has_capacity", lambda n=1: True)

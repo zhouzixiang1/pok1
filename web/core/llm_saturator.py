@@ -922,6 +922,50 @@ def _low_memory_inflight_cap() -> int:
         return 1
 
 
+def _saturator_stream_rss_mb() -> int:
+    """RSS (MB) charged for ONE admitted claude stream (2026-10-11, w6+1).
+
+    ``POK_LLM_SATURATOR_STREAM_RSS_MB`` (default 250): the measured RSS of a
+    single claude SDK child (~235-250 MB/stream; the 2026-08-10 memory-budget
+    note in env.runtime). Soft-band admission must subtract this from the
+    CURRENT headroom before opening the lane: a packet admitted into a
+    150-300 MB band would otherwise land the service cgroup past
+    ``memory.high`` straight into kernel-reclaim throttle — the exact risk
+    that kept the lane dormant in the 2026-10-10 deploy.
+    """
+    try:
+        return max(
+            0, int(os.environ.get("POK_LLM_SATURATOR_STREAM_RSS_MB", "250"))
+        )
+    except (TypeError, ValueError):
+        return 250
+
+
+def _saturator_band_overshoot_mb() -> int:
+    """Explicit cap (MB) on how far a band admission may cross the floor.
+
+    ``POK_LLM_SATURATOR_BAND_OVERSHOOT_MB`` (default 0). The soft-band
+    admission line is::
+
+        headroom - STREAM_RSS_MB >= SOFT_FLOOR_MB - OVERSHOOT_MB
+
+    At the default 0, an admitted stream must leave the PROJECTED
+    post-launch headroom at/above the soft floor — with the committed
+    defaults (soft floor 150, stream RSS 250) that needs headroom >= 400,
+    above the 300 MB hard floor, so the soft lane stays closed and nothing
+    ever crosses ``memory.high``. Raising OVERSHOOT is the single explicit
+    operator dial for letting one band admission dip up to OVERSHOOT below
+    the soft floor (possibly past ``memory.high``), trading native
+    60s-decision reclaim-throttle risk for background-lane throughput.
+    """
+    try:
+        return max(
+            0, int(os.environ.get("POK_LLM_SATURATOR_BAND_OVERSHOOT_MB", "0"))
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
 def saturator_soft_cap(effective_capacity: int, static_capacity: int) -> int:
     """Saturator in-flight ceiling as a pure function of the dynamic capacity.
 
@@ -1173,16 +1217,27 @@ def saturator_may_launch(
     # lane for 76 straight minutes. Between the soft floor and the hard floor
     # degrade to a bounded low-memory lane; below the soft floor refuse
     # exactly as before.
+    # RSS-aware admission (2026-10-11): opening the lane must charge the
+    # admitted packet's OWN claude-child RSS against the headroom —
+    # ``headroom - STREAM_RSS >= SOFT_FLOOR - OVERSHOOT`` — otherwise a
+    # single admission in the observed w6 203-252 MB band lands the cgroup
+    # past memory.high into reclaim throttle. With the committed defaults
+    # (150/250/0) that line needs headroom >= 400 > hard floor 300, so the
+    # lane stays closed until OVERSHOOT is deliberately raised; the refusal
+    # is then its own typed reason, distinct from the inflight-cap refusal.
     cgroup_headroom = _cgroup_memory_headroom_mb()
     cgroup_min = _cgroup_headroom_mb()
     if cgroup_headroom is not None and cgroup_min:
         if cgroup_headroom < _cgroup_memory_soft_floor_mb():
             return False, "low_memory_cgroup"
-        if (
-            cgroup_headroom < cgroup_min
-            and in_flight >= _low_memory_inflight_cap()
-        ):
-            return False, "low_memory_cgroup_soft"
+        if cgroup_headroom < cgroup_min:
+            if (
+                cgroup_headroom - _saturator_stream_rss_mb()
+                < _cgroup_memory_soft_floor_mb() - _saturator_band_overshoot_mb()
+            ):
+                return False, "low_memory_cgroup_stream_rss"
+            if in_flight >= _low_memory_inflight_cap():
+                return False, "low_memory_cgroup_soft"
     return True, "ok"
 
 

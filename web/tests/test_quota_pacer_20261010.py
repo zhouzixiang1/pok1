@@ -355,9 +355,19 @@ def test_restart_fill_lane_does_not_bypass_quota_pacing(monkeypatch):
 
 
 def test_committed_env_runtime_enables_pacing_with_kpi_clearing_values():
-    """The w2/w4/w5 fix is a deploy decision as much as code: the committed
-    cloud env must enable the pacer at a pace that (a) clears the 20M/h
-    hourly KPI and (b) leaves headroom under the observed ~178M 5h cap."""
+    """The w2/w4/w5 deploy decision, superseded 2026-10-11 by the operator
+    call 『宁要高峰、接受配额死小时』: the committed cloud env now DISABLES
+    the pacer entirely (budget 0). This test pins that decision — budget 0,
+    window retained (18000s) so a future re-enable is a one-line change —
+    plus the unchanged bounded restart-fill lane.
+
+    History: 2026-10-10 committed 150M/18000s = 30M/h (cleared the 20M/h
+    KPI under the ~178M/5h observed cap); 2026-10-11 the operator chose peak
+    throughput over the paced mean. The dual-caliber snapshot fields on
+    ``pipeline.llm_quota_exceeded_detected`` events are pacing-independent
+    and keep firing for future cache-weight calibration (see
+    test_quota_pacer_cache_calibration_20261010.py).
+    """
 
     env_path = (
         Path(__file__).resolve().parents[2]
@@ -376,10 +386,9 @@ def test_committed_env_runtime_enables_pacing_with_kpi_clearing_values():
 
     budget = int(values["POK_LLM_QUOTA_WINDOW_BUDGET_TOKENS"])
     window = float(values["POK_LLM_QUOTA_WINDOW_SEC"])
-    hourly = budget / window * 3600.0
-    # (a) clears the 20M tokens/hour KPI ...
-    assert hourly >= 20_000_000, hourly
-    # (b) ... with headroom under the observed ~178M/5h provider capacity.
-    assert budget <= 178_000_000, budget
+    # The 2026-10-11 operator decision: pacer fully disabled.
+    assert budget == 0, budget
+    # The window var is retained verbatim for a future one-line re-enable.
+    assert window == 18000.0, window
     # The bounded restart-fill lane is part of the same committed config.
     assert int(values["POK_LLM_SATURATOR_RESTART_FILL_INFLIGHT"]) >= 1

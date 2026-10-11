@@ -564,6 +564,17 @@ def _rotate_orchestrator_logs(logs_dir: Path | None, keep: int) -> tuple[int, in
     if logs_dir is None or not logs_dir.is_dir():
         return 0, 0
     try:
+        # Import-order guard (2026-10-11): this janitor seam runs from the web
+        # lifespan, potentially in a process where ``orchestrator`` has never
+        # been imported (view-only / reset-required server). Importing the
+        # companion FIRST starts the orchestrator<->companion import cycle the
+        # wrong way round: orchestrator.py's bottom re-export block then raises
+        # ImportError against the partially-initialized companion and leaves
+        # permanently-stale companion ``_o`` bindings (a dead partial
+        # orchestrator object). Importing ``orchestrator`` first initializes
+        # the cluster in the safe order (identical weight: the companion
+        # imports it at module level anyway).
+        import orchestrator  # noqa: F401
         from orchestrator_abandon_and_cost import _rotate_orchestrator_logs as _rotate
     except Exception:
         _rotate = None
