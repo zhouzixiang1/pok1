@@ -744,6 +744,51 @@ def _first_strict_batch_pending_result(
 
 
 
+def _build_pool_gate_spec(opponents, *, first_strict: bool) -> tuple[dict | None, str | None]:
+    """Resolve the pool-ratchet gate spec at the plan-freeze moment.
+
+    Returns ``(spec, error)``.  The spec is resolved exactly once, here, from
+    the live publication mode and the selected opponents; it is then frozen
+    into the plan settings and every retry/commit re-proves it from the frozen
+    copy (never from live env).  ``error`` is a fail-fast configuration
+    failure (invalid ``POK_PUBLISH_MODE`` or gate overrides) that must pause
+    the pipeline before any plan is frozen.  The first-strict system control
+    never carries a pool gate.
+    """
+
+    if first_strict:
+        return None, None
+    from pool_ratchet import publish_mode
+
+    try:
+        mode = publish_mode()
+    except Exception as exc:
+        return None, (
+            f"publish_mode_invalid:{type(exc).__name__}:{str(exc)[:240]}"
+        )
+    if mode != "pool_ratchet":
+        return None, None
+    gate_label = next(
+        (
+            str(item.get("name") or "")
+            for item in opponents
+            if isinstance(item, dict)
+            and str(item.get("reason") or "") == "pool_weakest_gate"
+        ),
+        "",
+    )
+    if not gate_label:
+        return None, None
+    from pool_ratchet_gate import build_pool_gate_settings
+
+    try:
+        return build_pool_gate_settings(gate_label), None
+    except Exception as exc:
+        return None, (
+            f"pool_gate_settings_invalid:{type(exc).__name__}:{str(exc)[:240]}"
+        )
+
+
 async def _run_national_precommit_backend(
     *,
     v: int,
@@ -1252,6 +1297,24 @@ async def _run_national_precommit_backend(
                 })
     else:
         control_gate = None
+    # Pool admission gate (pool-ratchet mode): the frozen plan settings carry
+    # the gate spec (label + thresholds); execution reads ONLY the frozen
+    # settings, so an operator flipping the live mode/thresholds mid-flight
+    # never re-decides an in-flight generation's gate semantics.
+    pool_gate_spec = settings.get("pool_gate")
+    pool_gate_spec = (
+        pool_gate_spec if isinstance(pool_gate_spec, dict) else None
+    )
+    pool_gate_summary = None
+    if pool_gate_spec and pool_gate_spec.get("label"):
+        from pool_ratchet_gate import pool_gate_blockers
+
+        pool_blockers, pool_gate_summary = pool_gate_blockers(
+            matchups,
+            str(pool_gate_spec.get("label")),
+            settings,
+        )
+        blockers.extend(pool_blockers)
     passed = (
         bool(national_result.get("passed"))
         and len(blockers) == 0
@@ -1296,6 +1359,7 @@ async def _run_national_precommit_backend(
                 "matches_per_opponent": national_matches,
                 "blockers": blockers,
                 "paired_bootstrap": paired_bootstrap_payload,
+                "pool_gate": pool_gate_summary,
                 "elapsed_sec": round(time.time() - started_at, 2),
             },
         )
@@ -1348,7 +1412,15 @@ async def _run_national_precommit_backend(
         "national": national_result,
         "official_platform": official_platform_result,
         "code_fingerprint": code_fingerprint,
-        "precommit_eval_plan": precommit_plan,
+        # Leak-surface guard (2026-10-11): the frozen plan (which now carries
+        # the deck-seed nonce) is deliberately NOT copied into the result
+        # payload / checkpoint gate_results.  Its two remaining carriers are
+        # the PRECOMMIT CONTRACT DRIFT pause payload and the checkpoint
+        # audit_context copy that commit re-proves — every result-side
+        # consumer was audited to read neither (rework feedback extraction
+        # reads directive/reviewer_feedback/blockers/failures/matchups only;
+        # the commit ledger reads the audit_context copy; the sole historical
+        # result-side reader was the one-time first-strict control compare).
         "precommit_eval_contract": evaluation_contract,
         "precommit_eval_contract_digest": evaluation_contract.get("contract_digest"),
         "control_execution_scope": (
@@ -2111,6 +2183,47 @@ async def run_precommit_eval(args):
         if parent2_path.exists() and not any(o["name"] == parent2_name for o in opponents):
             opponents.append({"name": parent2_name, "reason": "crossover_parent_b"})
 
+    # Fail-closed opponent-selection blockers (pool-ratchet mode): the frozen
+    # snapshot must be able to name a pool-weakest member.  A missing
+    # conservative_rating (or an invalid publish-mode config) is an
+    # infrastructure boundary that requires operator attention — it must never
+    # degrade into a silent legacy selection, and never blame the candidate.
+    selection_blockers = []
+    clean_opponents = []
+    for item in opponents:
+        if isinstance(item, dict) and isinstance(
+            item.get("selection_blocker"), dict
+        ):
+            selection_blockers.append(dict(item["selection_blocker"]))
+        else:
+            clean_opponents.append(item)
+    if selection_blockers:
+        blockers.extend(selection_blockers)
+        opponents = clean_opponents
+        return _json_tool_result({
+            "error": (
+                "PRECOMMIT OPPONENT SELECTION FAILED: "
+                + "; ".join(
+                    str(item.get("reason") or "selection_failed")
+                    for item in selection_blockers
+                )
+            ),
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "blockers": blockers,
+            "opponents": opponents,
+            "matchups": [],
+            "failure_class": "infrastructure",
+            "intent": make_intent(
+                "pause",
+                failure_class="infrastructure",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=False,
+                reason="precommit_opponent_selection_failed",
+            ),
+        })
+
     if not opponents:
         blockers.append({"reason": "no_opponents", "details": "No eligible current-epoch native TCP opponents found."})
     all_opponents = list(opponents)  # preserve full list for result reporting
@@ -2119,6 +2232,34 @@ async def run_precommit_eval(args):
     evaluation_contract = current_evaluation_contract
     if national_evaluation and precommit_plan is None and opponents:
         national_hands, national_matches = _national_precommit_shape(workflow_profile, n_games)
+        # Pool-ratchet admission gate spec: resolved once at this plan-freeze
+        # moment from the live publication mode and the selected opponents,
+        # then frozen into the plan settings (retries re-prove the frozen
+        # copy; a mid-flight mode flip cannot change this generation's gate).
+        pool_gate_spec, pool_gate_error = _build_pool_gate_spec(
+            opponents,
+            first_strict=declared_first_strict,
+        )
+        if pool_gate_error:
+            payload = {
+                "error": f"PRECOMMIT PLAN CREATION FAILED: {pool_gate_error}",
+                "version": v,
+                "source_v": source_v,
+                "passed": False,
+                "blockers": [{
+                    "reason": "precommit_plan_creation_failed",
+                    "details": pool_gate_error,
+                }],
+                "failure_class": "infrastructure",
+                "intent": make_intent(
+                    "pause",
+                    failure_class="infrastructure",
+                    authority="tool:precommit_eval",
+                    safe_to_auto_execute=False,
+                    reason="precommit_plan_creation_failed",
+                ),
+            }
+            return _json_tool_result(payload)
         try:
             precommit_plan = create_precommit_plan(
                 candidate_version=v,
@@ -2134,6 +2275,7 @@ async def run_precommit_eval(args):
                     or get_bot_dir(parse_bot_version(item["name"]))
                 ),
                 require_published_opponents=True,
+                pool_gate=pool_gate_spec,
             )
         except PrecommitEvalContractError as exc:
             payload = {
@@ -2185,6 +2327,38 @@ async def run_precommit_eval(args):
             precommit_plan,
             candidate_code_fingerprint=code_fingerprint,
         )
+        # Record the seed provenance for audit replay: the structured event
+        # payload (journal side) carries the nonce original bound to the plan
+        # digest; UI-facing text renders only the derived base and digest.
+        try:
+            frozen_seed_settings = (
+                (precommit_plan.get("settings") or {})
+            )
+            log_system_event(
+                "pipeline.precommit_seed_frozen",
+                "info",
+                (
+                    f"Precommit deck seed frozen for v{v}: "
+                    f"derivation={frozen_seed_settings.get('seed_derivation')} "
+                    f"deck_seed_base={frozen_seed_settings.get('deck_seed_base')}"
+                ),
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "plan_digest": precommit_plan.get("plan_digest"),
+                    "seed_derivation": frozen_seed_settings.get(
+                        "seed_derivation"
+                    ),
+                    "deck_seed_base": frozen_seed_settings.get(
+                        "deck_seed_base"
+                    ),
+                    "deck_seed_nonce": frozen_seed_settings.get(
+                        "deck_seed_nonce"
+                    ),
+                },
+            )
+        except Exception:
+            pass
         opponents = opponents_from_plan(precommit_plan)
         all_opponents = list(opponents)
         n_games = int((precommit_plan.get("settings") or {}).get("matches_per_opponent") or n_games)

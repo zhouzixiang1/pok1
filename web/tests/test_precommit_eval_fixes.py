@@ -470,6 +470,11 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(tbm, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(tbm, "MAX_ACTIVE_BOTS", 1)
+        # Pool-ratchet wiring (2026-10-11): reap cap now resolves through
+        # pool_ratchet.pool_target_size(); pin it to the same test cap.
+        import pool_ratchet
+
+        monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 1)
         monkeypatch.setattr(
             tbm,
             "load_ratings",

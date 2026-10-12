@@ -92,13 +92,29 @@ def _is_strict_canonical_bot_name(value) -> bool:
 def _validate_reap_selection_snapshot(snapshot: dict) -> dict[str, dict]:
     """Validate and decode one immutable conservative-Glicko preimage."""
 
-    if not isinstance(snapshot, dict) or set(snapshot) != _tbm._REAP_SNAPSHOT_KEYS:
+    if not isinstance(snapshot, dict):
+        raise RuntimeError("reap_selection_snapshot_keys_invalid")
+    policy = snapshot.get("selection_policy")
+    if policy not in _tbm.REAP_SELECTION_POLICIES:
+        raise RuntimeError("reap_selection_snapshot_keys_invalid")
+    # Pool-ratchet snapshots must freeze their protection profile so the
+    # selection rules replay deterministically; a legacy snapshot carries no
+    # such key (byte-identical to the historical shape).
+    protection_profile = snapshot.get("protection_profile")
+    if policy == "conservative_glicko_pool_ratchet_v1":
+        if protection_profile != "pool_ratchet":
+            raise RuntimeError("reap_selection_snapshot_protection_invalid")
+        expected_keys = _tbm._REAP_SNAPSHOT_KEYS | {"protection_profile"}
+    else:
+        if protection_profile is not None:
+            raise RuntimeError("reap_selection_snapshot_protection_invalid")
+        expected_keys = set(_tbm._REAP_SNAPSHOT_KEYS)
+    if set(snapshot) != expected_keys:
         raise RuntimeError("reap_selection_snapshot_keys_invalid")
     if (
         type(snapshot.get("schema_version")) is not int
         or snapshot["schema_version"] != 1
         or snapshot.get("kind") != "strict-active-pool-selection-snapshot"
-        or snapshot.get("selection_policy") != _tbm.REAP_SELECTION_POLICY
         or type(snapshot.get("max_active_bots")) is not int
         or snapshot["max_active_bots"] < 1
         or not isinstance(snapshot.get("active_bots"), list)
@@ -159,13 +175,41 @@ def _capture_reap_selection_snapshot(
     active_bots=None,
     *,
     max_active_bots: int | None = None,
+    selection_policy: str | None = None,
+    protection_profile: str | None = None,
 ) -> dict:
-    """Freeze every input used by the active conservative-Glicko policy."""
+    """Freeze every input used by the active conservative-Glicko policy.
+
+    ``selection_policy`` / ``protection_profile`` / ``max_active_bots``
+    default to the pool-ratchet mode resolution (``pool_ratchet`` module), so
+    the manual MCP ``reap_weakest`` no-argument capture and the handoff
+    ``pool_reap`` plan share ONE policy source.  In legacy mode the resolved
+    values are byte-identical to the historical constants
+    (``conservative_glicko_v1`` / no protection key / ``MAX_ACTIVE_BOTS``).
+    """
 
     from evaluation_bundle import evaluation_cycle_lock
+    from pool_ratchet import (
+        pool_target_size,
+        publish_mode,
+        reap_protection_profile_for_mode,
+        reap_selection_policy_for_mode,
+    )
     from tool_helpers import _read_json
 
-    cap = _tbm.MAX_ACTIVE_BOTS if max_active_bots is None else max_active_bots
+    mode = publish_mode()
+    if selection_policy is None:
+        selection_policy = reap_selection_policy_for_mode(mode)
+    if protection_profile is None:
+        # Derive from the EFFECTIVE policy (explicit policy wins over the
+        # live mode) so an explicitly-passed legacy policy can never freeze a
+        # contradictory ratchet protection profile.
+        protection_profile = reap_protection_profile_for_mode(
+            "pool_ratchet"
+            if selection_policy == "conservative_glicko_pool_ratchet_v1"
+            else "legacy"
+        )
+    cap = pool_target_size() if max_active_bots is None else max_active_bots
     if type(cap) is not int or cap < 1:
         raise RuntimeError("reap_selection_max_active_bots_invalid")
     with evaluation_cycle_lock(_tbm.RESULTS_DIR, exclusive=False):
@@ -217,7 +261,7 @@ def _capture_reap_selection_snapshot(
     snapshot = {
         "schema_version": 1,
         "kind": "strict-active-pool-selection-snapshot",
-        "selection_policy": _tbm.REAP_SELECTION_POLICY,
+        "selection_policy": selection_policy,
         "max_active_bots": cap,
         "active_bots": names,
         "active_pool_digest": _tbm.canonical_digest(names),
@@ -225,6 +269,10 @@ def _capture_reap_selection_snapshot(
         "bot_inputs": rows,
         "bot_inputs_digest": _tbm.canonical_digest(rows),
     }
+    if protection_profile == "pool_ratchet":
+        # Legacy snapshots keep the exact historical key set; only the
+        # pool-ratchet profile freezes the extra key.
+        snapshot["protection_profile"] = protection_profile
     snapshot["snapshot_digest"] = _tbm.canonical_digest(snapshot)
     _tbm._validate_reap_selection_snapshot(snapshot)
     return snapshot
@@ -253,6 +301,78 @@ def _select_reap_candidate_from_snapshot(
         active_bots,
         key=lambda name: _tbm.parse_bot_version(name) or -1,
     )
+
+    protection_profile = snapshot.get("protection_profile")
+    if protection_profile == "pool_ratchet":
+        # Pool-ratchet protection, three members classes:
+        # * the latest entrant (current bot) and the priority bot — the
+        #   design's declared protection set;
+        # * every member strictly ABOVE the pool's median PLAIN rating (r) —
+        #   red-team fix (2026-10-12, "gate/reap position mismatch"): the
+        #   conservative score treats rating uncertainty as weakness, so an
+        #   idle-but-strong member (high r, inflated rd) can sit at the
+        #   conservative bottom while being top-half by actual rating (live
+        #   pool: r=1764.7, 3rd highest, cons lowest).  Deleting a top-half
+        #   member on uncertainty alone contradicts the design's own
+        #   "a slot is held by evidence" principle and breaks the
+        #   beat-the-position-you-replace invariant.  Bounding victims to
+        #   the plain-rating bottom half caps the damage of any conservative
+        #   misranking; a pool above the target capacity still always yields
+        #   a victim (n - 2 - ceil((n-1)/2) >= 1 for every n >= 5, and the
+        #   ratchet floor N >= 12 keeps pools far above that).
+        sorted_ratings = sorted(inputs[name]["r"] for name in active_bots)
+        median_rating = sorted_ratings[len(sorted_ratings) // 2]
+        protected_names = {current_bot}
+        if snapshot["priority_bot"] in active_bots:
+            protected_names.add(snapshot["priority_bot"])
+        for name in active_bots:
+            if inputs[name]["r"] > median_rating:
+                protected_names.add(name)
+        evaluated_candidates = []
+        zero_game_candidates = []
+        for name in active_bots:
+            if name in protected_names:
+                continue
+            row = inputs[name]
+            candidate = (name, row["r"], row["rd"], row["games"])
+            if row["games"] == 0:
+                zero_game_candidates.append(candidate)
+                continue
+            evaluated_candidates.append(candidate)
+        # Soft overflow still prefers excluding untested candidates, but an
+        # empty evaluated set falls THROUGH to the zero-game candidates
+        # instead of returning "no candidate" — pool > cap implies a victim.
+        if len(active_bots) <= cap + 3:
+            candidates = evaluated_candidates or zero_game_candidates
+        else:
+            candidates = evaluated_candidates + zero_game_candidates
+        if not candidates:
+            return {
+                "candidate": None,
+                "reason": "all_protected",
+                "remaining": len(active_bots),
+                "protected_count": len(protected_names),
+            }
+        candidates.sort(key=lambda row: (
+            row[1] - 2 * row[2],
+            row[3],
+            _tbm.parse_bot_version(row[0]) or 0,
+        ))
+        name, rating_r, rating_rd, _games = candidates[0]
+        frozen = inputs[name]
+        # NOTE: keep the exact historical seven-key result shape —
+        # ``_validate_pool_reap_plan`` compares full selection dicts against
+        # the (key-filtered) frozen targets, which only match because the
+        # legacy result carries exactly these keys.
+        return {
+            "candidate": name,
+            "selection_key": "conservative_glicko",
+            "conservative_rating": round(rating_r - 2 * rating_rd, 1),
+            "leaderboard_score": round(frozen["leaderboard_score"], 4),
+            "h2h_avg_wr": round(frozen["h2h_avg_wr"], 4),
+            "rating": {"r": round(rating_r, 1), "rd": round(rating_rd, 1)},
+            "active_pool": sorted(active_bots),
+        }
 
     # Exclude the current/latest source and the newest few active bots; they are
     # either being evolved from or still need fresh evaluation.
@@ -385,10 +505,19 @@ async def _do_reap_weakest(
                 return {"reaped": False, "reason": f"{culled_name} already moved"}
             # Publish the durable tombstone before mutating runtime metadata.
             # A failed tag/push must leave the sentinel intact so the operator
-            # can retry without an ambiguous half-reaped state.
+            # can retry without an ambiguous half-reaped state.  The tombstone
+            # reason derives from the frozen snapshot's protection profile so
+            # the handoff's ``_execute_pool_reap_plan`` (which passes only
+            # expected_culled/selection_snapshot) records the correct cause
+            # without any extra plumbing; the reason is free text and enters
+            # no contract key (evolution_infra.record_reaped_bot).
             _tbm.record_reaped_bot(
                 culled_name,
-                reason="max_active_bots",
+                reason=(
+                    "pool_ratchet_replace_weakest"
+                    if snapshot.get("protection_profile") == "pool_ratchet"
+                    else "max_active_bots"
+                ),
                 data={
                     "selection_key": "conservative_glicko",
                     "conservative_rating": selection["conservative_rating"],
@@ -455,8 +584,55 @@ def _mcp_result(data: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(data)}]}
 
 
+def _manual_reap_frozen_precommit_block() -> dict | None:
+    """Typed rejection when any active checkpoint holds a frozen precommit plan.
+
+    Guards ONLY the operator-facing manual ``reap_weakest`` entry: the handoff
+    step-6 automatic reap and the scheduler's prepare-time trim call
+    ``_do_reap_weakest`` directly with their own frozen authority and never
+    pass through here.  A manual reap between plan freeze and gate execution
+    removes a frozen gate opponent from the pool, so the plan's retry then
+    misjudges the match set; refuse it fail-closed instead.
+    """
+
+    try:
+        from evolution_infra import read_all_pipeline_checkpoints
+
+        slots = read_all_pipeline_checkpoints()
+    except Exception:
+        slots = {}
+    frozen_slots = []
+    for slot_id, checkpoint in (slots or {}).items():
+        if not isinstance(checkpoint, dict):
+            continue
+        audit_context = checkpoint.get("audit_context")
+        plan = (
+            audit_context.get("precommit_eval_plan")
+            if isinstance(audit_context, dict)
+            else None
+        )
+        if isinstance(plan, dict) and plan:
+            frozen_slots.append(slot_id)
+    if not frozen_slots:
+        return None
+    return {
+        "reaped": False,
+        "error": "manual_reap_blocked_frozen_precommit_plan",
+        "reason": (
+            "存在冻结 precommit 计划（活跃检查点 audit_context."
+            "precommit_eval_plan），手动 reap 被拒绝：被移除的冻结门对手"
+            "会让计划重试误判对局集合；请等待该计划的门执行完成，或由 "
+            "handoff 第6步自动 reap 处理"
+        ),
+        "frozen_precommit_slots": sorted(frozen_slots),
+    }
+
+
 @_tbm.tool("_tbm.reap_weakest", "Check if bot pool exceeds _tbm.MAX_ACTIVE_BOTS and cull the weakest bot by conservative rating, reporting unified strength.", {})
 async def reap_weakest(args):
+    blocked = _manual_reap_frozen_precommit_block()
+    if blocked is not None:
+        return _tbm._mcp_result(blocked)
     result = await _tbm._do_reap_weakest(quiet=args.get("quiet", False) if isinstance(args, dict) else False)
     return _tbm._mcp_result(result)
 

@@ -24,6 +24,14 @@ INFRA_BLOCKER_REASONS = {
     "native_no_samples",
     "native_precommit_exception",
     "national_precommit_exception",
+    # Red-team fix (2026-10-12): the frozen pool-weakest gate opponent has no
+    # matchup row — the opponent directory vanished mid-flight (manual
+    # reap during a precommit run, or a one-ahead lane's handoff reap under
+    # Slice-2b).  The candidate never got to play the frozen gate; blaming
+    # the candidate flips a harness/concurrency event into an immediate
+    # candidate-attributed auto-abandon.  Classified infra so the bounded
+    # retry budget absorbs it instead.
+    "pool_gate_label_missing",
 }
 
 

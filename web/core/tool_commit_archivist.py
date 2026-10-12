@@ -922,11 +922,26 @@ def _build_pool_reap_plan(record: dict) -> dict:
     """Freeze the complete reap sequence before publishing any tombstone."""
 
     from bot_artifact import canonical_digest
+    from pool_ratchet import (
+        pool_target_size,
+        publish_mode,
+        reap_protection_profile_for_mode,
+        reap_selection_policy_for_mode,
+    )
     from tool_bot_management import (
-        REAP_SELECTION_POLICY,
         _capture_reap_selection_snapshot,
         _select_reap_candidate_from_snapshot,
     )
+
+    # Pool-ratchet wiring (2026-10-11): the target capacity, selection
+    # policy, and protection profile are resolved from the ONE mode source at
+    # this plan-freeze moment.  Legacy mode resolves to the historical
+    # constants (MAX_ACTIVE_BOTS / conservative_glicko_v1 / no profile key),
+    # so the legacy plan is byte-equivalent to the pre-ratchet shape.
+    mode = publish_mode()
+    target_size = pool_target_size()
+    selection_policy = reap_selection_policy_for_mode(mode)
+    protection_profile = reap_protection_profile_for_mode(mode)
 
     initial = sorted(_tc.get_active_bots())
     if (
@@ -939,13 +954,15 @@ def _build_pool_reap_plan(record: dict) -> dict:
         raise RuntimeError("pool_reap_active_namespace_invalid")
     selection_snapshot = _capture_reap_selection_snapshot(
         initial,
-        max_active_bots=_tc.MAX_ACTIVE_BOTS,
+        max_active_bots=target_size,
+        selection_policy=selection_policy,
+        protection_profile=protection_profile,
     )
     if selection_snapshot["active_bots"] != initial:
         raise RuntimeError("pool_reap_selection_snapshot_pool_mismatch")
     simulated = list(initial)
     targets = []
-    while len(simulated) > _tc.MAX_ACTIVE_BOTS:
+    while len(simulated) > target_size:
         selection = _select_reap_candidate_from_snapshot(
             selection_snapshot,
             simulated,
@@ -970,12 +987,12 @@ def _build_pool_reap_plan(record: dict) -> dict:
         "schema_version": 2,
         "kind": "strict-active-pool-reap-plan",
         "publication_id": record["identity"]["publication_id"],
-        "selection_policy": REAP_SELECTION_POLICY,
+        "selection_policy": selection_policy,
         "selection_snapshot": selection_snapshot,
         "selection_snapshot_digest": selection_snapshot["snapshot_digest"],
         "active_bots": initial,
         "active_pool_digest": canonical_digest(initial),
-        "max_active_bots": _tc.MAX_ACTIVE_BOTS,
+        "max_active_bots": target_size,
         "required_reaps": len(targets),
         "targets": targets,
         "target_sequence_digest": canonical_digest(targets),
@@ -1003,19 +1020,31 @@ def _validate_pool_reap_plan(
     """Purely prove the complete frozen target sequence before any effect."""
 
     from bot_artifact import canonical_digest
+    from pool_ratchet import (
+        pool_target_size,
+        publish_mode,
+        reap_selection_policy_for_mode,
+    )
     from tool_bot_management import (
-        REAP_SELECTION_POLICY,
+        REAP_SELECTION_POLICIES,
         _select_reap_candidate_from_snapshot,
         _validate_reap_selection_snapshot,
     )
 
     if not isinstance(reap_plan, dict) or set(reap_plan) != _POOL_REAP_PLAN_KEYS:
         raise RuntimeError("pool_reap_plan_keys_invalid")
+    # The policy must be a known reap policy AND equal the mode-resolved
+    # value; the cap must equal the LIVE mode-resolved target size.  An
+    # operator changing POK_POOL_RATCHET_TARGET_SIZE while a handoff is in
+    # flight therefore fails closed here (pool_reap_plan_contract_invalid)
+    # instead of executing a plan against a cap it was not built for.
+    expected_selection_policy = reap_selection_policy_for_mode(publish_mode())
     if (
         type(reap_plan.get("schema_version")) is not int
         or reap_plan["schema_version"] != 2
         or reap_plan.get("kind") != "strict-active-pool-reap-plan"
-        or reap_plan.get("selection_policy") != REAP_SELECTION_POLICY
+        or reap_plan.get("selection_policy") not in REAP_SELECTION_POLICIES
+        or reap_plan.get("selection_policy") != expected_selection_policy
         or not _lower_hex(reap_plan.get("publication_id"), 64)
         or not _lower_hex(reap_plan.get("expected_head_oid"), 40)
         or (
@@ -1023,7 +1052,7 @@ def _validate_pool_reap_plan(
             and not _lower_hex(reap_plan.get("expected_remote_main_oid"), 40)
         )
         or type(reap_plan.get("max_active_bots")) is not int
-        or reap_plan["max_active_bots"] != _tc.MAX_ACTIVE_BOTS
+        or reap_plan["max_active_bots"] != pool_target_size()
         or type(reap_plan.get("required_reaps")) is not int
         or not isinstance(reap_plan.get("active_bots"), list)
         or not isinstance(reap_plan.get("targets"), list)
@@ -1070,6 +1099,31 @@ def _validate_pool_reap_plan(
         or snapshot.get("active_pool_digest") != reap_plan["active_pool_digest"]
     ):
         raise RuntimeError("pool_reap_selection_snapshot_identity_mismatch")
+
+    # Priority invariant (2026-10-12, fail-closed hardening): the handoff step
+    # order runs ``priority_eval`` BEFORE ``pool_reap`` precisely so the frozen
+    # selection snapshot protects the bot THIS handoff just published (the
+    # priority_eval receipt writes ``bot_name(v)``).  A snapshot whose
+    # ``priority_bot`` is missing (``None``) or still points at an older bot
+    # proves the priority_eval step failed or was skipped, leaving last
+    # cycle's stale protection in place -- reaping under it could cull the
+    # freshly published bot.  The published identity is the handoff record's
+    # own ``identity.version`` (same source ``_handoff_publication_result``
+    # and the priority_eval receipt use); an unreadable/missing version can
+    # never prove the invariant and fails closed exactly like any other
+    # validation mismatch (the handoff stays incomplete / paused).
+    published_version = identity.get("version")
+    expected_priority_bot = (
+        _tc.bot_name(published_version)
+        if type(published_version) is int
+        and published_version >= _tc.FIRST_STRICT_POLICY_VERSION
+        else None
+    )
+    if (
+        expected_priority_bot is None
+        or snapshot.get("priority_bot") != expected_priority_bot
+    ):
+        raise RuntimeError("pool_reap_priority_bot_not_published_bot")
 
     expected_targets = []
     simulated = list(initial)

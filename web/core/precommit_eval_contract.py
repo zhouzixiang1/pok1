@@ -42,6 +42,7 @@ SEMANTIC_PATHS = (
     "web/core/national_runtime_authority.py",
     "sever/server/transport.py",
     "web/core/precommit_eval_contract.py",
+    "web/core/pool_ratchet_gate.py",
     "web/core/strength_order.py",
     "web/core/tool_eval.py",
     "web/core/tool_gates.py",
@@ -120,8 +121,22 @@ def build_sample_plan(
     matches_per_opponent: int,
     *,
     deck_seed_base: int = DEFAULT_DECK_SEED_BASE,
+    bot_seed_base_root: int | None = None,
     native_match_timing_plan_digest: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Freeze the per-row deck/bot seed schedule.
+
+    ``bot_seed_base_root=None`` (every historical caller, the explicit/diagnostic
+    base path, and the removed first-strict control authority) keeps the
+    historical linear relation ``bot_seed == deck_seed + 1e9``.  The nonce path
+    passes an INDEPENDENT root (domain-separated hash of the plan nonce —
+    ``pool_ratchet_gate.derive_bot_seed_root``): the evaluated bot process
+    receives its own seed via POK_NATIVE_BOT_SEED, and a linear relation to
+    the deck seed would hand the candidate a complete deck-prediction oracle
+    (red-team 2026-10-12).  With an independent root, observing the bot-side
+    seed reveals nothing about the deck; the row expansion shape (index
+    linear) is identical for both.
+    """
     rows: list[dict[str, Any]] = []
     for opponent_index, opponent in enumerate(opponents):
         name = str(opponent.get("name") or "")
@@ -131,12 +146,19 @@ def build_sample_plan(
                 + opponent_index * 100_000
                 + repeat_index * 1_000
             )
+            bot_seed = (
+                int(bot_seed_base_root)
+                + opponent_index * 100_000
+                + repeat_index * 1_000
+                if bot_seed_base_root is not None
+                else deck_seed + 1_000_000_000
+            )
             row = {
                 "opponent": name,
                 "opponent_index": opponent_index,
                 "repeat": repeat_index + 1,
                 "deck_seed_base": deck_seed,
-                "bot_seed_base": deck_seed + 1_000_000_000,
+                "bot_seed_base": bot_seed,
             }
             if native_match_timing_plan_digest is not None:
                 row["native_match_timing_plan_digest"] = (
@@ -151,6 +173,7 @@ def build_native_precommit_batch_plan(
     *,
     native_timing_plan: Any,
     first_strict_control: bool,
+    bot_seed_base_root: int | None = None,
 ) -> dict[str, Any]:
     """Freeze the bounded execution shape for one native precommit batch.
 
@@ -160,6 +183,11 @@ def build_native_precommit_batch_plan(
     fresh samples that one provider invocation may launch.  First-strict's
     eight system-control samples deliberately advance one durable receipt at a
     time, while ordinary precommit retains its existing bounded batch shape.
+
+    ``bot_seed_base_root`` mirrors ``build_sample_plan``: ``None`` enforces the
+    historical linear bot/deck relation (first-strict + explicit-base paths);
+    an independent root enforces the domain-separated expansion (nonce path —
+    see the red-team seed-decoupling note in ``build_sample_plan``).
     """
 
     if not isinstance(sample_plan, list) or not sample_plan:
@@ -187,6 +215,20 @@ def build_native_precommit_batch_plan(
         opponent_index = row.get("opponent_index")
         deck_seed = row.get("deck_seed_base")
         bot_seed = row.get("bot_seed_base")
+        expected_bot_seed = None
+        if type(deck_seed) is int and bot_seed_base_root is None:
+            expected_bot_seed = deck_seed + 1_000_000_000
+        elif (
+            bot_seed_base_root is not None
+            and type(repeat) is int
+            and type(opponent_index) is int
+            and opponent_index >= 0
+        ):
+            expected_bot_seed = (
+                int(bot_seed_base_root)
+                + opponent_index * 100_000
+                + (repeat - 1) * 1_000
+            )
         if (
             not opponent
             or type(repeat) is not int
@@ -195,7 +237,7 @@ def build_native_precommit_batch_plan(
             or opponent_index < 0
             or type(deck_seed) is not int
             or type(bot_seed) is not int
-            or bot_seed != deck_seed + 1_000_000_000
+            or bot_seed != expected_bot_seed
             or row.get("native_match_timing_plan_digest") != timing_digest
         ):
             raise PrecommitEvalContractError(
@@ -283,6 +325,16 @@ def _system_control_identity(
     )
 
 
+def _system_control_would_be_planned(
+    opponents: list[dict[str, Any]],
+) -> bool:
+    return any(
+        str(item.get("authority") or "") == "system_first_strict_control"
+        for item in opponents
+        if isinstance(item, dict)
+    )
+
+
 def create_precommit_plan(
     *,
     candidate_version: int,
@@ -295,9 +347,61 @@ def create_precommit_plan(
     matches_per_opponent: int,
     path_resolver: Callable[[dict[str, Any]], str | Path],
     require_published_opponents: bool,
-    deck_seed_base: int = DEFAULT_DECK_SEED_BASE,
+    deck_seed_base: int | None = None,
+    pool_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from bot_namespace import ARCHIVED_VERSION_HIGH_WATER
+
+    # Deck seed provenance.  The production path (deck_seed_base=None)
+    # generates a fresh one-time 128-bit nonce and derives the base through
+    # the identity-bound formula in pool_ratchet_gate — the seed cannot be
+    # predicted from the version number or any checkpoint field.  An explicit
+    # base is the test/diagnostic path (seed_derivation='explicit_base').
+    # This is enabled in BOTH publication modes: the seed fix is a
+    # correctness fix, not a model switch.
+    if deck_seed_base is None:
+        from pool_ratchet_gate import (
+            SEED_DERIVATION_NONCE,
+            derive_bot_seed_root,
+            derive_deck_seed_base,
+            generate_deck_seed_nonce,
+        )
+
+        deck_seed_nonce = generate_deck_seed_nonce()
+        effective_deck_seed_base = derive_deck_seed_base(deck_seed_nonce)
+        # Independent, domain-separated bot-side root: the evaluated bot
+        # process receives its own seed (POK_NATIVE_BOT_SEED) and must not be
+        # able to derive the deck schedule from it (red-team 2026-10-12).
+        effective_bot_seed_root = derive_bot_seed_root(deck_seed_nonce)
+        seed_derivation = SEED_DERIVATION_NONCE
+    else:
+        deck_seed_nonce = None
+        effective_deck_seed_base = int(deck_seed_base)
+        effective_bot_seed_root = None
+        seed_derivation = "explicit_base"
+    try:
+        from pool_ratchet import publish_mode as _resolve_publish_mode
+
+        resolved_publish_mode = _resolve_publish_mode()
+    except Exception as exc:
+        raise PrecommitEvalContractError(
+            f"precommit publish mode invalid: {type(exc).__name__}: {str(exc)[:240]}"
+        ) from exc
+    # The first-strict system control is the empty-pool bootstrap authority;
+    # it carries no pool semantics and its plan must never freeze a pool gate.
+    if pool_gate is not None and _system_control_would_be_planned(opponents):
+        pool_gate = None
+    if pool_gate is not None:
+        from pool_ratchet_gate import validate_pool_gate_settings
+
+        try:
+            pool_gate = validate_pool_gate_settings(pool_gate)
+        except ValueError as exc:
+            raise PrecommitEvalContractError(
+                f"precommit pool gate invalid: {exc}"
+            ) from exc
+    else:
+        pool_gate = None
 
     if str(execution_mode) == "native_tcp" and int(hands_per_match) != 70:
         raise PrecommitEvalContractError(
@@ -413,7 +517,12 @@ def create_precommit_plan(
     sample_plan = build_sample_plan(
         normalized,
         effective_matches_per_opponent,
-        deck_seed_base=int(deck_seed_base),
+        deck_seed_base=int(effective_deck_seed_base),
+        bot_seed_base_root=(
+            int(effective_bot_seed_root)
+            if effective_bot_seed_root is not None
+            else None
+        ),
         native_match_timing_plan_digest=(
             native_timing_plan.digest()
             if native_timing_plan is not None
@@ -425,6 +534,11 @@ def create_precommit_plan(
             sample_plan,
             native_timing_plan=native_timing_plan,
             first_strict_control=bool(system_control_count),
+            bot_seed_base_root=(
+                int(effective_bot_seed_root)
+                if effective_bot_seed_root is not None
+                else None
+            ),
         )
         if native_timing_plan is not None
         else None
@@ -433,7 +547,11 @@ def create_precommit_plan(
         "sample_unit": "70_hand_match" if int(hands_per_match) == 70 else "national_match",
         "hands_per_match": int(hands_per_match),
         "matches_per_opponent": effective_matches_per_opponent,
-        "deck_seed_base": int(deck_seed_base),
+        "deck_seed_base": int(effective_deck_seed_base),
+        "deck_seed_nonce": deck_seed_nonce,
+        "seed_derivation": seed_derivation,
+        "publish_mode": resolved_publish_mode,
+        "pool_gate": pool_gate,
         "parent_min_samples": PRECOMMIT_PARENT_MIN_SAMPLES,
         "parent_max_score": PRECOMMIT_PARENT_MAX_SCORE,
         "aggregate_min_samples": PRECOMMIT_AGGREGATE_MIN_SAMPLES,
@@ -619,6 +737,62 @@ def validate_precommit_plan(
         issues.append("precommit_first_strict_control_shape_invalid")
 
     settings = plan.get("settings") if isinstance(plan.get("settings"), dict) else {}
+    # Seed provenance, publication model, and pool-gate shape re-proofs.  The
+    # nonce->base derivation lives in the identity-bound pool_ratchet_gate
+    # member, so a changed derivation formula or a tampered nonce fails here
+    # (and in the plan digest) instead of silently re-seeding a replay.
+    seed_derivation = settings.get("seed_derivation")
+    expected_bot_seed_root = None
+    if seed_derivation == "nonce_sha256_v1":
+        from pool_ratchet_gate import (
+            derive_bot_seed_root,
+            derive_deck_seed_base,
+        )
+
+        try:
+            expected_seed_base = derive_deck_seed_base(
+                settings.get("deck_seed_nonce")
+            )
+        except ValueError:
+            expected_seed_base = None
+        try:
+            expected_bot_seed_root = derive_bot_seed_root(
+                settings.get("deck_seed_nonce")
+            )
+        except ValueError:
+            expected_bot_seed_root = None
+        if (
+            expected_seed_base is None
+            or settings.get("deck_seed_base") != expected_seed_base
+        ):
+            issues.append("precommit_seed_derivation_mismatch")
+    elif seed_derivation == "explicit_base":
+        if settings.get("deck_seed_nonce") is not None:
+            issues.append("precommit_seed_derivation_mismatch")
+    else:
+        issues.append("precommit_seed_derivation_invalid")
+    if settings.get("publish_mode") not in ("legacy", "pool_ratchet"):
+        issues.append("precommit_publish_mode_invalid")
+    plan_pool_gate = settings.get("pool_gate")
+    if plan_pool_gate is not None:
+        from pool_ratchet_gate import validate_pool_gate_settings
+
+        try:
+            normalized_pool_gate = validate_pool_gate_settings(plan_pool_gate)
+        except ValueError:
+            normalized_pool_gate = None
+        if normalized_pool_gate is None:
+            issues.append("precommit_pool_gate_thresholds_invalid")
+        else:
+            if plan_pool_gate != normalized_pool_gate:
+                issues.append("precommit_pool_gate_not_canonical")
+            if not any(
+                isinstance(item, dict)
+                and str(item.get("name") or "") == normalized_pool_gate["label"]
+                and str(item.get("reason") or "") == "pool_weakest_gate"
+                for item in opponents
+            ):
+                issues.append("precommit_pool_gate_label_unbound")
     native_timing_plan = None
     if str(execution_mode) == "native_tcp":
         try:
@@ -704,6 +878,7 @@ def validate_precommit_plan(
             opponents,
             int(settings.get("matches_per_opponent")),
             deck_seed_base=int(settings.get("deck_seed_base")),
+            bot_seed_base_root=expected_bot_seed_root,
             native_match_timing_plan_digest=(
                 native_timing_plan.digest()
                 if native_timing_plan is not None
@@ -721,6 +896,7 @@ def validate_precommit_plan(
                 expected_samples,
                 native_timing_plan=native_timing_plan,
                 first_strict_control=bool(system_control_count),
+                bot_seed_base_root=expected_bot_seed_root,
             )
         except Exception:
             expected_batch_plan = None

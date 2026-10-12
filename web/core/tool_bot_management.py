@@ -1148,6 +1148,15 @@ class ReapWeakestInput(_tbmr.ReapWeakestInput):
 
 
 REAP_SELECTION_POLICY = "conservative_glicko_v1"
+# Pool-ratchet publication model (2026-10-11): the reap selection snapshot may
+# freeze either the historical legacy policy or the pool-ratchet policy.  The
+# snapshot's ``protection_profile`` key decides the protection rules at
+# selection time; a legacy snapshot carries no such key (byte-identical to the
+# historical shape) while a ratchet snapshot must carry 'pool_ratchet'.
+REAP_SELECTION_POLICIES = {
+    "conservative_glicko_v1",
+    "conservative_glicko_pool_ratchet_v1",
+}
 _REAP_SNAPSHOT_KEYS = {
     "schema_version",
     "kind",
@@ -1194,11 +1203,15 @@ def _capture_reap_selection_snapshot(
     active_bots=None,
     *,
     max_active_bots: int | None = None,
+    selection_policy: str | None = None,
+    protection_profile: str | None = None,
 ) -> dict:
     """Delegate to tool_bot_management_reap."""
     return _tbmr._capture_reap_selection_snapshot(
         active_bots,
         max_active_bots=max_active_bots,
+        selection_policy=selection_policy,
+        protection_profile=protection_profile,
     )
 
 

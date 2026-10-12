@@ -61,6 +61,10 @@ def _make_plan(tmp_path, monkeypatch, *, matches=3):
         matches_per_opponent=matches,
         path_resolver=lambda item: tmp_path / item["name"],
         require_published_opponents=True,
+        # Explicit base keeps this suite's historical seed assertions
+        # meaningful (seed_derivation='explicit_base'); the production
+        # nonce path is covered by test_precommit_seed_nonce_20261011.
+        deck_seed_base=91_000,
     )
     return plan, identities
 
@@ -136,6 +140,14 @@ def test_plan_freezes_order_identity_and_all_sample_seeds(tmp_path, monkeypatch)
         ],
     }
     assert plan["sample_plan"][-1]["deck_seed_base"] == 193_000
+    # Pool-ratchet settings keys (2026-10-11): an explicit base records its
+    # derivation, the publication mode is frozen, and a legacy plan carries
+    # no pool gate.
+    assert plan["settings"]["deck_seed_base"] == 91_000
+    assert plan["settings"]["seed_derivation"] == "explicit_base"
+    assert plan["settings"]["deck_seed_nonce"] is None
+    assert plan["settings"]["publish_mode"] == "legacy"
+    assert plan["settings"]["pool_gate"] is None
     assert contract.validate_precommit_plan(
         plan,
         candidate_version=9,

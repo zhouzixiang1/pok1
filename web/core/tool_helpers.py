@@ -1157,6 +1157,67 @@ def _select_precommit_opponents(
     if parent not in selected:
         return []
 
+    # Pool-ratchet admission opponent: inject the current pool-weakest member
+    # from the SAME frozen snapshot rows (never live ratings), using the reap
+    # victim ordering key (conservative_rating, games, version) so the
+    # position a candidate must beat is exactly the position the reap
+    # replaces.  ``add``'s active+disk filters make a just-reaped weakest
+    # defer to the next-weakest.  A snapshot that cannot name a weakest
+    # member (missing conservative_rating) fails closed with an explicit
+    # selection blocker — never a silent legacy downgrade.  Legacy mode
+    # injects nothing (byte-equivalent selection).
+    pool_weakest_name = None
+    pool_weakest_blocker = None
+    import pool_ratchet as _pool_ratchet
+
+    try:
+        _ratchet_enabled = _pool_ratchet.publish_mode() == "pool_ratchet"
+    except _pool_ratchet.PoolRatchetConfigError as exc:
+        _ratchet_enabled = False
+        pool_weakest_blocker = {
+            "reason": "publish_mode_invalid",
+            "details": str(exc)[:400],
+        }
+    except Exception as exc:  # defensive: config resolution must not crash selection
+        _ratchet_enabled = False
+        pool_weakest_blocker = {
+            "reason": "pool_weakest_selection_error",
+            "details": f"{type(exc).__name__}:{str(exc)[:300]}",
+        }
+    if _ratchet_enabled:
+        # The parent is ALWAYS excluded from the admission-opponent universe:
+        # a freshly published entrant carries default ratings (r=1500, rd=350
+        # → conservative 800, nominally pool-lowest until convergence), so
+        # gating against it degenerates the pool gate into a plain re-test of
+        # the parent exactly when the ratchet protection is most needed
+        # (red-team attacks "pool-gate degeneration"/"ratchet downward
+        # drift": gate target == previous entrant for 58-96% of generations).
+        # Excluding parent+candidate means every generation statistically
+        # tests against an ESTABLISHED pool member.
+        _tried = {candidate, parent}
+        for _ in range(len(rows) + 1):
+            try:
+                _weakest_row = _pool_ratchet.select_pool_weakest(
+                    rows,
+                    exclude_names=_tried,
+                )
+            except _pool_ratchet.PoolRatchetSelectionError as exc:
+                pool_weakest_blocker = {
+                    "reason": "pool_weakest_conservative_rating_missing",
+                    "details": str(exc)[:400],
+                }
+                break
+            if _weakest_row is None:
+                # Pool smaller than two or every row excluded (bootstrap
+                # degeneration): no admission opponent.
+                break
+            _weakest_name = str(_weakest_row.get("name") or "")
+            add(_weakest_name, "pool_weakest_gate")
+            _tried.add(_weakest_name)
+            if _weakest_name in selected:
+                pool_weakest_name = _weakest_name
+                break
+
     from strength_order import strength_order_key
 
     strength_scores = {
@@ -1217,13 +1278,25 @@ def _select_precommit_opponents(
                 "evaluation_identity_digest": snapshot_manifest.get(
                     "evaluation_identity_digest"
                 ),
+                "pool_weakest_selected": pool_weakest_name,
                 "opponents": details,
             },
         )
     except Exception:
         pass
 
-    return [{"name": name, "reason": reasons[name]} for name in selected]
+    selected_opponents = [
+        {"name": name, "reason": reasons[name]} for name in selected
+    ]
+    if pool_weakest_blocker is not None:
+        # Fail-closed marker consumed by run_precommit_eval before any plan
+        # is frozen (infrastructure pause; never a candidate regression).
+        selected_opponents.append({
+            "name": "",
+            "reason": "pool_weakest_gate",
+            "selection_blocker": pool_weakest_blocker,
+        })
+    return selected_opponents
 
 
 

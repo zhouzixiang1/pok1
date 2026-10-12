@@ -242,6 +242,20 @@ def _complete_all_steps(
             version, source_v
         )
         assert len(remote_calls) == 1
+        # Production step order (priority_eval #3 before pool_reap #6) means
+        # the snapshot capture below reads the priority_eval.json that step
+        # durably wrote, and the pool contains the bot this handoff just
+        # published.  Model both: seed the durable priority write into the
+        # directory the capture reads (tool_bot_management.RESULTS_DIR, the
+        # conftest-isolated results dir) and capture over the published bot's
+        # own pool.  Required by the reap-plan priority invariant
+        # (pool_reap_priority_bot_not_published_bot, 2026-10-12).
+        import tool_bot_management
+
+        published_pool = [module.bot_name(version)]
+        (tool_bot_management.RESULTS_DIR / "priority_eval.json").write_text(
+            json.dumps({"bot": module.bot_name(version)}), encoding="utf-8"
+        )
         for step in module.REQUIRED_STEPS:
             identity = record["identity"]
             publication_id = identity["publication_id"]
@@ -254,7 +268,7 @@ def _complete_all_steps(
             )
 
             selection_snapshot = _capture_reap_selection_snapshot(
-                [], max_active_bots=tool_commit.MAX_ACTIVE_BOTS
+                published_pool, max_active_bots=tool_commit.MAX_ACTIVE_BOTS
             )
             plans = {
                 "stability_observation": {
@@ -309,8 +323,10 @@ def _complete_all_steps(
                     "selection_snapshot_digest": selection_snapshot[
                         "snapshot_digest"
                     ],
-                    "active_bots": [],
-                    "active_pool_digest": module.canonical_digest([]),
+                    "active_bots": list(published_pool),
+                    "active_pool_digest": module.canonical_digest(
+                        published_pool
+                    ),
                     "max_active_bots": tool_commit.MAX_ACTIVE_BOTS,
                     "required_reaps": 0,
                     "targets": [],

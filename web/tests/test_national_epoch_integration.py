@@ -108,7 +108,13 @@ def test_git_commit_registry_preflight_blocks_before_any_git(monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_reap_failure_keeps_completed_sentinel(monkeypatch, tmp_path):
+    import pool_ratchet
     import tool_bot_management as bot_management
+
+    # Pool-ratchet wiring (2026-10-11): the reap cap resolves through
+    # pool_ratchet.pool_target_size(); pin it like the legacy
+    # MAX_ACTIVE_BOTS monkeypatch below.
+    monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 1)
 
     bots_dir = tmp_path / "bots"
     results_dir = tmp_path / "web" / "core" / "results"

@@ -47,7 +47,10 @@ def _frozen_reap_snapshot(names, *, max_active_bots):
         "max_active_bots": max_active_bots,
         "active_bots": active,
         "active_pool_digest": canonical_digest(active),
-        "priority_bot": None,
+        # The priority invariant (2026-10-12): the frozen snapshot protects
+        # the handoff's just-published bot -- the max-version pool member
+        # (v146 for the _BOTS fixture below).
+        "priority_bot": active[-1],
         "bot_inputs": rows,
         "bot_inputs_digest": canonical_digest(rows),
     }
@@ -528,6 +531,11 @@ def test_pool_reap_plan_freezes_every_target(monkeypatch):
     from bot_artifact import canonical_digest
 
     monkeypatch.setattr(tool_commit, "MAX_ACTIVE_BOTS", 2)
+    # Pool-ratchet wiring (2026-10-11): the pool_reap plan cap now resolves
+    # through pool_ratchet.pool_target_size(); pin it to the same test cap.
+    import pool_ratchet
+
+    monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 2)
     monkeypatch.setattr(
         tool_commit,
         "get_active_bots",
@@ -548,6 +556,7 @@ def test_pool_reap_plan_freezes_every_target(monkeypatch):
             "publication_id": "a" * 64,
             "commit_oid": "b" * 40,
             "remote_publication": {"remote_main_oid": "c" * 40},
+            "version": 146,
         }
     }
     plan = tool_commit._build_pool_reap_plan(record)
@@ -586,6 +595,11 @@ async def test_multi_reap_crash_converges_without_reselecting_or_repeating(
     active = list(_BOTS)
     calls = []
     monkeypatch.setattr(tool_commit, "MAX_ACTIVE_BOTS", 2)
+    # Pool-ratchet wiring (2026-10-11): the pool_reap plan cap now resolves
+    # through pool_ratchet.pool_target_size(); pin it to the same test cap.
+    import pool_ratchet
+
+    monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 2)
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: list(active))
     frozen = _frozen_reap_snapshot(active, max_active_bots=2)
     monkeypatch.setattr(
@@ -619,6 +633,7 @@ async def test_multi_reap_crash_converges_without_reselecting_or_repeating(
             "publication_id": "a" * 64,
             "commit_oid": "b" * 40,
             "remote_publication": {"remote_main_oid": "c" * 40},
+            "version": 146,
         }
     }
     plan = tool_commit._build_pool_reap_plan(record)
@@ -642,6 +657,11 @@ async def test_forged_pool_reap_target_is_rejected_before_any_effect(monkeypatch
 
     active = list(_BOTS)
     monkeypatch.setattr(tool_commit, "MAX_ACTIVE_BOTS", 2)
+    # Pool-ratchet wiring (2026-10-11): the pool_reap plan cap now resolves
+    # through pool_ratchet.pool_target_size(); pin it to the same test cap.
+    import pool_ratchet
+
+    monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 2)
     monkeypatch.setattr(tool_commit, "get_active_bots", lambda: list(active))
     frozen = _frozen_reap_snapshot(active, max_active_bots=2)
     monkeypatch.setattr(
@@ -654,6 +674,7 @@ async def test_forged_pool_reap_target_is_rejected_before_any_effect(monkeypatch
             "publication_id": "a" * 64,
             "commit_oid": "b" * 40,
             "remote_publication": {"remote_main_oid": "c" * 40},
+            "version": 146,
         }
     }
     plan = tool_commit._build_pool_reap_plan(record)
@@ -739,7 +760,24 @@ async def test_executor_crash_after_effect_resumes_from_persisted_plan(
     ):
         monkeypatch.setattr(evolution_infra, attribute, results / name)
     monkeypatch.setattr(tool_commit, "MAX_ACTIVE_BOTS", 8)
-    monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [])
+    # Pool-ratchet wiring (2026-10-11): pin the mode-resolved reap cap.
+    import pool_ratchet
+
+    monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 8)
+    # The pool_reap priority invariant (2026-10-12): at pool_reap time the
+    # active pool necessarily contains the bot this handoff just published
+    # (v143), and the snapshot capture reads the priority_eval.json the
+    # priority_eval step durably wrote ({"bot": v143}).  The real write is
+    # stubbed below, so pre-seed the file the capture reads.
+    monkeypatch.setattr(
+        tool_commit, "get_active_bots", lambda: [bot_name(143)]
+    )
+    import json as _json
+    import tool_bot_management
+
+    (tool_bot_management.RESULTS_DIR / "priority_eval.json").write_text(
+        _json.dumps({"bot": bot_name(143)}), encoding="utf-8"
+    )
     monkeypatch.setattr(tool_commit, "_git_ensure_main_branch", lambda: None)
     monkeypatch.setattr(
         tool_commit,

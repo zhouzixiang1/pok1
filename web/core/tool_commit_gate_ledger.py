@@ -394,7 +394,19 @@ def validate_commit_gate_ledger(
                             force_protocol_refresh=True,
                             pending_local_publication=pending_local_publication,
                         ))
-                        if precommit.get("precommit_eval_plan") != precommit_plan:
+                        # Red-team fix (2026-10-12): the leak-surface guard
+                        # removed ``precommit_eval_plan`` from the RESULT-side
+                        # gate payload (the frozen plan — which now carries
+                        # the deck-seed nonce — lives only in the
+                        # audit_context copy re-proved by
+                        # validate_precommit_plan above).  Compare the
+                        # result-side copy only when a legacy record still
+                        # carries one; its absence is not a mismatch.
+                        result_side_plan = precommit.get("precommit_eval_plan")
+                        if (
+                            result_side_plan is not None
+                            and result_side_plan != precommit_plan
+                        ):
                             control_errors.append(
                                 "first_strict_control_result_plan_mismatch"
                             )

@@ -5,7 +5,17 @@ from bot_namespace import bot_name
 
 
 def _setup_reap_case(tmp_path, monkeypatch, max_active=1):
+    import pool_ratchet
     import tool_bot_management as tbm
+
+    # Pool-ratchet wiring (2026-10-11): the reap cap now resolves through
+    # pool_ratchet.pool_target_size() (single mode-resolved source); pin it to
+    # the same test cap the legacy MAX_ACTIVE_BOTS monkeypatch used to set.
+    monkeypatch.setattr(
+        pool_ratchet,
+        "pool_target_size",
+        lambda: max_active,
+    )
 
     root = tmp_path
     bots_dir = root / "bots"

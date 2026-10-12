@@ -122,6 +122,12 @@ _FORBIDDEN_IMPORT_ROOTS = frozenset({
     "os",
     "pathlib",
     "pickle",
+    # ``posix`` is the low-level backend of ``os``: importing it reaches
+    # ``posix.environ`` (and friends) without touching the forbidden ``os``
+    # root.  A candidate policy reproduced the complete frozen deck schedule
+    # by reading its own POK_NATIVE_BOT_SEED through this module (red-team
+    # 2026-10-12) — policy code has no legitimate reason to import it.
+    "posix",
     "requests",
     "shutil",
     "smtplib",
