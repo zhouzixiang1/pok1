@@ -21,8 +21,15 @@
   ``resume_receipt_history``（选择摊平而非前向携带的论证见
   ``llm_availability_store`` 内注释：前向携带会让 quota 记录的标量字段
   谎报"最新压制"归属、并把 marker 生命周期耦合到未来记录链而非有界
-  归档槽）。无 marker 的 ACTIVE 记录被覆写不产生投影（F-M1 既有契约
-  不变：被顶替记录自身的 digest 仍 fail-closed）。
+  归档槽）。**v555 改判（2026-10-14 生产事故，52h 楔死 / 104 次慢道
+  复活全失败）**：当时的"F-M1 既有契约不变：无 marker 的 ACTIVE 记录
+  被覆写不产生投影、被顶替记录自身的 digest 仍 fail-closed"是故意钉死
+  的残留 —— 同报文同 digest 冻结（Worker 冻结 ACTIVE 记录自身的
+  evidence_digest，抑制分支不写 marker）+ 1308 整体替换的复合形态下，
+  该 digest 在存储里零痕迹，恢复校验永久无门。修订：蒸发投影的扁平化
+  marker 列表并入被丢弃 ACTIVE 记录自身的 ``(category, evidence_digest)``
+  （去重、最旧），无 marker 的 ACTIVE 记录同样产生投影；结构绑定不变
+  （只有 store 持有过的记录 digest 才入档）。
 * **R3（授权事件 data.category 被 event_bus 保留键覆盖）**：
   ``log_system_event`` 会 ``pop("category")``（``emit`` 的首位形参名就是
   ``category``），``event_bus.emit`` 再回填事件类型 → 落盘
@@ -325,8 +332,19 @@ def test_active_marker_overwritten_by_quota_flattens_into_archive(isolated_store
     assert auth["matched_record"] == "archived"
 
 
-def test_plain_superseded_active_record_adds_no_eviction_entry(isolated_store):
-    """无 marker 的 ACTIVE 记录被 quota 顶替：不产生投影，旧契约不变。"""
+def test_superseded_active_record_own_digest_lands_in_eviction(isolated_store):
+    """v555 改判（2026-10-14 生产事故）：无 marker 的 ACTIVE 记录被 quota
+    顶替时，其自身 (category, evidence_digest) 必须进入蒸发投影。
+
+    旧断言（本测试在 a22d1eea 后曾钉死"无 marker -> 无投影、被顶替记录
+    自身 digest 仍 fail-closed"）按 v555 事故改判：Worker 同报文冻结 ACTIVE
+    记录自身的 evidence_digest 时抑制分支不写 marker（llm_availability_store
+    抑制分支仅在 digest 不等时落 marker），随后 1308 配额整体替换 —— 该
+    digest 在存储里零痕迹，恢复校验（receipt 链 + marker 链）永久无门，
+    WORKER_AVAILABILITY_RESUME_RECEIPT_INVALID 楔死 52 小时（104 次慢车道
+    复活全失败）。修订后：无 marker 的 ACTIVE 记录同样生成含自身 digest 的
+    蒸发投影；horizon 过后该冻结通过压制链授权。
+    """
     p1 = store.persist_llm_pause(
         _service_issue("HTTP 529 P1 superseded by quota"), now=BASE
     )
@@ -337,7 +355,20 @@ def test_plain_superseded_active_record_adds_no_eviction_entry(isolated_store):
     )
     ondisk = store.load_llm_pause()
     history = ondisk.get("resume_receipt_history") or []
-    assert history == [], "no markers -> no eviction projection"
+    # 无 marker 的 ACTIVE 记录被覆写：仍产生一条含自身 digest 的蒸发投影。
+    evictions = [
+        e
+        for e in history
+        if isinstance(e, dict)
+        and e.get("archive_kind") == "suppressed_marker_eviction"
+    ]
+    assert len(evictions) == 1, "the own-digest eviction projection must exist"
+    eviction = evictions[0]
+    assert eviction.get("evidence_digest") == p1["evidence_digest"]
+    assert eviction.get("category") == SERVICE_UNAVAILABLE
+    assert p1["evidence_digest"] in _marker_digests(eviction)
+    assert not str(eviction.get("resumed_at") or ""), "eviction stays receipt-closed"
+    assert not str(eviction.get("resume_source") or "")
 
     after_reset = datetime(2026, 10, 9, 5, 30, 1, tzinfo=timezone.utc)
     assert store.active_llm_pause(now=after_reset) is None
@@ -345,10 +376,10 @@ def test_plain_superseded_active_record_adds_no_eviction_entry(isolated_store):
     errors, auth = durable._worker_availability_resume_validation(
         deferred, audit, now=after_reset + timedelta(minutes=5)
     )
-    assert errors, "F-M1 contract unchanged: P1's own digest still fails closed"
-    # 历史为空（无回执、无蒸发投影），拒绝走当前记录 mismatch 令牌路径。
-    assert "global_pause_resume_receipt_evidence_digest_mismatch" in errors
-    assert auth is None
+    assert errors == [], errors
+    assert auth is not None
+    assert auth["authorization_shape"] == "suppressed_evidence_chain"
+    assert auth["matched_record"] == "archived"
 
 
 def test_eviction_entry_survives_history_carry_forward(isolated_store):
@@ -377,8 +408,14 @@ def test_eviction_entry_survives_history_carry_forward(isolated_store):
 
 
 def test_eviction_marker_list_carried_into_new_record_markers(isolated_store):
-    """多 marker 列表（R1×R2 复合）：双冻结后 quota 覆写，X1/X2 都可证。"""
-    store.persist_llm_pause(_service_issue("HTTP 529 storm record D0"), now=BASE)
+    """多 marker 列表（R1×R2 复合）：双冻结后 quota 覆写，X1/X2 都可证。
+
+    v555（2026-10-14）：被丢弃 ACTIVE 风暴记录 D0 自身的 digest 也并入
+    扁平化列表（最旧位）—— 同报文冻结该 digest 的 deferred 效应由此可证。
+    """
+    d0 = store.persist_llm_pause(
+        _service_issue("HTTP 529 storm record D0"), now=BASE
+    )
     x1 = _freeze("HTTP 529 worker d1 reqid=d1", "WORKER d1", BASE + timedelta(seconds=1))
     store.persist_llm_pause(x1, now=BASE + timedelta(seconds=1))
     x2 = _freeze("HTTP 529 worker d2 reqid=d2", "WORKER d2", BASE + timedelta(seconds=2))
@@ -396,11 +433,18 @@ def test_eviction_marker_list_carried_into_new_record_markers(isolated_store):
     ]
     assert len(evictions) == 1
     carried = set(_marker_digests(evictions[0]))
-    assert carried == {x1["evidence_digest"], x2["evidence_digest"]}
+    # v555: D0 自身 digest（记录身份）与两个被压制 marker 全部在档。
+    assert carried == {d0["evidence_digest"], x1["evidence_digest"], x2["evidence_digest"]}
+    # 自身 digest 位于最旧位（记录先于其生命周期内的压制存在），
+    # 标量槽保持"最新一条被压制 marker"语义不变。
+    assert _marker_digests(evictions[0])[0] == d0["evidence_digest"]
+    assert evictions[0].get("last_suppressed_evidence_digest") == x2["evidence_digest"]
 
     later = after_reset + timedelta(minutes=5)
     assert _errors(x1, audit, later) == []
     assert _errors(x2, audit, later) == []
+    # v555: 同报文冻结 D0 自身 digest 的效应同样通过蒸发投影授权。
+    assert _errors(dict(d0), audit, later) == []
 
 
 # ---------------------------------------------------------------------------

@@ -325,12 +325,38 @@ def _suppressed_marker_eviction_projection(record: dict | None) -> dict | None:
     event).  An eviction entry deliberately carries no ``resumed_at`` /
     ``resume_source``, so the receipt-lane validator can never authorize
     through it; only the structurally digest-bound marker chain reads it.
+
+    v555 (2026-10-14, 52h wedge / 104 failed slow-lane revivals): the discarded
+    ACTIVE record's OWN ``(category, evidence_digest)`` joins the flattened
+    marker list (deduped, oldest — the record predates every suppression that
+    happened during its life), and a marker-less ACTIVE record no longer skips
+    the projection.  The frozen incident shape is the *same-report freeze*: a
+    Worker defers on the exact digest of the still-ACTIVE record, so the
+    suppression branch (equal digest) writes no marker; when the 1308 quota
+    record then replaces that record, the own digest used to evaporate with
+    zero durable trace and the deferred effect wedged forever on
+    ``WORKER_AVAILABILITY_RESUME_RECEIPT_INVALID``.  The own digest is itself
+    store-held proof (only ``persist_llm_pause`` ever wrote that record), so
+    including it keeps the structural binding: a forged digest still matches
+    no marker at any depth.  The entry's top-level ``category`` /
+    ``evidence_digest`` carry the own digest even when the 34-slot list bound
+    slices it back out; the durable validator reads that surface for archived
+    eviction entries (``tool_planning_worker_durable``).
     """
 
     if not isinstance(record, dict) or not record.get("active"):
         return None
-    markers = _suppressed_marker_entries(record)[-SUPPRESSED_MARKER_HISTORY_CAP:]
+    markers = _suppressed_marker_entries(record)
+    own_category = str(record.get("category") or "")
+    own_digest = str(record.get("evidence_digest") or "")
+    if own_category and own_digest and not any(
+        item["evidence_digest"] == own_digest for item in markers
+    ):
+        markers.insert(0, {"category": own_category, "evidence_digest": own_digest})
+    markers = markers[-SUPPRESSED_MARKER_HISTORY_CAP:]
     if not markers:
+        # Only reachable for a malformed ACTIVE record (empty category or
+        # digest): nothing store-held to prove, so nothing to archive.
         return None
     newest = markers[-1]
     return {
@@ -615,9 +641,13 @@ def persist_llm_pause(
         # (higher-priority overwrite — e.g. 1302 storm escalating to a 1308
         # quota).  An ACTIVE record never has a resume receipt, so without an
         # explicit eviction projection its suppression markers would evaporate
-        # here.  Flatten them into ONE bounded archive entry; marker-less
-        # ACTIVE records add nothing (the F-M1 fail-closed contract for a
-        # superseded record's own digest is unchanged).
+        # here.  Flatten them into ONE bounded archive entry; since v555
+        # (2026-10-14) the flattened list also carries the discarded record's
+        # OWN (category, evidence_digest) — a same-report Worker freeze holds
+        # exactly that digest and the suppression branch writes no marker for
+        # it, so the own digest is otherwise left with zero durable trace
+        # (the round-3 F-M1 fail-closed stance was re-adjudicated against the
+        # production wedge; see the projection docstring above).
         evicted_markers = _suppressed_marker_eviction_projection(current)
         if evicted_markers is not None:
             resume_history.append(evicted_markers)

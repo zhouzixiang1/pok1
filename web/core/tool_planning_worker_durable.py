@@ -1567,7 +1567,13 @@ def _suppressed_evidence_chain_authorization(
     higher-priority overwrite (1302 storm -> 1308 quota escalation)
     contributes a ``suppressed_marker_eviction`` archive projection, so the
     chain keeps every suppressed digest durable across same-window double
-    freezes and priority-replacement alike.
+    freezes and priority-replacement alike.  v555 (2026-10-14, 52h wedge):
+    a same-report freeze holds the ACTIVE record's OWN digest, for which the
+    suppression branch writes no marker; the eviction projection now folds
+    that own digest into its flattened list, and ``_marker_matches`` also
+    reads the eviction entry's TOP-LEVEL ``(category, evidence_digest)`` so
+    pre-v555 on-disk entries (markers without the own digest) and entries
+    whose 34-slot list bound sliced the own entry back out still authorize.
 
     Authorization is deliberately narrow and fail-closed:
 
@@ -1637,6 +1643,26 @@ def _suppressed_evidence_chain_authorization(
                     and str(entry.get("category") or "") == category
                 ):
                     return True
+        # v555 (2026-10-14): archived eviction projections additionally prove
+        # the discarded ACTIVE record's OWN (category, evidence_digest) at the
+        # top level.  Two reasons this read exists even though the fixed
+        # producer also folds the own digest into the flattened list: (a) it
+        # authorizes entries already on disk from the pre-v555 producer, whose
+        # list holds only genuinely-suppressed digests while the top-level
+        # pair is the evicted record's own digest; (b) when the 34-slot list
+        # bound slices the own (oldest) entry back out, the top-level pair —
+        # uncapped, carried verbatim by ``_carried_eviction_entry`` — keeps it
+        # durable.  Still structurally bound: only the store writes
+        # eviction entries, and only from a record it held.  Deliberately
+        # gated on ``archive_kind`` so the CURRENT record's own digest (a
+        # receipt-lane concern once that record is inactive) is not re-read
+        # here, and receipt projections are not double-matched.
+        if str(record.get("archive_kind") or "") == "suppressed_marker_eviction":
+            if (
+                str(record.get("evidence_digest") or "") == digest
+                and str(record.get("category") or "") == category
+            ):
+                return True
         return False
 
     matched_where = None

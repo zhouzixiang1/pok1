@@ -343,9 +343,19 @@ def test_forged_digest_never_authorizes_even_with_full_archive(isolated_store):
     assert "global_pause_resume_receipt_no_archived_match" in errors
 
 
-def test_superseded_active_pause_without_marker_fails_closed(isolated_store):
-    """EXP-2/repro 形态：P1 被更高优先级 quota 覆写（非压制分支）→ P1 既无
-    回执也无压制 marker —— 满容量归档下仍 fail-closed（结构性绑定）。"""
+def test_superseded_active_pause_own_digest_authorizes_until_archive_evicts_it(
+    isolated_store,
+):
+    """v555 改判（2026-10-14 生产事故，52h 楔死）：P1 被更高优先级 quota
+    覆写（非压制分支）时，其自身 digest 进入蒸发投影 —— 满 64 条归档内
+    授权；被 FIFO 挤出后归档里无据 → fail-closed（有界表面语义不变）。
+
+    旧断言（本测试曾钉死"P1 既无回执也无压制 marker → 满容量归档下仍
+    fail-closed"）按 v555 事故改判：同报文冻结 P1 自身 digest 的 deferred
+    效应此前在存储里零痕迹，恢复校验永久无门。伪造 digest 的 fail-closed
+    契约不受影响（``test_forged_digest_never_authorizes_even_with_full_archive``
+    独立钉住）。
+    """
     p1 = store.persist_llm_pause(
         _blip("HTTP 529 P1 superseded by quota"), now=BASE
     )
@@ -363,13 +373,37 @@ def test_superseded_active_pause_without_marker_fails_closed(isolated_store):
     moment = _fill_archive_full(reset + timedelta(seconds=2))
     audit = store.load_llm_pause()
     assert _history_len(audit) == store.RESUME_RECEIPT_HISTORY_CAP
+    # v555: P1 自身 digest 经蒸发投影（归档最旧条目）durable 存在 ——
+    # 它不是回执（无 resumed_at），是蒸发投影顶层对 + 扁平化列表。
+    evictions = [
+        entry
+        for entry in (audit.get("resume_receipt_history") or [])
+        if isinstance(entry, dict)
+        and entry.get("archive_kind") == "suppressed_marker_eviction"
+    ]
+    assert len(evictions) == 1
+    assert evictions[0].get("evidence_digest") == p1["evidence_digest"]
+    assert not str(evictions[0].get("resumed_at") or "")
+
+    errors, authorization = (
+        tool_planning_worker_durable._worker_availability_resume_validation(
+            deferred, audit, now=moment + timedelta(hours=1)
+        )
+    )
+    assert errors == [], errors
+    assert authorization is not None
+    assert authorization["matched_record"] == "archived"
+
+    # 有界表面：再挤一个归档周期把蒸发投影（最旧条目）挤出 64 槽窗口 →
+    # 该 digest 在链上无据 → fail-closed（结构性绑定：链上无据即拒）。
+    moment = _sawtooth_cycles(moment, 1)
+    audit_evicted = store.load_llm_pause()
     assert not any(
         entry.get("evidence_digest") == p1["evidence_digest"]
-        for entry in (audit.get("resume_receipt_history") or [])
-    ), "precondition: P1's receipt never existed"
-
+        for entry in (audit_evicted.get("resume_receipt_history") or [])
+    ), "precondition: the eviction projection was FIFO-evicted"
     errors = _worker_availability_resume_receipt_errors(
-        deferred, audit, now=moment + timedelta(hours=1)
+        deferred, audit_evicted, now=moment + timedelta(hours=1)
     )
     assert errors
     assert "global_pause_resume_receipt_no_archived_match" in errors
