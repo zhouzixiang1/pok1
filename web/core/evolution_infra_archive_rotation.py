@@ -71,6 +71,69 @@ _ROTATION_SUBJECT_KEYS = frozenset({
     "rotation_id", "completed_plan_digest",
 })
 
+# ──────────────────────────────────────────────
+# Batch cap: disk/memory spike guard (2026-10-15).
+#
+# When archive rotation resumes after a long stall, the accumulated cold
+# prefix of events.jsonl is ~933 MB against a ~16 MB watermark; a single
+# copy-only pass would put ~959 MB on disk at once and hold several full
+# copies in memory (whole-file reads + splitlines + prefix slices → an
+# estimated 2-3 GB transient RSS on a 3.7 GB / ~2 GB-available host).  Each
+# rotation batch is therefore capped: build clamps the planned cold range
+# to ``start + _ROTATION_BATCH_MAX_BYTES`` and the watermark advances
+# publication by publication until the backlog drains.  Bytes, digests and
+# the append-only copy-only semantics are unchanged; later publications
+# simply continue from the advanced watermark.
+#
+# Operators may override the cap via ``POK_ROTATION_BATCH_MAX_BYTES``; the
+# hardcoded default below is authoritative whenever the env key is unset or
+# unparsable. The env key is intentionally unbounded: it doubles as the
+# escape hatch for a rotation plan frozen by pre-cap code whose cold span
+# exceeds the default cap (such a plan validates only while the effective
+# cap covers its frozen span). Deploy-order hazard: a mid-handoff plan
+# frozen by older code with a span above the cap hard-blocks that version's
+# archive_rotation step until the operator raises the env cap — and a huge
+# value likewise disables the bounded-memory protection.
+# ──────────────────────────────────────────────
+_ROTATION_BATCH_MAX_BYTES = 128 * 1024 * 1024
+_ROTATION_BATCH_MAX_BYTES_ENV = "POK_ROTATION_BATCH_MAX_BYTES"
+# Bounded streaming chunk for file-backed digests/range reads (4 MiB).
+_ROTATION_STREAM_CHUNK_BYTES = 4 * 1024 * 1024
+# Backward line-boundary scan chunk for the cold-prefix end computation.
+_ROTATION_SCAN_CHUNK_BYTES = 1024 * 1024
+
+
+def _rotation_batch_cap_bytes() -> int:
+    """Resolve the per-publication rotation batch cap (env-overridable).
+
+    Unbounded by design: the env key is the documented escape hatch for
+    pre-cap frozen plans (see the module note above), so huge values also
+    disable the bounded-memory protection; unparsable or <1 falls back to
+    the authoritative default.
+    """
+
+    raw = os.environ.get(_ROTATION_BATCH_MAX_BYTES_ENV)
+    if raw is None:
+        return _ROTATION_BATCH_MAX_BYTES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _ROTATION_BATCH_MAX_BYTES
+    if value < 1:
+        return _ROTATION_BATCH_MAX_BYTES
+    return value
+
+
+def _rotation_clamp_cold_end(cold_end: int, start: int) -> int:
+    """Bound one rotation batch to the configured cap (caller normalizes
+    ``cold_end >= start`` first).  Identical to the uncapped value whenever
+    the remaining cold range already fits within the cap."""
+
+    batch_cap = _rotation_batch_cap_bytes()
+    if cold_end - start > batch_cap:
+        return start + batch_cap
+    return cold_end
+
 
 def _rotation_rules():
     return (
@@ -84,6 +147,206 @@ def _rotation_rules():
 
 def _rotation_digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _rotation_digest_range(raw, start: int, end: int) -> str:
+    """sha256 over ``raw[start:end]`` without materializing big prefixes.
+
+    Byte-input callers keep the historical ``_ei._rotation_digest`` slice
+    path (preserving the monkeypatch surface); file-backed views stream the
+    range in bounded chunks, which is what keeps the ~951 MB live sources
+    from being fully resident once per pipeline stage.
+    """
+
+    if isinstance(raw, _RotationSourceView):
+        return raw.digest_range(start, end)
+    return _ei._rotation_digest(raw[start:end])
+
+
+class _RotationSourceView:
+    """Prefix-consistent lazy stand-in for a fully read rotation source.
+
+    The pipeline historically executed ``raw = source.read()`` four times
+    per publication (build/validate/rotate/receipts) and then materialized
+    ``splitlines`` lists and ``raw[:end]`` prefix slices on top; for the
+    ~951 MB events.jsonl that is a 2-3 GB transient RSS on a ~2 GB-available
+    host.  The view pins the regular-file inode opened inside the caller's
+    sidecar-locked critical section, freezes the size observed there, and
+    serves bounded range reads and streamed digests below that size.
+
+    These sources are append-only by contract (``source_bytes_must_be_
+    preserved``): appends never alter bytes below the observed size, and a
+    concurrent atomic replace leaves the pinned inode intact, so every
+    range read returns exactly the bytes a whole-file ``read()`` captured
+    at open time.  Slicing/digest semantics are byte-identical to the
+    historical ``bytes`` value; only residency changes.
+    """
+
+    __slots__ = ("_descriptor", "_size", "_closed")
+
+    def __init__(self, descriptor: int, size: int):
+        self._descriptor = descriptor
+        self._size = size
+        self._closed = False
+
+    @classmethod
+    def open(cls, source_path: Path):
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(source_path, flags)
+        try:
+            identity = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(identity.st_mode)
+                or identity.st_nlink != 1
+            ):
+                raise OSError(
+                    "rotation source view must be single-link regular file: "
+                    f"{source_path.name}"
+                )
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return cls(descriptor, identity.st_size)
+
+    def _normalized(self, start, end):
+        start, end, _step = slice(start, end).indices(self._size)
+        return start, end
+
+    def read_range(self, start: int, end: int) -> bytes:
+        start, end = self._normalized(start, end)
+        if start >= end:
+            return b""
+        parts = []
+        offset = start
+        while offset < end:
+            chunk = os.pread(
+                self._descriptor,
+                min(end - offset, _ROTATION_STREAM_CHUNK_BYTES),
+                offset,
+            )
+            if not chunk:
+                raise OSError("rotation source range unavailable")
+            parts.append(chunk)
+            offset += len(chunk)
+        return parts[0] if len(parts) == 1 else b"".join(parts)
+
+    def digest_range(self, start: int, end: int) -> str:
+        start, end = self._normalized(start, end)
+        hasher = hashlib.sha256()
+        offset = start
+        while offset < end:
+            chunk = os.pread(
+                self._descriptor,
+                min(end - offset, _ROTATION_STREAM_CHUNK_BYTES),
+                offset,
+            )
+            if not chunk:
+                raise OSError("rotation source range unavailable")
+            hasher.update(chunk)
+            offset += len(chunk)
+        return hasher.hexdigest()
+
+    def __len__(self) -> int:
+        return self._size
+
+    def __getitem__(self, key) -> bytes:
+        if not isinstance(key, slice):
+            raise TypeError("rotation source view supports slices only")
+        if key.step not in (None, 1):
+            raise TypeError("rotation source view does not support steps")
+        return self.read_range(key.start, key.stop)
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            os.close(self._descriptor)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def _open_rotation_source_view(source_path: Path) -> _RotationSourceView:
+    return _RotationSourceView.open(source_path)
+
+
+def _close_rotation_source(raw) -> None:
+    if isinstance(raw, _RotationSourceView):
+        raw.close()
+
+
+def _scan_cold_end_backwards(read_range, limit: int, keep_lines: int) -> int:
+    """Cold-prefix end via a bounded backward line-boundary scan.
+
+    ``bytes.splitlines(keepends=True)`` line ``-(keep_lines)`` starts
+    immediately after the ``(keep_lines + 1)``-th line boundary from the
+    end when the region ends with a boundary, and after the
+    ``keep_lines``-th otherwise (an unterminated trailing line).  Boundaries
+    for ``bytes`` are exactly ``\\n``, ``\\r`` and the pair ``\\r\\n``; the
+    backward scan counts each ``\\n`` once, each lone ``\\r`` once, and
+    skips a ``\\r`` whose successor is the ``\\n`` already counted.  The
+    equivalence with the historical whole-buffer expression is pinned by
+    ``web/tests/test_archive_rotation_batch_cap_20261015.py`` (exhaustive
+    short-string sweep plus randomized data with tiny scan chunks).
+    Returns 0 when the region holds ``keep_lines`` lines or fewer.
+    """
+
+    if keep_lines < 1 or limit <= 0:
+        return 0
+    last = read_range(limit - 1, limit)
+    needed = keep_lines + (1 if last in (b"\n", b"\r") else 0)
+    remaining = needed
+    above = None  # byte just past the current chunk top; None at region end
+    position = limit
+    while position > 0:
+        start = max(0, position - _ROTATION_SCAN_CHUNK_BYTES)
+        data = read_range(start, position)
+        index = len(data) - 1
+        while index >= 0:
+            byte = data[index]
+            if byte == 0x0A:
+                remaining -= 1
+                if remaining == 0:
+                    return start + index + 1
+            elif byte == 0x0D:
+                successor = (
+                    data[index + 1] if index + 1 < len(data) else above
+                )
+                if successor != 0x0A:
+                    remaining -= 1
+                    if remaining == 0:
+                        return start + index + 1
+            index -= 1
+        above = data[0] if data else None
+        position = start
+    return 0
+
+
+def _rotation_cold_prefix_end(raw, keep_lines: int, *, limit=None) -> int:
+    """Byte offset where the last ``keep_lines`` lines begin (0 if fewer).
+
+    Exactly the historical
+    ``sum(len(line) for line in raw[:limit].splitlines(keepends=True)[:-keep_lines])``
+    for buffers with more than ``keep_lines`` lines (and 0 otherwise),
+    computed without materializing the line list for bytes inputs and
+    without reading the region at all beyond bounded chunks for
+    file-backed views.
+    """
+
+    if limit is None:
+        limit = len(raw)
+    if keep_lines < 1 or limit <= 0:
+        return 0
+    if isinstance(raw, _RotationSourceView):
+        return _scan_cold_end_backwards(raw.read_range, limit, keep_lines)
+    data = raw if limit == len(raw) else raw[:limit]
+    lines = data.splitlines(keepends=True)
+    if len(lines) <= keep_lines:
+        return 0
+    return sum(len(line) for line in lines[:-keep_lines])
 
 
 def _rotation_paths(source_path: Path, version: int):
@@ -272,7 +535,7 @@ def _validate_rotation_plan(
         "start_offset": start,
         "end_offset": end,
         "archive_sha256": _ei._rotation_digest(archived),
-        "new_prefix_sha256": _ei._rotation_digest(raw[:end]),
+        "new_prefix_sha256": _rotation_digest_range(raw, 0, end),
         "previous_watermark_digest": plan["previous_watermark_digest"],
     }
     if (
@@ -303,7 +566,7 @@ def _load_rotation_watermark(source_path: Path, raw: bytes):
         watermark.get("source") != source_path.name
         or type(end) is not int
         or not 0 < end <= len(raw)
-        or watermark.get("prefix_sha256") != _ei._rotation_digest(raw[:end])
+        or watermark.get("prefix_sha256") != _rotation_digest_range(raw, 0, end)
         or type(watermark.get("last_version")) is not int
         or int(watermark["last_version"]) < _ei.FIRST_STRICT_POLICY_VERSION
     ):
@@ -652,8 +915,8 @@ def build_archive_rotation_plan(version, publication_id):
             )
         snapshot_exists = os.path.lexists(source_path)
         if snapshot_exists:
-            with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
-                raw = source.read()
+            with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH):
+                raw = _open_rotation_source_view(source_path)
                 watermark = _ei._load_rotation_watermark(source_path, raw)
         else:
             raw = b""
@@ -662,50 +925,53 @@ def build_archive_rotation_plan(version, publication_id):
                 raise RuntimeError(
                     f"archive rotation source missing with authority: {source_path.name}"
                 )
-        lines = raw.splitlines(keepends=True)
-        cold_end = (
-            sum(len(line) for line in lines[:-keep_lines])
-            if len(lines) > keep_lines
-            else 0
-        )
-        start = int(watermark["end_offset"])
-        if cold_end < start:
-            cold_end = start
-        expected = None
-        if cold_end > start:
-            archive_path, _plan_path, _watermark_path = _ei._rotation_paths(
-                source_path,
-                version,
-            )
-            subject = {
-                "version": version,
+        try:
+            cold_end = _rotation_cold_prefix_end(raw, keep_lines)
+            start = int(watermark["end_offset"])
+            if cold_end < start:
+                cold_end = start
+            cold_end = _rotation_clamp_cold_end(cold_end, start)
+            expected = None
+            if cold_end > start:
+                archive_path, _plan_path, _watermark_path = _ei._rotation_paths(
+                    source_path,
+                    version,
+                )
+                subject = {
+                    "version": version,
+                    "source": source_path.name,
+                    "start_offset": start,
+                    "end_offset": cold_end,
+                    "archive_sha256": _rotation_digest_range(
+                        raw, start, cold_end
+                    ),
+                    "new_prefix_sha256": _rotation_digest_range(
+                        raw, 0, cold_end
+                    ),
+                    "previous_watermark_digest": watermark["digest"],
+                }
+                expected = {
+                    **subject,
+                    "archive": archive_path.name,
+                    "rotation_id": canonical_digest(subject),
+                }
+                expected["completed_plan_digest"] = (
+                    _ei._completed_rotation_plan_digest(expected)
+                )
+                rotations.append(expected)
+            snapshots.append({
                 "source": source_path.name,
-                "start_offset": start,
-                "end_offset": cold_end,
-                "archive_sha256": _ei._rotation_digest(raw[start:cold_end]),
-                "new_prefix_sha256": _ei._rotation_digest(raw[:cold_end]),
-                "previous_watermark_digest": watermark["digest"],
-            }
-            expected = {
-                **subject,
-                "archive": archive_path.name,
-                "rotation_id": canonical_digest(subject),
-            }
-            expected["completed_plan_digest"] = (
-                _ei._completed_rotation_plan_digest(expected)
-            )
-            rotations.append(expected)
-        snapshots.append({
-            "source": source_path.name,
-            "keep_lines": keep_lines,
-            "snapshot_exists": snapshot_exists,
-            "snapshot_size": len(raw),
-            "snapshot_sha256": _ei._rotation_digest(raw),
-            "cold_end_offset": cold_end,
-            "watermark_end_offset": start,
-            "watermark_digest": watermark["digest"],
-            "expected_rotation": expected,
-        })
+                "keep_lines": keep_lines,
+                "snapshot_exists": snapshot_exists,
+                "snapshot_size": len(raw),
+                "snapshot_sha256": _rotation_digest_range(raw, 0, len(raw)),
+                "cold_end_offset": cold_end,
+                "watermark_end_offset": start,
+                "watermark_digest": watermark["digest"],
+                "expected_rotation": expected,
+            })
+        finally:
+            _close_rotation_source(raw)
     plan = {
         "schema_version": 1,
         "kind": _ROTATION_SET_PLAN_KIND,
@@ -756,85 +1022,105 @@ def validate_archive_rotation_plan(
             raw = b""
             current_watermark = _ei._base_rotation_watermark(source_path)
         else:
-            with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
-                raw = source.read()
+            with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH):
+                raw = _open_rotation_source_view(source_path)
                 current_watermark = _ei._load_rotation_watermark(source_path, raw)
-        snapshot_size = snapshot["snapshot_size"]
-        if (
-            len(raw) < snapshot_size
-            or _ei._rotation_digest(raw[:snapshot_size])
-            != snapshot["snapshot_sha256"]
-        ):
-            raise RuntimeError(
-                f"archive rotation source prefix changed: {source_path.name}"
-            )
-        frozen = raw[:snapshot_size]
-        lines = frozen.splitlines(keepends=True)
-        cold_end = (
-            sum(len(line) for line in lines[:-keep_lines])
-            if len(lines) > keep_lines
-            else 0
-        )
-        if cold_end < snapshot["watermark_end_offset"]:
-            cold_end = snapshot["watermark_end_offset"]
-        if cold_end != snapshot["cold_end_offset"]:
-            raise RuntimeError(
-                f"archive rotation frozen range changed: {source_path.name}"
-            )
-        expected = expected_by_source.get(source_path.name)
-        _archive_path, low_plan_path, _watermark_path = _ei._rotation_paths(
-            source_path,
-            int(version),
-        )
-        low_plan = None
-        if os.path.lexists(low_plan_path):
-            low_plan = _ei._rotation_record(
-                low_plan_path,
-                kind=_ROTATION_PLAN_KIND,
-                keys=_ROTATION_PLAN_KEYS,
-            )
-        if expected is None:
-            if low_plan is not None:
+        try:
+            snapshot_size = snapshot["snapshot_size"]
+            if (
+                len(raw) < snapshot_size
+                or _rotation_digest_range(raw, 0, snapshot_size)
+                != snapshot["snapshot_sha256"]
+            ):
                 raise RuntimeError(
-                    f"archive rotation unplanned low-level plan: {source_path.name}"
+                    f"archive rotation source prefix changed: {source_path.name}"
                 )
-            if current_watermark["digest"] != snapshot["watermark_digest"]:
-                raise RuntimeError(
-                    f"archive rotation no-op predecessor changed: {source_path.name}"
-                )
-            continue
-        if low_plan is None:
-            if current_watermark["digest"] != snapshot["watermark_digest"]:
-                raise RuntimeError(
-                    f"archive rotation predecessor changed: {source_path.name}"
-                )
-            continue
-        _ei._validate_rotation_plan(
-            low_plan,
-            version=int(version),
-            source_path=source_path,
-            raw=raw,
-            require_completed=low_plan.get("state") == "completed",
-            require_archive=low_plan.get("state") == "completed",
-        )
-        for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
-            if low_plan.get(key) != expected.get(key):
-                raise RuntimeError(
-                    f"archive rotation low-level plan mismatch: {source_path.name}"
-                )
-        if expected["completed_plan_digest"] != _ei._completed_rotation_plan_digest(
-            expected
-        ):
-            raise RuntimeError(
-                f"archive rotation completion digest mismatch: {source_path.name}"
+            cold_end = _rotation_cold_prefix_end(
+                raw,
+                keep_lines,
+                limit=snapshot_size,
             )
-        if (
-            low_plan.get("state") == "completed"
-            and low_plan.get("digest") != expected["completed_plan_digest"]
-        ):
-            raise RuntimeError(
-                f"archive rotation completed plan mismatch: {source_path.name}"
+            if cold_end < snapshot["watermark_end_offset"]:
+                cold_end = snapshot["watermark_end_offset"]
+            # Mirror the build-time batch clamp exactly: the frozen plan
+            # stores the capped end, so an uncapped recompute here would
+            # spuriously report "frozen range changed".
+            cold_end = _rotation_clamp_cold_end(
+                cold_end,
+                snapshot["watermark_end_offset"],
             )
+            if cold_end != snapshot["cold_end_offset"]:
+                frozen_span = int(snapshot["cold_end_offset"]) - int(
+                    snapshot["watermark_end_offset"]
+                )
+                cap_hint = (
+                    f"; frozen span {frozen_span} exceeds the effective batch cap"
+                    f" {_rotation_batch_cap_bytes()} — a plan frozen by pre-cap code"
+                    f" (or a lowered env) needs"
+                    f" {_ROTATION_BATCH_MAX_BYTES_ENV} >= {frozen_span} to validate"
+                    if frozen_span > _rotation_batch_cap_bytes()
+                    else ""
+                )
+                raise RuntimeError(
+                    f"archive rotation frozen range changed:"
+                    f" {source_path.name}{cap_hint}"
+                )
+            expected = expected_by_source.get(source_path.name)
+            _archive_path, low_plan_path, _watermark_path = _ei._rotation_paths(
+                source_path,
+                int(version),
+            )
+            low_plan = None
+            if os.path.lexists(low_plan_path):
+                low_plan = _ei._rotation_record(
+                    low_plan_path,
+                    kind=_ROTATION_PLAN_KIND,
+                    keys=_ROTATION_PLAN_KEYS,
+                )
+            if expected is None:
+                if low_plan is not None:
+                    raise RuntimeError(
+                        f"archive rotation unplanned low-level plan: {source_path.name}"
+                    )
+                if current_watermark["digest"] != snapshot["watermark_digest"]:
+                    raise RuntimeError(
+                        f"archive rotation no-op predecessor changed: {source_path.name}"
+                    )
+                continue
+            if low_plan is None:
+                if current_watermark["digest"] != snapshot["watermark_digest"]:
+                    raise RuntimeError(
+                        f"archive rotation predecessor changed: {source_path.name}"
+                    )
+                continue
+            _ei._validate_rotation_plan(
+                low_plan,
+                version=int(version),
+                source_path=source_path,
+                raw=raw,
+                require_completed=low_plan.get("state") == "completed",
+                require_archive=low_plan.get("state") == "completed",
+            )
+            for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
+                if low_plan.get(key) != expected.get(key):
+                    raise RuntimeError(
+                        f"archive rotation low-level plan mismatch: {source_path.name}"
+                    )
+            if expected["completed_plan_digest"] != _ei._completed_rotation_plan_digest(
+                expected
+            ):
+                raise RuntimeError(
+                    f"archive rotation completion digest mismatch: {source_path.name}"
+                )
+            if (
+                low_plan.get("state") == "completed"
+                and low_plan.get("digest") != expected["completed_plan_digest"]
+            ):
+                raise RuntimeError(
+                    f"archive rotation completed plan mismatch: {source_path.name}"
+                )
+        finally:
+            _close_rotation_source(raw)
     return rotation_plan
 
 
@@ -870,8 +1156,8 @@ def archive_rotate_files(version, rotation_plan):
             source_path,
             version,
         )
-        with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_EX) as source:
-            raw = source.read()
+        with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_EX):
+            raw = _open_rotation_source_view(source_path)
             watermark = _ei._load_rotation_watermark(source_path, raw)
             plan = _ei._rotation_record(
                 plan_path,
@@ -963,6 +1249,7 @@ def archive_rotate_files(version, rotation_plan):
                         f"archive rotation completed plan mismatch: {source_path.name}"
                     )
             receipts.append(_ei._rotation_receipt(plan))
+            _close_rotation_source(raw)
     _ei.validate_archive_rotation_receipts(
         version,
         receipts,
@@ -1037,8 +1324,8 @@ def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
             raise RuntimeError(
                 f"archive rotation source missing: {source_name}"
             )
-        with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
-            raw = source.read()
+        with _ei.locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH):
+            raw = _open_rotation_source_view(source_path)
             watermark = _ei._load_rotation_watermark(source_path, raw)
             plan = _ei._rotation_record(
                 plan_path,
@@ -1066,6 +1353,7 @@ def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
             if receipt != expected:
                 raise RuntimeError(f"archive rotation receipt mismatch: {source_name}")
             verified.append(expected)
+            _close_rotation_source(raw)
     return verified
 
 
