@@ -1746,6 +1746,34 @@ def _resume_receipt_identity_errors(deferred, projection):
     return errors
 
 
+#: System-owned transient resume-source tokens (2026-10-15 wedge fix, the
+#: v555 sibling shape): both values are written exclusively by
+#: ``llm_availability_store._reconcile_llm_pause``, and only once the record's
+#: own resume deadline has elapsed — ``bounded_cooldown_elapsed`` for the
+#: cooldown categories, ``provider_quota_reset_elapsed`` for a trusted
+#: (provider-timestamp or classifier-stamped fallback) QUOTA_429 reset. The
+#: token itself is therefore proof the receipt was produced by the
+#: system-owned reconcile path, which is exactly the argument the
+#: archived-receipt lane already makes for ``bounded_cooldown_elapsed``.
+#: Every other source stays fail-closed: notably
+#: ``untrusted_quota_pause_without_reset_authority`` (the deliberate drop of a
+#: pre-fix invented 5-hour wait — authorizing through it would resurrect the
+#: exact pause the store refuses to trust) and ``operator_evidence_digest``
+#: (the manual lane, validated separately against the exact digest). Before
+#: this set existed, a Worker freezing an ACTIVE trusted-1308 record's own
+#: projection (claim boundary) — or the fresh persist of the same report
+#: (exception path) — had its digest become an inactive record whose only
+#: resume receipt carries ``provider_quota_reset_elapsed``; with no marker
+#: written (equal digest) and no higher-priority eviction, all three
+#: validation lanes failed permanently with
+#: ``transient_pause_cooldown_receipt_missing`` (52h-class wedge, red-team
+#: probe dwfrun-e13bccf5).
+_SYSTEM_TRANSIENT_RESUME_SOURCES = frozenset({
+    "bounded_cooldown_elapsed",
+    "provider_quota_reset_elapsed",
+})
+
+
 def _resume_receipt_policy_errors(
     projection,
     *,
@@ -1756,11 +1784,13 @@ def _resume_receipt_policy_errors(
     """Resume-path policy checks for one receipt projection.
 
     ``require_auto_resume_deadline`` is False for archived projections: the
-    store does not archive ``auto_resume_at``, and an archived
-    ``resume_source == "bounded_cooldown_elapsed"`` token is already proof the
-    receipt was produced by the system-owned reconcile path (only
-    ``_reconcile_llm_pause`` writes that token, and only once the deadline
-    elapsed). Manual policy is enforced identically for archived receipts.
+    store does not archive ``auto_resume_at``, and a system-owned
+    ``resume_source`` token (``bounded_cooldown_elapsed`` or, symmetrically
+    since 2026-10-15, ``provider_quota_reset_elapsed`` for the trusted quota
+    reset path) is already proof the receipt was produced by the
+    system-owned reconcile path (only ``_reconcile_llm_pause`` writes those
+    tokens, and only once the deadline elapsed). Manual policy is enforced
+    identically for archived receipts.
     """
     errors = []
     resume_source = str(projection.get("resume_source") or "")
@@ -1771,7 +1801,7 @@ def _resume_receipt_policy_errors(
         if resume_digest != digest:
             errors.append("manual_pause_resume_evidence_digest_mismatch")
     else:
-        if resume_source != "bounded_cooldown_elapsed":
+        if resume_source not in _SYSTEM_TRANSIENT_RESUME_SOURCES:
             errors.append("transient_pause_cooldown_receipt_missing")
         if resume_digest:
             errors.append("transient_pause_unexpected_operator_digest")
