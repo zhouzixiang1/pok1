@@ -584,6 +584,50 @@ def _compact_candidate_ledger_step(results_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+def _evaluation_identity_retention_step(results_dir: Path) -> dict[str, Any] | None:
+    """T6 wiring on a non-identity carrier: keep the newest identity snapshots.
+
+    ``evaluation_data_identity.py`` and ``elo_daemon.py`` both sit inside the
+    rating SEMANTIC_PATHS identity set, so the retention hook must not live in
+    either. The janitor owns the cadence here instead, holding the same
+    exclusive cycle + manifest locks the migration writer holds. A lock-free
+    pre-check skips the pass entirely while the archive is within budget, so
+    the steady-state janitor cycle never touches those locks.
+    """
+    from evaluation_identity_retention import KEEP_RECENT_SNAPSHOTS
+
+    archive_dir = results_dir / "archive" / "evaluation_identity"
+    if not archive_dir.is_dir():
+        return None
+    try:
+        snapshots = [
+            entry
+            for entry in archive_dir.iterdir()
+            if entry.is_dir() and not entry.is_symlink()
+        ]
+    except OSError:
+        return None
+    if len(snapshots) <= KEEP_RECENT_SNAPSHOTS:
+        return None
+    try:
+        from evaluation_bundle import evaluation_cycle_lock
+        from evaluation_data_identity import _manifest_lock
+        from evaluation_identity_retention import run_evaluation_identity_retention
+    except Exception as exc:  # pragma: no cover - import guard
+        log.warning("evaluation identity retention unavailable: %s", exc)
+        return None
+    try:
+        with evaluation_cycle_lock(results_dir, exclusive=True), _manifest_lock(
+            results_dir
+        ):
+            return run_evaluation_identity_retention(
+                results_dir, triggered_by="disk_hygiene_janitor"
+            )
+    except Exception as exc:
+        log.warning("evaluation identity retention failed: %s", exc)
+        return None
+
+
 def _append_reaped_tree_receipt(results_dir: Path, row: dict[str, Any]) -> None:
     """Durably append one orphan-tree receipt row under the sidecar lock."""
     path = results_dir / REAPED_TREES_LEDGER_NAME
@@ -1257,6 +1301,13 @@ def run_disk_hygiene(
     compaction = _compact_candidate_ledger_step(results_dir)
     if compaction and compaction.get("receipt_persisted"):
         report["candidate_ledger_compaction"] = compaction
+
+    retention = _evaluation_identity_retention_step(results_dir)
+    if retention and retention.get("moved"):
+        report["evaluation_identity_retention"] = {
+            "moved": len(retention["moved"]),
+            "receipt_path": retention.get("receipt_path"),
+        }
 
     metrics = results_dir / "llm_call_metrics.jsonl"
     trimmed = _trim_jsonl(metrics, keep_metrics_lines)
