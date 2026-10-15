@@ -400,6 +400,16 @@ class CandidateLifecycle:
         self._db_path = str(db_path)
         self._ensure_schema()
 
+    @property
+    def db_path(self) -> str:
+        """The sqlite path backing this lifecycle store (read-only accessor).
+
+        Used by the activation layer's retired-store tolerance check in
+        ``recover_at_boot`` (an archived-away store must not be touched) and
+        by the idle-store archive path for idleness accounting.
+        """
+        return self._db_path
+
     # -- schema -------------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
@@ -1120,6 +1130,195 @@ class CandidateLifecycle:
 # resolving.  Constructed with a db_path (the activation passes the lifecycle
 # sqlite path; tests pass a tmp_path).
 ValidationLedger = CandidateLifecycle
+
+
+# ---------------------------------------------------------------------------
+# Retired-feature lifecycle archive (dead-store reclamation, 2026-10-15)
+# ---------------------------------------------------------------------------
+#
+# ``POK_SLICE2B_ENABLED=0`` retired the one-ahead feature in production on
+# 2026-08-15; the persisted lifecycle store
+# (``results/workflow/slice2b_lifecycle.sqlite3``, ~126MB on the cloud host)
+# stopped receiving writes at the same moment and is now a dead store that
+# still consumes root-disk on every boot.  This is a CONTROLLED ARCHIVE path,
+# not truncation: the bytes are MOVED (never rewritten) into
+# ``results/archive/`` under the original file name plus an archive timestamp,
+# and a content-bound receipt is left at the original location recording where
+# the bytes went.  Re-enabling the feature never auto-restores the archive --
+# the receipt records the location and restoration stays a manual operator
+# decision (a re-enabled epoch starts from a fresh empty store).
+
+SLICE2B_LIFECYCLE_DB_NAME = "slice2b_lifecycle.sqlite3"
+SLICE2B_LIFECYCLE_ARCHIVE_RECEIPT_SCHEMA = (
+    "producer-consumer-slice2b-lifecycle-archive-receipt-v1"
+)
+SLICE2B_LIFECYCLE_ARCHIVE_RECEIPT_NAME = "slice2b_lifecycle_archive_receipt.json"
+# A disabled slice2b whose lifecycle store has not been written for at least
+# this long is a dead store and may be archived.  Default 30 days (the
+# production store stopped receiving writes 2026-08-15).
+POK_SLICE2B_LIFECYCLE_ARCHIVE_IDLE_SECONDS = float(
+    os.environ.get(
+        "POK_SLICE2B_LIFECYCLE_ARCHIVE_IDLE_SECONDS", str(30 * 24 * 3600)
+    )
+)
+
+
+def slice2b_lifecycle_db_path() -> Path:
+    """Resolve the production lifecycle store path (lazy; RESULTS_DIR-bound)."""
+
+    from evolution_infra import RESULTS_DIR
+
+    return Path(RESULTS_DIR) / "workflow" / SLICE2B_LIFECYCLE_DB_NAME
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fsync_dir(path: Path) -> None:
+    """Best-effort directory fsync so a completed rename is durable."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def archive_idle_slice2b_lifecycle(
+    *,
+    enabled: bool,
+    db_path: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+    idle_threshold_seconds: float | None = None,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Archive the retired slice2b lifecycle store when it is provably dead.
+
+    Controlled-move contract (T5, 2026-10-15):
+
+    * ``enabled=True`` NEVER archives -- a live feature owns its store, no
+      matter how idle the file looks.  Returns ``None`` without touching
+      anything.
+    * ``enabled=False`` archives only when the store has been idle (mtime)
+      beyond ``idle_threshold_seconds`` (default
+      ``POK_SLICE2B_LIFECYCLE_ARCHIVE_IDLE_SECONDS``, 30 days).  A missing
+      store is tolerated silently (already archived / never existed); the
+      disabled boot path must not error on its absence.
+    * The move preserves bytes exactly: the main sqlite file plus any
+      ``-wal``/``-shm`` sidecars are renamed into ``archive_dir`` under
+      ``<original-name>.<YYYYmmddTHHMMSSZ>[sidecar]`` (original file name +
+      archive timestamp).  Nothing is ever truncated or rewritten.
+    * A content-bound receipt (schema
+      ``producer-consumer-slice2b-lifecycle-archive-receipt-v1``) is written
+      atomically beside the original location, recording the archive
+      destination, per-file sizes/digests, observed idleness, and the
+      no-auto-restore policy.  Re-enabling slice2b starts from a fresh empty
+      store; restoring the archive is a manual operator decision.
+
+    Returns the receipt dict when an archive happened, ``None`` otherwise.
+    Raises only on a mid-archive filesystem failure or a destination
+    collision (never silently clobbers an existing archive).
+    """
+
+    if enabled:
+        # A live feature owns its store; the enabled boot path must never
+        # archive, regardless of idleness.
+        return None
+    threshold = (
+        float(idle_threshold_seconds)
+        if idle_threshold_seconds is not None
+        else POK_SLICE2B_LIFECYCLE_ARCHIVE_IDLE_SECONDS
+    )
+    ts = float(now if now is not None else time.time())
+    src = Path(db_path) if db_path is not None else slice2b_lifecycle_db_path()
+    if not src.is_file():
+        # Disabled-feature tolerance: the store is absent (archived in a prior
+        # boot, or never created).  Nothing to recover, nothing to report.
+        return None
+    idle_seconds = ts - src.stat().st_mtime
+    if idle_seconds < threshold:
+        return None
+    if archive_dir is not None:
+        dest_dir = Path(archive_dir)
+    else:
+        from evolution_infra import ARCHIVE_DIR
+
+        dest_dir = Path(ARCHIVE_DIR)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(ts))
+    # Move plan: sidecars FIRST (a leftover ``-wal`` holds committed pages not
+    # yet folded into the main db; moving it alongside the main file preserves
+    # the complete store), main file last.
+    move_plan: list[tuple[Path, Path, bool]] = []
+    for sidecar in ("-wal", "-shm"):
+        side = src.with_name(src.name + sidecar)
+        if side.is_file():
+            move_plan.append(
+                (side, dest_dir / f"{src.name}.{stamp}{sidecar}", sidecar == "-wal")
+            )
+    move_plan.append((src, dest_dir / f"{src.name}.{stamp}", True))
+    for _, dest, _ in move_plan:
+        if dest.exists():
+            raise Slice2bError(
+                f"slice2b_lifecycle_archive_destination_exists:{dest.name}"
+            )
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    archived_files: list[dict[str, Any]] = []
+    for origin, dest, digest_it in move_plan:
+        entry = {
+            "original_name": origin.name,
+            "archived_name": dest.name,
+            "bytes": origin.stat().st_size,
+        }
+        if digest_it:
+            entry["sha256"] = _sha256_file(origin)
+        os.replace(origin, dest)
+        archived_files.append(entry)
+    _fsync_dir(dest_dir)
+    _fsync_dir(src.parent)
+    receipt: dict[str, Any] = {
+        "schema": SLICE2B_LIFECYCLE_ARCHIVE_RECEIPT_SCHEMA,
+        "schema_version": 1,
+        "archived_at_epoch": ts,
+        "archived_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)),
+        "feature_env_var": "POK_SLICE2B_ENABLED",
+        "feature_enabled_at_archive": False,
+        "reason": "slice2b_disabled_and_lifecycle_idle",
+        "source_dir": str(src.parent),
+        "source_file_name": src.name,
+        "archive_dir": str(dest_dir),
+        "archived_files": archived_files,
+        "idle_seconds_observed": round(idle_seconds, 3),
+        "idle_threshold_seconds": threshold,
+        "restore_policy": {
+            "auto_restore": False,
+            "manual_decision_required": True,
+            "note": (
+                "Re-enabling POK_SLICE2B_ENABLED starts from a fresh empty "
+                "lifecycle store; restoring this archive is a manual operator "
+                "decision (move the archived files back and remove this "
+                "receipt before restart)."
+            ),
+        },
+    }
+    receipt["receipt_digest"] = _content_digest(receipt)
+    receipt_path = src.parent / SLICE2B_LIFECYCLE_ARCHIVE_RECEIPT_NAME
+    tmp_path = receipt_path.with_name(receipt_path.name + ".tmp")
+    tmp_path.write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, receipt_path)
+    _fsync_dir(src.parent)
+    return receipt
 
 
 # ---------------------------------------------------------------------------
@@ -1966,7 +2165,11 @@ def slice2b_enabled(context: Mapping[str, Any] | None) -> bool:
 __all__ = [
     "CONSUMER_GATE_CHAIN_ORDER",
     "GATE_CHAIN_ORDER",
+    "POK_SLICE2B_LIFECYCLE_ARCHIVE_IDLE_SECONDS",
     "SLICE2B_LEDGER_KIND",
+    "SLICE2B_LIFECYCLE_ARCHIVE_RECEIPT_NAME",
+    "SLICE2B_LIFECYCLE_ARCHIVE_RECEIPT_SCHEMA",
+    "SLICE2B_LIFECYCLE_DB_NAME",
     "SLICE2B_SEALED_KIND",
     "ConsumerDispatcher",
     "GateRunner",
@@ -1974,8 +2177,10 @@ __all__ = [
     "SealResult",
     "Slice2bError",
     "ValidationLedger",
+    "archive_idle_slice2b_lifecycle",
     "build_sealed_candidate_snapshot",
     "build_slice2b_quality_envelope",
     "seal_candidate",
     "slice2b_enabled",
+    "slice2b_lifecycle_db_path",
 ]

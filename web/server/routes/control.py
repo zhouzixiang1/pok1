@@ -1331,6 +1331,48 @@ def _eval_wait_projection(
     }
 
 
+def _llm_usage_by_caliber_projection() -> dict[str, Any]:
+    """B1 (2026-10-15): pipeline-vs-saturator consumption caliber split.
+
+    Splits the trailing 1h/24h LLM usage recorded in
+    ``llm_call_metrics.jsonl`` by role caliber (``SATURATOR*`` roles vs
+    everything else) via the streaming core summarizer
+    (``llm_call_metrics.summarize_llm_usage_by_caliber``). During an 8h
+    pipeline wedge the aggregate token rate looked healthy because the
+    background saturator alone kept it above 40M tokens/h; this block makes
+    the dead pipeline lane visible as ``pipeline_tokens=0``.
+
+    The whole-file scan is mtime-cached (same ``cached_by_mtime`` pattern as
+    the ``/api/llm/metrics`` endpoints) so frequent status polls do not rescan
+    a growing JSONL, and it is NOT part of the observer authority content key:
+    keying the (expensive) observer rebuild on every LLM-call append would
+    rebuild the full status projection far too often. The block is therefore
+    as fresh as the observer snapshot that carried it.
+
+    Purely additive: no existing status field is changed.
+    """
+    from llm_call_metrics import llm_call_metrics_file, summarize_llm_usage_by_caliber
+    from server.cache import cached_by_mtime
+
+    return cached_by_mtime(
+        "control:llm_usage_by_caliber",
+        llm_call_metrics_file(),
+        summarize_llm_usage_by_caliber,
+    )
+
+
+def _llm_usage_by_caliber_unavailable(reason: str = "projection_failed") -> dict[str, Any]:
+    from llm_call_metrics import zeroed_caliber_windows
+
+    return {
+        "available": False,
+        "schema_version": 1,
+        "reason": reason,
+        "time_basis": "unavailable",
+        "windows": zeroed_caliber_windows(),
+    }
+
+
 def _phase_a_unavailable_projection() -> dict[str, Any]:
     """Fail-closed Phase A blocks when epoch projection is unavailable."""
 
@@ -1975,6 +2017,13 @@ def _sync_evolution_fields(
     state["stability_observation_digest"] = _stability_observation_digest(
         state.get("stability_observation")
     )
+    # B1 (2026-10-15): consumption-caliber split overlay. Attached last and
+    # fail-closed so a metrics-file problem can never disturb any field above;
+    # purely additive to the status payload.
+    try:
+        state["llm_usage_by_caliber"] = _llm_usage_by_caliber_projection()
+    except Exception:
+        state["llm_usage_by_caliber"] = _llm_usage_by_caliber_unavailable()
     return state
 
 

@@ -80,6 +80,11 @@ def _metrics_file() -> Path:
         return Path("web/core/results") / _METRICS_FILE_NAME
 
 
+def llm_call_metrics_file() -> Path:
+    """Public accessor for the metrics JSONL path (mtime-cache keys, exports)."""
+    return _metrics_file()
+
+
 def _truncate(value, limit=500):
     if value is None:
         return None
@@ -258,3 +263,216 @@ def record_llm_call_metrics(
             pass
     except Exception:
         pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Consumption-caliber split (B1, 2026-10-15)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A row whose ``role`` starts with SATURATOR belongs to the background
+# saturator; every other role — including a missing or blank ``role`` — is the
+# main pipeline. Case-insensitive so a future lowercase role spelling still
+# buckets correctly; the producer currently writes exactly one saturator role,
+# "SATURATOR STRATEGY RESEARCH" (llm_saturator.SATURATOR_ROLE).
+_SATURATOR_ROLE_PREFIX = "SATURATOR"
+
+# Trailing windows published by ``summarize_llm_usage_by_caliber``: 1h and 24h.
+_CALIBER_WINDOWS_SEC = (("last_1h", 3600.0), ("last_24h", 86400.0))
+
+_LINE_ORDER_UNBOUNDED_NOTE = (
+    "llm_call_metrics.jsonl carries no usable timestamp on any row; the 1h/24h "
+    "windows could not be time-bounded and instead include the whole file "
+    "(line-order approximation over the append-only log)"
+)
+
+
+def _is_saturator_role(role) -> bool:
+    return str(role or "").strip().upper().startswith(_SATURATOR_ROLE_PREFIX)
+
+
+def _row_total_tokens(row: dict) -> int:
+    """Token count for one metrics row (same basis as the pacer feed)."""
+    value = row.get("total_tokens")
+    try:
+        total = int(value)
+    except (TypeError, ValueError):
+        total = 0
+    if total > 0:
+        return total
+    # ``total_tokens`` is written as None when input+output was zero; recompute
+    # from the parts so a legacy/partial row still counts what it carries.
+    for field in ("input_tokens", "output_tokens"):
+        try:
+            total += int(row.get(field) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _resolve_row_timestamp(row: dict):
+    """Return ``(epoch_seconds | None, anchored)`` for one metrics row.
+
+    Prefers the numeric ``epoch_ts``; falls back to parsing the ISO ``ts``
+    string. ``(None, False)`` means the row carried no usable time field.
+    """
+    try:
+        ts = float(row.get("epoch_ts"))
+    except (TypeError, ValueError):
+        ts = None
+    if ts is not None and ts > 0:
+        return ts, True
+    raw = row.get("ts")
+    if isinstance(raw, str) and raw.strip():
+        text = raw.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None, False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp(), True
+    return None, False
+
+
+def zeroed_caliber_windows() -> dict:
+    return {
+        name: {"pipeline_tokens": 0, "saturator_tokens": 0, "pipeline_calls": 0}
+        for name, _ in _CALIBER_WINDOWS_SEC
+    }
+
+
+def _unavailable_caliber_summary(reason: str) -> dict:
+    return {
+        "available": False,
+        "schema_version": 1,
+        "reason": reason,
+        "time_basis": "unavailable",
+        "windows": zeroed_caliber_windows(),
+    }
+
+
+def summarize_llm_usage_by_caliber(now=None) -> dict:
+    """Stream the metrics JSONL and split recent usage by consumption caliber.
+
+    Motivation (2026-10-15, B1): during an 8h pipeline wedge the aggregate
+    token rate looked healthy because the background saturator alone kept it
+    above 40M tokens/h. Splitting the same ``llm_call_metrics.jsonl`` rows by
+    role caliber makes the dead pipeline lane visible as zero.
+
+    Caliber rule: ``role`` starting with ``SATURATOR`` (case-insensitive) is
+    the saturator; every other role — including a missing/blank ``role`` — is
+    the pipeline. Each JSONL row is one provider attempt, so ``*_calls``
+    counts attempts, not unique ``call_id``s.
+
+    Timestamps: a row is placed via ``epoch_ts``, else by parsing the ISO
+    ``ts`` string. A row with neither inherits the nearest preceding anchored
+    row's timestamp (line-order approximation over the append-only file) and
+    is counted in ``approximated_rows``. A leading row with no anchor yet is
+    excluded from the windows and counted in ``unplaced_rows``. When NO row
+    carries a usable timestamp the windows cannot be time-bounded: every row
+    is then included in every window and ``time_basis`` reports
+    ``line_order_unbounded`` with an explanatory ``note``.
+
+    Streams line-by-line (never loads the whole file) under a best-effort
+    contract: a missing/unreadable file yields ``available: False`` with
+    zeroed windows, and malformed lines are skipped exactly as in the write
+    path.
+    """
+    if now is None:
+        now = time.time()
+    cutoffs = {name: now - sec for name, sec in _CALIBER_WINDOWS_SEC}
+    windows = zeroed_caliber_windows()
+    # All-time accumulators back the line_order_unbounded fallback: whether the
+    # file has any timestamp at all is only known after the full scan.
+    totals = {"pipeline_tokens": 0, "saturator_tokens": 0, "pipeline_calls": 0}
+
+    rows_scanned = 0
+    approximated_rows = 0
+    unplaced_rows = 0
+    any_anchor = False
+
+    try:
+        handle = open(_metrics_file(), "r", encoding="utf-8")
+    except OSError:
+        return _unavailable_caliber_summary("metrics_file_unreadable")
+
+    try:
+        last_ts = None
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            rows_scanned += 1
+
+            ts, anchored = _resolve_row_timestamp(row)
+            if anchored:
+                any_anchor = True
+                last_ts = ts
+            elif last_ts is not None:
+                ts = last_ts
+                approximated_rows += 1
+            else:
+                unplaced_rows += 1
+                ts = None
+
+            tokens = _row_total_tokens(row)
+            if _is_saturator_role(row.get("role")):
+                totals["saturator_tokens"] += tokens
+            else:
+                totals["pipeline_tokens"] += tokens
+                totals["pipeline_calls"] += 1
+
+            if ts is not None:
+                for name, cutoff in cutoffs.items():
+                    if ts >= cutoff:
+                        bucket = windows[name]
+                        if _is_saturator_role(row.get("role")):
+                            bucket["saturator_tokens"] += tokens
+                        else:
+                            bucket["pipeline_tokens"] += tokens
+                            bucket["pipeline_calls"] += 1
+    except OSError:
+        return _unavailable_caliber_summary("metrics_file_read_error")
+    finally:
+        handle.close()
+
+    if rows_scanned == 0:
+        time_basis = "no_rows"
+        note = None
+    elif not any_anchor:
+        # No usable timestamp anywhere: the windows cannot be bounded by time.
+        # Approximate by line order — the whole append-only file is recent
+        # history — and say so explicitly.
+        windows = {
+            name: dict(totals) for name, _ in _CALIBER_WINDOWS_SEC
+        }
+        time_basis = "line_order_unbounded"
+        note = _LINE_ORDER_UNBOUNDED_NOTE
+    elif approximated_rows:
+        time_basis = "file_timestamps_with_line_order_approximation"
+        note = None
+    else:
+        time_basis = "file_timestamps"
+        note = None
+
+    return {
+        "available": True,
+        "schema_version": 1,
+        "generated_at": round(float(now), 3),
+        "caliber_rule": "role startswith SATURATOR -> saturator, otherwise pipeline",
+        "window_sec": {name: int(sec) for name, sec in _CALIBER_WINDOWS_SEC},
+        "time_basis": time_basis,
+        "note": note,
+        "rows_scanned": rows_scanned,
+        "approximated_rows": approximated_rows,
+        "unplaced_rows": unplaced_rows,
+        "windows": windows,
+    }

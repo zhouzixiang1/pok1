@@ -15,6 +15,26 @@ trees. It never truncates or unlinks:
   (append-only rotation authority)
 - ``bots/`` products, ``strict_invocations/``, handoff records
 
+Two bounded-retention additions (T7, 2026-10-15):
+
+- **Orphan never-published ``vN`` trees.** ``results/vN`` trees whose
+  generation was prepared but never published, never abandoned (no abandon
+  ledger row), unreferenced by any live surface (primary/draft/consumer
+  checkpoints, non-terminal Slice-2b lifecycle rows) and older than
+  ``POK_ORPHAN_RESULT_TREE_MAX_AGE_DAYS`` (default 14 days) are reaped with
+  a per-tree receipt appended to ``reaped_generation_trees.jsonl`` (receipt
+  first: a tree whose receipt cannot be written is kept). Live, published,
+  abandoned-ledger and strict-invocation-bearing trees are never touched.
+- **Cost-ledger compaction.** ``generation_cost_ledger.jsonl`` keeps the
+  last ``POK_COST_LEDGER_RETENTION_DAYS`` (default 30) days of full rows
+  verbatim; older rows are compacted — under the exact
+  ``_locked_state_sidecar`` exclusive sidecar lock every ledger reader and
+  writer already takes — into per-month summary rows, with a per-row
+  summary receipt (line digest + accounting scalars) under
+  ``cost_ledger_compaction_receipts/`` so no row silently disappears. The
+  receipt is written before the ledger rewrite; a crash between the two
+  only duplicates receipt accounting, never loses a row.
+
 It runs from the app lifespan beside the LLM saturator so it keeps working
 even when the orchestrator is mid-call. Failures are logged and swallowed.
 """
@@ -22,12 +42,15 @@ even when the orchestrator is mid-call. Failures are logged and swallowed.
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +80,7 @@ _PROTECTED_RESULT_NAMES = frozenset({
     "rate_limit_state.json",
     "llm_availability_pause.json",
     "generation_cost_pending.json",
+    "reaped_generation_trees.jsonl",
     "policy_epoch_reset_receipt.json",
     "policy_epoch_reconciliation_receipt.json",
 })
@@ -70,6 +94,17 @@ DEFAULT_KEEP_ABANDONED_RESULT_DIRS_PRESSURE = 3
 DEFAULT_KEEP_FINDINGS_LINES = 400
 DEFAULT_KEEP_METRICS_LINES = 8000
 DEFAULT_KEEP_ORCHESTRATOR_LOGS = 20
+
+# T7a: orphan never-published ``results/vN`` trees.
+DEFAULT_ORPHAN_RESULT_TREE_MAX_AGE_DAYS = 14.0
+
+# T7b: bounded retention for the generation cost ledger.
+COST_LEDGER_NAME = "generation_cost_ledger.jsonl"
+COST_LEDGER_RECEIPTS_DIR_NAME = "cost_ledger_compaction_receipts"
+COST_LEDGER_SUMMARY_KIND = "cost_ledger_monthly_summary"
+DEFAULT_COST_LEDGER_RETENTION_DAYS = 30.0
+DEFAULT_COST_LEDGER_COMPACTION_MIN_INTERVAL_SEC = 6.0 * 3600.0
+REAPED_TREES_LEDGER_NAME = "reaped_generation_trees.jsonl"
 
 
 def _env_flag(name: str, default: str = "1") -> bool:
@@ -445,6 +480,134 @@ def _reap_stale_consumer_checkpoints(
     return freed, removed
 
 
+def _tree_contains_strict_invocations(tree: Path) -> bool:
+    """True when any ``strict_invocations`` entry exists inside the tree.
+
+    Fail closed: an unreadable tree reports True (never reaped by the orphan
+    branch). Symlinked entries count as protective without being followed.
+    """
+    canonical = tree / "logs" / "strict_invocations"
+    if os.path.lexists(canonical):
+        return True
+    errored = False
+
+    def _note(_error) -> None:
+        nonlocal errored
+        errored = True
+
+    for _root, dirnames, _filenames in os.walk(tree, followlinks=False, onerror=_note):
+        if "strict_invocations" in dirnames:
+            return True
+    return errored
+
+
+def _consumer_checkpoint_versions(results_dir: Path) -> set[int]:
+    """Versions named by a still-present consumer checkpoint file."""
+    versions: set[int] = set()
+    for path in results_dir.glob("pipeline_state_consumer-candidate-v*.json"):
+        version = _version_token(path.stem)
+        if version:
+            versions.add(version)
+    return versions
+
+
+def _slice2b_referenced_versions(results_dir: Path) -> set[int] | None:
+    """Versions pinned by non-terminal Slice-2b lifecycle candidates.
+
+    Returns ``None`` when the lifecycle database is present but unreadable —
+    the caller then fails closed and reaps no orphan tree this pass.
+    """
+    db_path = results_dir / "workflow" / "slice2b_lifecycle.sqlite3"
+    if not db_path.is_file() or db_path.is_symlink():
+        return set()
+    import sqlite3
+
+    try:
+        connection = sqlite3.connect(db_path, timeout=30.0)
+        try:
+            rows = connection.execute(
+                "SELECT candidate_id FROM slice2b_candidate_lifecycle "
+                "WHERE state NOT IN ('promoted', 'rejected')"
+            ).fetchall()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return None
+    versions: set[int] = set()
+    for row in rows:
+        version = _version_token(row[0] if row else "")
+        if version:
+            versions.add(version)
+    return versions
+
+
+def _orphan_reference_versions(results_dir: Path, live: set[int]) -> set[int] | None:
+    """Every live-reference surface for the orphan branch, or None (unreadable).
+
+    Fail-closed on a present-but-unparsable primary checkpoint: the live set
+    derived upstream is unreliable then, so the orphan branch must reap
+    nothing this pass (red-team probe 2026-10-15 — a corrupt
+    pipeline_state.json silently emptied the live set and made the live
+    generation's own tree orphan-reapable).
+    """
+    primary = results_dir / "pipeline_state.json"
+    if primary.exists() and _load_json(primary) is None:
+        return None
+    references = set(live) | _consumer_checkpoint_versions(results_dir)
+    lifecycle = _slice2b_referenced_versions(results_dir)
+    if lifecycle is None:
+        return None
+    references |= lifecycle
+    return references
+
+
+def _compact_candidate_ledger_step(results_dir: Path) -> dict[str, Any] | None:
+    """Run the sidecar-locked candidates-ledger retention window (T3 wiring).
+
+    ``compact_candidate_ledger`` shipped as library code with no production
+    caller (red-team finding 2026-10-15); the janitor owns its cadence here.
+    It holds the append sidecar lock, rewrites only when there is something
+    to compact, and a no-op run touches nothing on disk.
+    """
+    ledger = results_dir / "candidates.jsonl"
+    if not ledger.is_file():
+        return None
+    try:
+        from candidate_store import compact_candidate_ledger
+    except Exception as exc:  # pragma: no cover - import guard
+        log.warning("candidate ledger compaction unavailable: %s", exc)
+        return None
+    try:
+        return compact_candidate_ledger(ledger)
+    except Exception as exc:
+        log.warning("candidate ledger compaction failed: %s", exc)
+        return None
+
+
+def _append_reaped_tree_receipt(results_dir: Path, row: dict[str, Any]) -> None:
+    """Durably append one orphan-tree receipt row under the sidecar lock."""
+    path = results_dir / REAPED_TREES_LEDGER_NAME
+    payload = json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n"
+    try:
+        from evolution_infra import locked_file
+    except Exception:
+        locked_file = None
+    handle: Any
+    try:
+        if locked_file is not None:
+            with locked_file(path, "a+", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+    except OSError as exc:
+        raise RuntimeError(f"reaped-tree receipt append failed: {exc}") from exc
+
+
 def _reap_generation_trees(
     results_dir: Path,
     *,
@@ -452,6 +615,9 @@ def _reap_generation_trees(
     published: set[int],
     abandoned: list[int],
     keep_abandoned: int,
+    orphan_max_age_sec: float = (
+        DEFAULT_ORPHAN_RESULT_TREE_MAX_AGE_DAYS * 24.0 * 3600.0
+    ),
 ) -> tuple[int, int]:
     freed = 0
     removed = 0
@@ -462,6 +628,8 @@ def _reap_generation_trees(
     except OSError:
         return freed, removed
     abandoned_set = set(abandoned)
+    now = time.time()
+    orphan_references: set[int] | None = None
     for child in children:
         try:
             if not child.is_dir() or child.is_symlink():
@@ -473,7 +641,52 @@ def _reap_generation_trees(
         version = _version_token(child.name)
         if version is None or version in protected:
             continue
-        if version not in abandoned_set:
+        if version in abandoned_set:
+            freed += _rm(child)
+            removed += 1
+            continue
+        # T7a orphan branch: prepared but never published, absent from the
+        # abandon ledger (a crashed generation leaves no receipt at all),
+        # unreferenced by any live surface, and older than the age window.
+        if orphan_max_age_sec <= 0:
+            continue
+        if orphan_references is None:
+            orphan_references = _orphan_reference_versions(results_dir, live)
+            if orphan_references is None:
+                # Unreadable live-reference surface: never guess which tree
+                # is orphaned. Reap nothing this pass.
+                break
+        if version in orphan_references:
+            continue
+        try:
+            stat_result = child.stat()
+            age = now - stat_result.st_mtime
+        except OSError:
+            continue
+        if age < orphan_max_age_sec:
+            continue
+        if _tree_contains_strict_invocations(child):
+            continue
+        # Receipt first: a tree whose receipt cannot be durably written is
+        # kept, never silently deleted.
+        try:
+            _append_reaped_tree_receipt(
+                results_dir,
+                {
+                    "schema_version": 1,
+                    "kind": "orphan_result_tree_reaped",
+                    "reaped_at": now,
+                    "version": version,
+                    "tree": child.name,
+                    "tree_mtime": stat_result.st_mtime,
+                    "age_sec": round(age, 3),
+                    "orphan_max_age_sec": float(orphan_max_age_sec),
+                    "reason": "prepared_never_published_no_live_reference_aged_out",
+                    "bytes_freed": _path_size(child),
+                },
+            )
+        except Exception as exc:
+            log.warning("orphan tree %s kept (receipt failed): %s", child.name, exc)
             continue
         freed += _rm(child)
         removed += 1
@@ -599,6 +812,360 @@ def _rotate_orchestrator_logs(logs_dir: Path | None, keep: int) -> tuple[int, in
     return freed, removed
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_days_seconds(name: str, default_days: float) -> float:
+    return max(0.0, _env_float(name, default_days)) * 24.0 * 3600.0
+
+
+def _cost_receipt_digest(body: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in body.items() if key != "receipt_digest"}
+    raw = json.dumps(
+        unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _write_cost_compaction_receipt(
+    receipts_dir: Path, body: dict[str, Any]
+) -> Path:
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    body["receipt_digest"] = _cost_receipt_digest(body)
+    stamp = time.strftime(
+        "%Y%m%dT%H%M%S", time.gmtime(body.get("created_at") or time.time())
+    )
+    path = receipts_dir / f"{stamp}-{uuid.uuid4().hex[:8]}.json"
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(body, handle, ensure_ascii=False, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    descriptor = os.open(receipts_dir, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return path
+
+
+def _new_cost_summary_bucket(month: str) -> dict[str, Any]:
+    return {
+        "row_count": 0,
+        "cost_usd_sum": 0.0,
+        "cost_known_rows": 0,
+        "cost_unknown_rows": 0,
+        "input_tokens_sum": 0,
+        "output_tokens_sum": 0,
+        "generation_ids": set(),
+        "first_ts": None,
+        "last_ts": None,
+        "kind_counts": {},
+    }
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _merge_cost_summary_into_summary(
+    bucket: dict[str, Any], row: dict[str, Any]
+) -> None:
+    """Additively merge a summary row into a month bucket.
+
+    On a fresh (all-zero) bucket this is an exact seed, so ledger line order
+    — summary row before or after its month's full rows — cannot matter.
+    """
+    bucket["row_count"] += int(row.get("row_count") or 0)
+    bucket["cost_usd_sum"] += _as_float(row.get("cost_usd_sum"))
+    bucket["cost_known_rows"] += int(row.get("cost_known_rows") or 0)
+    bucket["cost_unknown_rows"] += int(row.get("cost_unknown_rows") or 0)
+    bucket["input_tokens_sum"] += int(row.get("input_tokens_sum") or 0)
+    bucket["output_tokens_sum"] += int(row.get("output_tokens_sum") or 0)
+    bucket["generation_ids"] |= {
+        str(item) for item in (row.get("generation_ids") or []) if str(item)
+    }
+    for key, value in dict(row.get("kind_counts") or {}).items():
+        clean = str(key)
+        bucket["kind_counts"][clean] = (
+            int(bucket["kind_counts"].get(clean, 0)) + int(value)
+        )
+    for edge in ("first_ts", "last_ts"):
+        candidate = row.get(edge)
+        try:
+            candidate = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if bucket[edge] is None:
+            bucket[edge] = candidate
+        elif edge == "first_ts":
+            bucket[edge] = min(bucket[edge], candidate)
+        else:
+            bucket[edge] = max(bucket[edge], candidate)
+
+
+def _merge_cost_row_into_summary(
+    bucket: dict[str, Any], row: dict[str, Any]
+) -> None:
+    bucket["row_count"] += 1
+    kind = str(row.get("kind") or "unknown")
+    bucket["kind_counts"][kind] = int(bucket["kind_counts"].get(kind, 0)) + 1
+    cost_known = bool(row.get("cost_known")) and row.get("cost_usd") is not None
+    if cost_known:
+        bucket["cost_known_rows"] += 1
+        bucket["cost_usd_sum"] += _as_float(row.get("cost_usd"))
+    else:
+        bucket["cost_unknown_rows"] += 1
+    for field, key in (("input_tokens", "input_tokens_sum"), ("output_tokens", "output_tokens_sum")):
+        try:
+            bucket[key] += int(row.get(field) or 0)
+        except (TypeError, ValueError):
+            continue
+    generation_id = str(row.get("generation_id") or "").strip()
+    if generation_id:
+        bucket["generation_ids"].add(generation_id)
+    try:
+        ts = float(row.get("ts"))
+    except (TypeError, ValueError):
+        ts = None
+    if ts is not None:
+        bucket["first_ts"] = ts if bucket["first_ts"] is None else min(bucket["first_ts"], ts)
+        bucket["last_ts"] = ts if bucket["last_ts"] is None else max(bucket["last_ts"], ts)
+
+
+def _finalize_cost_summary(month: str, bucket: dict[str, Any], now: float) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "kind": COST_LEDGER_SUMMARY_KIND,
+        "month": month,
+        "row_count": int(bucket["row_count"]),
+        "cost_usd_sum": round(float(bucket["cost_usd_sum"]), 9),
+        "cost_known_rows": int(bucket["cost_known_rows"]),
+        "cost_unknown_rows": int(bucket["cost_unknown_rows"]),
+        "input_tokens_sum": int(bucket["input_tokens_sum"]),
+        "output_tokens_sum": int(bucket["output_tokens_sum"]),
+        "generation_ids": sorted(bucket["generation_ids"]),
+        "first_ts": bucket["first_ts"],
+        "last_ts": bucket["last_ts"],
+        "kind_counts": dict(sorted(bucket["kind_counts"].items())),
+        "compacted_at": now,
+    }
+
+
+def compact_generation_cost_ledger(
+    results_dir: Path,
+    *,
+    now: float | None = None,
+    retention_sec: float | None = None,
+    min_interval_sec: float | None = None,
+) -> dict[str, Any]:
+    """Compact aged rows of ``generation_cost_ledger.jsonl``.
+
+    Full rows younger than the retention window stay byte-verbatim. Older
+    rows become one per-month summary row per month, and a receipt under
+    ``cost_ledger_compaction_receipts/`` records a per-row summary list
+    (line digest plus accounting scalars) so no row silently disappears.
+    The whole read-plan-receipt-rewrite runs under the exact
+    ``_locked_state_sidecar`` exclusive sidecar lock every ledger reader and
+    writer already takes, so it is serialized against
+    ``record_generation_cost`` / ``_read_generation_entries``.
+    """
+    results_dir = Path(results_dir)
+    report: dict[str, Any] = {
+        "ok": True,
+        "bytes_freed": 0,
+        "removed": 0,
+        "skipped": None,
+    }
+    if not _env_flag("POK_COST_LEDGER_COMPACTION_ENABLED", "1"):
+        report["skipped"] = "disabled"
+        return report
+    path = results_dir / COST_LEDGER_NAME
+    try:
+        if not path.is_file() or path.is_symlink():
+            report["skipped"] = "ledger_missing"
+            return report
+    except OSError:
+        report["skipped"] = "ledger_stat_failed"
+        return report
+    now = time.time() if now is None else float(now)
+    if retention_sec is None:
+        retention_sec = _env_days_seconds(
+            "POK_COST_LEDGER_RETENTION_DAYS", DEFAULT_COST_LEDGER_RETENTION_DAYS
+        )
+    if min_interval_sec is None:
+        min_interval_sec = max(
+            0.0,
+            _env_float(
+                "POK_COST_LEDGER_COMPACTION_MIN_INTERVAL_SEC",
+                DEFAULT_COST_LEDGER_COMPACTION_MIN_INTERVAL_SEC,
+            ),
+        )
+    receipts_dir = results_dir / COST_LEDGER_RECEIPTS_DIR_NAME
+    if receipts_dir.is_dir() and min_interval_sec > 0.0:
+        try:
+            newest = max(
+                item.stat().st_mtime
+                for item in receipts_dir.iterdir()
+                if item.is_file() and item.name.endswith(".json")
+            )
+        except (OSError, ValueError):
+            newest = None
+        if newest is not None and (time.time() - newest) < min_interval_sec:
+            report["skipped"] = "interval"
+            return report
+
+    try:
+        from evolution_infra import _locked_state_sidecar, locked_file
+    except Exception as exc:
+        report["ok"] = False
+        report["skipped"] = f"import_failed:{type(exc).__name__}"
+        log.warning("cost ledger compaction unavailable: %s", exc)
+        return report
+
+    cutoff = now - float(retention_sec)
+    try:
+        with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+            raw = path.read_bytes()
+            if not raw:
+                report["skipped"] = "ledger_empty"
+                return report
+            summaries: dict[str, dict[str, Any]] = {}
+            months_touched: dict[str, int] = {}
+            existing_summary_months: set[str] = set()
+            replaced_summary_line_hashes: list[str] = []
+            recent_lines: list[bytes] = []
+            row_summaries: list[dict[str, Any]] = []
+            for raw_line in raw.splitlines(keepends=True):
+                try:
+                    row = json.loads(raw_line)
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                    # Unparsable bytes are never dropped, never compacted.
+                    recent_lines.append(raw_line)
+                    continue
+                if not isinstance(row, dict):
+                    recent_lines.append(raw_line)
+                    continue
+                if row.get("kind") == COST_LEDGER_SUMMARY_KIND:
+                    month = str(row.get("month") or "")
+                    if re.fullmatch(r"\d{4}-\d{2}", month):
+                        existing_summary_months.add(month)
+                        # The summary line itself is derived data; its bytes
+                        # are replaced by the merged re-emission. Record the
+                        # replaced line digest so the receipt keeps a
+                        # byte-level trail of every original ledger line.
+                        replaced_summary_line_hashes.append(
+                            hashlib.sha256(raw_line).hexdigest()
+                        )
+                        _merge_cost_summary_into_summary(
+                            summaries.setdefault(
+                                month, _new_cost_summary_bucket(month)
+                            ),
+                            row,
+                        )
+                        continue
+                    # Malformed summary month: keep the line verbatim
+                    # instead of dropping its accounting.
+                    recent_lines.append(raw_line)
+                    continue
+                try:
+                    ts = float(row.get("ts"))
+                except (TypeError, ValueError):
+                    ts = None
+                if ts is None or ts >= cutoff:
+                    recent_lines.append(raw_line)
+                    continue
+                month = time.strftime("%Y-%m", time.gmtime(ts))
+                bucket = summaries.setdefault(month, _new_cost_summary_bucket(month))
+                _merge_cost_row_into_summary(bucket, row)
+                months_touched[month] = months_touched.get(month, 0) + 1
+                row_summaries.append(
+                    {
+                        "line_sha256": hashlib.sha256(raw_line).hexdigest(),
+                        "entry_id": row.get("entry_id"),
+                        "generation_id": row.get("generation_id"),
+                        "kind": row.get("kind"),
+                        "role": row.get("role"),
+                        "ts": row.get("ts"),
+                        "cost_usd": row.get("cost_usd"),
+                        "cost_known": bool(row.get("cost_known")),
+                        "input_tokens": row.get("input_tokens"),
+                        "output_tokens": row.get("output_tokens"),
+                    }
+                )
+            if not row_summaries:
+                report["skipped"] = "nothing_to_compact"
+                return report
+            new_lines: list[bytes] = []
+            for month in sorted(summaries):
+                summary = _finalize_cost_summary(
+                    month, summaries[month], now
+                )
+                new_lines.append(
+                    json.dumps(summary, sort_keys=True, ensure_ascii=False).encode(
+                        "utf-8"
+                    )
+                    + b"\n"
+                )
+            new_lines.extend(recent_lines)
+            new_bytes = b"".join(new_lines)
+            receipt: dict[str, Any] = {
+                "schema_version": 1,
+                "kind": "cost_ledger_compaction",
+                "created_at": time.time(),
+                "evaluated_at": now,
+                "retention_sec": float(retention_sec),
+                "cutoff": cutoff,
+                "ledger_path": str(path),
+                "ledger_sha256_before": hashlib.sha256(raw).hexdigest(),
+                "ledger_sha256_after": hashlib.sha256(new_bytes).hexdigest(),
+                "bytes_before": len(raw),
+                "bytes_after": len(new_bytes),
+                "compacted_rows": len(row_summaries),
+                "kept_recent_lines": len(recent_lines),
+                "summary_rows_total": len(summaries),
+                "merged_into_existing_summary_months": sorted(
+                    months_touched.keys() & existing_summary_months
+                ),
+                "new_summary_months": sorted(
+                    months_touched.keys() - existing_summary_months
+                ),
+                "replaced_summary_line_hashes": replaced_summary_line_hashes,
+                "months": [
+                    {"month": month, "rows_compacted": count}
+                    for month, count in sorted(months_touched.items())
+                ],
+                "rows": row_summaries,
+            }
+            # Receipt first: a crash between the receipt and the ledger
+            # rewrite can only duplicate receipt accounting, never lose a
+            # row; the rewrite is idempotent on the next pass.
+            receipt_path = _write_cost_compaction_receipt(receipts_dir, receipt)
+            with locked_file(path, "wb") as handle:
+                handle.write(new_bytes)
+    except OSError as exc:
+        report["ok"] = False
+        report["skipped"] = f"io_error:{type(exc).__name__}:{exc}"
+        log.warning("cost ledger compaction failed: %s", exc)
+        return report
+    report["bytes_freed"] = max(0, len(raw) - len(new_bytes))
+    report["removed"] = len(row_summaries)
+    report["compacted_rows"] = len(row_summaries)
+    report["kept_recent_lines"] = len(recent_lines)
+    report["bytes_before"] = len(raw)
+    report["bytes_after"] = len(new_bytes)
+    report["receipt_path"] = str(receipt_path)
+    return report
+
+
 def run_disk_hygiene(
     results_dir: Path,
     *,
@@ -610,6 +1177,7 @@ def run_disk_hygiene(
     keep_findings_lines: int = DEFAULT_KEEP_FINDINGS_LINES,
     keep_metrics_lines: int = DEFAULT_KEEP_METRICS_LINES,
     keep_orchestrator_logs: int = DEFAULT_KEEP_ORCHESTRATOR_LOGS,
+    orphan_result_tree_max_age_sec: float | None = None,
 ) -> dict[str, Any]:
     """Reap non-authority runtime artifacts. Safe to call concurrently with LLM."""
     results_dir = Path(results_dir)
@@ -649,6 +1217,11 @@ def run_disk_hygiene(
     abandoned = abandoned_versions(results_dir)
     report["live_versions"] = sorted(live)
     report["published_high_water"] = max(published) if published else 0
+    if orphan_result_tree_max_age_sec is None:
+        orphan_result_tree_max_age_sec = _env_days_seconds(
+            "POK_ORPHAN_RESULT_TREE_MAX_AGE_DAYS",
+            DEFAULT_ORPHAN_RESULT_TREE_MAX_AGE_DAYS,
+        )
 
     steps = (
         _prune_saturator(
@@ -666,6 +1239,7 @@ def run_disk_hygiene(
             published=published,
             abandoned=abandoned,
             keep_abandoned=keep_abandoned_result_dirs,
+            orphan_max_age_sec=orphan_result_tree_max_age_sec,
         ),
         _reap_crossover_workspaces(
             results_dir,
@@ -680,11 +1254,48 @@ def run_disk_hygiene(
         report["bytes_freed"] += int(freed)
         report["removed"] += int(removed)
 
+    compaction = _compact_candidate_ledger_step(results_dir)
+    if compaction and compaction.get("receipt_persisted"):
+        report["candidate_ledger_compaction"] = compaction
+
     metrics = results_dir / "llm_call_metrics.jsonl"
     trimmed = _trim_jsonl(metrics, keep_metrics_lines)
     if trimmed:
         report["bytes_freed"] += trimmed
         report["removed"] += 1
+
+    # T7b: bounded retention for the generation cost ledger (recent rows
+    # verbatim, aged rows compacted to per-month summaries + per-row
+    # receipts, all under the ledger sidecar lock). Failures never break
+    # the janitor loop.
+    try:
+        cost_report = compact_generation_cost_ledger(results_dir)
+        report["cost_ledger_compaction"] = cost_report
+        if cost_report.get("ok"):
+            report["bytes_freed"] += int(cost_report.get("bytes_freed") or 0)
+            report["removed"] += int(cost_report.get("removed") or 0)
+    except Exception as exc:
+        log.warning("cost ledger compaction failed: %s", exc)
+
+    # Conservative retention window for the workflow journal store
+    # (events.sqlite3 + content-addressed artifacts).  The step plans and
+    # deletes only terminal, retention-aged, unreferenced runs and writes its
+    # own receipt; failures never break the janitor loop.
+    if _env_flag("POK_WORKFLOW_JOURNAL_HYGIENE_ENABLED", "1"):
+        try:
+            from workflow_journal_hygiene import (
+                run_workflow_journal_hygiene,
+            )
+
+            journal_report = run_workflow_journal_hygiene(results_dir)
+            report["workflow_journal"] = journal_report
+            if journal_report.get("ok"):
+                report["bytes_freed"] += int(
+                    journal_report.get("bytes_freed") or 0
+                )
+                report["removed"] += int(journal_report.get("removed") or 0)
+        except Exception as exc:
+            log.warning("workflow journal hygiene failed: %s", exc)
 
     return report
 

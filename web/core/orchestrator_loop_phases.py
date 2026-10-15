@@ -313,6 +313,29 @@ async def _loop_phase_a_setup_body(ui, shutdown_mgr, no_daemon, daemon_workers,
         daemon_workers: Number of parallel workers for the daemon subprocess.
         daemon_pairs: Complete 70-hand native matches per scheduled bot pairing.
     """
+    # Retired slice2b lifecycle-store reclamation (T5, 2026-10-15): with
+    # ``POK_SLICE2B_ENABLED=0`` the persisted one-ahead lifecycle store
+    # (``results/workflow/slice2b_lifecycle.sqlite3``, ~126MB) stopped
+    # receiving writes on 2026-08-15.  At every pipeline boot, when the
+    # feature is disabled and the store has been idle beyond the threshold,
+    # the controlled archive path MOVES it (never truncates) into
+    # ``results/archive/`` under its original name plus an archive timestamp
+    # and leaves a content-bound receipt at the original location;
+    # re-enabling the feature never auto-restores it (manual operator
+    # decision, recorded by the receipt).  Janitorial and best-effort: runs
+    # before the epoch guard so a dead store is reclaimed regardless of
+    # pipeline state, and a filesystem failure can never block boot.  The
+    # lazy import keeps the dormant slice modules inert at import time (the
+    # sanctioned-seam contract in
+    # test_producer_consumer_workflow_store.py).
+    try:
+        from producer_consumer_slice2b_activation import (
+            maybe_archive_retired_slice2b_lifecycle,
+        )
+
+        maybe_archive_retired_slice2b_lifecycle()
+    except Exception:
+        pass
     try:
         from epoch_authority import require_policy_epoch_initialized
 

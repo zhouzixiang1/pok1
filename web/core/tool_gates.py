@@ -234,6 +234,37 @@ _finalize_strict_blueprint_quality_rejection = tool_gates_internals._finalize_st
 
 _quality_source_dir = tool_gates_internals._quality_source_dir  # delegate: extracted to tool_gates_internals.py
 
+# Event-ledger payload dedup (T1, 2026-10-15).  The quality-event payload
+# carried the full ``scorecard`` — whose gate artifacts already embed the
+# national capability contract, architecture transition, national acceptance
+# report, and smoke report — PLUS the same payloads expanded at the top of
+# ``quality_detail`` (and ``smoke``/``native_tcp_smoke`` are byte-identical
+# in native TCP mode, both sourced from ``smoke_payload``).  Measured on the
+# live ledger this near double-write made every pipeline.quality_passed /
+# quality_failed row ~1.7 MB.  New event rows keep ONE authoritative copy of
+# each payload: ``scorecard`` (gate artifacts) and the top-level ``smoke``
+# field (matching the scorecard gate name and its smoke_ok/smoke_errors
+# siblings); the keys below are dropped from the EVENT payload only.  The
+# checkpoint gate payload (``_record_gate`` via ``_gate_payload``), the
+# candidate-ledger ``quality_finished`` row, and every already-persisted
+# event keep the full unslimmed shape — old events are never rewritten.
+_QUALITY_EVENT_DEDUPED_FIELDS = (
+    "national_architecture_transition",
+    "national_acceptance",
+    "national_capability_contract",
+    "native_tcp_smoke",
+)
+
+
+def _quality_event_payload(data: dict) -> dict:
+    """Copy of ``data`` minus the payloads duplicated by scorecard artifacts."""
+
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in _QUALITY_EVENT_DEDUPED_FIELDS
+    }
+
 
 @tool("run_quality_gates", "Run all quality gates on a bot: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, and reachability.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
@@ -1810,7 +1841,12 @@ async def run_quality_gates(args):
         quality_event,
         quality_severity,
         f"Quality gates {quality_verb} for v{v}: {', '.join(failed_gates_detail) or 'all checks passed'}",
-        {"version": v, "pass_rate": round(decision_rate, 2), **quality_detail},
+        # Event rows are deduped against the scorecard artifacts
+        # (see _QUALITY_EVENT_DEDUPED_FIELDS); the checkpoint gate payload
+        # below still receives the full quality_detail.
+        _quality_event_payload(
+            {"version": v, "pass_rate": round(decision_rate, 2), **quality_detail}
+        ),
     )
 
     _ckpt = _matching_checkpoint(v, source_v) if source_v is not None else _matching_checkpoint(v)

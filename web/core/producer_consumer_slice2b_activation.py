@@ -777,6 +777,18 @@ class Slice2bActivation:
             "terminal": [],
             "rejected": [],
         }
+        # RETIRED-STORE TOLERANCE (T5, 2026-10-15): while slice2b is disabled
+        # the dead lifecycle store may have been archived away (moved into
+        # ``results/archive/`` with a receipt -- see
+        # ``maybe_archive_retired_slice2b_lifecycle``).  A missing store means
+        # there is nothing to recover from: boot recovery must neither attempt
+        # recovery nor raise -- it returns the empty result and lets a
+        # re-enabled epoch start from a fresh store.
+        try:
+            if not Path(self.ledger.db_path).is_file():
+                return recovered
+        except Exception:
+            pass
         try:
             non_terminal = self.ledger.non_terminal_candidates()
         except Exception:
@@ -1083,6 +1095,78 @@ def activation_registry(action: str, *, adapter: ProducerConsumerWorkflowAdapter
         _ACTIVATION = Slice2bActivation(adapter=adapter)
         return _ACTIVATION
     raise ValueError(f"slice2b_activation_unknown_action:{action}")
+
+
+# ---------------------------------------------------------------------------
+# Retired-store archive hook (assembly point; see producer_consumer_slice2b)
+# ---------------------------------------------------------------------------
+
+
+def maybe_archive_retired_slice2b_lifecycle(
+    *,
+    db_path: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+    idle_threshold_seconds: float | None = None,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Archive the retired slice2b lifecycle store when it is provably dead.
+
+    Thin assembly wrapper over
+    :func:`producer_consumer_slice2b.archive_idle_slice2b_lifecycle`: resolves
+    the live feature flag (``slice2b_active()``) and the production paths
+    (``RESULTS_DIR/workflow/slice2b_lifecycle.sqlite3`` -> ``ARCHIVE_DIR``),
+    then performs the controlled move with its content-bound receipt.  When
+    the feature is ENABLED the underlying function refuses to archive; when
+    the store is missing or not idle enough this is a silent no-op.
+
+    Wired at the pipeline boot surface (``orchestrator_loop_phases`` phase-A
+    setup, the sanctioned slice2b assembly seam) so the dead 126MB store is
+    reclaimed on the next service restart without any operator action.
+    Best-effort by contract: the caller wraps it so a filesystem failure can
+    never block boot.
+    """
+
+    if db_path is None or archive_dir is None:
+        try:
+            from evolution_infra import ARCHIVE_DIR, RESULTS_DIR
+        except Exception:
+            return None
+        if db_path is None:
+            db_path = Path(RESULTS_DIR) / "workflow" / "slice2b_lifecycle.sqlite3"
+        if archive_dir is None:
+            archive_dir = Path(ARCHIVE_DIR)
+    from producer_consumer_slice2b import archive_idle_slice2b_lifecycle
+
+    receipt = archive_idle_slice2b_lifecycle(
+        enabled=slice2b_active(),
+        db_path=db_path,
+        archive_dir=archive_dir,
+        idle_threshold_seconds=idle_threshold_seconds,
+        now=now,
+    )
+    if receipt is not None:
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.slice2b_lifecycle_archived",
+                "info",
+                "Archived idle slice2b lifecycle store "
+                f"({receipt['source_file_name']}, idle "
+                f"{receipt['idle_seconds_observed']}s) into "
+                f"{receipt['archive_dir']}; restore is a manual decision",
+                {
+                    "source_dir": receipt.get("source_dir"),
+                    "archive_dir": receipt.get("archive_dir"),
+                    "idle_seconds_observed": receipt.get("idle_seconds_observed"),
+                    "idle_threshold_seconds": receipt.get("idle_threshold_seconds"),
+                    "archived_files": receipt.get("archived_files"),
+                    "receipt_digest": receipt.get("receipt_digest"),
+                },
+            )
+        except Exception:
+            pass
+    return receipt
 
 
 def canonical_gate_runner_factory(next_v, source_v):
@@ -1458,6 +1542,7 @@ __all__ = [
     "activation_registry",
     "build_snapshot_from_checkpoint",
     "canonical_gate_runner_factory",
+    "maybe_archive_retired_slice2b_lifecycle",
     "slice2b_active",
     "stage_is_workers_done_seam",
     "write_activation_migration_receipt",

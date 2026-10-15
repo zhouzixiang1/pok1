@@ -3,13 +3,28 @@
 JSONL remains the append-only audit log. SQLite is the queryable entity layer
 used by selection, UI, and postmortem analysis. The public append/read helpers
 stay backward compatible with the original JSONL-only implementation.
+
+Bounded retention (quality window): ``compact_candidate_ledger`` keeps full
+rows for the most recent ``keep_versions`` (default 50) distinct versions and
+compacts older ``quality_finished`` rows — the ~1.8 MB-per-row byte mass —
+into sha256-referenced summary rows. Every compaction step (JSONL rewrite,
+SQLite event DELETE + VACUUM, receipt append) runs while holding the exact
+``_locked_state_sidecar`` exclusive lock ``append_locked_jsonl`` uses, so a
+concurrent appender can never interleave with the read-rewrite window (the
+lockless read→tmp→os.replace trim in ``disk_hygiene._trim_jsonl`` is
+forbidden here precisely because it can drop lines raced by an append).
 """
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
+import os
 import sqlite3
+import stat
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +46,21 @@ CANDIDATE_DB_FILE = _IMPORT_RESULTS_DIR / "candidates.sqlite3"
 
 
 SCHEMA_VERSION = 2
+
+
+# --- Bounded retention window (quality rows) -------------------------------
+#
+# ``candidates.jsonl`` grew to ~490 MB with ``candidates.sqlite3`` at ~567 MB
+# because every ``quality_finished`` event embeds the full gate/scorecard
+# payload (~1.8 MB per row). The retention window keeps the most recent
+# ``DEFAULT_KEEP_VERSIONS`` distinct versions byte-exact and compacts older
+# ``quality_finished`` rows into summary rows that reference the original row
+# by sha256. Compaction shares the append sidecar lock and writes a receipt.
+
+DEFAULT_KEEP_VERSIONS = 50
+QUALITY_FINISHED_EVENT = "quality_finished"
+QUALITY_SUMMARY_RETENTION = "quality_finished_summary"
+COMPACTION_RECEIPTS_FILE = "candidates_compaction_receipt.jsonl"
 
 
 _CANDIDATE_COLUMNS: tuple[str, ...] = (
@@ -757,3 +787,337 @@ def count_candidate_children(parent_id: str, *, path: Path | None = None) -> int
         if parent_id in row.get("parent_ids", []):
             count += 1
     return count
+
+
+def _retention_version_floor(
+    versions: set[int],
+    keep_versions: int,
+) -> int | None:
+    """Return the oldest version that stays inside the full-row window.
+
+    ``None`` means the window covers every version present (fewer distinct
+    versions than ``keep_versions``), so nothing is eligible for compaction.
+    """
+
+    if keep_versions <= 0:
+        return None
+    ordered = sorted(versions, reverse=True)
+    if len(ordered) < keep_versions:
+        return None
+    return ordered[keep_versions - 1]
+
+
+def _quality_finished_summary_row(
+    row: dict[str, Any],
+    original_line: bytes,
+) -> dict[str, Any]:
+    """Build the compacted replacement for one old quality_finished row.
+
+    Keeps the identity/conclusion scalars plus a sha256 reference to the exact
+    original JSON bytes, so the summary stays auditable against any retained
+    copy of the full row (e.g. cycle archives) without carrying its bulk.
+    """
+
+    original_json = original_line.rstrip(b"\r\n")
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    scorecard = row.get("scorecard") if isinstance(row.get("scorecard"), dict) else {}
+    quality_summary: dict[str, Any] = {}
+    if isinstance(metrics.get("all_passed"), bool):
+        quality_summary["all_passed"] = metrics["all_passed"]
+    decision_pass_rate = metrics.get("decision_pass_rate")
+    if isinstance(decision_pass_rate, (int, float)) and not isinstance(
+        decision_pass_rate, bool
+    ):
+        quality_summary["decision_pass_rate"] = decision_pass_rate
+    if isinstance(scorecard.get("passed"), bool):
+        quality_summary["passed"] = scorecard["passed"]
+    return {
+        "candidate_id": row.get("candidate_id"),
+        "event_type": QUALITY_FINISHED_EVENT,
+        "event_source": row.get("event_source", "runtime"),
+        "version": row.get("version"),
+        "source_v": row.get("source_v"),
+        "timestamp": row.get("timestamp"),
+        "gate": row.get("gate", ""),
+        "run_id": row.get("run_id", ""),
+        "failure_class": row.get("failure_class", ""),
+        "quality_summary": quality_summary,
+        "ledger_compaction": {
+            "retention": QUALITY_SUMMARY_RETENTION,
+            "original_sha256": hashlib.sha256(original_json).hexdigest(),
+            "original_bytes": len(original_json),
+        },
+    }
+
+
+def _parse_ledger_line(line: bytes) -> dict[str, Any] | None:
+    """Parse one JSONL row, returning None for anything not a JSON object."""
+
+    try:
+        item = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return item if isinstance(item, dict) else None
+
+
+def _line_version(item: dict[str, Any] | None) -> int | None:
+    if item is None:
+        return None
+    version = item.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return None
+    return version
+
+
+def _is_compaction_candidate(item: dict[str, Any] | None, floor: int) -> bool:
+    return (
+        item is not None
+        and item.get("event_type") == QUALITY_FINISHED_EVENT
+        and "ledger_compaction" not in item
+        and _line_version(item) is not None
+        and _line_version(item) < floor
+    )
+
+
+def compact_candidate_ledger(
+    path: Path | None = None,
+    *,
+    keep_versions: int = DEFAULT_KEEP_VERSIONS,
+) -> dict[str, Any]:
+    """Bound the candidates ledger under the append sidecar lock.
+
+    Full rows for the most recent ``keep_versions`` distinct versions are kept
+    byte-exact; older ``quality_finished`` rows are rewritten in place as
+    sha256-referenced summary rows; the paired SQLite ``candidate_events``
+    rows are DELETEd and the database is VACUUMed to reclaim the bytes. The
+    whole transaction — JSONL scan, rewrite, SQLite DELETE/VACUUM, receipt
+    append — holds the exact ``_locked_state_sidecar`` exclusive lock that
+    ``append_locked_jsonl`` acquires (evolution_infra_state_io.py), so a
+    concurrent appender (same process via the thread lock, another process
+    via flock) serializes fully with the rewrite and no line can be dropped.
+
+    This is deliberately NOT the lockless ``read → tmp → os.replace`` shape of
+    ``disk_hygiene._trim_jsonl``: without the sidecar lock an append landing
+    between the read and the replace is silently lost. The rewrite itself is
+    streamed through a private temp inode (the ``_atomic_publish_state_text``
+    protocol: O_EXCL temp, fsync, inode revalidation, ``os.replace``,
+    directory fsync) so a ~490 MB ledger never has to be materialized twice
+    in memory on this memory-capped VM.
+
+    Returns the receipt dict (also appended to
+    ``candidates_compaction_receipt.jsonl`` beside the ledger whenever the
+    run actually compacted or deleted something). A no-op run leaves both
+    files untouched and returns ``receipt_persisted=False``.
+    """
+
+    events_path = _events_path(path)
+    receipt: dict[str, Any] = {
+        "receipt_type": "candidates_ledger_compaction",
+        "events_file": events_path.name,
+        "compacted_at": time.time(),
+        "keep_versions": keep_versions,
+        "version_floor": None,
+        "rows_total": 0,
+        "rows_compacted": 0,
+        "bytes_before": 0,
+        "bytes_after": 0,
+        "bytes_reclaimed": 0,
+        "sqlite_events_deleted": 0,
+        "sqlite_vacuumed": False,
+        "sqlite_bytes_before": 0,
+        "sqlite_bytes_after": 0,
+        "sqlite_bytes_reclaimed": 0,
+        "summaries": [],
+        "receipt_persisted": False,
+    }
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    # Re-entrant exclusive lease on the append sidecar: the receipt append and
+    # every other nested helper below re-enter (or bypass via raw os.open,
+    # mirroring append_locked_jsonl's own in-section style) this same lock
+    # instead of releasing it between the scan and the rewrite.
+    with evolution_infra._locked_state_sidecar(
+        events_path, lock_type=fcntl.LOCK_EX
+    ):
+        if not events_path.exists():
+            return receipt
+        existing = os.lstat(events_path)
+        if (
+            not stat.S_ISREG(existing.st_mode)
+            or stat.S_ISLNK(existing.st_mode)
+            or existing.st_nlink != 1
+        ):
+            raise OSError("candidates ledger compaction target is unsafe")
+        receipt["bytes_before"] = int(existing.st_size)
+        read_fd = os.open(
+            events_path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            opened = os.fstat(read_fd)
+            live = os.lstat(events_path)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or live.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino)
+            ):
+                raise OSError("candidates ledger identity changed before scan")
+            with os.fdopen(read_fd, "rb") as read_handle:
+                read_fd = None
+                # Pass 1 (streamed): distinct versions only — the window floor
+                # must be known before any row can be classified.
+                rows_total = 0
+                versions: set[int] = set()
+                for line in read_handle:
+                    if not line.strip():
+                        continue
+                    rows_total += 1
+                    version = _line_version(_parse_ledger_line(line))
+                    if version is not None:
+                        versions.add(version)
+                floor = _retention_version_floor(versions, keep_versions)
+                receipt["rows_total"] = rows_total
+                receipt["version_floor"] = floor
+
+                summaries: list[dict[str, Any]] = []
+                if floor is not None:
+                    # Pass 2 (streamed): rewrite into a private temp inode,
+                    # copying kept lines verbatim and substituting summaries.
+                    read_handle.seek(0)
+                    temp = events_path.with_name(
+                        f".{events_path.name}.{uuid.uuid4().hex}.tmp"
+                    )
+                    temp_flags = (
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                    temp_fd = os.open(temp, temp_flags, 0o600)
+                    bytes_after = 0
+                    try:
+                        with os.fdopen(temp_fd, "wb") as out:
+                            temp_fd = None
+                            for line in read_handle:
+                                item = _parse_ledger_line(line)
+                                if _is_compaction_candidate(item, floor):
+                                    summary_row = _quality_finished_summary_row(
+                                        item, line
+                                    )
+                                    chunk = (
+                                        _json_dumps(summary_row) + "\n"
+                                    ).encode("utf-8")
+                                    out.write(chunk)
+                                    bytes_after += len(chunk)
+                                    compaction = summary_row["ledger_compaction"]
+                                    summaries.append(
+                                        {
+                                            "candidate_id": summary_row[
+                                                "candidate_id"
+                                            ],
+                                            "version": summary_row["version"],
+                                            "timestamp": summary_row["timestamp"],
+                                            "original_sha256": compaction[
+                                                "original_sha256"
+                                            ],
+                                            "original_bytes": compaction[
+                                                "original_bytes"
+                                            ],
+                                        }
+                                    )
+                                else:
+                                    out.write(line)
+                                    bytes_after += len(line)
+                            out.flush()
+                            os.fsync(out.fileno())
+                            temp_identity = os.fstat(out.fileno())
+                        # Fail closed if a writer that ignored the sidecar
+                        # changed the destination while the temp was written.
+                        current = os.lstat(events_path)
+                        if (
+                            not stat.S_ISREG(current.st_mode)
+                            or stat.S_ISLNK(current.st_mode)
+                            or current.st_nlink != 1
+                            or (current.st_dev, current.st_ino)
+                            != (existing.st_dev, existing.st_ino)
+                        ):
+                            raise OSError(
+                                "candidates ledger changed during compaction"
+                            )
+                        if summaries:
+                            os.replace(temp, events_path)
+                            published = os.lstat(events_path)
+                            if (
+                                not stat.S_ISREG(published.st_mode)
+                                or stat.S_ISLNK(published.st_mode)
+                                or published.st_nlink != 1
+                                or (published.st_dev, published.st_ino)
+                                != (
+                                    temp_identity.st_dev,
+                                    temp_identity.st_ino,
+                                )
+                                or published.st_size != temp_identity.st_size
+                            ):
+                                raise OSError(
+                                    "candidates ledger compaction publication"
+                                    " did not retain the temporary inode"
+                                )
+                            evolution_infra._fsync_directory(events_path.parent)
+                    finally:
+                        if temp_fd is not None:
+                            os.close(temp_fd)
+                        try:
+                            temp.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    receipt["bytes_after"] = bytes_after
+                else:
+                    receipt["bytes_after"] = receipt["bytes_before"]
+                receipt["rows_compacted"] = len(summaries)
+                receipt["bytes_reclaimed"] = max(
+                    0, receipt["bytes_before"] - receipt["bytes_after"]
+                )
+                receipt["summaries"] = summaries
+        finally:
+            if read_fd is not None:
+                os.close(read_fd)
+
+        db_path = _db_path_for_events(events_path)
+        if floor is not None and db_path.exists():
+            try:
+                receipt["sqlite_bytes_before"] = int(db_path.stat().st_size)
+            except OSError:
+                receipt["sqlite_bytes_before"] = 0
+            with _connect(events_path) as conn:
+                cursor = conn.execute(
+                    "DELETE FROM candidate_events "
+                    "WHERE event_type = ? AND version IS NOT NULL AND version < ?",
+                    (QUALITY_FINISHED_EVENT, floor),
+                )
+                receipt["sqlite_events_deleted"] = max(0, cursor.rowcount or 0)
+                conn.commit()
+                try:
+                    conn.execute("VACUUM")
+                    receipt["sqlite_vacuumed"] = True
+                except sqlite3.Error:
+                    receipt["sqlite_vacuumed"] = False
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:
+                    pass
+            try:
+                receipt["sqlite_bytes_after"] = int(db_path.stat().st_size)
+            except OSError:
+                receipt["sqlite_bytes_after"] = receipt["sqlite_bytes_before"]
+            receipt["sqlite_bytes_reclaimed"] = max(
+                0, receipt["sqlite_bytes_before"] - receipt["sqlite_bytes_after"]
+            )
+
+        if receipt["rows_compacted"] or receipt["sqlite_events_deleted"]:
+            persisted = {**receipt, "receipt_persisted": True}
+            append_locked_jsonl(
+                events_path.parent / COMPACTION_RECEIPTS_FILE, persisted
+            )
+            receipt["receipt_persisted"] = True
+    return receipt
