@@ -1999,7 +1999,6 @@ from evolution_infra_archive_rotation import (  # noqa: F401, E402
     _ROTATION_SET_PLAN_KEYS,
     _ROTATION_SOURCE_SNAPSHOT_KEYS,
     _ROTATION_SUBJECT_KEYS,
-    _ROTATION_BATCH_MAX_BYTES,
 )
 
 
