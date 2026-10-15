@@ -248,3 +248,107 @@ def test_stage_contract_order_and_stage_record():
     assert next_stage_name("quality") == "review"
     record = StageRunRecord(candidate_id=_candidate_id(250, 249), stage="quality", status="passed")
     assert record.candidate_id == _candidate_id(250, 249)
+
+
+def _read_event_payload(ledger):
+    db = ledger.with_suffix(".sqlite3")
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT payload_json FROM candidate_events").fetchone()
+        return json.loads(row["payload_json"])
+
+
+def _read_entity_scorecard(ledger):
+    db = ledger.with_suffix(".sqlite3")
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT latest_scorecard_json FROM candidates").fetchone()
+        return json.loads(row["latest_scorecard_json"])
+
+
+def test_candidate_ledger_dedupes_gate_results_equal_to_scorecard_gates(tmp_path):
+    """Lossless bounded-retention dedupe for the constructive double write.
+
+    Production callers pass ``gate_results=scorecard.gates`` (tool_gates.py /
+    tool_eval.py), so each row persisted the same gate list twice. When both
+    copies are structurally equal, the persisted entry keeps one canonical
+    copy inside ``scorecard`` and an empty ``gate_results``.
+    """
+    ledger = tmp_path / "candidates.jsonl"
+
+    card = ScoreCard(name="quality")
+    card.add(GateResult.from_bool("compile", True))
+    card.add(GateResult.from_bool("runtime_probe", False, failures=["probe miss"]))
+
+    entry = append_candidate_event(
+        "quality_finished",
+        version=260,
+        source_v=259,
+        gate="quality",
+        scorecard=card,
+        gate_results=card.gates,
+        path=ledger,
+    )
+
+    canonical_gates = [gate.model_dump() for gate in card.gates]
+    assert entry["gate_results"] == []
+    assert entry["scorecard"]["gates"] == canonical_gates
+
+    # JSONL ledger row carries the deduplicated payload.
+    disk_entry = json.loads(ledger.read_text(encoding="utf-8").strip())
+    assert disk_entry["gate_results"] == []
+    assert disk_entry["scorecard"]["gates"] == canonical_gates
+
+    # SQLite event payload mirrors the JSONL row.
+    payload = _read_event_payload(ledger)
+    assert payload["gate_results"] == []
+    assert payload["scorecard"]["gates"] == canonical_gates
+
+    # The candidates entity column still projects the full record.
+    assert _read_entity_scorecard(ledger)["gates"] == canonical_gates
+
+
+def test_candidate_ledger_keeps_divergent_gate_results_verbatim(tmp_path):
+    ledger = tmp_path / "candidates.jsonl"
+
+    card = ScoreCard(name="quality")
+    card.add(GateResult.from_bool("compile", True))
+    divergent_gate = GateResult.from_bool("critic_advisory", False, failures=["low score"])
+
+    entry = append_candidate_event(
+        "quality_finished",
+        version=261,
+        source_v=260,
+        gate="quality",
+        scorecard=card,
+        gate_results=[divergent_gate],
+        path=ledger,
+    )
+
+    assert entry["gate_results"] == [divergent_gate.model_dump()]
+    assert entry["scorecard"]["gates"] == [gate.model_dump() for gate in card.gates]
+
+    disk_entry = json.loads(ledger.read_text(encoding="utf-8").strip())
+    assert disk_entry["gate_results"] == [divergent_gate.model_dump()]
+
+    payload = _read_event_payload(ledger)
+    assert payload["gate_results"] == [divergent_gate.model_dump()]
+
+
+def test_candidate_ledger_keeps_gate_results_without_scorecard(tmp_path):
+    ledger = tmp_path / "candidates.jsonl"
+
+    gate = GateResult.from_bool("precommit_eval", True)
+    entry = append_candidate_event(
+        "precommit_finished",
+        version=262,
+        source_v=261,
+        gate="precommit_eval",
+        gate_results=[gate],
+        path=ledger,
+    )
+
+    assert entry["gate_results"] == [gate.model_dump()]
+    assert entry["scorecard"] == {}
+    payload = _read_event_payload(ledger)
+    assert payload["gate_results"] == [gate.model_dump()]

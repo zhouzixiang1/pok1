@@ -419,8 +419,20 @@ def _infer_latest_status(record: CandidateRecord) -> str:
     return ""
 
 
-def _upsert_sqlite_record(record: CandidateRecord, *, path: Path | None = None) -> None:
-    entry = record.model_dump()
+def _upsert_sqlite_record(
+    record: CandidateRecord,
+    *,
+    path: Path | None = None,
+    persisted_entry: dict[str, Any] | None = None,
+) -> None:
+    """Upsert the entity row and append the event row.
+
+    ``persisted_entry`` (optional) is the payload already written to the JSONL
+    ledger. When supplied it backs only ``candidate_events.payload_json``; the
+    ``candidates`` entity columns (``latest_scorecard_json`` etc.) always
+    project from the full ``record``.
+    """
+    entry = persisted_entry if persisted_entry is not None else record.model_dump()
     with _connect(path) as conn:
         now = float(record.timestamp)
         existing = conn.execute(
@@ -605,8 +617,16 @@ def append_candidate_event(
     events_path = _events_path(path)
     events_path.parent.mkdir(parents=True, exist_ok=True)
     entry = record.model_dump()
+    if entry["gate_results"] and entry["scorecard"].get("gates") == entry["gate_results"]:
+        # Lossless bounded-retention dedupe: callers constructively pass
+        # ``gate_results=scorecard.gates`` (tool_gates/tool_eval), storing the
+        # same gate list twice per ledger row. When both copies are
+        # structurally equal, persist an empty ``gate_results`` and keep the
+        # canonical copy inside ``scorecard`` — no bytes are lost. Divergent
+        # ``gate_results`` are always persisted verbatim.
+        entry["gate_results"] = []
     append_locked_jsonl(events_path, entry)
-    _upsert_sqlite_record(record, path=events_path)
+    _upsert_sqlite_record(record, path=events_path, persisted_entry=entry)
     return entry
 
 
