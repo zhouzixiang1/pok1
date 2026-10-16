@@ -92,6 +92,63 @@ PRECOMMIT_DEFAULT_N_GAMES = 12
 PRECOMMIT_MIN_N_GAMES = 4
 PRECOMMIT_MAX_N_GAMES = 16
 
+# Pool-ratchet admission-leg sample depth (2026-10-16 calibration).  The
+# pool gate's bare-majority threshold at the historical 12-leg admitted at
+# W>=7/12; deepening ONLY the pool-weakest leg to 24 with the derived
+# threshold (see _pool_gate_max_score_for_matches) moves the boundary to
+# W>=14/24 (parity false-admission 0.2706).  The parent and v1 legs keep
+# PRECOMMIT_DEFAULT_N_GAMES — the parent gate semantics are unchanged.
+# Read ONCE at the plan-freeze moment and frozen into the plan (per-opponent
+# ``matches`` + pool-gate ``max_score``); a live env flip never re-decides an
+# in-flight generation.
+PRECOMMIT_POOL_WEAKEST_N_GAMES_ENV = "POK_PRECOMMIT_POOL_WEAKEST_N_GAMES"
+PRECOMMIT_POOL_WEAKEST_N_GAMES = 24
+# The floor is the pool gate's own minimum sample depth
+# (pool_ratchet_gate.POOL_GATE_MIN_SAMPLES = 6): below it the gate's blocker
+# branch never engages and a 0W-nL pool leg would pass silently (red-team
+# 2026-10-16 config hole). The plan-wide PRECOMMIT_MAX_N_GAMES=16 ceiling
+# deliberately does NOT bound this leg — the pool gate carries its own cost
+# ceiling above.
+PRECOMMIT_POOL_WEAKEST_MIN_N_GAMES = 6
+PRECOMMIT_POOL_WEAKEST_MAX_N_GAMES = 48
+
+
+def precommit_pool_weakest_n_games() -> int:
+    """Resolve the pool-weakest admission-leg match count (freeze moment)."""
+
+    raw = str(os.environ.get(PRECOMMIT_POOL_WEAKEST_N_GAMES_ENV) or "").strip()
+    if not raw:
+        return PRECOMMIT_POOL_WEAKEST_N_GAMES
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not (
+        PRECOMMIT_POOL_WEAKEST_MIN_N_GAMES
+        <= value
+        <= PRECOMMIT_POOL_WEAKEST_MAX_N_GAMES
+    ):
+        raise ValueError(
+            f"pool_weakest_n_games_invalid:{raw}:expected integer in "
+            f"[{PRECOMMIT_POOL_WEAKEST_MIN_N_GAMES}, "
+            f"{PRECOMMIT_POOL_WEAKEST_MAX_N_GAMES}]"
+        )
+    return value
+
+
+def _pool_gate_max_score_for_matches(matches: int) -> float:
+    """Derive the pool-leg score threshold from its frozen sample count.
+
+    Pass requires a primary match score STRICTLY greater than
+    ``(n//2 + 1) / n`` over n complete matches, i.e. at least
+    ``n//2 + 2`` decisive wins (W>=14 at n=24; parity false-admission
+    P(W>=14 | p=0.5, n=24) = 0.2706).  An exact score at the threshold
+    (13W-0D-11L at n=24) keeps the existing exact-tie net-chip CI rescue.
+    """
+
+    n = max(2, int(matches))
+    return (n // 2 + 1) / n
+
 
 def set_precommit_shutdown(token: threading.Event | None = None):
     """Permanently cancel every precommit holding the current attempt token.
@@ -779,14 +836,41 @@ def _build_pool_gate_spec(opponents, *, first_strict: bool) -> tuple[dict | None
     )
     if not gate_label:
         return None, None
-    from pool_ratchet_gate import build_pool_gate_settings
+    from pool_ratchet_gate import (
+        POOL_GATE_MAX_SCORE_ENV,
+        build_pool_gate_settings,
+    )
 
     try:
-        return build_pool_gate_settings(gate_label), None
+        spec = build_pool_gate_settings(gate_label)
     except Exception as exc:
         return None, (
             f"pool_gate_settings_invalid:{type(exc).__name__}:{str(exc)[:240]}"
         )
+    # Pool-leg threshold derivation (2026-10-16 calibration): the pool leg
+    # freezes a deeper sample (opponent item ``matches``, default 24), and
+    # its code-default score threshold scales with that count so the pass
+    # boundary is W >= n//2 + 2 (14/24) instead of bare majority (13/24).
+    # An explicit POK_POOL_GATE_MAX_SCORE keeps full operator authority —
+    # the derivation only replaces the unset code default.
+    pool_leg_matches = 0
+    for item in opponents:
+        if (
+            isinstance(item, dict)
+            and str(item.get("reason") or "") == "pool_weakest_gate"
+        ):
+            raw = item.get("matches")
+            if type(raw) is int and raw >= 1:
+                pool_leg_matches = raw
+            break
+    if pool_leg_matches and not str(
+        os.environ.get(POOL_GATE_MAX_SCORE_ENV) or ""
+    ).strip():
+        spec = {
+            **spec,
+            "max_score": _pool_gate_max_score_for_matches(pool_leg_matches),
+        }
+    return spec, None
 
 
 async def _run_national_precommit_backend(
@@ -1194,11 +1278,26 @@ async def _run_national_precommit_backend(
         )
         or 0
     )
-    expected_gate_samples = national_matches * sum(
-        1 for item in opponents_with_paths if is_precommit_gate_matchup(item)
+    # Per-opponent frozen match counts (2026-10-16 pool-leg calibration):
+    # ``matches_per_opponent`` is the plan-wide default (parent/top legs);
+    # an opponent item carrying its own ``matches`` (pool-weakest admission
+    # leg) freezes a different depth.  Recorded in every event/receipt so
+    # the reported games always match the executed games.
+    matches_by_opponent = {
+        str(item.get("name") or ""): max(
+            1, int(item.get("matches") or national_matches)
+        )
+        for item in opponents_with_paths
+    }
+    expected_gate_samples = sum(
+        matches_by_opponent[str(item.get("name") or "")]
+        for item in opponents_with_paths
+        if is_precommit_gate_matchup(item)
     )
-    expected_strength_samples = national_matches * sum(
-        1 for item in opponents_with_paths if is_strength_matchup(item)
+    expected_strength_samples = sum(
+        matches_by_opponent[str(item.get("name") or "")]
+        for item in opponents_with_paths
+        if is_strength_matchup(item)
     )
     strength_evidence_required = bool(
         settings.get("strength_evidence_required", True)
@@ -1357,6 +1456,7 @@ async def _run_national_precommit_backend(
                 "execution_mode": "native_tcp",
                 "hands_per_match": national_hands,
                 "matches_per_opponent": national_matches,
+                "matches_by_opponent": matches_by_opponent,
                 "blockers": blockers,
                 "paired_bootstrap": paired_bootstrap_payload,
                 "pool_gate": pool_gate_summary,
@@ -1377,6 +1477,7 @@ async def _run_national_precommit_backend(
         **native_template_evidence,
         "hands_per_match": national_hands,
         "matches_per_opponent": national_matches,
+        "matches_by_opponent": matches_by_opponent,
         "expected_net_chips_samples": expected_gate_samples,
         "expected_strength_net_chips_samples": expected_strength_samples,
         "opponents": all_opponents,
@@ -1447,6 +1548,7 @@ async def _run_national_precommit_backend(
             "n_opponents": len(all_opponents),
             "hands_per_match": national_hands,
             "matches_per_opponent": national_matches,
+            "matches_by_opponent": matches_by_opponent,
             "primary_70_hand_match_score": outcome_order.get("primary_match_score"),
             "secondary_net_chips_mean": strength_order.get("secondary_net_chips_mean"),
             "precommit_evidence_authority": (
@@ -2232,6 +2334,39 @@ async def run_precommit_eval(args):
     evaluation_contract = current_evaluation_contract
     if national_evaluation and precommit_plan is None and opponents:
         national_hands, national_matches = _national_precommit_shape(workflow_profile, n_games)
+        # Pool-leg sample depth (2026-10-16 calibration): freeze a deeper
+        # per-opponent leg for the pool-weakest admission opponent (default
+        # POK_PRECOMMIT_POOL_WEAKEST_N_GAMES=24).  Every other leg (parent,
+        # top-strength, h2h-weakness) keeps the plan-wide count, so the
+        # parent gate semantics are unchanged.
+        try:
+            pool_weakest_matches = precommit_pool_weakest_n_games()
+        except ValueError as exc:
+            payload = {
+                "error": f"PRECOMMIT PLAN CREATION FAILED: {exc}",
+                "version": v,
+                "source_v": source_v,
+                "passed": False,
+                "blockers": [{
+                    "reason": "precommit_plan_creation_failed",
+                    "details": str(exc)[:800],
+                }],
+                "failure_class": "infrastructure",
+                "intent": make_intent(
+                    "pause",
+                    failure_class="infrastructure",
+                    authority="tool:precommit_eval",
+                    safe_to_auto_execute=False,
+                    reason="precommit_plan_creation_failed",
+                ),
+            }
+            return _json_tool_result(payload)
+        for item in opponents:
+            if (
+                isinstance(item, dict)
+                and str(item.get("reason") or "") == "pool_weakest_gate"
+            ):
+                item["matches"] = pool_weakest_matches
         # Pool-ratchet admission gate spec: resolved once at this plan-freeze
         # moment from the live publication mode and the selected opponents,
         # then frozen into the plan settings (retries re-prove the frozen

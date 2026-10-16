@@ -141,14 +141,20 @@ def _validate_reap_selection_snapshot(snapshot: dict) -> dict[str, dict]:
     ):
         raise RuntimeError("reap_selection_snapshot_inputs_invalid")
     decoded: dict[str, dict] = {}
+    # Pool-ratchet snapshots additionally freeze the measured win rate the
+    # 2026-10-16 protection alignment consumes (see the builder); legacy
+    # snapshots keep the exact historical row key set.
+    expected_input_keys = _tbm._REAP_BOT_INPUT_KEYS
+    if protection_profile == "pool_ratchet":
+        expected_input_keys = _tbm._REAP_BOT_INPUT_KEYS | {"win_rate_hex"}
     for expected_name, row in zip(active_bots, rows):
-        if not isinstance(row, dict) or set(row) != _tbm._REAP_BOT_INPUT_KEYS:
+        if not isinstance(row, dict) or set(row) != expected_input_keys:
             raise RuntimeError("reap_selection_snapshot_input_keys_invalid")
         if row.get("bot") != expected_name:
             raise RuntimeError("reap_selection_snapshot_input_order_invalid")
         if type(row.get("games")) is not int or row["games"] < 0:
             raise RuntimeError("reap_selection_snapshot_games_invalid")
-        decoded[expected_name] = {
+        decoded_row = {
             "r": _tbm._decode_finite_float_hex(
                 row.get("rating_r_hex"), field="rating_r"
             ),
@@ -163,6 +169,11 @@ def _validate_reap_selection_snapshot(snapshot: dict) -> dict[str, dict]:
                 row.get("h2h_avg_wr_hex"), field="h2h_avg_wr"
             ),
         }
+        if protection_profile == "pool_ratchet":
+            decoded_row["win_rate"] = _tbm._decode_finite_float_hex(
+                row.get("win_rate_hex"), field="win_rate"
+            )
+        decoded[expected_name] = decoded_row
     unsigned = {
         key: value for key, value in snapshot.items() if key != "snapshot_digest"
     }
@@ -258,6 +269,23 @@ def _capture_reap_selection_snapshot(
                     h2h_winrates.get(name, 0.0), field="h2h_avg_wr"
                 ),
             })
+            if protection_profile == "pool_ratchet":
+                # Measured-strength input for the 2026-10-16 gate/reap key
+                # alignment: the admission gate targets the Wilson-95%
+                # measured weakest (bot_stats win_rate/games), so the reap
+                # protection set needs the same measurement. Legacy-profile
+                # snapshots keep the exact historical row shape.
+                try:
+                    win_rate = float(
+                        (bot_stats.get(name) or {}).get("win_rate", 0.0) or 0.0
+                    )
+                except (TypeError, ValueError):
+                    win_rate = 0.0
+                if not math.isfinite(win_rate):
+                    win_rate = 0.0
+                rows[-1]["win_rate_hex"] = _tbm._finite_float_hex(
+                    win_rate, field="win_rate"
+                )
     snapshot = {
         "schema_version": 1,
         "kind": "strict-active-pool-selection-snapshot",
@@ -328,6 +356,41 @@ def _select_reap_candidate_from_snapshot(
         for name in active_bots:
             if inputs[name]["r"] > median_rating:
                 protected_names.add(name)
+        # Measured-strength protection (2026-10-16 gate/reap key alignment,
+        # half-measure; red-team high finding): the admission gate now tests
+        # against the Wilson-95% measured weakest, so a measured-strong
+        # member must never be reaped on conservative-score uncertainty
+        # alone (pre-alignment data: reap would take v11 — measured 3rd
+        # strongest — while the gate made the candidate beat v173). Members
+        # whose Wilson lower bound (at the gate's games floor) sits strictly
+        # above the pool median lower bound join the protection set; the
+        # extension yields whenever it would strand the pool without any
+        # victim — "pool > cap implies a victim" outranks the alignment.
+        from pool_ratchet import (
+            POOL_WEAKEST_WILSON_MIN_GAMES,
+            wilson_lower_bound,
+        )
+
+        lb_by_name: dict[str, float] = {}
+        for name in active_bots:
+            row = inputs[name]
+            win_rate = row.get("win_rate")
+            member_games = int(row.get("games", 0) or 0)
+            if (
+                win_rate is not None
+                and member_games >= POOL_WEAKEST_WILSON_MIN_GAMES
+            ):
+                lb_by_name[name] = wilson_lower_bound(win_rate, member_games)
+        if lb_by_name:
+            median_lb = sorted(lb_by_name.values())[len(lb_by_name) // 2]
+            measured_strong = {
+                name for name, lb in lb_by_name.items() if lb > median_lb
+            }
+            if any(
+                name not in protected_names and name not in measured_strong
+                for name in active_bots
+            ):
+                protected_names |= measured_strong
         evaluated_candidates = []
         zero_game_candidates = []
         for name in active_bots:

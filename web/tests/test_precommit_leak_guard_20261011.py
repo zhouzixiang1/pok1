@@ -21,6 +21,13 @@ import tool_helpers
 from bot_namespace import bot_name, parse_bot_version
 from web.tests.runtime_probe_fixtures import passing_runtime_probe
 
+# The pool-weakest admission-leg match count frozen by the harness (handler
+# request n_games=6 is the plan-wide default; the pool leg gets the deeper
+# calibrated default from POK_PRECOMMIT_POOL_WEAKEST_N_GAMES).
+from tool_eval import PRECOMMIT_POOL_WEAKEST_N_GAMES  # noqa: E402
+
+PRECOMMIT_POOL_WEAKEST_TEST_N_GAMES = PRECOMMIT_POOL_WEAKEST_N_GAMES
+
 
 def _published(path: Path) -> dict:
     return {
@@ -36,7 +43,7 @@ def _published(path: Path) -> dict:
     }
 
 
-def _harness(monkeypatch, tmp_path, *, weakest_wins=2, weakest_losses=0):
+def _harness(monkeypatch, tmp_path, *, weakest_wins=14, weakest_losses=0):
     bots = tmp_path / "bots"
     for version in (9, 8, 11):
         bot_dir = bots / bot_name(version)
@@ -85,6 +92,8 @@ def _harness(monkeypatch, tmp_path, *, weakest_wins=2, weakest_losses=0):
     writes = []
 
     monkeypatch.delenv("POK_NATIONAL_PRECOMMIT_MATCHES", raising=False)
+    monkeypatch.delenv("POK_PRECOMMIT_POOL_WEAKEST_N_GAMES", raising=False)
+    monkeypatch.delenv("POK_POOL_GATE_MAX_SCORE", raising=False)
     monkeypatch.setenv("POK_PUBLISH_MODE", "pool_ratchet")
     monkeypatch.setattr(tool_eval, "get_workflow_profile", lambda: profile)
     monkeypatch.setattr(tool_eval, "get_bot_dir", lambda v: bots / bot_name(v))
@@ -137,11 +146,14 @@ def _harness(monkeypatch, tmp_path, *, weakest_wins=2, weakest_losses=0):
             plan_by_opponent.setdefault(row["opponent"], []).append(row)
         for index, item in enumerate(opponents):
             name = item["name"]
+            # Per-opponent frozen counts (2026-10-16 pool-leg calibration):
+            # the pool-weakest leg freezes its own deeper ``matches``.
+            item_matches = int(item.get("matches") or matches_per_opponent)
             if name == bot_name(11):
                 wins, losses = weakest_wins, weakest_losses
             else:
-                wins, losses = matches_per_opponent, 0
-            draws = matches_per_opponent - wins - losses
+                wins, losses = item_matches, 0
+            draws = item_matches - wins - losses
             chips = []
             repeats = []
             for row in plan_by_opponent.get(name, []):
@@ -218,11 +230,29 @@ async def test_passing_result_omits_plan_and_freezes_pool_gate(
     gate = frozen_plan["settings"]["pool_gate"]
     assert gate["label"] == bot_name(11)
     assert gate["min_samples"] == 6
-    assert gate["max_score"] == 0.50
+    # Pool-leg threshold derivation (2026-10-16): the pool-weakest leg froze
+    # its own 24-match depth, so the code-default score threshold scales to
+    # 13/24 — pass boundary W>=14, not bare majority.
+    assert gate["max_score"] == tool_eval._pool_gate_max_score_for_matches(
+        PRECOMMIT_POOL_WEAKEST_TEST_N_GAMES
+    )
     assert gate["tie_ci_lower_min"] == 0.0
     assert frozen_plan["settings"]["seed_derivation"] == "nonce_sha256_v1"
     assert frozen_plan["settings"]["publish_mode"] == "pool_ratchet"
     assert frozen_plan["settings"]["deck_seed_nonce"]
+    # The pool leg froze 24 matches while the parent leg kept the requested 6.
+    assert frozen_plan["settings"]["matches_by_opponent"] == {
+        bot_name(8): 6,
+        bot_name(11): PRECOMMIT_POOL_WEAKEST_TEST_N_GAMES,
+    }
+    # Receipts record the per-opponent games that actually ran.
+    assert payload["matches_by_opponent"] == {
+        bot_name(8): 6,
+        bot_name(11): PRECOMMIT_POOL_WEAKEST_TEST_N_GAMES,
+    }
+    assert payload["expected_net_chips_samples"] == (
+        6 + PRECOMMIT_POOL_WEAKEST_TEST_N_GAMES
+    )
 
     # Leak guard: neither the result payload nor the checkpoint gate_results
     # copy carries the frozen plan (nonce surface).
@@ -316,3 +346,15 @@ def test_rework_feedback_extractor_never_surfaces_seed_fields(monkeypatch, tmp_p
     assert "deck_seed" not in joined
     assert "nonce" not in joined
     assert "precommit_eval_plan" not in joined
+
+
+def test_pool_weakest_leg_floor_is_gate_minimum(monkeypatch):
+    # Red-team 2026-10-16 config hole: a pool leg below the gate's own
+    # POOL_GATE_MIN_SAMPLES never engages the blocker branch (silent no-op).
+    import tool_eval
+
+    monkeypatch.setenv("POK_PRECOMMIT_POOL_WEAKEST_N_GAMES", "5")
+    with pytest.raises(ValueError, match="pool_weakest_n_games_invalid"):
+        tool_eval.precommit_pool_weakest_n_games()
+    monkeypatch.setenv("POK_PRECOMMIT_POOL_WEAKEST_N_GAMES", "6")
+    assert tool_eval.precommit_pool_weakest_n_games() == 6

@@ -16,7 +16,7 @@ from bot_artifact import canonical_digest, hash_path, published_bot_identity
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN_SCHEMA_VERSION = 7
+PLAN_SCHEMA_VERSION = 8
 EVALUATION_CONTRACT_SCHEMA_VERSION = 5
 DEFAULT_DECK_SEED_BASE = 91_000
 NATIVE_PRECOMMIT_BATCH_PLAN_SCHEMA_VERSION = 1
@@ -116,6 +116,22 @@ def evaluator_identity(
     return {**payload, "identity_digest": canonical_digest(payload)}
 
 
+def _per_opponent_matches(opponent: dict[str, Any], default_matches: int) -> int:
+    """Resolve one opponent's frozen match count.
+
+    ``opponent["matches"]`` (an int >= 1, written by ``create_precommit_plan``)
+    overrides the plan-wide ``matches_per_opponent`` — the pool-ratchet
+    admission leg (2026-10-16 calibration) freezes a deeper sample than the
+    parent/top legs.  Anything else (absent, non-int, < 1) falls back to the
+    plan-wide count.
+    """
+
+    raw = opponent.get("matches")
+    if type(raw) is int and raw >= 1:
+        return raw
+    return max(1, int(default_matches))
+
+
 def build_sample_plan(
     opponents: list[dict[str, Any]],
     matches_per_opponent: int,
@@ -136,11 +152,17 @@ def build_sample_plan(
     (red-team 2026-10-12).  With an independent root, observing the bot-side
     seed reveals nothing about the deck; the row expansion shape (index
     linear) is identical for both.
+
+    Each opponent expands to its own frozen count
+    (``_per_opponent_matches``): an opponent item carrying ``matches`` gets a
+    deeper leg while the plan-wide count applies to the rest.
     """
     rows: list[dict[str, Any]] = []
     for opponent_index, opponent in enumerate(opponents):
         name = str(opponent.get("name") or "")
-        for repeat_index in range(max(1, int(matches_per_opponent))):
+        for repeat_index in range(
+            _per_opponent_matches(opponent, matches_per_opponent)
+        ):
             deck_seed = (
                 int(deck_seed_base)
                 + opponent_index * 100_000
@@ -503,6 +525,23 @@ def create_precommit_plan(
         control_min_samples = None
         control_min_match_score = None
 
+    # Per-opponent frozen match counts (2026-10-16 calibration): a caller may
+    # freeze a deeper leg for one opponent (the pool-ratchet admission
+    # opponent) by passing ``matches`` on that opponent item; every other leg
+    # keeps the plan-wide count.  The system control's exact count comes from
+    # its gate contract and always wins over any caller value.  This second
+    # pass runs after ``effective_matches_per_opponent`` exists because the
+    # control contract is read from the normalized receipt.
+    for source_item, normalized_item in zip(opponents, normalized):
+        normalized_item["matches"] = (
+            effective_matches_per_opponent
+            if normalized_item["authority"] == "system_first_strict_control"
+            else _per_opponent_matches(source_item, matches_per_opponent)
+        )
+    matches_by_opponent = {
+        str(item["name"]): int(item["matches"]) for item in normalized
+    }
+
     native_timing_plan = None
     if str(execution_mode) == "native_tcp":
         from national_native import (
@@ -547,6 +586,11 @@ def create_precommit_plan(
         "sample_unit": "70_hand_match" if int(hands_per_match) == 70 else "national_match",
         "hands_per_match": int(hands_per_match),
         "matches_per_opponent": effective_matches_per_opponent,
+        # Per-opponent frozen counts (introduced by the 2026-10-16 pool-leg
+        # calibration): ``matches_per_opponent`` remains the plan-wide default
+        # (parent / top legs); a deeper leg (pool-weakest admission) records
+        # its exact count here and re-proves through the sample plan.
+        "matches_by_opponent": matches_by_opponent,
         "deck_seed_base": int(effective_deck_seed_base),
         "deck_seed_nonce": deck_seed_nonce,
         "seed_derivation": seed_derivation,
@@ -612,6 +656,7 @@ def opponents_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
             "path": str(item.get("path") or ""),
             "authority": str(item.get("authority") or "published_bot"),
             "identity": dict(item.get("identity") or {}),
+            "matches": int(item.get("matches") or 0),
             "control_receipt": dict(item.get("control_receipt") or {}),
             "precommit_gate_admitted": bool(
                 item.get("precommit_gate_admitted", True)
@@ -885,11 +930,21 @@ def validate_precommit_plan(
                 else None
             ),
         )
+        expected_matches_by_opponent = {
+            str(item.get("name") or ""): _per_opponent_matches(
+                item, int(settings.get("matches_per_opponent"))
+            )
+            for item in opponents
+            if isinstance(item, dict)
+        }
     except Exception:
         expected_samples = []
+        expected_matches_by_opponent = None
         issues.append("precommit_sample_settings_invalid")
     if plan.get("sample_plan") != expected_samples:
         issues.append("precommit_sample_plan_mismatch")
+    if settings.get("matches_by_opponent") != expected_matches_by_opponent:
+        issues.append("precommit_matches_by_opponent_mismatch")
     if native_timing_plan is not None:
         try:
             expected_batch_plan = build_native_precommit_batch_plan(

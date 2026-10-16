@@ -111,7 +111,7 @@ def test_missing_conservative_rating_fails_closed_with_blocker(
     blockers = [item for item in selected if "selection_blocker" in item]
     assert len(blockers) == 1
     assert blockers[0]["selection_blocker"]["reason"] == (
-        "pool_weakest_conservative_rating_missing"
+        "pool_weakest_selection_failed"
     )
     # The normal parent selection still accompanies the blocker entry.
     assert any(item.get("reason") == "parent" for item in selected)
@@ -279,7 +279,7 @@ async def test_selection_blocker_pauses_precommit_before_plan_freeze(
                 "name": "",
                 "reason": "pool_weakest_gate",
                 "selection_blocker": {
-                    "reason": "pool_weakest_conservative_rating_missing",
+                    "reason": "pool_weakest_selection_failed",
                     "details": "pool_snapshot_conservative_rating_missing:x",
                 },
             },
@@ -303,6 +303,6 @@ async def test_selection_blocker_pauses_precommit_before_plan_freeze(
     assert payload["intent"]["safe_to_auto_execute"] is False
     assert payload["error"].startswith("PRECOMMIT OPPONENT SELECTION FAILED")
     assert [item["reason"] for item in payload["blockers"]] == [
-        "pool_weakest_conservative_rating_missing"
+        "pool_weakest_selection_failed"
     ]
     assert backend_calls == []

@@ -1158,12 +1158,14 @@ def _select_precommit_opponents(
         return []
 
     # Pool-ratchet admission opponent: inject the current pool-weakest member
-    # from the SAME frozen snapshot rows (never live ratings), using the reap
-    # victim ordering key (conservative_rating, games, version) so the
-    # position a candidate must beat is exactly the position the reap
-    # replaces.  ``add``'s active+disk filters make a just-reaped weakest
+    # from the SAME frozen snapshot rows (never live ratings), selected by the
+    # pool_ratchet measured-strength key (Wilson-95% lower bound of the
+    # observed win rate at games>=600; conservative rating with rd capped at
+    # 150 below that floor) so the gate targets genuinely weak members
+    # instead of strong-but-rusty high-rd bots.  ``add``'s active+disk
+    # filters make a just-reaped weakest
     # defer to the next-weakest.  A snapshot that cannot name a weakest
-    # member (missing conservative_rating) fails closed with an explicit
+    # member (missing rating/rd ordering inputs) fails closed with an explicit
     # selection blocker — never a silent legacy downgrade.  Legacy mode
     # injects nothing (byte-equivalent selection).
     pool_weakest_name = None
@@ -1203,7 +1205,7 @@ def _select_precommit_opponents(
                 )
             except _pool_ratchet.PoolRatchetSelectionError as exc:
                 pool_weakest_blocker = {
-                    "reason": "pool_weakest_conservative_rating_missing",
+                    "reason": "pool_weakest_selection_failed",
                     "details": str(exc)[:400],
                 }
                 break

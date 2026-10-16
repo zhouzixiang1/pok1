@@ -51,6 +51,20 @@ from evolution_core import (
     MAX_OFFICIAL_REWORK_ROUNDS,
     MAX_QUALITY_REWORK_ROUNDS,
 )
+# 2026-10-16 calibration: the authoritative default moves 3 → 1 HERE because
+# ``evolution_infra.py`` (where the constant is defined, re-exported through
+# ``evolution_core``) sits inside the rating-daemon SEMANTIC_PATHS identity
+# set — a one-byte change there crashes the daemon's identity guard — and
+# this module is the sole live reader's ``_tw`` parent.
+# A precommit rework round reuses the checkpoint-frozen plan (tool_eval
+# stored_plan; the seed nonce is only generated when no plan exists), so
+# rounds 2+ replay the SAME seeds — measured same-seed replays produced
+# identical score lines (v558: four rounds all 6W-6L; v560: two rounds with
+# identical scores). One repair round is kept for a genuinely reworked
+# candidate; POK_MAX_PRECOMMIT_REWORK_ROUNDS still overrides.
+MAX_PRECOMMIT_REWORK_ROUNDS = int(
+    os.environ.get("POK_MAX_PRECOMMIT_REWORK_ROUNDS", "1")
+)
 from tool_helpers import (
     _json_tool_result,
     _state_blocked,

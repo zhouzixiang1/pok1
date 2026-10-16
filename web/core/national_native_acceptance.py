@@ -752,6 +752,14 @@ async def run_native_precommit(
         requested_timeout_sec=_nn.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
     )
     matches_per_opponent = max(1, int(matches_per_opponent))
+
+    def _item_matches(item: dict[str, Any]) -> int:
+        """One opponent's frozen match count (plan item override wins)."""
+        raw = item.get("matches")
+        if type(raw) is int and raw >= 1:
+            return raw
+        return matches_per_opponent
+
     matchups: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     aggregate_net_chips: list[int] = []
@@ -766,7 +774,7 @@ async def run_native_precommit(
             if not key[0] or key[1] < 1 or key in frozen_samples:
                 raise ValueError("native precommit sample plan has an invalid or duplicate key")
             frozen_samples[key] = dict(row)
-        expected_rows = len(opponents) * matches_per_opponent
+        expected_rows = sum(_item_matches(item) for item in opponents)
         if len(frozen_samples) != expected_rows:
             raise ValueError(
                 f"native precommit sample plan has {len(frozen_samples)} rows; "
@@ -952,7 +960,8 @@ async def run_native_precommit(
         candidate_issues: list[str] = []
         opponent_issues: list[str] = []
         hands_played_total = 0
-        for repeat in range(matches_per_opponent):
+        item_matches = _item_matches(item)
+        for repeat in range(item_matches):
             # A first-strict provider invocation may create at most one new
             # physical sample.  Recovered receipts are cheap reads and may be
             # traversed first, but once a fresh runner has completed its
@@ -1340,12 +1349,12 @@ async def run_native_precommit(
             ),
             "protocol": "national_native_tcp",
             "hands_per_match": hands,
-            "matches": matches_per_opponent,
+            "matches": item_matches,
             "wins": wins,
             "losses": losses,
             "draws": draws,
             "n_played": len(samples),
-            "samples_expected": matches_per_opponent,
+            "samples_expected": item_matches,
             "hands_played_total": hands_played_total,
             "net_chips": samples,
             "net_chips_mean": _nn._rounded(mean),
@@ -1368,12 +1377,12 @@ async def run_native_precommit(
         if gate_authoritative and opponent_issues:
             blockers.append({"reason": "native_opponent_compliance", "opponent": matchup["opponent"], "details": "; ".join(opponent_issues[:5])})
         if gate_authoritative and any(not row["complete"] for row in repeats):
-            blockers.append({"reason": "native_incomplete_match", "opponent": matchup["opponent"], "details": f"{hands_played_total}/{hands * matches_per_opponent} hands completed"})
-        if gate_authoritative and len(samples) != matches_per_opponent:
+            blockers.append({"reason": "native_incomplete_match", "opponent": matchup["opponent"], "details": f"{hands_played_total}/{hands * item_matches} hands completed"})
+        if gate_authoritative and len(samples) != item_matches:
             blockers.append({
                 "reason": "native_precommit_sample_shortfall",
                 "opponent": matchup["opponent"],
-                "details": f"{len(samples)}/{matches_per_opponent} complete compliant 70-hand samples admitted",
+                "details": f"{len(samples)}/{item_matches} complete compliant 70-hand samples admitted",
             })
     agg_mean = _nn._mean(aggregate_net_chips)
     agg_ci_lower, agg_ci_upper = _nn._ci(aggregate_net_chips)
