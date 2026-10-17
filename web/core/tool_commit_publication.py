@@ -501,6 +501,32 @@ def _resume_publication_transaction(v, source_v, ckpt):
                             (frozen_rb.get("head") or "?")[:12],
                             commit_oid[:12],
                         )
+                    else:
+                        # The bind write bumped checkpoint_revision (the CAS
+                        # writer advances it on EVERY write:
+                        # evolution_infra_checkpoint_cas), so the pre-bind
+                        # `current` snapshot is now stale.  Using it below
+                        # would freeze the old revision into the handoff
+                        # record and then fail the clear CAS against the old
+                        # revision — the deterministic v566 wedge (the frozen
+                        # record then blocks its own retry 68 times).  Re-read
+                        # the post-bind checkpoint and revalidate it against
+                        # the frozen intent; only a checkpoint that still
+                        # binds this intent may proceed.
+                        rebound = _tc.read_pipeline_checkpoint()
+                        rebound_errors = publication_intent_checkpoint_errors(
+                            intent, rebound
+                        )
+                        if rebound_errors:
+                            return _publication_pending_result(
+                                v,
+                                source_v,
+                                error="COMMIT PENDING: checkpoint changed before publication completion.",
+                                completed_sentinel_written=True,
+                                validation_errors=rebound_errors,
+                                remote_proof=remote_proof,
+                            )
+                        current = rebound
         except Exception as exc:
             # Same rationale as above: log so a failure is visible instead of
             # silently degrading; the publication transaction itself is already

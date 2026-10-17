@@ -1430,3 +1430,232 @@ def test_pre_push_authority_reopens_latest_publishing_checkpoint(
         ("ledger", latest),
         ("live", latest),
     ]
+
+
+def _bind_recovery_fixture(tmp_path, monkeypatch):
+    """Shared stage for the post-commit repo_baseline bind tests.
+
+    Returns ``(repo, version, source_v, intent, pre_bind, commit_oid,
+    reads, writes, ensure_handoff, clear)``.  ``reads`` is the ordered list
+    ``read_pipeline_checkpoint`` serves (pre-bind current, bind-block
+    re-read, post-bind rebound).  ``publication_intent_checkpoint_errors``
+    is left REAL so the rebound revalidation is exercised for real.
+    """
+
+    import national_runtime_authority
+    import post_publication_handoff
+    import publication_transaction
+    import tool_commit
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    baseline = _git(repo, "rev-parse", "HEAD")
+    version = STRICT_TARGET_V + 1
+    source_v = STRICT_TARGET_V
+    candidate, _certificate = _write_candidate_and_certificate(
+        repo,
+        version=version,
+    )
+    intent = _intent(
+        repo,
+        baseline,
+        remote_required=False,
+        remote_enabled=False,
+        version=version,
+        source_v=source_v,
+    )
+    official_status = {
+        "status": "certified",
+        "policy_id": "official_full_policy_removed",
+        "certificate_digest": "b" * 64,
+        "certification_identity": {
+            "candidate_hash": intent["candidate_artifact_hash"],
+        },
+    }
+    pre_bind = {
+        "next_v": version,
+        "source_v": source_v,
+        "parent2_v": None,
+        "workflow_run_id": f"generation:{version}:test",
+        "checkpoint_revision": 10,
+        "stage": "publishing",
+        "publication_intent": intent,
+        "gate_results": {"official_full": {"status": official_status}},
+    }
+    commit_oid = "e" * 40
+    reads = [pre_bind, pre_bind]
+    writes = []
+    handoff_kwargs = []
+    clear_calls = []
+
+    monkeypatch.setenv(
+        "POK_ALLOW_LOCAL_ONLY_POST_PUBLICATION_HANDOFF_FOR_TESTS",
+        "1",
+    )
+    monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: candidate)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(
+        tool_commit,
+        "_existing_local_bot_tag_matches_certificate",
+        lambda *_a, **_k: (True, ""),
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "validate_commit_gate_ledger",
+        lambda *_a, **_k: {"missing_gates": [], "failed_gates": []},
+    )
+    monkeypatch.setattr(
+        publication_transaction,
+        "publication_gate_ledger_digest",
+        lambda _ledger: intent["final_gate_ledger_digest"],
+    )
+    monkeypatch.setattr(
+        publication_transaction,
+        "publication_intent_live_errors",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "strict_published_bot_names",
+        lambda **_k: (bot_name(version),),
+    )
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "build_pending_local_publication_proof",
+        lambda _path: {
+            "bot": bot_name(version),
+            "proof_digest": "proof",
+        },
+    )
+
+    def read():
+        return reads.pop(0)
+
+    def write(*args, **kwargs):
+        writes.append(kwargs)
+        return True
+
+    def ensure_publication(*_a, **_k):
+        return {"commit_oid": commit_oid, "push_ok": False, "local_refs": {}}
+
+    def ensure_handoff(**kwargs):
+        handoff_kwargs.append(kwargs)
+        return {"identity_digest": "d" * 64, "state": "pending"}
+
+    def clear(**kwargs):
+        clear_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(tool_commit, "read_pipeline_checkpoint", read)
+    monkeypatch.setattr(tool_commit, "write_pipeline_checkpoint", write)
+    monkeypatch.setattr(
+        tool_commit, "ensure_bot_git_publication", ensure_publication
+    )
+    monkeypatch.setattr(tool_commit, "evolution_git_push_required", lambda: False)
+    monkeypatch.setattr(tool_commit, "clear_pipeline_checkpoint", clear)
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "ensure_post_publication_handoff",
+        ensure_handoff,
+    )
+    return {
+        "repo": repo,
+        "version": version,
+        "source_v": source_v,
+        "intent": intent,
+        "pre_bind": pre_bind,
+        "commit_oid": commit_oid,
+        "reads": reads,
+        "writes": writes,
+        "handoff_kwargs": handoff_kwargs,
+        "clear_calls": clear_calls,
+        "candidate": candidate,
+    }
+
+
+def test_post_commit_baseline_bind_uses_the_post_bind_checkpoint_snapshot(
+    tmp_path, monkeypatch
+):
+    """First pass converges: handoff and clear must use the rebound snapshot.
+
+    The CAS writer bumps ``checkpoint_revision`` on every write, so a
+    successful post-commit ``bind_repo_baseline_head`` write moves the live
+    checkpoint from revision 10 to 11.  Before the fix, ``current`` stayed at
+    the pre-bind snapshot: the handoff record froze revision 10 and the
+    clear CAS expected revision 10 against a live revision-11 checkpoint —
+    the deterministic v566 wedge (frozen record then blocked its own retry
+    68 times).
+    """
+
+    import tool_commit
+
+    fixture = _bind_recovery_fixture(tmp_path, monkeypatch)
+    version = fixture["version"]
+    source_v = fixture["source_v"]
+    post_bind = {
+        **fixture["pre_bind"],
+        "checkpoint_revision": 11,
+        "repo_baseline": {"head": fixture["commit_oid"]},
+    }
+    fixture["reads"].append(post_bind)
+
+    result = tool_commit._resume_publication_transaction(
+        version,
+        source_v,
+        fixture["pre_bind"],
+    )
+
+    assert result["committed"] is True
+    assert result["checkpoint_cleared"] is True
+    assert fixture["reads"] == []
+    assert len(fixture["writes"]) == 1
+    assert fixture["writes"][0]["bind_repo_baseline_head"] == (
+        fixture["commit_oid"]
+    )
+    assert fixture["writes"][0]["expected_checkpoint_revision"] == 10
+    assert len(fixture["handoff_kwargs"]) == 1
+    assert fixture["handoff_kwargs"][0]["publishing_checkpoint"] is post_bind
+    assert len(fixture["clear_calls"]) == 1
+    assert fixture["clear_calls"][0]["expected_checkpoint_revision"] == 11
+    assert fixture["clear_calls"][0]["expected_checkpoint_stage"] == "publishing"
+    assert (fixture["candidate"] / ".completed").read_text(encoding="utf-8") == (
+        f"publication_id={fixture['intent']['publication_id']}\n"
+    )
+
+
+def test_post_commit_baseline_bind_fails_closed_when_rebound_drifts(
+    tmp_path, monkeypatch
+):
+    """A rebound checkpoint that no longer binds the intent is COMMIT PENDING."""
+
+    import tool_commit
+
+    fixture = _bind_recovery_fixture(tmp_path, monkeypatch)
+    version = fixture["version"]
+    source_v = fixture["source_v"]
+    drifted = {
+        **fixture["pre_bind"],
+        "checkpoint_revision": 11,
+        "repo_baseline": {"head": fixture["commit_oid"]},
+        "stage": "verified",
+    }
+    fixture["reads"].append(drifted)
+
+    result = tool_commit._resume_publication_transaction(
+        version,
+        source_v,
+        fixture["pre_bind"],
+    )
+
+    assert result["committed"] is False
+    assert result["checkpoint_preserved"] is True
+    assert result["completed_sentinel_written"] is True
+    assert result["error"] == (
+        "COMMIT PENDING: checkpoint changed before publication completion."
+    )
+    assert result["validation_errors"]
+    assert "publication_intent_checkpoint_stage_mismatch" in (
+        result["validation_errors"]
+    )
+    assert fixture["handoff_kwargs"] == []
+    assert fixture["clear_calls"] == []

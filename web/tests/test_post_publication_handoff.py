@@ -613,6 +613,196 @@ def test_ensure_refuses_publication_until_authority_directories_are_durable(
     assert module._archive_path(V).exists()
 
 
+def _drifted_identity(module, record, archive):
+    """Recomputed identity of the SAME publication after a revision bump.
+
+    The CAS writer advances ``checkpoint_revision`` on every checkpoint
+    write, so a retry of one publication re-derives an identity that differs
+    from the frozen record in exactly ``checkpoint_revision`` and
+    ``publishing_checkpoint_digest``.
+    """
+
+    frozen = record["identity"]
+    drifted = {
+        key: copy.deepcopy(value)
+        for key, value in frozen.items()
+        if key != "archive_base_snapshot_digest"
+    }
+    drifted["checkpoint_revision"] = frozen["checkpoint_revision"] + 1
+    projection = copy.deepcopy(archive["publishing_checkpoint_projection"])
+    projection["checkpoint_revision"] = drifted["checkpoint_revision"]
+    drifted["publishing_checkpoint_digest"] = module.canonical_digest(projection)
+    return drifted
+
+
+def test_ensure_adopts_the_frozen_record_after_checkpoint_revision_drift(
+    handoff_env, monkeypatch
+):
+    """Same-publication retry adopts its frozen record (the wedge cure).
+
+    v566 wedged for 68 consecutive retries: the frozen record bound revision
+    20 while the live checkpoint had advanced to 21, and the active guard
+    compared whole identity digests, so the publication blocked itself with
+    ``another_post_publication_handoff_is_active`` forever.  A retry whose
+    stable publication fields all match must adopt the frozen record
+    byte-for-byte and never recompute the archive preimage.
+    """
+
+    module, _results = handoff_env
+    record_path, record, archive = _write_pair(module)
+    drifted = _drifted_identity(module, record, archive)
+    assert module._same_publication_identity(record["identity"], drifted)
+    assert drifted["checkpoint_revision"] != record["identity"][
+        "checkpoint_revision"
+    ]
+
+    def unexpected_base(**_kwargs):
+        raise AssertionError("_archive_base must not run on the adoption path")
+
+    monkeypatch.setattr(
+        module,
+        "_publication_identity",
+        lambda **_kwargs: copy.deepcopy(drifted),
+    )
+    monkeypatch.setattr(module, "_archive_base", unexpected_base)
+
+    resumed = module.ensure_post_publication_handoff(
+        version=V,
+        source_v=S,
+        publishing_checkpoint={},
+        publication_result={},
+    )
+    assert resumed == record
+    assert module._read_json(record_path) == record
+    pointer = module._read_json(module._active_pointer_path())
+    assert pointer["identity_digest"] == record["identity_digest"]
+    route = module.pending_handoff_route()
+    assert route["status"] == "pending"
+    assert route["record"]["identity_digest"] == record["identity_digest"]
+
+
+@pytest.mark.parametrize("pointer_present", [True, False])
+def test_ensure_still_refuses_a_different_publication_at_the_same_path(
+    handoff_env, monkeypatch, pointer_present
+):
+    """Any unequal stable field is another publication: fail closed."""
+
+    module, _results = handoff_env
+    record_path, record, archive = _write_pair(module)
+    if not pointer_present:
+        # Exercise the same-path record probe directly (pointer lost).
+        module._active_pointer_path().unlink()
+    different = _drifted_identity(module, record, archive)
+    different["commit_oid"] = f"{V + 42:040x}"
+    assert not module._same_publication_identity(
+        record["identity"], different
+    )
+    monkeypatch.setattr(
+        module,
+        "_publication_identity",
+        lambda **_kwargs: copy.deepcopy(different),
+    )
+    with pytest.raises(
+        module.PostPublicationHandoffError,
+        match="another_post_publication_handoff_is_active",
+    ):
+        module.ensure_post_publication_handoff(
+            version=V,
+            source_v=S,
+            publishing_checkpoint={},
+            publication_result={},
+        )
+    assert module._read_json(record_path) == record
+
+
+@pytest.mark.parametrize("damage", ["corrupted", "missing"])
+def test_ensure_adoption_fails_closed_when_the_archive_boundary_is_broken(
+    handoff_env, monkeypatch, damage
+):
+    module, _results = handoff_env
+    record_path, record, archive = _write_pair(module)
+    module._active_pointer_path().unlink()
+    archive_path = module._archive_path(V)
+    if damage == "corrupted":
+        corrupted = copy.deepcopy(archive)
+        corrupted["base_snapshot_digest"] = "f" * 64
+        module._atomic_write(archive_path, corrupted)
+    else:
+        archive_path.unlink()
+    drifted = _drifted_identity(module, record, archive)
+    monkeypatch.setattr(
+        module,
+        "_publication_identity",
+        lambda **_kwargs: copy.deepcopy(drifted),
+    )
+    with pytest.raises(
+        module.PostPublicationHandoffError,
+        match="archive_snapshot_preimage_mismatch",
+    ):
+        module.ensure_post_publication_handoff(
+            version=V,
+            source_v=S,
+            publishing_checkpoint={},
+            publication_result={},
+        )
+    assert module._read_json(record_path) == record
+    assert not module._active_pointer_path().exists()
+
+
+def test_ensure_never_adopts_a_completed_record_on_revision_drift(
+    handoff_env, monkeypatch
+):
+    """Completed same-publication history keeps the exact re-publish path."""
+
+    module, _results = handoff_env
+    _write_pair(module)
+    completed = _complete_all_steps(module)
+    frozen = completed["identity"]
+    record_path = module._handoff_path(V, frozen["publication_id"])
+    archive = module._read_json(module._archive_path(V))
+    base = {
+        key: copy.deepcopy(value)
+        for key, value in archive.items()
+        if key not in {
+            "base_snapshot_digest",
+            "post_publication_handoff",
+            "finalization",
+            "archivist_notes",
+        }
+    }
+    drifted = {
+        key: copy.deepcopy(value)
+        for key, value in frozen.items()
+        if key != "archive_base_snapshot_digest"
+    }
+    drifted["checkpoint_revision"] = frozen["checkpoint_revision"] + 1
+    projection = copy.deepcopy(archive["publishing_checkpoint_projection"])
+    projection["checkpoint_revision"] = drifted["checkpoint_revision"]
+    drifted["publishing_checkpoint_digest"] = module.canonical_digest(projection)
+    assert module._same_publication_identity(frozen, drifted)
+    monkeypatch.setattr(
+        module,
+        "_publication_identity",
+        lambda **_kwargs: copy.deepcopy(drifted),
+    )
+    monkeypatch.setattr(
+        module,
+        "_archive_base",
+        lambda **_kwargs: copy.deepcopy(base),
+    )
+    with pytest.raises(
+        module.PostPublicationHandoffError,
+        match="handoff_identity_mismatch",
+    ):
+        module.ensure_post_publication_handoff(
+            version=V,
+            source_v=S,
+            publishing_checkpoint={},
+            publication_result={},
+        )
+    assert module._read_json(record_path) == completed
+
+
 def test_publication_identity_requires_the_exact_local_tag_tree_proof(handoff_env):
     module, _results = handoff_env
     _path, record, archive = _write_pair(module)

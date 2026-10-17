@@ -508,6 +508,45 @@ def _publication_identity(
     }
 
 
+# The retry-stable spine of a publication identity.  ``checkpoint_revision``
+# and ``publishing_checkpoint_digest`` are deliberately excluded: the CAS
+# writer bumps the revision on every checkpoint write
+# (evolution_infra_checkpoint_cas), so a publishing checkpoint that advanced
+# between the frozen record and a retry of the *same* publication changes
+# exactly those two fields.  Every field below is content-bound to the
+# publication itself (cryptographic publication_id + commit_oid +
+# candidate_artifact_hash + workflow identity + ref/proof bindings) and must
+# be byte-equal before a retry may adopt its frozen handoff record.
+_SAME_PUBLICATION_IDENTITY_FIELDS = (
+    "schema_version",
+    "evaluation_epoch",
+    "version",
+    "source_v",
+    "workflow_run_id",
+    "publication_id",
+    "commit_oid",
+    "candidate_artifact_hash",
+    "source_binding_digest",
+    "local_paired_refs",
+    "local_publication_proof",
+    "certificate_digest",
+    "remote_publication",
+)
+
+
+def _same_publication_identity(frozen: Any, recomputed: Any) -> bool:
+    """True only when both identities bind the exact same publication."""
+
+    if not isinstance(frozen, dict) or not isinstance(recomputed, dict):
+        return False
+    for field in _SAME_PUBLICATION_IDENTITY_FIELDS:
+        if field not in frozen or field not in recomputed:
+            return False
+        if frozen[field] != recomputed[field]:
+            return False
+    return True
+
+
 def _base_record(identity: dict[str, Any], archive_digest: str) -> dict[str, Any]:
     identity = {**identity, "archive_base_snapshot_digest": archive_digest}
     identity_digest = canonical_digest(identity)
@@ -638,6 +677,60 @@ def _load_active_pair(*, reopen_archive: bool = True) -> tuple[
     return record_path, pointer, record
 
 
+def _adopt_frozen_handoff_record(
+    existing: dict[str, Any],
+    handoff_path: Path,
+) -> dict[str, Any]:
+    """Adopt the frozen record of the same publication on a drifted retry.
+
+    The frozen record is the ``record_digest``-chain authority, so its bytes
+    are never rewritten.  This path only re-proves the archive/record/pointer
+    boundaries against the *frozen* identity (the recomputed identity may
+    differ in exactly ``checkpoint_revision`` /
+    ``publishing_checkpoint_digest`` because the CAS writer bumped the
+    revision between the freeze and this retry) and re-points the active
+    pointer at the frozen record.
+    """
+
+    errors = validate_handoff_record(existing, reopen_archive=False)
+    if errors:
+        raise PostPublicationHandoffError(";".join(errors))
+    frozen_identity = existing["identity"]
+    archive_path = _archive_path(int(frozen_identity["version"]))
+    existing_archive = _read_json(archive_path, missing_ok=True)
+    if (
+        not isinstance(existing_archive, dict)
+        or existing_archive.get("base_snapshot_digest")
+        != frozen_identity.get("archive_base_snapshot_digest")
+    ):
+        raise PostPublicationHandoffError("archive_snapshot_preimage_mismatch")
+    _reprove_durable(archive_path)
+    _reprove_durable(handoff_path)
+    pointer = _active_pointer(existing, handoff_path)
+    _atomic_write(_active_pointer_path(), pointer)
+    # Re-open all three after their independent replace/fsync boundaries,
+    # mirroring the creation path: a half-published archive/record/pointer
+    # set can never authorize a clear.
+    archive_check = _read_json(archive_path)
+    handoff_check = _read_json(handoff_path)
+    pointer_check = _read_json(_active_pointer_path())
+    if (
+        archive_check.get("base_snapshot_digest")
+        != frozen_identity.get("archive_base_snapshot_digest")
+        or handoff_check != existing
+        or (archive_check.get("post_publication_handoff") or {}).get(
+            "identity_digest"
+        )
+        != existing.get("identity_digest")
+        or pointer_check != pointer
+    ):
+        raise PostPublicationHandoffError("handoff_archive_pair_not_durable")
+    _reprove_durable(archive_path)
+    _reprove_durable(handoff_path)
+    _reprove_durable(_active_pointer_path())
+    return handoff_check
+
+
 def ensure_post_publication_handoff(
     *,
     version: int,
@@ -657,24 +750,6 @@ def ensure_post_publication_handoff(
         publication_result=publication_result,
         allow_local_only=allow_local_only,
     )
-    base = _archive_base(
-        version=version,
-        source_v=source_v,
-        checkpoint=publishing_checkpoint,
-        publication_identity=publication_identity,
-    )
-    base_digest = canonical_digest(base)
-    expected_record = _base_record(publication_identity, base_digest)
-    archive = {
-        **base,
-        "base_snapshot_digest": base_digest,
-        "post_publication_handoff": {
-            "identity_digest": expected_record["identity_digest"],
-            "publication_id": publication_identity["publication_id"],
-            "state": "pending",
-        },
-        "finalization": {"state": "pending"},
-    }
     handoff_path = _handoff_path(version, publication_identity["publication_id"])
     archive_path = _archive_path(version)
     _ensure_durable_authority_directory(handoff_path.parent)
@@ -686,12 +761,49 @@ def ensure_post_publication_handoff(
         if (
             active_record is not None
             and active_record.get("state") != "completed"
-            and active_record.get("identity_digest")
-            != expected_record["identity_digest"]
+            and not _same_publication_identity(
+                active_record.get("identity"), publication_identity
+            )
         ):
             raise PostPublicationHandoffError(
                 "another_post_publication_handoff_is_active"
             )
+        existing = _read_json(handoff_path, missing_ok=True)
+        if existing is not None and existing.get("state") != "completed":
+            # Same-publication adoption (the wedge cure).  A retry of the
+            # exact same publication whose publishing checkpoint advanced
+            # (the CAS writer bumps checkpoint_revision on every write) must
+            # not be blocked by — and must never rewrite — its own frozen
+            # record: the frozen bytes are the record_digest-chain authority.
+            # A different publication at this path still fails closed below.
+            if not _same_publication_identity(
+                existing.get("identity"), publication_identity
+            ):
+                raise PostPublicationHandoffError(
+                    "another_post_publication_handoff_is_active"
+                )
+            return _adopt_frozen_handoff_record(existing, handoff_path)
+        # Creation path only: _archive_base re-derives the archive preimage
+        # from the live checkpoint, which is meaningless (and would mismatch
+        # the frozen archive) on a same-publication retry.
+        base = _archive_base(
+            version=version,
+            source_v=source_v,
+            checkpoint=publishing_checkpoint,
+            publication_identity=publication_identity,
+        )
+        base_digest = canonical_digest(base)
+        expected_record = _base_record(publication_identity, base_digest)
+        archive = {
+            **base,
+            "base_snapshot_digest": base_digest,
+            "post_publication_handoff": {
+                "identity_digest": expected_record["identity_digest"],
+                "publication_id": publication_identity["publication_id"],
+                "state": "pending",
+            },
+            "finalization": {"state": "pending"},
+        }
         existing_archive = _read_json(archive_path, missing_ok=True)
         if existing_archive is None:
             _atomic_write(archive_path, archive)
@@ -701,7 +813,6 @@ def ensure_post_publication_handoff(
                     "archive_snapshot_preimage_mismatch"
                 )
             _reprove_durable(archive_path)
-        existing = _read_json(handoff_path, missing_ok=True)
         if existing is None:
             _atomic_write(handoff_path, expected_record)
             existing = expected_record
