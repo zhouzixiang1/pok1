@@ -58,7 +58,19 @@ sys.path.insert(1, str(ROOT))
 from bot_artifact import canonical_digest  # noqa: E402
 from evaluation_contract import evaluate_head_drift  # noqa: E402
 from evolution_infra import _git as _evolution_git, read_pipeline_checkpoint  # noqa: E402
-from official_certification_job import _index_lock  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def _index_lock():
+    """No-op stand-in for the retired certification-system index lock.
+
+    The official certification system was removed; the contract-change
+    abandon flow must stay runnable (2026-10-17: v566 post-publication
+    handoff wedge recovery after deploy 2b4dafbd).
+    """
+    yield
+
 from scripts.reconcile_national_policy_epoch import (  # noqa: E402
     _reconciliation_lock,
     _runtime_checkout_identity_errors,
