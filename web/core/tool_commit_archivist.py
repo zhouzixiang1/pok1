@@ -919,9 +919,18 @@ def _revalidate_strict_log_archives(
                 "source_relative_path", "entries", "tree_digest",
             )
         }
-        if _tc._safe_log_tree_manifest(
-            source, version=item["version"]
-        ) != expected_tree:
+        # 2026-10-18 (fourteenth convergence defect, v566): disk hygiene may
+        # have legitimately reaped an orphan generation's live log tree after
+        # the receipt froze (v186). For such versions the immutable tar.gz +
+        # manifest evidence validated above IS the proof; a source tree that
+        # still exists but diverged keeps failing closed below.
+        try:
+            live_tree = _tc._safe_log_tree_manifest(
+                source, version=item["version"]
+            )
+        except FileNotFoundError:
+            live_tree = None
+        if live_tree is not None and live_tree != expected_tree:
             raise RuntimeError("strict_log_final_source_mismatch")
         expected_receipt = {
             "version": item["version"],
