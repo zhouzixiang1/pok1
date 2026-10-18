@@ -420,14 +420,12 @@ def _state_errors(state: Any) -> list[str]:
         publication_ids.add(publication_id)
         if row.get("completion_tag") != bot_tag(version):
             errors.append(f"{prefix}_completion_tag_mismatch")
+        # Native-tier rows carry no certificate-system fields (certification
+        # removed 2026-08-08): the publication-bound essentials are required;
+        # certificate-era fields are optional-but-validated-when-present.
         for key in (
             "commit_oid",
-            "certificate_digest",
             "candidate_artifact_hash",
-            "official_policy_id",
-            "official_status_digest",
-            "certificate_file_sha256",
-            "certificate_attestation_digest",
             "workflow_run_id",
             "daemon_process_identity",
             "final_gate_ledger_digest",
@@ -446,6 +444,8 @@ def _state_errors(state: Any) -> list[str]:
             "daemon_process_identity",
             "final_gate_ledger_digest",
         ):
+            if not str(row.get(key) or ""):
+                continue
             if not _is_hex(row.get(key), 64):
                 errors.append(f"{prefix}_{key}_invalid")
         if row.get("checkpoint_cleared") is not True:
@@ -1527,14 +1527,14 @@ def record_published_generation(
         "completed_sentinel_written": True,
         "published_at": _now(),
     }
+    # Native-tier publications carry no certificate-system fields (the
+    # certification removal, 2026-08-08): only the publication-bound
+    # essentials are required. The certificate-era fields stay optional —
+    # absent is legal, but a present value must still be a valid digest
+    # (never silently accept garbage).
     for key in (
         "commit_oid",
-        "certificate_digest",
         "candidate_artifact_hash",
-        "official_policy_id",
-        "official_status_digest",
-        "certificate_file_sha256",
-        "certificate_attestation_digest",
         "workflow_run_id",
         "daemon_process_identity",
         "final_gate_ledger_digest",
@@ -1553,6 +1553,8 @@ def record_published_generation(
         "daemon_process_identity",
         "final_gate_ledger_digest",
     ):
+        if not row[key]:
+            continue
         if not _is_hex(row[key], 64):
             raise StabilityObservationError(f"publication_{key}_invalid")
 
