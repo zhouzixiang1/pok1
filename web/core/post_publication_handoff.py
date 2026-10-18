@@ -584,10 +584,21 @@ def _publication_commit_is_ancestor_of_head(commit_oid: str) -> bool:
     ``handoff_commit_not_on_remote_main``: ``merge-base --is-ancestor``.
     """
 
+    return _publication_commit_is_ancestor_of(commit_oid, "HEAD")
+
+
+def _publication_commit_is_ancestor_of(commit_oid: str, tip: str) -> bool:
+    """Ancestor rule shared by the local-HEAD and remote-tip comparisons.
+
+    The publication commit must be an ancestor of the observed tip (live
+    HEAD, or the recomputed remote main) — the durable form of the rule the
+    handoff's remote leg already uses for ``handoff_commit_not_on_remote_main``.
+    """
+
     from evolution_infra import _git_command_succeeds
 
-    return _is_hex(commit_oid, 40) and _git_command_succeeds(
-        "merge-base", "--is-ancestor", commit_oid, "HEAD"
+    return _is_hex(commit_oid, 40) and (tip == "HEAD" or _is_hex(tip, 40)) and (
+        _git_command_succeeds("merge-base", "--is-ancestor", commit_oid, tip)
     )
 
 
@@ -644,9 +655,71 @@ def _same_publication_identity(frozen: Any, recomputed: Any) -> bool:
             ):
                 return False
             continue
+        if field == "remote_publication":
+            # Same rule for the remote leg: the remote tip observed at
+            # freeze time legitimately advances past the publication commit
+            # when a post-publication deploy is pushed; only the
+            # publication-bound fields are byte-compared and the
+            # ``remote_main_oid`` drift is accepted under the SAME
+            # merge-base ancestry rule ``_remote_handoff_identity_errors``
+            # already applies (2026-10-18, v566 convergence root cause A).
+            if not _same_remote_publication(
+                frozen[field],
+                recomputed[field],
+                commit_oid=str(frozen.get("commit_oid") or ""),
+            ):
+                return False
+            continue
         if frozen[field] != recomputed[field]:
             return False
     return True
+
+
+# Live-derived fields of a remote publication proof — observations or
+# verdicts that legitimately move between the freeze and a retry:
+# ``remote_main_oid`` is the remote main tip seen at verification time (the
+# remote twin of the local proof's ``main_commit_oid``), and ``valid`` /
+# ``issues`` are that verification's derived verdict. Everything else is
+# publication-bound and byte-compared; because the proof's field set has
+# evolved across eras (the intent-shaped ``required``/``paired_refs`` form
+# and the verifier-shaped ``remote_refs`` form), stability is graded over
+# the key-set difference instead of a hard-coded field list.
+_REMOTE_PUBLICATION_LIVE_FIELDS = ("remote_main_oid", "valid", "issues")
+
+
+def _same_remote_publication(
+    frozen: Any,
+    recomputed: Any,
+    *,
+    commit_oid: str,
+) -> bool:
+    """True only when both remote proofs bind the exact same publication.
+
+    Every non-live field must be present on both sides and byte-equal; a
+    ``remote_main_oid`` drift is accepted only while the publication commit
+    is an ancestor of the recomputed remote tip — the identical rule the
+    remote identity-errors path uses for
+    ``publication_commit_not_on_remote_main``.
+    """
+
+    if not isinstance(frozen, dict) or not isinstance(recomputed, dict):
+        return False
+    live = set(_REMOTE_PUBLICATION_LIVE_FIELDS)
+    frozen_keys = set(frozen) - live
+    recomputed_keys = set(recomputed) - live
+    if frozen_keys != recomputed_keys:
+        return False
+    for key in frozen_keys:
+        frozen_value = frozen.get(key)
+        recomputed_value = recomputed.get(key)
+        if frozen_value is None or recomputed_value is None:
+            return False
+        if frozen_value != recomputed_value:
+            return False
+    if frozen.get("remote_main_oid") == recomputed.get("remote_main_oid"):
+        return True
+    recomputed_main = str(recomputed.get("remote_main_oid") or "")
+    return _publication_commit_is_ancestor_of(commit_oid, recomputed_main)
 
 
 def _base_record(identity: dict[str, Any], archive_digest: str) -> dict[str, Any]:

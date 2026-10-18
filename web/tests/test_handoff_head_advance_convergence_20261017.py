@@ -315,8 +315,8 @@ def test_retry_identity_rebuild_accepts_advanced_main_commit_oid(
     ancestor = {"allowed": True}
     monkeypatch.setattr(
         module,
-        "_publication_commit_is_ancestor_of_head",
-        lambda _oid: ancestor["allowed"],
+        "_publication_commit_is_ancestor_of",
+        lambda _oid, _tip: ancestor["allowed"],
     )
 
     def rebuild(main_commit_oid):
@@ -363,8 +363,8 @@ def test_spine_adoption_survives_head_advance_drift(handoff_env, monkeypatch):
     ancestor = {"allowed": True}
     monkeypatch.setattr(
         module,
-        "_publication_commit_is_ancestor_of_head",
-        lambda _oid: ancestor["allowed"],
+        "_publication_commit_is_ancestor_of",
+        lambda _oid, _tip: ancestor["allowed"],
     )
     assert module._same_publication_identity(record["identity"], drifted)
 
@@ -542,8 +542,8 @@ def test_live_proof_reproof_grades_stable_fields_and_head_advance(
     ancestor = {"allowed": True}
     monkeypatch.setattr(
         module,
-        "_publication_commit_is_ancestor_of_head",
-        lambda _oid: ancestor["allowed"],
+        "_publication_commit_is_ancestor_of",
+        lambda _oid, _tip: ancestor["allowed"],
     )
 
     def errors_for(fresh_proof):
@@ -1148,3 +1148,102 @@ def test_preflight_head_issues_tolerates_only_ancestral_advance(
         "publication_repository_head_mismatch",
         "publication_remote_main_head_mismatch",
     ]
+
+
+def _remote_proof(commit_oid: str, remote_main: str) -> dict:
+    return {
+        "valid": True,
+        "version": 7,
+        "publication_id": "p" * 64,
+        "commit_oid": commit_oid,
+        "remote_main_oid": remote_main,
+        "remote_refs": {"refs/tags/x": {"object_oid": "1" * 40, "peeled": "2" * 40}},
+        "issues": [],
+    }
+
+
+def _remote_proof_legacy(commit_oid: str, remote_main: str) -> dict:
+    """The intent-shaped era of the remote proof (required/paired_refs)."""
+    return {
+        "required": False,
+        "explicit_test_mode": True,
+        "remote_main_oid": remote_main,
+        "paired_refs": {},
+    }
+
+
+def test_same_remote_publication_tolerates_only_ancestral_main_drift(
+    tmp_path, monkeypatch
+):
+    # Root cause A (2026-10-18): the frozen remote tip observed at publication
+    # time legitimately advances past the publication commit when a
+    # post-publication deploy is pushed; adoption must not byte-compare it.
+    import post_publication_handoff as handoff
+
+    repo, pub, head = _real_git_repo(tmp_path, monkeypatch)
+    frozen = _remote_proof(pub, pub)
+    advanced = _remote_proof(pub, head)
+    stale = _remote_proof(pub, "0" * 40)
+
+    # Exact match passes.
+    assert handoff._same_remote_publication(frozen, frozen, commit_oid=pub)
+    # Remote advanced past the publication commit: ancestor rule accepts.
+    assert handoff._same_remote_publication(frozen, advanced, commit_oid=pub)
+    # Reversed (frozen ahead of recomputed): the publication commit is not an
+    # ancestor of the stale zero tip — fails closed.
+    assert not handoff._same_remote_publication(advanced, stale, commit_oid=pub)
+    # Stable-field forgery is rejected even with an ancestral main.
+    forged = dict(advanced)
+    forged["remote_refs"] = {"refs/tags/x": {"object_oid": "9" * 40}}
+    assert not handoff._same_remote_publication(frozen, forged, commit_oid=pub)
+    forged_commit = dict(advanced)
+    forged_commit["commit_oid"] = "3" * 40
+    assert not handoff._same_remote_publication(frozen, forged_commit, commit_oid=pub)
+    # Non-dict / key-set drift fail.
+    assert not handoff._same_remote_publication(None, advanced, commit_oid=pub)
+    missing = {k: v for k, v in advanced.items() if k != "remote_refs"}
+    assert not handoff._same_remote_publication(frozen, missing, commit_oid=pub)
+    # The legacy intent-shaped proof grades identically (key-set stability).
+    legacy_frozen = _remote_proof_legacy(pub, pub)
+    legacy_advanced = _remote_proof_legacy(pub, head)
+    assert handoff._same_remote_publication(
+        legacy_frozen, legacy_advanced, commit_oid=pub
+    )
+    assert not handoff._same_remote_publication(
+        legacy_frozen, advanced, commit_oid=pub
+    )
+
+
+def test_precommit_plan_frozen_evaluator_identity_toggle():
+    # Root cause B (2026-10-18): inside the fully proven publication window
+    # the plan's own evaluator identity is authoritative; outside it the live
+    # SEMANTIC_PATHS drift stays a hard gate.
+    import precommit_eval_contract as contract
+
+    plan = {
+        "schema_version": contract.PLAN_SCHEMA_VERSION,
+        "candidate_version": 7,
+        "source_version": 6,
+        "profile_id": "pid",
+        "execution_mode": "emode",
+        "evaluation_protocol": "proto",
+        "evaluator_identity": "stale-identity",
+        "opponents": [{"name": "national_cloud_v1"}],
+        "require_published_opponents": True,
+    }
+    plan["plan_digest"] = contract.canonical_digest(
+        {k: v for k, v in plan.items() if k != "plan_digest"}
+    )
+    kwargs = dict(
+        candidate_version=7,
+        source_version=6,
+        profile_id="pid",
+        execution_mode="emode",
+        evaluation_protocol="proto",
+    )
+    strict = contract.validate_precommit_plan(plan, **kwargs)
+    assert "precommit_evaluator_identity_drift" in strict
+    windowed = contract.validate_precommit_plan(
+        plan, frozen_evaluator_identity=True, **kwargs
+    )
+    assert "precommit_evaluator_identity_drift" not in windowed

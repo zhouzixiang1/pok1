@@ -307,6 +307,31 @@ def validate_commit_gate_ledger(
                     precommit_plan = (
                         (ckpt.get("audit_context") or {}).get("precommit_eval_plan")
                     )
+                    # 2026-10-18 (v566 convergence, root cause B): inside the
+                    # fully proven intent-bound publication window the plan's
+                    # own evaluator identity is authoritative — the live
+                    # SEMANTIC_PATHS hash legitimately drifts after a
+                    # post-publication deploy touched a semantic file.
+                    publication_window_reconciliation = False
+                    if str(ckpt.get("stage") or "") == "publishing":
+                        try:
+                            from evolution_infra import (
+                                checkpoint_allocation_authority,
+                            )
+                            from evolution_infra_checkpoint_cas import (
+                                _publication_checkpoint_reconciliation_allowed,
+                            )
+
+                            publication_window_reconciliation = (
+                                _publication_checkpoint_reconciliation_allowed(
+                                    ckpt,
+                                    checkpoint_allocation_authority(
+                                        expected_next_v=None
+                                    ),
+                                )
+                            )
+                        except Exception:
+                            publication_window_reconciliation = False
                     plan_issues = validate_precommit_plan(
                         precommit_plan,
                         candidate_version=v,
@@ -314,6 +339,9 @@ def validate_commit_gate_ledger(
                         profile_id=expected_profile_id,
                         execution_mode=expected_execution_mode,
                         evaluation_protocol=expected_evaluation_protocol,
+                        frozen_evaluator_identity=(
+                            publication_window_reconciliation
+                        ),
                     )
                     contract_issues = (
                         validate_evaluation_contract(

@@ -686,6 +686,7 @@ def validate_precommit_plan(
     profile_id: str,
     execution_mode: str,
     evaluation_protocol: str,
+    frozen_evaluator_identity: bool = False,
 ) -> list[str]:
     from bot_namespace import ARCHIVED_VERSION_HIGH_WATER
 
@@ -713,7 +714,18 @@ def validate_precommit_plan(
         evaluation_protocol=evaluation_protocol,
     )
     if plan.get("evaluator_identity") != current_evaluator:
-        issues.append("precommit_evaluator_identity_drift")
+        if not frozen_evaluator_identity:
+            issues.append("precommit_evaluator_identity_drift")
+        # 2026-10-18 (v566 convergence, root cause B): inside the fully
+        # proven intent-bound publication window the evaluation is already
+        # frozen in the published artifacts — the gate ledger must re-derive
+        # its digest from the plan's OWN evaluator identity instead of the
+        # live SEMANTIC_PATHS hash, or any post-publication deploy that
+        # touched a semantic file permanently wedges the pre-push authority
+        # (and, on a transient remote-verification failure, the resume
+        # ledger branch) with precommit_evaluator_identity_drift. The window
+        # predicate itself is proven by the caller; outside it this stays a
+        # hard gate.
 
     opponents = plan.get("opponents")
     if not isinstance(opponents, list) or not opponents:
