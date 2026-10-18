@@ -487,12 +487,25 @@ def _validate_strict_log_cleanup_plan(
         keep_generations=STRICT_LOG_KEEP_GENERATIONS,
     )
     expected_archives = expected_plan["archives"]
-    if (
-        [item["version"] for item in archives]
-        != [item["version"] for item in expected_archives]
+    # 2026-10-18 (thirteenth convergence defect, v566): disk hygiene
+    # legitimately reaps old orphan vN trees AFTER the receipt froze (v186's
+    # live source was removed ~90 minutes into the v566 handoff), so an
+    # exact frozen-vs-rebuilt equality check wedges the reproof forever.
+    # The anti-forgery property is directional: every log tree that exists
+    # on disk NOW must be covered by the frozen receipt (nothing new or
+    # undeclared may appear — a forged shortened list including the empty
+    # list still fails), and every covered tree whose live source still
+    # exists must match the frozen preimage byte-for-byte.  A version whose
+    # source was legitimately reaped remains proven by its immutable
+    # tar.gz + manifest under results/archive/.
+    frozen_by_version = {item["version"]: item for item in archives}
+    if any(
+        item["version"] not in frozen_by_version for item in expected_archives
     ):
         raise RuntimeError("strict_log_cleanup_plan_incomplete")
-    if archives != expected_archives:
+    if expected_archives != [
+        frozen_by_version[item["version"]] for item in expected_archives
+    ]:
         raise RuntimeError("strict_log_cleanup_preimage_changed")
     return archives
 

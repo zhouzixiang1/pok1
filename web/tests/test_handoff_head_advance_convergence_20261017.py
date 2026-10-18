@@ -1447,3 +1447,53 @@ def test_stability_reproof_tolerates_documented_reset(handoff_env, monkeypatch):
         Exception, match="handoff_stability_observation_reproof_mismatch"
     ):
         contracts._reprove_operational_steps(record)
+
+
+def test_strict_log_cleanup_reproof_tolerates_reaped_source(tmp_path, monkeypatch):
+    # Thirteenth convergence defect (2026-10-18): the log-cleanup reproof
+    # rebuilt the plan from LIVE disk state and demanded exact equality with
+    # the frozen receipt, so disk hygiene legitimately reaping an old orphan
+    # vN tree after the receipt froze (v186, ~90 minutes into the v566
+    # handoff) wedged the reproof forever.  The anti-forgery property is
+    # directional and stays intact: every tree on disk NOW must be covered
+    # by the frozen receipt, and covered trees must match their preimage.
+    import tool_commit as _tc
+    import tool_commit_archivist as tca
+
+    results = tmp_path / "results"
+    for version in (1, 2):
+        logs = results / f"v{version}" / "logs"
+        logs.mkdir(parents=True)
+        (logs / f"run-{version}.txt").write_text(f"log bytes {version}\n")
+    monkeypatch.setattr(_tc, "RESULTS_DIR", results)
+
+    handoff_version = 20  # cutoff 15 keeps v1..v15 subjects
+    frozen_plan = tca._build_strict_log_cleanup_plan(handoff_version)
+    assert [item["version"] for item in frozen_plan["archives"]] == [1, 2]
+
+    # Reap v2's live source AFTER freezing (the disk-hygiene case).
+    import shutil
+
+    shutil.rmtree(results / "v2")
+    validated = tca._validate_strict_log_cleanup_plan(
+        frozen_plan, expected_handoff_version=handoff_version
+    )
+    assert [item["version"] for item in validated] == [1, 2]
+
+    # A tree appearing on disk that the frozen receipt does NOT cover is
+    # still a hard failure (anti-laundering / forged-empty-list leg).
+    uncovered = dict(frozen_plan)
+    uncovered["archives"] = [
+        item for item in frozen_plan["archives"] if item["version"] != 1
+    ]
+    with pytest.raises(RuntimeError, match="strict_log_cleanup_plan_incomplete"):
+        tca._validate_strict_log_cleanup_plan(
+            uncovered, expected_handoff_version=handoff_version
+        )
+
+    # A covered tree whose live bytes changed since freezing still fails.
+    (results / "v1" / "logs" / "run-1.txt").write_text("mutated\n")
+    with pytest.raises(RuntimeError, match="strict_log_cleanup_preimage_changed"):
+        tca._validate_strict_log_cleanup_plan(
+            frozen_plan, expected_handoff_version=handoff_version
+        )
