@@ -513,13 +513,15 @@ def _stability_reset_proves_receipt(
     for entry in history:
         if not isinstance(entry, dict):
             continue
-        details = entry.get("details") or {}
+        # reset_stability_observation appends the pre-reset row binding at
+        # ENTRY level: {"at", "reason", "details", "previous_count",
+        # "previous_last_version"} (stability_observation.py).
         if (
             isinstance(entry.get("at"), (int, float))
             and entry.get("at") >= completed_at
-            and details.get("previous_last_version") == version
-            and isinstance(details.get("previous_count"), int)
-            and details.get("previous_count") >= count
+            and entry.get("previous_last_version") == version
+            and isinstance(entry.get("previous_count"), int)
+            and entry.get("previous_count") >= count
         ):
             return True
     return False

@@ -1365,6 +1365,9 @@ def _reset_reprove_record():
 
 
 def _reset_projection(*, at, previous_last_version=566, previous_count=1):
+    # Mirrors the REAL reset_stability_observation history entry shape:
+    # previous_count / previous_last_version are ENTRY-level fields, not
+    # nested in details (stability_observation.py history.append).
     return {
         "continuity_id": "2" * 32,
         "count": 0,
@@ -1375,11 +1378,9 @@ def _reset_projection(*, at, previous_last_version=566, previous_count=1):
             {
                 "at": at,
                 "reason": "runtime_process_start",
-                "details": {
-                    "identity_mismatches": ["repository_head", "process_pid"],
-                    "previous_count": previous_count,
-                    "previous_last_version": previous_last_version,
-                },
+                "details": {"identity_mismatches": ["repository_head"]},
+                "previous_count": previous_count,
+                "previous_last_version": previous_last_version,
             }
         ],
     }
