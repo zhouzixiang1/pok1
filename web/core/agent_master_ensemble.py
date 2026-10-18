@@ -99,6 +99,11 @@ _TARGET_INFEASIBLE_HINT_PREFIXES = (
 # (strict_authority_workflow) stays authoritative.
 _ENSEMBLE_NEW_ERROR_RETRY_ROUNDS = 1
 
+# Packet-terminal rescue (2026-10-19): one extra repair round per
+# still-invalid direction, dispatched ONLY when the packet would otherwise
+# die (< required distinct valid proposals). See the rescue block below.
+_ENSEMBLE_PACKET_RESCUE_ROUNDS = 1
+
 
 def _proposal_error_classes(hints: object) -> frozenset[str]:
     """First error-code segment of every hint: the stable failure class.
@@ -991,6 +996,7 @@ async def _run_master_proposal_ensemble(
         # repairable one.  Strict-authority generations are excluded (their
         # durable MAX_SCHEMA_ATTEMPTS_PER_SLOT journal contract stays
         # authoritative), and no third round exists — the cap is structural.
+        second_failures: list = []
         if (
             retry_validation_failures
             and _ENSEMBLE_NEW_ERROR_RETRY_ROUNDS > 0
@@ -1019,7 +1025,7 @@ async def _run_master_proposal_ensemble(
                     "Master ensemble new-error second retry for directions: %s",
                     [direction for direction, _d, _r in second_retry_specs],
                 )
-                second_provider_errors, _second_failures = (
+                second_provider_errors, second_failures = (
                     await _dispatch_retry_round(
                         second_retry_specs,
                         attempt_label="attempt 3",
@@ -1033,6 +1039,95 @@ async def _run_master_proposal_ensemble(
                         error,
                         slot=f"proposal:{direction}",
                     )
+    # 2026-10-19 (packet-terminal rescue, workflow-audit high finding):
+    # the v450 new-error gate refuses a third attempt whose failure class
+    # merely repeats attempt-1's — sound against WASTE, fatal when the
+    # repeated-class direction is the last missing proposal: 3 of 7
+    # generations (v562/v563/v565) died exactly here with got_2, burning
+    # the whole generation's LLM spend for zero strategy information.
+    # When the packet would otherwise die, exactly ONE rescue attempt per
+    # still-invalid direction is positive expected value over certain
+    # death: same validators, same avoid/claim rules, full unavailable
+    # set (including the direction's own failed symbols, so it cannot
+    # re-propose its failure).  The pin is deliberately NOT carried over:
+    # the pinned target is exactly what kept failing.  Strict-authority
+    # bootstrap generations keep their durable
+    # MAX_SCHEMA_ATTEMPTS_PER_SLOT journal cap and get no rescue.
+    if (
+        len(proposals) != len(_am._MASTER_PROPOSAL_DIRECTIONS)
+        and _ENSEMBLE_PACKET_RESCUE_ROUNDS > 0
+        and not strict_authority_enabled
+        and not (protocol_bootstrap_prepared_only or singleton_no_strength)
+    ):
+        latest_failures: dict[str, tuple] = {}
+        for record in [*retry_validation_failures, *second_failures]:
+            latest_failures[record[0]] = record
+        taken_directions = set(accepted_proposal_directions.values())
+        rescue_specs: list[tuple[str, str, dict]] = []
+        for direction, _default_directive in _am._MASTER_PROPOSAL_DIRECTIONS:
+            if direction in taken_directions:
+                continue
+            record = latest_failures.get(direction)
+            if record is None:
+                continue
+            _direction, directive, prior_repair, failed_output, fresh_hints = record
+            # Constrain the rescue to the REAL ensemble invariant only:
+            # other directions' claimed symbols and registered pins. The
+            # direction's OWN registered pin is excluded (the same rule the
+            # second retry documents: the pin was registered for this
+            # direction, so it must not count against itself), and its own
+            # failed symbol is NOT avoided — the repeated failure classes
+            # are overwhelmingly field-level (risks text, required text,
+            # measurement binding) with an innocent symbol, and re-proposing
+            # it with fixed fields is the most probable rescue success.
+            # Symbol-level failures still die at the same schema validators
+            # as every other attempt.
+            own_pin = str(retry_pinned_symbols.get(direction) or "")
+            unavailable = [
+                symbol
+                for symbol in _ensemble_unavailable_change_symbols()
+                if symbol != own_pin
+            ]
+            hints = list(fresh_hints)
+            hints.extend(
+                f"schema_retry_avoid_claimed_symbol.{symbol}"
+                for symbol in unavailable
+                if f"schema_retry_avoid_claimed_symbol.{symbol}" not in hints
+            )
+            rescue_specs.append(
+                (
+                    direction,
+                    directive,
+                    {
+                        "kind": "schema",
+                        "retry_round": 3,
+                        "avoid_change_symbols": unavailable,
+                        "projection_hints": hints,
+                    },
+                )
+            )
+        if rescue_specs:
+            _log.warning(
+                "Master ensemble packet-terminal rescue for directions %s "
+                "(packet would die with %d/%d valid proposals)",
+                [d for d, _dd, _r in rescue_specs],
+                len(proposals),
+                len(_am._MASTER_PROPOSAL_DIRECTIONS),
+            )
+            rescue_provider_errors, _rescue_failures = (
+                await _dispatch_retry_round(
+                    rescue_specs,
+                    attempt_label="packet rescue",
+                )
+            )
+            if rescue_provider_errors:
+                direction, error = rescue_provider_errors[0]
+                raise_provider_failure(
+                    "proposal_scout_repair",
+                    direction,
+                    error,
+                    slot=f"proposal:{direction}",
+                )
     if len(proposals) != len(_am._MASTER_PROPOSAL_DIRECTIONS):
         _log.error(
             "Master ensemble insufficient: got %d valid proposals, need %d. "

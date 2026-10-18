@@ -351,10 +351,19 @@ async def test_repeated_same_error_class_does_not_trigger_second_retry(
     )
     packet = await harness.run(tmp_path)
 
-    assert packet["valid"] is False
-    assert packet["reason"].endswith("got_2")
-    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 1
-    # The single retry prompt carried the attempt-1 class' (new) guidance.
+    # 2026-10-19 packet-terminal rescue: the second-retry MACHINERY still
+    # does not fire for a repeated class, but the packet would die with 2/3
+    # valid proposals, so exactly one rescue attempt is dispatched — and
+    # here it returns a fully valid proposal, saving the generation that
+    # historically died (v562/v563/v565).
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 2
+    rescue_inputs = harness.retry_inputs("mechanism", "schema")[-1]
+    assert "schema_retry_avoid_claimed_symbol." in str(
+        rescue_inputs.get("projection_hints")
+    )
+    # The first retry prompt carried the attempt-1 class' (new) guidance.
     retry_prompt = harness.retry_prompt("mechanism", "schema")
     assert "under 20 characters" in retry_prompt
     assert "measurement" in retry_prompt
@@ -364,8 +373,9 @@ async def test_repeated_same_error_class_does_not_trigger_second_retry(
 async def test_second_retry_fires_at_most_once_never_a_third(
     monkeypatch, tmp_path
 ):
-    """The second retry also fails (this time with a class already seen in
-    attempt-1): no third retry exists — the per-direction cap is structural."""
+    """The second retry also fails with a repeated class; the packet-terminal
+    rescue (2026-10-19) fires exactly once more and is the last attempt —
+    the per-direction cap stays structural, now one round later."""
 
     harness = _RoundHarness(
         monkeypatch,
@@ -380,11 +390,30 @@ async def test_second_retry_fires_at_most_once_never_a_third(
     )
     packet = await harness.run(tmp_path)
 
+    # 2026-10-19: the packet-terminal rescue adds exactly ONE last attempt
+    # (attempt-2 + attempt-3 + rescue); it fails with the same repeated
+    # class, and the packet still dies got_2. No fifth dispatch exists.
     assert packet["valid"] is False
     assert packet["reason"].endswith("got_2")
-    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 2
+    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 3
     # The critics never ran: the ensemble died before ballots.
     assert not any("CRITIC" in name for name, _prompt in harness.calls)
+
+
+@pytest.mark.asyncio
+async def test_packet_terminal_rescue_fires_only_when_packet_would_die(
+    monkeypatch, tmp_path
+):
+    """The rescue round is terminal-only: when all three directions are
+    valid on attempt 1, no rescue (or any retry) is ever dispatched."""
+
+    harness = _RoundHarness(monkeypatch, tmp_path)
+    packet = await harness.run(tmp_path)
+
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 0
+    assert harness.role_count("MASTER PROPOSAL compute_memory SCHEMA RETRY") == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
