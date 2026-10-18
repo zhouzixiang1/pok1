@@ -746,6 +746,15 @@ def test_publication_requires_local_and_remote_main_at_exact_commit(monkeypatch)
     current = _install_identity(monkeypatch, observation)
     observation.initialize_stability_observation()
     result, checkpoint = _publication(V0)
+    # 2026-10-17 HEAD-advance rule: the autouse daemon-identity fixture stubs
+    # ``_git_command_succeeds`` to True (tolerating ANY head drift through the
+    # ancestor seam); pin it to a realistic "no fake oid is an ancestor" so a
+    # non-ancestral repository head / remote main still fails closed here.
+    monkeypatch.setattr(
+        observation,
+        "_git_command_succeeds",
+        lambda *_args: False,
+    )
 
     with pytest.raises(
         observation.StabilityObservationError,

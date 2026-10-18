@@ -268,7 +268,15 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
         raise RuntimeError("reap_registry_projection_missing")
     if name in set(_tc.get_active_bots()):
         raise RuntimeError("reaped_target_still_active")
-    if _tc._git("rev-parse", "HEAD").strip() != record["identity"]["commit_oid"]:
+    head_oid = _tc._git("rev-parse", "HEAD").strip()
+    # HEAD-advance rule (2026-10-17): a post-publication deploy legitimately
+    # moves HEAD past the publication commit; the pin is "publication commit
+    # is an ancestor of HEAD", not exact equality (v566 wedge class).
+    if head_oid != record["identity"]["commit_oid"] and not (
+        _tc._publication_head_advance_allowed(
+            record["identity"]["commit_oid"], head_oid
+        )
+    ):
         raise RuntimeError("reap_changed_head")
     return {
         "bot": name,
@@ -310,7 +318,17 @@ async def _run_durable_post_publication_archivist(v: int, source_v: int):
             }
         _tc._set_pipeline_status(f"Archiving v{v}")
         _tc._git_ensure_main_branch()
-        if _tc._git("rev-parse", "HEAD").strip() != record["identity"]["commit_oid"]:
+        # HEAD-advance rule (2026-10-17): a fully published generation must
+        # converge even after a bug-fix deploy advanced HEAD past the
+        # publication commit (v566).  The requirement is "the publication
+        # commit is an ancestor of HEAD", not exact HEAD equality; the
+        # worktree-clean proof below is unchanged.
+        head_oid = _tc._git("rev-parse", "HEAD").strip()
+        if head_oid != record["identity"]["commit_oid"] and not (
+            _tc._publication_head_advance_allowed(
+                record["identity"]["commit_oid"], head_oid
+            )
+        ):
             raise RuntimeError("post_publication_head_not_publication_commit")
         if _tc._git_dirty_paths():
             raise RuntimeError("post_publication_worktree_not_clean")

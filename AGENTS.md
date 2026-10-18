@@ -977,7 +977,19 @@ valid.
 Final handoff completion reopens the operational stability row, reissues the
 exact daemon refresh and priority capabilities, and independently re-proves
 rotation archives, strict-log archives, reap tombstones, Cycle Archivist
-annotation, Git HEAD, and clean worktree. Archive rotation first freezes one
+annotation, Git HEAD, and clean worktree. The Git HEAD re-proof is an
+ancestor rule, not exact equality: the frozen publication commit must be an
+ancestor of the current HEAD (identity rebuild, frozen-record adoption, the
+live local re-proof, the archivist entry/housekeeping checks, and the
+stability-observation preflight all grade on publication-bound fields and
+accept a HEAD that advanced past the publication commit only under
+``merge-base --is-ancestor``). Fixing a bug and deploying it after a
+publication is legitimate operations, and an exact publication-time-HEAD
+re-proof would wedge every published generation's handoff forever once any
+post-publication deploy landed (proven by v566: published at 1d4391dc, HEAD
+advanced to 2b4dafbd/d5d06871 while the handoff was still converging). The
+clean-worktree re-proof is unchanged. Archive
+rotation first freezes one
 high-level plan for every managed append-only source and preserves live source
 bytes. Strict-generation log archival is non-destructive: it emits immutable
 archives/manifests while retaining the live log tree and every generation

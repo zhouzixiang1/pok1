@@ -1893,6 +1893,7 @@ from tool_commit_archivist import (  # noqa: F401
     _POOL_REAP_PLAN_KEYS,
     _validated_archivist_storage_owner_lock,
     _git_dirty_paths,
+    _publication_head_advance_allowed,
     _verify_post_publication_worktree,
     _durable_archivist_state_write,
     _build_strict_log_cleanup_plan,

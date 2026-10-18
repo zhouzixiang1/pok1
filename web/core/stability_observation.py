@@ -1341,6 +1341,49 @@ def reset_stability_observation(
     return _projection(state, identity=identity)
 
 
+def _preflight_head_issues(
+    publication_commit: str,
+    *,
+    current_head: str,
+    remote_main: str,
+) -> list[str]:
+    """First-observation head issues under the HEAD-advance (ancestor) rule.
+
+    ``_publication_head_transition_issues`` in its ``previous_head=None``
+    form pins live HEAD and remote main to the publication commit exactly.
+    The streak path already filters those two codes as tolerated drift
+    (see the ``drift_issues`` comprehension); the preflight must tolerate
+    exactly the same thing, but only under the ancestor rule — a head that
+    advanced past the publication commit via a legitimate post-publication
+    deploy converges (v566), while a different branch line or a non-ancestor
+    tip still fails closed.  Every other transition issue still raises.
+    """
+
+    issues = _publication_head_transition_issues(
+        previous_head=None,
+        current_head=current_head,
+        publication_commit=publication_commit,
+        remote_main=remote_main,
+    )
+    if not _is_hex(publication_commit, 40):
+        return issues
+    tolerated: set[str] = set()
+    if "publication_repository_head_mismatch" in issues and (
+        _git_command_succeeds(
+            "merge-base", "--is-ancestor", publication_commit, "HEAD"
+        )
+    ):
+        tolerated.add("publication_repository_head_mismatch")
+    if "publication_remote_main_head_mismatch" in issues and (
+        _is_hex(remote_main, 40)
+        and _git_command_succeeds(
+            "merge-base", "--is-ancestor", publication_commit, remote_main
+        )
+    ):
+        tolerated.add("publication_remote_main_head_mismatch")
+    return [issue for issue in issues if issue not in tolerated]
+
+
 def _publication_head_transition_issues(
     *,
     previous_head: str | None,
@@ -1527,10 +1570,9 @@ def record_published_generation(
             "repair_baseline_artifact_hash"
         )
     identity = _current_identity()
-    preflight_head_issues = _publication_head_transition_issues(
-        previous_head=None,
+    preflight_head_issues = _preflight_head_issues(
+        commit_oid,
         current_head=str(identity.get("repository_head") or ""),
-        publication_commit=commit_oid,
         remote_main=str(remote_binding.get("remote_main_oid") or ""),
     )
     if preflight_head_issues:

@@ -462,6 +462,14 @@ def _publication_identity(
     if local_proof.get("proof_digest") != canonical_digest(unsigned_proof):
         raise PostPublicationHandoffError("local_publication_proof_digest_invalid")
     completion_name = bot_tag(version)
+    # HEAD-advance rule (2026-10-17): at first publication HEAD IS the
+    # publication commit, so ``main_commit_oid == commit_oid`` holds.  On a
+    # retry of an already-tagged, remote-proven publication after a deploy
+    # advanced HEAD, the rebuilt proof legitimately carries the new branch tip
+    # as ``main_commit_oid`` — the exact equality there raised
+    # ``candidate_artifact_hash_mismatch`` before the retry could ever reach
+    # the frozen-record adoption branch (v566).  Accept the drift only while
+    # the publication commit is an ancestor of the current HEAD.
     if (
         not _is_hex(artifact_hash, 64)
         or (not staging_intent and not _is_hex(certificate_digest, 64))
@@ -475,7 +483,13 @@ def _publication_identity(
         or local_proof.get("tag_object")
         != paired[completion_name]["object_oid"]
         or local_proof.get("commit_oid") != commit_oid
-        or local_proof.get("main_commit_oid") != commit_oid
+        or not (
+            _is_hex(local_proof.get("main_commit_oid"), 40)
+            and (
+                local_proof.get("main_commit_oid") == commit_oid
+                or _publication_commit_is_ancestor_of_head(commit_oid)
+            )
+        )
         or not _is_hex(local_proof.get("completion_tree_oid"), 40)
     ):
         raise PostPublicationHandoffError("candidate_artifact_hash_mismatch")
@@ -516,7 +530,10 @@ def _publication_identity(
 # exactly those two fields.  Every field below is content-bound to the
 # publication itself (cryptographic publication_id + commit_oid +
 # candidate_artifact_hash + workflow identity + ref/proof bindings) and must
-# be byte-equal before a retry may adopt its frozen handoff record.
+# be byte-equal before a retry may adopt its frozen handoff record — with the
+# one graded exception of ``local_publication_proof``, whose live
+# ``main_commit_oid``/``proof_digest`` legs re-derive after a legitimate
+# post-publication deploy advanced HEAD (see ``_same_publication_proof``).
 _SAME_PUBLICATION_IDENTITY_FIELDS = (
     "schema_version",
     "evaluation_epoch",
@@ -534,6 +551,80 @@ _SAME_PUBLICATION_IDENTITY_FIELDS = (
 )
 
 
+# The publication-bound (retry-stable) fields of a local publication proof.
+# ``main_commit_oid`` — the evolution-branch tip observed at proof-build time —
+# and its derived ``proof_digest`` are deliberately excluded: fixing a bug and
+# deploying it after a publication legitimately advances HEAD past the
+# publication commit (v566: published at 1d4391dc, HEAD advanced to 2b4dafbd /
+# d5d06871 while the handoff was still converging), so a retry re-derives both
+# to new values no matter how exact the frozen publication is.  This is the
+# same stable-field cut as ``checkpoint_schema.stable_publication_identity``,
+# which drops live checkout observations (``main_commit_oid``, current HEAD
+# tree) from a durable parent receipt for exactly that reason.
+_PROOF_STABLE_FIELDS = (
+    "schema_version",
+    "kind",
+    "bot",
+    "version",
+    "artifact_hash",
+    "tag",
+    "tag_object",
+    "commit_oid",
+    "completion_tree_oid",
+)
+
+
+def _publication_commit_is_ancestor_of_head(commit_oid: str) -> bool:
+    """HEAD-advance rule: the publication commit is an ancestor of live HEAD.
+
+    An exact publication-time-HEAD pin made every frozen-record-vs-live-git
+    comparison permanently fail after any post-publication deploy, wedging a
+    fully published generation's handoff forever (v566).  The durable rule is
+    the one the handoff's remote leg already uses for
+    ``handoff_commit_not_on_remote_main``: ``merge-base --is-ancestor``.
+    """
+
+    from evolution_infra import _git_command_succeeds
+
+    return _is_hex(commit_oid, 40) and _git_command_succeeds(
+        "merge-base", "--is-ancestor", commit_oid, "HEAD"
+    )
+
+
+def _same_publication_proof(
+    frozen: Any,
+    recomputed: Any,
+    *,
+    commit_oid: str = "",
+) -> bool:
+    """True only when both proofs bind the exact same local publication.
+
+    The stable fields must be byte-equal.  A ``main_commit_oid`` (and therefore
+    ``proof_digest``) drift is accepted only while the publication commit is an
+    ancestor of the current HEAD — i.e. the drift is exactly "HEAD advanced
+    past the publication", never a different branch line or a forged tip.
+    """
+
+    if not isinstance(frozen, dict) or not isinstance(recomputed, dict):
+        return False
+    for field in _PROOF_STABLE_FIELDS:
+        # A missing stable field on either side is a shape break, not a match:
+        # legitimate proofs always carry every publication-bound key (the
+        # builder emits the full key set and frozen records pass the
+        # ``_LOCAL_PROOF_KEYS`` shape gate), so ``None == None`` must not
+        # silently pass for a pair that dropped the same field (red-team
+        # 2026-10-17).
+        frozen_value = frozen.get(field)
+        recomputed_value = recomputed.get(field)
+        if frozen_value is None or recomputed_value is None:
+            return False
+        if frozen_value != recomputed_value:
+            return False
+    if frozen.get("main_commit_oid") == recomputed.get("main_commit_oid"):
+        return True
+    return _publication_commit_is_ancestor_of_head(commit_oid)
+
+
 def _same_publication_identity(frozen: Any, recomputed: Any) -> bool:
     """True only when both identities bind the exact same publication."""
 
@@ -542,6 +633,17 @@ def _same_publication_identity(frozen: Any, recomputed: Any) -> bool:
     for field in _SAME_PUBLICATION_IDENTITY_FIELDS:
         if field not in frozen or field not in recomputed:
             return False
+        if field == "local_publication_proof":
+            # The proof is graded on its stable publication fields; a live
+            # ``main_commit_oid``/``proof_digest`` drift is accepted only
+            # under the HEAD-advance (ancestor) rule, never byte-compared.
+            if not _same_publication_proof(
+                frozen[field],
+                recomputed[field],
+                commit_oid=str(frozen.get("commit_oid") or ""),
+            ):
+                return False
+            continue
         if frozen[field] != recomputed[field]:
             return False
     return True
@@ -1032,7 +1134,14 @@ def validate_handoff_record(
         or local_proof.get("tag_object")
         != (local_refs.get(completion_name) or {}).get("object_oid")
         or local_proof.get("commit_oid") != identity.get("commit_oid")
-        or local_proof.get("main_commit_oid") != identity.get("commit_oid")
+        # ``main_commit_oid`` is a live checkout observation (the branch tip
+        # at proof-build time), not a publication-bound field: after a
+        # post-publication deploy advanced HEAD it legitimately differs from
+        # the publication commit (``_publication_identity`` accepts exactly
+        # equality-or-ancestor at freeze/adopt time and the local re-proof
+        # re-derives it under the same rule).  Structurally it must only be
+        # a well-formed commit oid; the stable fields above stay byte-equal.
+        or not _is_hex(local_proof.get("main_commit_oid"), 40)
         or not _is_hex(local_proof.get("completion_tree_oid"), 40)
     ):
         errors.append("handoff_local_publication_proof_identity_mismatch")
@@ -1255,7 +1364,17 @@ def local_handoff_identity_errors(record: Any) -> list[str]:
 
         candidate = Path(PROJECT_ROOT) / "bots" / bot_name(version)
         fresh_proof = build_pending_local_publication_proof(candidate)
-        if fresh_proof != identity["local_publication_proof"]:
+        # HEAD-advance rule (2026-10-17): a post-publication deploy moves HEAD
+        # past the publication commit, so the freshly built proof re-derives
+        # ``main_commit_oid`` (the branch tip at proof-build time) and its
+        # ``proof_digest`` to new values.  Grade the re-proof on the stable
+        # publication-bound fields only, and accept the main-commit drift only
+        # while the publication commit is an ancestor of the current HEAD.
+        if not _same_publication_proof(
+            identity["local_publication_proof"],
+            fresh_proof,
+            commit_oid=commit_oid,
+        ):
             errors.append("handoff_live_local_publication_proof_mismatch")
         spec = resolve_national_bot_spec(
             candidate,
@@ -1267,7 +1386,16 @@ def local_handoff_identity_errors(record: Any) -> list[str]:
                 f"handoff_live_published_candidate:{item}"
                 for item in spec.issues[:30]
             )
-        if spec.certificate_digest != identity["certificate_digest"]:
+        # Certificate removal (2026-08-08) left the two "no certificate"
+        # spellings asymmetric: the resolved spec carries None while frozen
+        # identities carry the empty string, so a raw != refused every
+        # cert-less publication's live re-proof forever.  Normalize both
+        # sides exactly like evolution_infra_checkpoint_cas does for the
+        # post-publish repo-baseline bind: absent/empty/None all mean "no
+        # certificate"; a real digest must still match byte-for-byte.
+        if (spec.certificate_digest or None) != (
+            identity.get("certificate_digest") or None
+        ):
             errors.append("handoff_live_certificate_digest_mismatch")
         for name, expected in identity["local_paired_refs"].items():
             ref = f"refs/tags/{name}"

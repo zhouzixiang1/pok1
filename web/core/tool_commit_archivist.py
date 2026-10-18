@@ -151,6 +151,37 @@ def _git_dirty_paths() -> set[str]:
 
 
 
+def _publication_head_advance_allowed(
+    publication_commit_oid: str,
+    head_oid: str,
+) -> bool:
+    """HEAD may have advanced past the publication commit (ancestor rule).
+
+    Fixing a bug and deploying it after a publication legitimately moves HEAD
+    beyond the publication commit; an exact-HEAD pin would wedge the
+    post-publication handoff forever (v566: published at 1d4391dc, HEAD
+    advanced to 2b4dafbd/d5d06871 while the handoff was converging).  The
+    durable rule is the one the handoff's remote leg already uses for
+    ``handoff_commit_not_on_remote_main``: the publication commit must be an
+    ancestor of the observed HEAD.  Worktree cleanliness is NOT relaxed by
+    this helper — only the HEAD-oid comparison.
+    """
+
+    from evolution_infra import _git_command_succeeds
+
+    return (
+        _lower_hex(publication_commit_oid, 40)
+        and _lower_hex(head_oid, 40)
+        and _git_command_succeeds(
+            "merge-base",
+            "--is-ancestor",
+            publication_commit_oid,
+            head_oid,
+        )
+    )
+
+
+
 def _verify_post_publication_worktree(
     *,
     expected_head: str,
@@ -161,13 +192,17 @@ def _verify_post_publication_worktree(
     Reaping publishes an annotated tombstone tag and removes an ignored
     ``.completed`` capability.  Log/result archiving is ignored runtime state.
     Consequently there is no authorized tracked housekeeping commit.  Any HEAD
-    or porcelain change is a hard failure and remains for operator inspection.
+    move that is not the legitimate "publication commit is an ancestor of the
+    observed HEAD" deploy advance, and any porcelain change, is a hard failure
+    and remains for operator inspection.
     """
 
     _tc._git_ensure_main_branch()
     actual_head = _tc._git("rev-parse", "HEAD").strip()
     actual_dirty = _git_dirty_paths()
-    if actual_head != expected_head:
+    if actual_head != expected_head and not (
+        _tc._publication_head_advance_allowed(expected_head, actual_head)
+    ):
         raise RuntimeError("post_publication_head_changed")
     if actual_dirty != set(expected_dirty):
         raise RuntimeError("post_publication_worktree_changed")
