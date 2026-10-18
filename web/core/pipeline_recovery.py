@@ -510,6 +510,31 @@ def checkpoint_recovery_diagnostics(
         target_dir = root / bot_relpath(next_v) if next_v is not None else None
         policy = _resume_policy(stage, checkpoint) or {}
         requires_contract_unchanged = bool(policy.get("requires_contract_unchanged", True))
+        # 2026-10-18: the fully proven intent-bound publication window
+        # tolerates contract drift. Once the publication's tags, commit and
+        # intent are independently proven (the evaluation is frozen in the
+        # published artifacts, not in live code), the only remaining effects
+        # are idempotent recovery steps (sentinel, checkpoint clear, handoff
+        # convergence) — the exact window
+        # ``_publication_checkpoint_reconciliation_allowed`` recognizes.
+        # Without this, any post-publication bug-fix deploy wedges the
+        # publishing checkpoint forever (v566).
+        publication_reconciliation_window = False
+        if stage == "publishing" and checkpoint is not None:
+            try:
+                from evolution_infra import checkpoint_allocation_authority
+                from evolution_infra_checkpoint_cas import (
+                    _publication_checkpoint_reconciliation_allowed,
+                )
+
+                publication_reconciliation_window = (
+                    _publication_checkpoint_reconciliation_allowed(
+                        checkpoint,
+                        checkpoint_allocation_authority(expected_next_v=None),
+                    )
+                )
+            except Exception:
+                publication_reconciliation_window = False
         branch_compatible = (
             current_branch == EVOLUTION_BRANCH
             and (not baseline_branch or baseline_branch == current_branch or baseline_branch_alias_allowed)
@@ -525,6 +550,7 @@ def checkpoint_recovery_diagnostics(
                 or contract_unchanged
                 or current_branch_unrelated_head_allowed
                 or not requires_contract_unchanged
+                or publication_reconciliation_window
             )
         )
         if can_resume:
@@ -533,6 +559,8 @@ def checkpoint_recovery_diagnostics(
             repo_diag["head_drift_resume_kind"] = policy.get("resume_kind", "checkpoint")
             repo_diag["head_drift_allowed_tools"] = list(policy.get("allowed_tools") or [])
             repo_diag["head_drift_requires_contract_unchanged"] = requires_contract_unchanged
+            if publication_reconciliation_window:
+                repo_diag["head_drift_publication_reconciliation"] = True
         else:
             issues.append("repo_baseline_head_mismatch")
 
