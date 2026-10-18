@@ -1140,6 +1140,13 @@ def main():
 # (``monkeypatch.setattr(orchestrator, "_runtime_branch_guard_enabled", ...)``
 # etc.), so the re-export keeps both the bare-global call sites and the
 # monkeypatch surface working unchanged.
+if __name__ == "__main__" and "orchestrator" not in sys.modules:  # pragma: no cover - script entry
+    # Companions (orchestrator_branch_guard et al.) import ``orchestrator``
+    # back; without this alias script mode dual-loads a twin module whose
+    # partially initialized state breaks these late imports (the elo_daemon
+    # ``sys.modules`` registration pattern).
+    sys.modules["orchestrator"] = sys.modules[__name__]
+
 from orchestrator_branch_guard import (  # noqa: E402,F401
     RUNTIME_BRANCH_GUARD_INTERVAL,
     _branch_name,
