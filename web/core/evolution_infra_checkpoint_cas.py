@@ -1833,7 +1833,42 @@ def read_pipeline_checkpoint(slot_id=None):
         from pipeline_infrastructure import normalize_checkpoint_infrastructure
 
         return normalize_checkpoint_infrastructure(checkpoint)
-    except Exception:
+    except Exception as exc:
+        # Eighteenth convergence defect (2026-10-18, v567): a PRESENT but
+        # unreadable/invalid checkpoint was silently returned as None, so a
+        # transient read/validation failure looked exactly like "checkpoint
+        # vanished" — the loop went to prepare, and the next prepare's atomic
+        # replace destroyed the evidence (the 17:20-17:22 silent loss).  Per
+        # the checkpoint-absence contract, unreadable bytes must NEVER become
+        # a clean scheduler boundary: emit a durable event with the failure
+        # detail so any recurrence is diagnosable to the exact validator.
+        try:
+            detail = {
+                "slot_id": slot_id,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "state_file": str(state_file),
+            }
+            try:
+                stat = state_file.stat()
+                detail["size_bytes"] = stat.st_size
+                detail["mtime"] = stat.st_mtime
+            except OSError:
+                pass
+            import logging
+
+            logging.getLogger("pok.checkpoint").error(
+                "Checkpoint read FAILED (treated as absent): %s", detail["error"]
+            )
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.checkpoint_read_failed",
+                "error",
+                "Present checkpoint failed to read/validate; treated as absent",
+                detail,
+            )
+        except Exception:
+            pass
         return None
 
 
