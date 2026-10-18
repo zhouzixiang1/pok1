@@ -1,0 +1,10 @@
+[Unit]
+Description=pok-evolution weekly authority-state backup (full, includes cycles/workflow/candidates)
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+ExecStart=/home/ubuntu/pok1/deploy/tencent-cloud/backup_authority_state.sh weekly
+Nice=10
+IOSchedulingClass=idle

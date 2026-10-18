@@ -501,3 +501,39 @@ After verifying tests on this operator checkout (`/home/ubuntu/pok1`):
 - Runtime data (`web/core/results/`, `web/logs/`) — gitignored everywhere
 
 Pushing this branch to GitHub backs up products off-host without polluting main.
+
+## Authority-state backups (2026-10-18)
+
+The runtime's authority state (ledgers, ratings, handoff records, manifest
+files) is gitignored and lives only on this disk. Two systemd timers take
+bounded read-only snapshots into `/home/ubuntu/backups/pok-evolution/`:
+
+- `pok-evolution-backup-daily.timer` — 04:30 daily, small critical set
+  (~4-8M gz): abandon/reap ledgers, rating history + glicko snapshot,
+  bot_stats, match history, cost ledgers, stability/rate-limit/pause state,
+  post-publication handoff records.
+- `pok-evolution-backup-weekly.timer` — Sunday 03:30, the daily set plus
+  `evaluation_cycles/`, `workflow/`, and `candidates.jsonl` (~80M gz,
+  nice/ionice so it never competes with a running generation).
+
+Retention is bounded in the script (`deploy/tencent-cloud/
+backup_authority_state.sh`): newest 14 daily + 4 weekly, then oldest-first
+pruning to a 1.5 GiB total cap. **Restores are operator-driven and never
+automatic** — authority files are CAS/digest-protected, and restoring a
+stale snapshot over newer live state is worse than rebuilding; any restore
+must go through the documented recovery paths, not a raw file copy.
+
+Re-install after unit changes:
+
+```bash
+sudo cp deploy/tencent-cloud/pok-evolution-backup-*.service \
+        deploy/tencent-cloud/pok-evolution-backup-*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pok-evolution-backup-daily.timer \
+                          pok-evolution-backup-weekly.timer
+```
+
+The main unit also runs `Restart=always` (2026-10-18): a clean-exit hang
+(exit 0) previously left the pipeline parked until a human noticed; the
+`StartLimitIntervalSec`/`StartLimitBurst` pair in `[Unit]` still bounds a
+true crash loop, and `systemctl stop` remains a deliberate operator stop.

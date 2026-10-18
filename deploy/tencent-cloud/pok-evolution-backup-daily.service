@@ -1,0 +1,8 @@
+[Unit]
+Description=pok-evolution daily authority-state backup (read-only snapshot)
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+ExecStart=/home/ubuntu/pok1/deploy/tencent-cloud/backup_authority_state.sh daily

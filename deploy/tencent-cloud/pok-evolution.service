@@ -20,7 +20,7 @@ Description=national TCP poker evolution control plane (tencent-cloud-runtime)
 Documentation=file:///home/ubuntu/pok1/deploy/tencent-cloud/README.md
 After=network-online.target
 Wants=network-online.target
-# Rate-limit Restart=on-failure. These MUST live in [Unit] (systemd silently
+# Rate-limit the restart policy. These MUST live in [Unit] (systemd silently
 # ignores them in [Service] with "Unknown key name ... ignoring"), otherwise a
 # crash loop is unbounded.
 StartLimitIntervalSec=300
@@ -83,7 +83,11 @@ KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=120
 
-Restart=on-failure
+# Restart=always (2026-10-18 robustness): the control plane must never stay
+# down. on-failure missed clean-exit hangs (a bug path exiting 0 left the
+# pipeline parked until a human noticed); the StartLimit burst above still
+# bounds a true crash loop, and operator `systemctl stop` remains deliberate.
+Restart=always
 RestartSec=10
 
 # Standard output/error -> journald (view with: journalctl -u pok-evolution -f).
