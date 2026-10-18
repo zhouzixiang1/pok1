@@ -1247,3 +1247,202 @@ def test_precommit_plan_frozen_evaluator_identity_toggle():
         plan, frozen_evaluator_identity=True, **kwargs
     )
     assert "precommit_evaluator_identity_drift" not in windowed
+
+
+def test_housekeeping_output_contract_accepts_only_ancestor_head(
+    tmp_path, monkeypatch
+):
+    # Eleventh exact-pin (2026-10-18): the housekeeping receipt records the
+    # head actually observed at verification time (_verify_post_publication_
+    # worktree returns the live HEAD), which legitimately advanced past the
+    # publication commit when a post-publication bug-fix deploy landed.  The
+    # output contract must grade with the same ancestor rule the executor
+    # already applies; a non-ancestral observed head still fails closed.
+    import post_publication_handoff_step_contracts as contracts
+
+    repo, pub, head = _real_git_repo(tmp_path, monkeypatch)
+
+    # A parentless orphan commit: well-formed 40-hex, provably NOT a
+    # descendant of the publication commit.
+    import subprocess
+
+    orphan = subprocess.run(
+        ["git", "commit-tree", f"{head}^{{tree}}", "-m", "orphan"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    identity = {
+        "publication_id": "pub-1",
+        "commit_oid": pub,
+        "version": 566,
+    }
+    plan = {
+        "schema_version": 1,
+        "kind": "post-publication-worktree-verification-plan",
+        "expected_head_oid": pub,
+        "expected_dirty_paths": [],
+        "tracked_housekeeping_commit_allowed": False,
+        "dependency_receipts": {
+            name: "a" * 64
+            for name in (
+                "archive_rotation",
+                "log_cleanup",
+                "pool_reap",
+                "cycle_annotation",
+            )
+        },
+    }
+    plan_digest = "b" * 64
+
+    def output_for(head_oid):
+        proofs: list = []
+        return {
+            "plan_digest": plan_digest,
+            "head_oid": head_oid,
+            "worktree_status_digest": "c" * 64,
+            "tracked_housekeeping_commit": False,
+            "archive_rotation_revalidated": True,
+            "strict_log_archives_revalidated": True,
+            "reap_proofs": proofs,
+            "reap_proof_set_digest": contracts.canonical_digest(proofs),
+        }
+
+    # Exact pin (no deploy) passes untouched.
+    assert contracts._step_output_contract_errors(
+        "housekeeping", output_for(pub), plan, plan_digest, identity
+    ) == []
+    # Observed head advanced past the publication commit: accepted under the
+    # REAL merge-base ancestor rule.
+    assert contracts._step_output_contract_errors(
+        "housekeeping", output_for(head), plan, plan_digest, identity
+    ) == []
+    # A well-formed non-ancestral head fails closed with the identity error.
+    assert contracts._step_output_contract_errors(
+        "housekeeping", output_for(orphan), plan, plan_digest, identity
+    ) == [
+        "handoff_step_output_contract_invalid:housekeeping:identity"
+    ]
+    # Reversed direction (publication commit recorded as the observed head
+    # while identity carries the advanced commit) also fails closed.
+    assert contracts._step_output_contract_errors(
+        "housekeeping", output_for(pub), plan, plan_digest,
+        {**identity, "commit_oid": head},
+    ) == [
+        "handoff_step_output_contract_invalid:housekeeping:identity"
+    ]
+
+
+def _reset_reprove_record():
+    completed_at = 1792300546.0
+    stability = {
+        "status": "completed",
+        "plan": {},
+        "plan_digest": "d" * 64,
+        "receipt": {
+            "schema_version": 1,
+            "step": "stability_observation",
+            "publication_id": "pub-1",
+            "completed_at": completed_at,
+            "plan_digest": "d" * 64,
+            "output": {
+                "plan_digest": "d" * 64,
+                "publication_id": "pub-1",
+                "continuity_id": "f" * 32,
+                "count": 1,
+                "target": 10,
+                "complete": False,
+            },
+        },
+    }
+    record = {
+        "identity": {"publication_id": "pub-1", "version": 566},
+        "steps": {"stability_observation": stability},
+    }
+    return record, completed_at
+
+
+def _reset_projection(*, at, previous_last_version=566, previous_count=1):
+    return {
+        "continuity_id": "2" * 32,
+        "count": 0,
+        "target": 10,
+        "complete": False,
+        "observations": [],
+        "reset_history": [
+            {
+                "at": at,
+                "reason": "runtime_process_start",
+                "details": {
+                    "identity_mismatches": ["repository_head", "process_pid"],
+                    "previous_count": previous_count,
+                    "previous_last_version": previous_last_version,
+                },
+            }
+        ],
+    }
+
+
+def test_stability_reproof_tolerates_documented_reset(handoff_env, monkeypatch):
+    # Twelfth convergence defect (2026-10-18): the stability observation row
+    # is process-scoped BY DESIGN; a runtime restart between the receipt and
+    # this reproof resets it to zero, so exact live-vs-receipt grading wedges
+    # the handoff forever (v566: receipt count=1 at 13:22, restart 14:31
+    # reset with previous_count=1/previous_last_version=566).  The reset
+    # history entry recorded AFTER the receipt, binding the pre-reset row
+    # this receipt observed, is the durable proof.
+    import post_publication_handoff_step_contracts as contracts
+    import stability_observation
+
+    record, completed_at = _reset_reprove_record()
+
+    # Reset after the receipt carrying the observed pre-reset row: accepted.
+    monkeypatch.setattr(
+        stability_observation,
+        "stability_observation_projection",
+        lambda: _reset_projection(at=completed_at + 3600.0),
+    )
+    assert contracts._reprove_operational_steps(record) == {
+        "stability_observation": True,
+        "reap_signal": False,
+        "priority_eval": False,
+    }
+
+    # A reset recorded BEFORE the receipt cannot witness it.
+    monkeypatch.setattr(
+        stability_observation,
+        "stability_observation_projection",
+        lambda: _reset_projection(at=completed_at - 60.0),
+    )
+    with pytest.raises(
+        Exception, match="handoff_stability_observation_reproof_mismatch"
+    ):
+        contracts._reprove_operational_steps(record)
+
+    # A reset whose pre-reset row bound a different version cannot witness
+    # this publication's observation.
+    monkeypatch.setattr(
+        stability_observation,
+        "stability_observation_projection",
+        lambda: _reset_projection(
+            at=completed_at + 3600.0, previous_last_version=999
+        ),
+    )
+    with pytest.raises(
+        Exception, match="handoff_stability_observation_reproof_mismatch"
+    ):
+        contracts._reprove_operational_steps(record)
+
+    # A reset whose pre-reset count is smaller than the receipt's count
+    # cannot witness it either.
+    monkeypatch.setattr(
+        stability_observation,
+        "stability_observation_projection",
+        lambda: _reset_projection(at=completed_at + 3600.0, previous_count=0),
+    )
+    with pytest.raises(
+        Exception, match="handoff_stability_observation_reproof_mismatch"
+    ):
+        contracts._reprove_operational_steps(record)

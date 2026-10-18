@@ -454,8 +454,21 @@ def _step_output_contract_errors(
         }):
             reject("fields")
         proofs = output.get("reap_proofs")
+        # HEAD-advance rule (2026-10-18, eleventh exact-pin of the v566
+        # convergence family): the receipt records the head actually observed
+        # at verification time, which legitimately advanced past the
+        # publication commit when a post-publication bug-fix deploy landed
+        # (this campaign itself).  The executor already applies the ancestor
+        # rule (_verify_post_publication_worktree); the contract grades the
+        # same way — exact equality stays the common no-deploy case and any
+        # non-ancestral divergence still fails closed.
         if (
-            output.get("head_oid") != identity.get("commit_oid")
+            not (
+                output.get("head_oid") == identity.get("commit_oid")
+                or _pph._publication_commit_is_ancestor_of(
+                    identity.get("commit_oid"), output.get("head_oid")
+                )
+            )
             or not _pph._is_hex(output.get("worktree_status_digest"), 64)
             or output.get("tracked_housekeeping_commit") is not False
             or output.get("archive_rotation_revalidated") is not True
@@ -466,6 +479,50 @@ def _step_output_contract_errors(
             reject("identity")
     return list(dict.fromkeys(errors))
 
+
+
+def _stability_reset_proves_receipt(
+    projection: dict[str, Any],
+    receipt: dict[str, Any],
+    identity: dict[str, Any],
+) -> bool:
+    """Durable proof for a process-scoped observation row that was reset.
+
+    2026-10-18 (twelfth convergence defect, v566): the stability observation
+    row is process-scoped BY DESIGN — a runtime restart (bug-fix deploy,
+    crash recovery) or any documented continuity break resets it to zero.
+    A handoff that spans such a reset can therefore never re-prove its
+    frozen receipt against live state, wedging the generation forever.  The
+    reset history entry is the durable witness: it fired after the receipt
+    was completed and it recorded the pre-reset row (``previous_last_version``,
+    ``previous_count``) this receipt observed.  Forging it requires writing
+    the operator-owned observation state file itself.
+    """
+
+    completed_at = receipt.get("completed_at")
+    output = receipt.get("output") or {}
+    version = identity.get("version")
+    count = output.get("count")
+    history = projection.get("reset_history")
+    if (
+        not isinstance(history, list)
+        or not isinstance(completed_at, (int, float))
+        or type(count) is not int
+    ):
+        return False
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        details = entry.get("details") or {}
+        if (
+            isinstance(entry.get("at"), (int, float))
+            and entry.get("at") >= completed_at
+            and details.get("previous_last_version") == version
+            and isinstance(details.get("previous_count"), int)
+            and details.get("previous_count") >= count
+        ):
+            return True
+    return False
 
 
 def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
@@ -490,7 +547,8 @@ def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
         from stability_observation import stability_observation_projection
 
         projection = stability_observation_projection()
-        output = (stability.get("receipt") or {}).get("output") or {}
+        receipt = stability.get("receipt") or {}
+        output = receipt.get("output") or {}
         expected = {
             "continuity_id": projection.get("continuity_id"),
             "count": projection.get("count"),
@@ -498,18 +556,27 @@ def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
             "complete": projection.get("complete"),
         }
         if any(output.get(key) != value for key, value in expected.items()):
-            raise _pph.PostPublicationHandoffError(
-                "handoff_stability_observation_reproof_mismatch"
-            )
-        publication_id = identity.get("publication_id")
-        observations = projection.get("observations")
-        if not isinstance(observations, list) or not any(
-            isinstance(row, dict) and row.get("publication_id") == publication_id
-            for row in observations
-        ):
-            raise _pph.PostPublicationHandoffError(
-                "handoff_stability_publication_row_missing"
-            )
+            # The observation row is process-scoped and legitimately resets
+            # (runtime_process_start et al.); a reset recorded after this
+            # receipt, carrying the pre-reset row this receipt observed, is
+            # the durable proof.  Anything else is still a mismatch.
+            if not _stability_reset_proves_receipt(
+                projection, receipt, identity
+            ):
+                raise _pph.PostPublicationHandoffError(
+                    "handoff_stability_observation_reproof_mismatch"
+                )
+        else:
+            publication_id = identity.get("publication_id")
+            observations = projection.get("observations")
+            if not isinstance(observations, list) or not any(
+                isinstance(row, dict)
+                and row.get("publication_id") == publication_id
+                for row in observations
+            ):
+                raise _pph.PostPublicationHandoffError(
+                    "handoff_stability_publication_row_missing"
+                )
         result["stability_observation"] = True
 
     from evolution_infra import (
