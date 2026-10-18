@@ -610,11 +610,14 @@ def test_cost_reader_sees_recent_rows_after_compaction(tmp_path: Path, monkeypat
     import orchestrator_cost_policy as cost_policy
 
     monkeypatch.setattr(cost_policy, "COST_LEDGER_FILE", ledger)
-    entries, errors = cost_policy._read_generation_entries(recent_generation)
+    entries, errors, historical = cost_policy._read_generation_entries(
+        recent_generation
+    )
     assert errors == ()
+    assert historical == 0
     assert [row["event_id"] for row in entries] == ["e-new-1", "e-new-2"]
-    old_entries, old_errors = cost_policy._read_generation_entries(
-        "generation:9:workflow-v1"
+    old_entries, old_errors, old_historical = (
+        cost_policy._read_generation_entries("generation:9:workflow-v1")
     )
     assert old_errors == ()
     assert old_entries == []

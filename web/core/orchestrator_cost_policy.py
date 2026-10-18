@@ -310,12 +310,16 @@ def deactivate_generation_cost_scope(generation_id: str | None = None) -> None:
         _active_scope = None
 
 
-def _read_generation_entries(generation_id: str) -> tuple[list[dict], tuple[str, ...]]:
+def _read_generation_entries(
+    generation_id: str,
+) -> tuple[list[dict], tuple[str, ...], int]:
     path = Path(COST_LEDGER_FILE)
     if not path.exists():
-        return [], ()
+        return [], (), 0
     entries: list[dict] = []
     errors: list[str] = []
+    historical_malformed = 0
+    in_generation_window = False
     try:
         with locked_file(path, "r", encoding="utf-8") as handle:
             for line_no, raw in enumerate(handle, 1):
@@ -324,16 +328,35 @@ def _read_generation_entries(generation_id: str) -> tuple[list[dict], tuple[str,
                 try:
                     entry = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
-                    errors.append(f"malformed_line:{line_no}")
+                    # 2026-10-18 (fifteenth convergence defect, v566): the
+                    # ledger is append-ordered, so a generation's rows form a
+                    # contiguous tail window. An unparseable line BEFORE the
+                    # first row of the audited generation is historical
+                    # corruption that cannot belong to it (a torn append from
+                    # a crash during THIS generation lands inside/after the
+                    # window and stays fatal).
+                    if in_generation_window:
+                        errors.append(f"malformed_line:{line_no}")
+                    else:
+                        historical_malformed += 1
                     continue
                 if not isinstance(entry, dict):
-                    errors.append(f"non_object_line:{line_no}")
+                    if in_generation_window:
+                        errors.append(f"non_object_line:{line_no}")
+                    else:
+                        historical_malformed += 1
                     continue
                 if str(entry.get("generation_id") or "") == generation_id:
+                    in_generation_window = True
                     entries.append(entry)
     except OSError as exc:
         errors.append(f"ledger_read_failed:{type(exc).__name__}:{exc}")
-    return entries, tuple(errors)
+    if historical_malformed and not in_generation_window:
+        # No row of the audited generation was ever seen, so the corruption
+        # cannot be proven pre-window: it may have swallowed this
+        # generation's accounting entirely. Fail closed.
+        errors.append(f"malformed_lines_without_generation_window:{historical_malformed}")
+    return entries, tuple(errors), historical_malformed
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, object]) -> None:
@@ -444,11 +467,14 @@ def generation_cost_status(scope: GenerationCostScope | None = None) -> dict:
             "spent_usd": 0.0,
             "accounting_ok": True,
         }
-    entries, read_errors = _read_generation_entries(scope.generation_id)
+    entries, read_errors, historical_malformed = _read_generation_entries(
+        scope.generation_id
+    )
     pending_entries, pending_errors = _read_pending_generation_entries(
         scope.generation_id
     )
     errors = [*read_errors, *pending_errors]
+    unpriced_rows = historical_malformed
     spent = 0.0
     ledger_event_ids: set[str] = set()
     for entry in entries:
@@ -458,7 +484,15 @@ def generation_cost_status(scope: GenerationCostScope | None = None) -> dict:
         if event_id:
             ledger_event_ids.add(event_id)
         if entry.get("cost_known") is False:
-            errors.append(f"unknown_cost:{event_id or 'unknown'}")
+            # 2026-10-18 (fifteenth convergence defect, v566): the GLM
+            # coding-plan provider never reports per-call USD through the
+            # SDK ResultMessage, so plan-billed rows legitimately carry
+            # cost_known=false with token counts (v561-v566 are ~90-95%
+            # such rows). An unknowable price is a visibility fact, not an
+            # accounting error; a present-but-invalid cost_usd below stays
+            # fatal.
+            unpriced_rows += 1
+            continue
         try:
             value = float(entry.get("cost_usd"))
         except (TypeError, ValueError):
@@ -474,7 +508,8 @@ def generation_cost_status(scope: GenerationCostScope | None = None) -> dict:
         if event_id and event_id in ledger_event_ids:
             continue
         if entry.get("cost_known") is False:
-            errors.append(f"unknown_pending_cost:{event_id or 'unknown'}")
+            unpriced_rows += 1
+            continue
         try:
             value = float(entry.get("cost_usd"))
         except (TypeError, ValueError):
@@ -508,6 +543,7 @@ def generation_cost_status(scope: GenerationCostScope | None = None) -> dict:
         "policy_receipt": scope.policy.receipt(),
         "accounting_ok": not errors,
         "accounting_errors": errors,
+        "unpriced_rows": unpriced_rows,
         "pending_usage_count": unresolved_pending,
     }
 
@@ -677,6 +713,15 @@ def assert_operator_cost_limit_available(scope: GenerationCostScope | None = Non
     if not status.get("accounting_ok"):
         raise OperatorGenerationCostLimitExceeded(
             "operator hard cost limit cannot be enforced because accounting is unavailable",
+            status=status,
+        )
+    if int(status.get("unpriced_rows") or 0) > 0:
+        # Monitor-only mode treats plan-billed unknown costs as visibility
+        # facts, but an explicit operator hard limit cannot be enforced
+        # against spend it cannot see (2026-10-15 semantics preserved).
+        raise OperatorGenerationCostLimitExceeded(
+            "operator hard cost limit cannot be enforced because some calls "
+            "have unknowable plan-billed cost",
             status=status,
         )
     if status.get("hard_limit_exceeded"):

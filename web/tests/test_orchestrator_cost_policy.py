@@ -459,6 +459,12 @@ def test_missing_sdk_cost_is_telemetry_in_monitor_and_fail_closed_in_hard_mode(
     isolated_cost_policy,
     monkeypatch,
 ):
+    # 2026-10-18 (fifteenth convergence defect, v566): the GLM coding plan
+    # never reports per-call USD, so cost_known=false rows are the provider
+    # NORMAL (v561-v566 are ~90-95% such rows). Monitor mode counts them as
+    # unpriced_rows visibility without breaking accounting_ok (the successor
+    # prepare boundary must not wedge); an explicit operator hard limit
+    # still fails closed against spend it cannot see.
     policy, _ledger = isolated_cost_policy
     import orchestrator
 
@@ -484,7 +490,7 @@ def test_missing_sdk_cost_is_telemetry_in_monitor_and_fail_closed_in_hard_mode(
 
     ui = UI()
     generation_id = policy.generation_workflow_id(151)
-    monitor = policy.activate_generation_cost_scope(
+    policy.activate_generation_cost_scope(
         generation_id,
         policy.GenerationCostPolicy(),
     )
@@ -496,29 +502,14 @@ def test_missing_sdk_cost_is_telemetry_in_monitor_and_fail_closed_in_hard_mode(
         event_id="sdk-result:missing-cost",
     )
     assert status["recorded"] is True
-    assert status["accounting_ok"] is False
-    assert any("unknown_cost" in item for item in status["accounting_errors"])
+    assert status["accounting_ok"] is True
+    assert status["unpriced_rows"] == 1
     checked = orchestrator._check_generation_cost_policy(ui)
-    assert checked["accounting_ok"] is False
-    warning = next(
-        event
-        for event in events
-        if event[0] == "pipeline.generation_cost_accounting_warning"
-    )
-    assert warning[1] == "warn"
-    assert any("unknown_cost" in item for item in warning[3]["accounting_errors"])
-    assert warning[3]["directive"].startswith("Telemetry is incomplete")
-    assert ui.history[-1][1] == "warn"
-    assert ui.bindings[-1][0] == generation_id
-    assert any(
-        "unknown_cost" in item
-        for item in ui.bindings[-1][2]["ledger_errors"]
-    )
-    orchestrator._check_generation_cost_policy(ui)
-    assert sum(
+    assert checked["accounting_ok"] is True
+    assert not any(
         event[0] == "pipeline.generation_cost_accounting_warning"
         for event in events
-    ) == 1
+    )
 
     hard = policy.activate_generation_cost_scope(
         generation_id,
@@ -526,10 +517,13 @@ def test_missing_sdk_cost_is_telemetry_in_monitor_and_fail_closed_in_hard_mode(
     )
     with pytest.raises(policy.OperatorGenerationCostLimitExceeded):
         orchestrator._check_generation_cost_policy(ui)
-    assert sum(
-        event[0] == "pipeline.generation_cost_accounting_warning"
+    trip = next(
+        event
         for event in events
-    ) == 1
+        if event[0] == "pipeline.operator_generation_cost_limit_tripped"
+    )
+    assert trip[3]["operator_action_required"] is True
+    assert hard.policy.hard_limit_usd == 5.0
 
 
 def test_failed_ledger_append_remains_fail_closed_after_restart_rebind(
