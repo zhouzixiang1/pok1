@@ -1102,10 +1102,6 @@ def main():
         raise SystemExit(exit_code)
 
 
-if __name__ == "__main__":
-    main()
-
-
 # ──────────────────────────────────────────────
 # Background-coroutine re-exports (split by business concern)
 # ──────────────────────────────────────────────
@@ -1276,3 +1272,7 @@ from orchestrator_watchdog import (  # noqa: E402,F401
     _stability_projection_maintenance_tick,
     _watchdog_coroutine,
 )
+
+if __name__ == "__main__":
+    main()
+
