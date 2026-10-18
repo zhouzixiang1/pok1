@@ -250,6 +250,7 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
@@ -309,6 +310,7 @@ def test_reaped_active_pool_subset_does_not_renumber_published_history(
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V + 4)
+    monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
@@ -435,6 +437,7 @@ def test_strict_publication_must_match_paired_namespace_high_water(
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
@@ -479,6 +482,7 @@ def test_namespace_high_water_drift_withholds_active_bot_authority(
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: STRICT_TARGET_V)
+    monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(
         evolution_infra,
         "version_namespace_authority",
@@ -1896,6 +1900,11 @@ def _stub_namespace(monkeypatch, epoch_authority, infra):
     """Minimal version-authority stubs shared by draft-override tests."""
     monkeypatch.setattr(
         infra,
+        "load_reaped_bot_versions",
+        lambda: set(),
+    )
+    monkeypatch.setattr(
+        infra,
         "find_current_v",
         lambda: STRICT_TARGET_V,
     )
@@ -1910,3 +1919,54 @@ def _stub_namespace(monkeypatch, epoch_authority, infra):
         lambda **_kw: {"floor": STRICT_TARGET_V, "head_digest": "a" * 64, "receipt_count": 0},
     )
 
+
+
+def test_projection_active_pool_excludes_durable_reaped_versions(
+    tmp_path, monkeypatch
+):
+    """Sixteenth convergence defect (v566->v567): the ABI scan alone kept a
+    durable-reaped bot in the projection's active pool (the artifact stays
+    spec-eligible after the pool-ratchet reap removes only the sentinel),
+    so the projection disagreed with sentinel-based discovery and every
+    prepare cycle aborted with pipeline.prepare_namespace_drift."""
+    import epoch_authority
+    import evolution_infra as infra
+    import national_runtime_authority as nra
+
+    monkeypatch.setattr(infra, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(infra, "RESULTS_DIR", tmp_path)
+    _stub_namespace(monkeypatch, epoch_authority, infra)
+
+    monkeypatch.setattr(
+        nra,
+        "strict_published_bot_names",
+        lambda **_kw: (
+            "national_cloud_v185",
+            "national_cloud_v186",
+            "national_cloud_v188",
+        ),
+    )
+    # The scanner lists all three ABI-eligible artifacts; the durable
+    # tombstone registry marks 186 reaped; the high water covers them all.
+    monkeypatch.setattr(infra, "load_reaped_bot_versions", lambda: {186})
+    monkeypatch.setattr(infra, "find_current_v", lambda: 188)
+    monkeypatch.setattr(infra, "find_max_committed_v", lambda: 188)
+    monkeypatch.setattr(
+        infra,
+        "version_namespace_authority",
+        lambda: SimpleNamespace(
+            high_water=188,
+            paired_versions=(185, 186, 188),
+            unpaired_completion_versions=(),
+            unpaired_high_water_versions=(),
+        ),
+    )
+
+    projection = epoch_authority.strict_epoch_projection()
+    assert projection.get("active_bots") == [
+        "national_cloud_v185",
+        "national_cloud_v188",
+    ]
+    # Published-version history stays tag-based and retains the reaped
+    # version's publication record.
+    assert 186 in (projection.get("strict_published_versions") or [])

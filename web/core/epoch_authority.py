@@ -688,6 +688,23 @@ def policy_epoch_initialization(
         for name in strict_published_bot_names(ledger_fresh=ledger_fresh)
         if (version := parse_bot_version(str(name))) is not None
     ]
+    # 2026-10-18 (sixteenth convergence defect, v566→v567): a durable-reaped
+    # version stays spec-eligible on disk (the pool-ratchet reap retains the
+    # artifact and only removes the completion sentinel while publishing a
+    # tombstone tag), so the ABI scan alone kept listing it and this
+    # projection's active pool disagreed with sentinel-based discovery on
+    # every prepare cycle (pipeline.prepare_namespace_drift loop after the
+    # first pool-ratchet reap). The durable tombstone registry is the reap
+    # authority: subtract it from the ACTIVE pool. Published-version
+    # history above stays tag-based and unchanged.
+    from evolution_infra import load_reaped_bot_versions
+
+    durable_reaped_versions = load_reaped_bot_versions()
+    observed_strict = [
+        (name, version)
+        for name, version in observed_strict
+        if version not in durable_reaped_versions
+    ]
     strict_publication_versions_above_high_water = sorted({
         version
         for _name, version in observed_strict
