@@ -601,13 +601,44 @@ def _scope(snapshot: dict[str, Any], candidate_v: int | None) -> dict[str, Any]:
     # bot.  Resolve the primary's in-flight next_v and pass it as an explicit
     # allowance to the worktree classifier.
     _primary_v = _parked_primary_version_for_draft(candidate_v)
-    return classify_status_entries(
+    allowed_bot_versions = [_primary_v] if _primary_v is not None else None
+    leftover_candidate_allowance: list[int] = []
+    if candidate_v is None and not allowed_bot_versions:
+        # Self-healing leftover candidate (2026-10-18, v567 wedge): a fresh
+        # prepare runs with no checkpoint, so an untracked generated bot dir
+        # cannot be attributed to ``candidate_v``.  When its version is above
+        # the published high-water it can only be a leftover in-flight
+        # candidate of THIS epoch (published bots are committed, so a version
+        # above the high-water was never published and carries zero git
+        # authority) — typically orphaned by a checkpoint loss, and exactly
+        # the version the next prepare re-allocates.  Tolerate it instead of
+        # wedging prepare forever; the next prepare owns and overwrites that
+        # staging directory.
+        from evolution_scope import active_bot_version
+        from evolution_infra import find_current_v
+
+        try:
+            high_water = int(find_current_v())
+        except Exception:
+            high_water = 0
+        for line in snapshot.get("entries") or []:
+            entry = str(line).strip()
+            if not is_generated_bot_dir_entry(entry):
+                continue
+            version = active_bot_version(f"bots/{entry.split('bots/', 1)[-1]}")
+            if version is not None and version > high_water:
+                leftover_candidate_allowance.append(version)
+        if leftover_candidate_allowance:
+            allowed_bot_versions = sorted(set(leftover_candidate_allowance))
+    scope = classify_status_entries(
         snapshot.get("entries") or [],
         candidate_v,
         contract_bot_versions=_contract_versions_for_candidate(candidate_v),
         evaluation_contract=_evaluation_contract_for_candidate(candidate_v),
-        allowed_bot_versions=[_primary_v] if _primary_v is not None else None,
+        allowed_bot_versions=allowed_bot_versions,
     )
+    scope["leftover_candidate_allowance"] = leftover_candidate_allowance
+    return scope
 
 
 def _unexpected_entries(snapshot: dict[str, Any], candidate_v: int | None) -> list[str]:
@@ -1057,6 +1088,25 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         }
         _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked unexpected worktree entries", payload)
         return False, payload
+
+    tolerated = _scope(snapshot, candidate_v).get("leftover_candidate_allowance") or []
+    if tolerated:
+        # Operator visibility for the self-healing leftover-candidate
+        # allowance: the fresh prepare proceeds over an orphaned in-flight
+        # candidate directory (see _scope); this event is the audit trail.
+        _log_guard_event(
+            "repo.runtime_guard_leftover_candidate_tolerated",
+            "info",
+            "Runtime git guard tolerated leftover in-flight candidate dirs",
+            {
+                "tool": tool_name,
+                "tolerated_versions": sorted(tolerated)[:10],
+                "note": (
+                    "untracked generated bot dirs above the published "
+                    "high-water; the next prepare owns these staging dirs"
+                ),
+            },
+        )
 
     absorbed_ok, absorbed_payload = (
         _absorb_committed_crossover_intent_before_route()
