@@ -515,10 +515,25 @@ def _state_errors(state: Any) -> list[str]:
                 if len(str(evidence.get(key) or "")) != 64:
                     errors.append(f"{prefix}_generation_evidence_{key}_invalid")
 
-    if observations and isinstance(observations[-1], dict) and str(
-        state.get("repository_head") or ""
-    ) != str(observations[-1].get("commit_oid") or ""):
-        errors.append("repository_head_not_latest_publication_commit")
+    if observations and isinstance(observations[-1], dict):
+        publication_commit = str(observations[-1].get("commit_oid") or "")
+        recorded_head = str(state.get("repository_head") or "")
+        # 2026-10-18 (v566 convergence, tenth exact-pin of the family): the
+        # recorded repository head legitimately advances past the latest
+        # publication commit when a post-publication bug-fix deploy lands.
+        # The durable rule is the ancestor rule used everywhere else in the
+        # convergence family: the publication commit must be an ancestor of
+        # the recorded head — exact equality remains the common no-deploy
+        # case, and any non-ancestral divergence still fails closed.
+        if recorded_head != publication_commit and not (
+            _git_command_succeeds(
+                "merge-base",
+                "--is-ancestor",
+                publication_commit,
+                recorded_head,
+            )
+        ):
+            errors.append("repository_head_not_latest_publication_commit")
 
     reset_history = state.get("reset_history")
     if not isinstance(reset_history, list):
