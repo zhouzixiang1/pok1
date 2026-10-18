@@ -1392,6 +1392,26 @@ async def _run_stream_with_signature_retry_attempts(
     )
 
 
+_PAUSE_PERSISTENCE_EXEMPT_ROLE_PREFIXES = ("SATURATOR",)
+
+
+def _role_exempt_from_pause_persistence(role_name: object) -> bool:
+    """True for background filler roles that must not arm the pipeline pause.
+
+    1302 amplifier fix (2026-10-18): the saturator is opportunistic filler
+    behind the pipeline. Its provider failures drive its own launch backoff
+    and the AIMD concurrency reduction; letting them (re-)arm the durable
+    pause starved every pipeline role under sustained frequency pressure —
+    each saturator retry extended auto_resume_at along the 8→120s curve, so
+    the pipeline waited out a pause no pipeline dispatch had ever failed
+    for. Pipeline-armed pauses still gate the saturator via the
+    ``raise_if_llm_paused`` pre-check; only the WRITE side is exempt.
+    """
+
+    value = str(role_name or "").upper()
+    return value.startswith(_PAUSE_PERSISTENCE_EXEMPT_ROLE_PREFIXES)
+
+
 async def run_claude_query(
     prompt,
     context_files,
@@ -1965,13 +1985,25 @@ async def run_claude_query(
 
             fail_provider_call(strict_authority, e)
         persistence_error = None
-        try:
-            from llm_availability_store import persist_llm_pause
+        pause_state = None
+        # 1302 amplifier fix (2026-10-18): the background saturator is
+        # opportunistic filler — its dispatches already back off through
+        # their own launch pause (llm_saturator._note_saturator_provider_
+        # failure) and still feed the AIMD concurrency reduction below. A
+        # saturator 1302 must NOT (re-)arm the durable pipeline pause: under
+        # sustained provider frequency pressure the saturator's every retry
+        # re-extended auto_resume_at (occurrences walked the 8→120s curve),
+        # so the pipeline's Master/Workers starved behind a pause that no
+        # pipeline role ever observed a failure for. Pipeline-armed pauses
+        # still gate the saturator (raise_if_llm_paused pre-check unchanged).
+        if not _role_exempt_from_pause_persistence(role_name):
+            try:
+                from llm_availability_store import persist_llm_pause
 
-            pause_state = persist_llm_pause(e)
-        except Exception as exc:
-            pause_state = None
-            persistence_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+                pause_state = persist_llm_pause(e)
+            except Exception as exc:
+                pause_state = None
+                persistence_error = f"{type(exc).__name__}: {str(exc)[:500]}"
         # AIMD 动态并发降档（2026-10-07 修复）：频率类失败的真实流经点在这里。
         # _process_stream 的 except ClaudeSDKError 已把 1302/裸 429 经
         # classify_llm_availability 包装成 LLMAvailabilityBlocked（RuntimeError，
@@ -1997,15 +2029,19 @@ async def run_claude_query(
                 note_llm_rate_limit_failure()
         except Exception:
             pass
+        _pause_exempt = _role_exempt_from_pause_persistence(role_name)
         _emit_llm_event(
-            "pipeline.llm_role_availability_pause_persisted"
+            "pipeline.llm_role_availability_pause_exempt"
+            if _pause_exempt
+            else "pipeline.llm_role_availability_pause_persisted"
             if pause_state
             else "pipeline.llm_role_availability_pause_persist_failed",
-            "error",
+            "error" if not _pause_exempt else "warning",
             f"{role_name}: provider availability control activated",
             elapsed_sec=round(time.time() - call_started_at, 2),
             availability_issue=e.issue.as_dict(),
             pause_persisted=bool(pause_state),
+            pause_persistence_exempt=_pause_exempt,
             persistence_error=persistence_error,
             **lifecycle_fields,
         )
