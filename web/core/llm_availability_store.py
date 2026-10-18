@@ -785,6 +785,61 @@ def reconcile_llm_pause(*, now: datetime | None = None) -> dict | None:
     return _reconcile_llm_pause(now=now)
 
 
+def resume_quota_pause_on_probe_success(
+    probe_evidence: dict,
+    *,
+    now: datetime | None = None,
+) -> dict | None:
+    """Early-resume an active TRUSTED quota pause after a provider probe.
+
+    2026-10-18 (quota-wait provider probing): the provider's declared reset
+    timestamp stays the default resume authority, but the actual window can
+    re-open before it (observed 2026-10-18: the provider resumed while the
+    persisted pause still had hours left, parking the pipeline for nothing).
+    A single accepted 1-token request is strong evidence the 5-hour window
+    reset atomically provider-side.  Only an ACTIVE quota_429 record with a
+    TRUSTED reset authority AND a still-future provider_reset_at may be
+    resumed this way; the probe evidence is attached to the resume receipt
+    for audit.  Every other shape (elapsed reset, untrusted authority,
+    non-quota category, missing record) is left untouched — the normal
+    reconcile paths own those.
+    """
+
+    timestamp = _utc_now(now)
+    evidence = dict(probe_evidence if isinstance(probe_evidence, dict) else {})
+
+    with _PauseLock():
+        path = pause_path()
+        current = _read_unlocked(path)
+        if not current or not current.get("active"):
+            return dict(current) if current else None
+        if str(current.get("category") or "") != QUOTA_429:
+            return dict(current)
+        if (
+            str(current.get("quota_reset_authority") or "").strip()
+            not in _TRUSTED_QUOTA_RESET_AUTHORITIES
+        ):
+            return dict(current)
+        reset = _parse_time(current.get("provider_reset_at"))
+        if reset is None or timestamp >= reset:
+            # Elapsed/absent reset: the normal reconcile owns the resume.
+            return dict(current)
+
+        resumed = dict(current)
+        resumed["active"] = False
+        resumed["resumed_at"] = _iso(timestamp)
+        resumed["resume_source"] = "provider_probe_success"
+        resumed["resume_evidence_digest"] = None
+        resumed["probe_evidence"] = {
+            "probed_at": _iso(timestamp),
+            "http_status": evidence.get("http_status"),
+            "elapsed_sec": evidence.get("elapsed_sec"),
+            "endpoint_model": evidence.get("model"),
+        }
+        _write_unlocked(path, resumed)
+        return resumed
+
+
 def active_llm_pause(*, now: datetime | None = None) -> dict | None:
     state = reconcile_llm_pause(now=now)
     if state and state.get("active"):

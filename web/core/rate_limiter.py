@@ -47,6 +47,96 @@ _429_INDICATOR_RE = re.compile(r'Request rejected \(429\)')
 # How often to check shutdown during wait (seconds)
 _SHUTDOWN_CHECK_INTERVAL = 30
 
+# ---------------------------------------------------------------------------
+# Quota-wait provider probing (2026-10-18): the provider's declared reset
+# timestamp stays the DEFAULT resume authority, but the actual 5-hour window
+# can re-open before it (observed 2026-10-18: the provider resumed while the
+# persisted pause still had hours left, parking the pipeline for nothing).
+# While blocked, send one minimal 1-token request every probe interval; a
+# single acceptance means the window reset atomically provider-side.  Every
+# rejection/error is "still blocked" — probing never extends or re-arms
+# anything.
+# ---------------------------------------------------------------------------
+
+_QUOTA_PROBE_TIMEOUT_SEC = 15.0
+
+
+def _quota_probe_enabled() -> bool:
+    return os.environ.get("POK_QUOTA_PROBE_ENABLED", "1").strip().lower() not in (
+        "0",
+        "false",
+        "off",
+        "no",
+    )
+
+
+def _quota_probe_interval_sec() -> float:
+    try:
+        return max(60.0, float(os.environ.get("POK_QUOTA_PROBE_INTERVAL_SEC", "300")))
+    except (TypeError, ValueError):
+        return 300.0
+
+
+def _probe_provider_quota_once() -> dict | None:
+    """One blocking minimal provider request. True status only on HTTP 200.
+
+    Returns {"ok": bool, "http_status": int, "elapsed_sec": float, "model":
+    str} or None on transport/auth failure (never permission to resume).
+    """
+
+    import urllib.error
+    import urllib.request
+
+    base = str(os.environ.get("ANTHROPIC_BASE_URL") or "").rstrip("/")
+    model = str(os.environ.get("ANTHROPIC_MODEL") or "")
+    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not base or not model or not (auth_token or api_key):
+        return None
+    body = json.dumps(
+        {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }
+    ).encode("utf-8")
+    headers = {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    if auth_token:
+        headers["authorization"] = f"Bearer {auth_token}"
+    if api_key:
+        headers["x-api-key"] = api_key
+    request = urllib.request.Request(
+        f"{base}/v1/messages", data=body, headers=headers, method="POST"
+    )
+    started = time.time()
+    try:
+        with urllib.request.urlopen(request, timeout=_QUOTA_PROBE_TIMEOUT_SEC) as response:
+            status = int(response.status)
+    except urllib.error.HTTPError as exc:
+        return {
+            "ok": False,
+            "http_status": int(exc.code),
+            "elapsed_sec": time.time() - started,
+            "model": model,
+        }
+    except Exception:
+        return None
+    return {
+        "ok": status == 200,
+        "http_status": status,
+        "elapsed_sec": time.time() - started,
+        "model": model,
+    }
+
+
+async def _probe_provider_quota_available() -> dict | None:
+    """Run the blocking probe off the event loop."""
+
+    return await asyncio.to_thread(_probe_provider_quota_once)
+
 
 class RateLimiter:
     """Thread-safe singleton for managing 429 quota-exhaustion blocking."""
@@ -136,12 +226,62 @@ class RateLimiter:
         """Block until the quota resets. Checks shutdown_mgr every 30s.
 
         This is the main blocking point used by both run_claude_query()
-        and orchestrator_loop().
+        and orchestrator_loop().  While a trusted quota block holds, one
+        minimal provider probe fires per ``POK_QUOTA_PROBE_INTERVAL_SEC``
+        (default 300s); a single accepted request resumes the wait AND the
+        durable availability pause early via
+        ``llm_availability_store.resume_quota_pause_on_probe_success``.
         """
+        last_probe = time.time()
         while self.is_blocked():
             wait = self.wait_seconds()
             if wait <= 0:
                 break
+            if (
+                _quota_probe_enabled()
+                and wait > 60.0
+                and time.time() - last_probe >= _quota_probe_interval_sec()
+            ):
+                last_probe = time.time()
+                try:
+                    probe = await _probe_provider_quota_available()
+                except Exception:
+                    probe = None
+                if probe is not None and probe.get("ok") is True:
+                    log.info(
+                        "Quota probe succeeded (HTTP %s, %.1fs) %.0fs ahead of the"
+                        " declared reset — resuming early.",
+                        probe.get("http_status"),
+                        float(probe.get("elapsed_sec") or 0.0),
+                        wait,
+                    )
+                    try:
+                        from evolution_infra import log_system_event
+
+                        log_system_event(
+                            "pipeline.llm_quota_probe_resumed",
+                            "success",
+                            "Provider accepted a quota probe before the declared"
+                            " reset; resuming early.",
+                            {
+                                "http_status": probe.get("http_status"),
+                                "elapsed_sec": probe.get("elapsed_sec"),
+                                "seconds_ahead_of_reset": round(wait),
+                            },
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        import llm_availability_store
+
+                        llm_availability_store.resume_quota_pause_on_probe_success(
+                            probe
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "Probe-resume of the durable pause failed: %s", exc
+                        )
+                    break
             # Sleep in chunks so we can check shutdown
             chunk = min(wait, _SHUTDOWN_CHECK_INTERVAL)
             log.info("Rate-limited: waiting %.0fs (reset at %s)", wait, self.reset_time_str())
@@ -212,3 +352,8 @@ class RateLimiter:
 
 # Module-level singleton — all LLM call sites share this instance
 rate_limiter = RateLimiter()
+
+
+# Re-export for tests and callers that want to pace probes themselves.
+quota_probe_enabled = _quota_probe_enabled
+quota_probe_interval_sec = _quota_probe_interval_sec
