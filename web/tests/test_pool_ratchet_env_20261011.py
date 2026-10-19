@@ -55,7 +55,7 @@ def test_ratchet_target_out_of_range_is_rejected(monkeypatch, bad):
         pool_ratchet.pool_target_size()
 
 
-@pytest.mark.parametrize("good", ["12", "13", "20", "30"])
+@pytest.mark.parametrize("good", ["12", "13", "15", "20", "30"])
 def test_ratchet_target_in_range_is_accepted(monkeypatch, good):
     monkeypatch.setenv("POK_PUBLISH_MODE", "pool_ratchet")
     monkeypatch.setenv("POK_POOL_RATCHET_TARGET_SIZE", good)
