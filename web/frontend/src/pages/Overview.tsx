@@ -11,10 +11,7 @@ import {
   useDataStreamStatus,
   useControlStatusValue,
 } from "../context/DataProvider";
-import { api } from "../api/client";
-import { controlSchedulerOwnsPrepareBoundary } from "../api/control";
-import type { LlmMetricsSummary } from "../api/types";
-import { useBoundPolling } from "../hooks/useBoundPolling";
+import { controlSchedulerOwnsPrepareBoundary, type ControlStatus } from "../api/control";
 import { authorityNextVersion } from "../hooks/useControlStatus";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
@@ -108,90 +105,95 @@ function RecentActivityCard() {
   );
 }
 
-/** LLM 今日用量摘要卡：用 useBoundPolling 统一拉取 /api/llm/metrics/summary。 */
-function LlmUsageCard({ epochReady }: { epochReady: boolean }) {
-  const { data: summary, loading, error } = useBoundPolling<LlmMetricsSummary | null>(
-    async () => (epochReady ? api.llmMetricsSummary() : Promise.resolve(null)),
-    { enabled: epochReady, pollMs: 30_000 },
-  );
+/** 用量 token 数的人读格式：≥1M 用 X.XM，≥1K 用 X.XK，否则整数。 */
+function fmtCaliberTokens(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(Math.round(value));
+}
 
+/**
+ * LLM 用量卡：消费后端 status 投影里的 llm_usage_by_caliber（近 1h / 24h
+ * 流水线 vs 饱和器拆分），复用 DataProvider 已有的 /health 轮询，不新增
+ * 独立轮询。口径不可用（后端未部署该字段或投影失败）时明确说明原因，
+ * 绝不回退到全时段累计数字冒充近期用量。
+ */
+function LlmUsageCard({ status }: { status: ControlStatus | null }) {
+  const epochReady = Boolean(status?.epoch_initialized);
+  const caliber = status?.llm_usage_by_caliber;
+
+  const title = "LLM 用量（近 1h / 24h）";
   if (!epochReady) {
     return (
       <EvolutionSurface padding="sm">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">LLM 今日用量</h3>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">{title}</h3>
         <p className="text-xs text-gray-400">未初始化</p>
       </EvolutionSurface>
     );
   }
-  if (loading && !summary) {
+  if (!caliber) {
+    // 混布窗口（前端已更新、服务尚未重启）或后端未携带该字段。
     return (
       <EvolutionSurface padding="sm">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">LLM 今日用量</h3>
-        <p className="text-xs text-gray-400">正在读取用量摘要…</p>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{title}</h3>
+          <Link to="/llm" className="text-xs text-brand-600 hover:underline dark:text-brand-400">详细分析 →</Link>
+        </div>
+        <p className="mt-2 text-xs text-gray-400">用量口径不可用：status 投影未携带 1h/24h 拆分</p>
       </EvolutionSurface>
     );
   }
-  if (error && !summary) {
+  if (!caliber.available) {
     return (
       <EvolutionSurface padding="sm">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">LLM 今日用量</h3>
-        <p className="text-xs text-error-600 dark:text-error-400">用量摘要不可用：{error.message}</p>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{title}</h3>
+          <Link to="/llm" className="text-xs text-brand-600 hover:underline dark:text-brand-400">详细分析 →</Link>
+        </div>
+        <p className="mt-2 text-xs text-error-600 dark:text-error-400">用量口径不可用：{caliber.reason ?? "投影失败"}</p>
       </EvolutionSurface>
     );
   }
 
-  // total_count/overall_success_rate are optional backend totals; when absent,
-  // derive from by_role so the strip still reflects current usage (non-authoritative
-  // aggregation only — full figures live on /llm).
-  const byRole = summary?.by_role ?? [];
-  const total = summary?.total_count ?? byRole.reduce((a, r) => a + r.count, 0);
-  const totalCost = summary?.total_cost_usd ?? byRole.reduce((a, r) => a + (r.total_cost_usd ?? 0), 0);
-  const successCount = summary?.total_success_count
-    ?? byRole.reduce((a, r) => a + r.success_count, 0);
-  const successRate = summary?.overall_success_rate ?? (total > 0 && successCount != null ? successCount / total : null);
-  const avgElapsed = summary?.avg_total_elapsed_sec ?? null;
+  const last1h = caliber.windows.last_1h;
+  const last24h = caliber.windows.last_24h;
+  const total1h = last1h.pipeline_tokens + last1h.saturator_tokens;
+  const total24h = last24h.pipeline_tokens + last24h.saturator_tokens;
 
   return (
     <EvolutionSurface padding="sm">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">LLM 今日用量</h3>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{title}</h3>
         <Link to="/llm" className="text-xs text-brand-600 hover:underline dark:text-brand-400">详细分析 →</Link>
       </div>
-      {total === 0 ? (
-        <p className="mt-2 text-xs text-gray-400">暂无 LLM 调用记录。</p>
-      ) : (
-        <div className="mt-2 flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">{total}</span>
-            <span className="text-[11px] text-gray-500">总调用</span>
-          </div>
+      <div className="mt-2 space-y-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <div className="flex items-baseline gap-1.5">
             <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">
-              {totalCost != null ? `$${totalCost.toFixed(2)}` : "—"}
+              {fmtCaliberTokens(total1h)}
             </span>
-            <span className="text-[11px] text-gray-500">总成本</span>
+            <span className="text-[11px] text-gray-500">token/h（近 1h）</span>
           </div>
-          <div className="flex items-baseline gap-1.5">
-            <span className={cn(
-              "text-xl font-bold tabular-nums",
-              successRate != null && successRate >= 0.95
-                ? "text-success-600 dark:text-success-400"
-                : successRate != null && successRate < 0.8
-                  ? "text-error-600 dark:text-error-400"
-                  : "text-gray-900 dark:text-white",
-            )}>
-              {successRate != null ? `${(successRate * 100).toFixed(1)}%` : "—"}
-            </span>
-            <span className="text-[11px] text-gray-500">成功率</span>
-          </div>
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-xl font-bold text-gray-900 dark:text-white tabular-nums">
-              {avgElapsed != null ? `${avgElapsed.toFixed(1)}s` : "—"}
-            </span>
-            <span className="text-[11px] text-gray-500">平均耗时</span>
-          </div>
+          <span className="text-[11px] text-gray-500 dark:text-gray-400">
+            流水线 {fmtCaliberTokens(last1h.pipeline_tokens)} · 饱和器 {fmtCaliberTokens(last1h.saturator_tokens)} · 调用 {last1h.pipeline_calls}
+          </span>
         </div>
-      )}
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 tabular-nums">
+              {fmtCaliberTokens(total24h)}
+            </span>
+            <span className="text-[11px] text-gray-500">token（近 24h）</span>
+          </div>
+          <span className="text-[11px] text-gray-500 dark:text-gray-400">
+            流水线 {fmtCaliberTokens(last24h.pipeline_tokens)} · 饱和器 {fmtCaliberTokens(last24h.saturator_tokens)} · 调用 {last24h.pipeline_calls}
+          </span>
+        </div>
+        {caliber.time_basis === "line_order_unbounded" && (
+          <p className="text-[10px] text-amber-600 dark:text-amber-400">口径提示：调用日志缺少时间戳，窗口为全文件行序近似</p>
+        )}
+      </div>
     </EvolutionSurface>
   );
 }
@@ -335,7 +337,12 @@ export default function Overview() {
       {/* Compact metric strip: system health cards (epoch 状态/服务/daemon/版本权威) */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{controlStatus?.active_bots.length ?? 0}</span>
+          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">
+            {controlStatus?.active_bots.length ?? 0}
+            {controlStatus?.pool_target_size != null && (
+              <span className="text-gray-400 dark:text-gray-500">{" / "}{controlStatus.pool_target_size}</span>
+            )}
+          </span>
           <span className="text-xs text-gray-500 dark:text-gray-400">真正完成发布的 Bot</span>
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
@@ -497,8 +504,8 @@ export default function Overview() {
             </EvolutionSurface>
           )}
 
-          {/* LLM 今日用量摘要 */}
-          <LlmUsageCard epochReady={epochReady} />
+          {/* LLM 用量（1h/24h 口径拆分） */}
+          <LlmUsageCard status={controlStatus} />
         </div>
 
         {/* Right: Activity */}

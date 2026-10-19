@@ -99,6 +99,31 @@ export interface VersionAuthorityProjection {
   unpaired_high_water_versions: number[];
 }
 
+/** One trailing consumption-caliber window (pipeline vs saturator split). */
+export interface LlmCaliberWindow {
+  pipeline_tokens: number;
+  saturator_tokens: number;
+  pipeline_calls: number;
+}
+
+/**
+ * B1 (2026-10-15) LLM consumption-caliber split published by the backend
+ * status projection (``summarize_llm_usage_by_caliber``): trailing 1h/24h
+ * token + pipeline-call counts split by role caliber (``SATURATOR*`` roles
+ * vs everything else).  ``available: false`` carries a ``reason`` and zeroed
+ * windows instead of omitting fields.
+ */
+export interface LlmUsageByCaliber {
+  available: boolean;
+  schema_version: number;
+  reason?: string;
+  time_basis: string;
+  windows: {
+    last_1h: LlmCaliberWindow;
+    last_24h: LlmCaliberWindow;
+  };
+}
+
 export interface EvalWaitProjection {
   waiting: boolean;
   bot: string | null;
@@ -260,6 +285,17 @@ export interface ControlStatus {
   eval_wait?: EvalWaitProjection;
   feature_flags?: FeatureFlagsProjection;
   version_authority?: VersionAuthorityProjection;
+  /**
+   * Pool-ratchet target capacity (POK_POOL_RATCHET_TARGET_SIZE).  Optional:
+   * absent on pre-deploy backends and ``null`` on an invalid env — callers
+   * must fall back to the bare published-bot count.
+   */
+  pool_target_size?: number | null;
+  /**
+   * Trailing 1h/24h LLM usage split by consumption caliber (pipeline vs
+   * saturator).  Optional additive overlay; absent on pre-deploy backends.
+   */
+  llm_usage_by_caliber?: LlmUsageByCaliber;
 }
 
 export interface ControlTaskHealth {
@@ -377,6 +413,32 @@ export interface ControlAbandonResult {
   abandon_receipt_digest?: string | null;
   message?: string;
   [key: string]: unknown;
+}
+
+/** One recent abandon receipt projected for the distribution panel. */
+export interface AbandonReasonRow {
+  version: number | string | null;
+  stage: string | null;
+  reason: string;
+  ts: number | null;
+}
+
+export interface AbandonReasonBucket {
+  reason_prefix: string;
+  count: number;
+  latest_version: number | string | null;
+  latest_ts: number | null;
+}
+
+/** GET /api/control/abandon-reasons — recent abandon-reason distribution. */
+export interface AbandonReasonsSummary {
+  available: boolean;
+  reason?: string;
+  schema_version?: number;
+  rows_scanned?: number;
+  truncated?: boolean;
+  distribution: AbandonReasonBucket[];
+  rows: AbandonReasonRow[];
 }
 
 export function controlPipelineBlocked(
@@ -715,6 +777,8 @@ export const controlApi = {
       headers: withOperatorControlHeader({ "Content-Type": "application/json" }),
       body: JSON.stringify(body ?? {}),
     }),
+  /** Read-only recent abandon-reason distribution (durable ledger tail). */
+  abandonReasons: () => fetchJSON<AbandonReasonsSummary>(`${BASE}/abandon-reasons`),
   listTools: () => fetchJSON<{
     tools: string[];
     enabled_tools?: string[];

@@ -24,7 +24,7 @@ import { cn } from "../lib/utils";
  *   替换原散落的 useEffect+setInterval；fail-closed（错误时清空，不展示陈旧数据）。
  * - 用 EvolutionPageScaffold 作为统一页头三件套。
  * - 增加按 role / token / cost 的快速筛选。
- * - 顶部实时利用率仪表盘（active / capacity），每 5s 轮询 /api/llm/metrics/live。
+ * - 顶部实时利用率仪表盘（active / capacity），每 10s 轮询 /api/llm/metrics/live。
  * - 概览卡片提供输入/输出/思考/缓存 token 四项细分。
  * - 按代次成本表，数据来自 /api/llm/metrics/by-generation。
  * - 并发时间线图（最近 60 分钟），由明细 [ts, ts+elapsed] 区间按分钟桶重叠计数。
@@ -170,7 +170,7 @@ export default function LlmMetrics() {
     async () => api.llmMetricsSummary().catch(() => null),
     { pollMs: REFRESH_INTERVAL_MS },
   );
-  // 实时利用率：每 5s 轮询 /api/llm/metrics/live；fail-closed（错误时清空）。
+  // 实时利用率：每 10s（LIVE_INTERVAL_MS）轮询 /api/llm/metrics/live；fail-closed（错误时清空）。
   const {
     data: live,
     error: liveError,
@@ -527,11 +527,11 @@ export default function LlmMetrics() {
       {/* 实时利用率仪表盘 */}
       <UtilizationGauge live={live} />
 
-      {/* 概览卡片 */}
+      {/* 概览卡片（全部由最近 metricsLimit 条明细派生，窗口随"加载更多"变化） */}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <OverviewCard label="总调用数" value={fmtInt(overview.total)} />
+        <OverviewCard label={`总调用数（最近 ${metricsLimit} 条）`} value={fmtInt(overview.total)} />
         <OverviewCard
-          label="成功率"
+          label={`成功率（最近 ${metricsLimit} 条）`}
           value={overview.successRate != null ? fmtPct(overview.successCount, overview.total) : "—"}
           valueClass={overview.successRate != null && overview.successRate >= 0.95
             ? "text-success-600 dark:text-success-400"
@@ -539,9 +539,9 @@ export default function LlmMetrics() {
               ? "text-error-600 dark:text-error-400"
               : undefined}
         />
-        <OverviewCard label="总成本" value={fmtCost(overview.totalCost, 2)} />
-        <OverviewCard label="平均耗时" value={fmtNum(overview.avgElapsed, 1, "s")} />
-        <OverviewCard label="平均 TTFT" value={fmtNum(overview.avgTtft, 2, "s")} />
+        <OverviewCard label={`总成本（最近 ${metricsLimit} 条）`} value={fmtCost(overview.totalCost, 2)} />
+        <OverviewCard label={`平均耗时（最近 ${metricsLimit} 条）`} value={fmtNum(overview.avgElapsed, 1, "s")} />
+        <OverviewCard label={`平均 TTFT（最近 ${metricsLimit} 条）`} value={fmtNum(overview.avgTtft, 2, "s")} />
       </div>
 
       {/* Token 细分卡片 */}
@@ -551,6 +551,7 @@ export default function LlmMetrics() {
           output={overview.totalOutput}
           thinking={overview.totalThinking}
           cache={overview.totalCacheRead}
+          windowLabel={`最近 ${metricsLimit} 条`}
         />
       </div>
 
@@ -795,17 +796,19 @@ function UtilizationGauge({ live }: { live: LlmLiveMetrics | null }) {
   );
 }
 
-/** Token 细分：输入 / 输出 / 思考 / 缓存命中。 */
+/** Token 细分：输入 / 输出 / 思考 / 缓存命中（窗口由前端明细派生时标注）。 */
 function TokenBreakdownCard({
   input,
   output,
   thinking,
   cache,
+  windowLabel,
 }: {
   input: number;
   output: number;
   thinking: number;
   cache: number;
+  windowLabel?: string;
 }) {
   const cells: Array<{ label: string; value: number; color: string }> = [
     { label: "输入", value: input, color: "text-success-600 dark:text-success-400" },
@@ -815,7 +818,9 @@ function TokenBreakdownCard({
   ];
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
-      <p className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Token 细分</p>
+      <p className="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+        Token 细分{windowLabel ? `（${windowLabel}）` : ""}
+      </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {cells.map((c) => (
           <div key={c.label} className="rounded-lg bg-gray-50 px-3 py-2 dark:bg-white/[0.03]">

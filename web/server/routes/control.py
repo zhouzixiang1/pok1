@@ -1418,6 +1418,21 @@ def _phase_a_unavailable_projection() -> dict[str, Any]:
 def _attach_phase_a_projections(state: dict[str, Any], *, epoch: dict[str, Any] | None) -> None:
     """Attach multi-slot / slice2b / cert / eval-wait control projection blocks."""
 
+    # Pool-ratchet target capacity (``POK_POOL_RATCHET_TARGET_SIZE`` via
+    # ``pool_ratchet.pool_target_size``, the single authority read).  Pure env
+    # read, zero IO, and deliberately NOT part of the observer authority
+    # content key (that key only watches tag/checkpoint/ledger lstat tuples),
+    # so adding it cannot trigger the ~76s observer rebuild; the value is as
+    # fresh as the observer snapshot that carried it (worst case TTL-bound).
+    # ``None`` on an invalid pool-ratchet env so a config error degrades the
+    # field, never the whole status projection.
+    try:
+        from pool_ratchet import pool_target_size
+
+        state["pool_target_size"] = pool_target_size()
+    except Exception:
+        state["pool_target_size"] = None
+
     if epoch is None:
         state.update(_phase_a_unavailable_projection())
         # Feature flags and pipeline mode remain readable even when epoch fails.
@@ -2586,6 +2601,123 @@ async def get_decisions(limit: int = 50):
     if limit <= 0:
         return []
     return decisions[-limit:]
+
+
+# Bounded tail-scan bounds for the read-only abandon-reason distribution.
+# Each ledger row embeds the full frozen checkpoint envelope, so the byte
+# window is generous while still bounded; lines are then capped by count.
+_ABANDON_REASONS_TAIL_LINES = 200
+_ABANDON_REASONS_TAIL_BYTES = 4 * 1024 * 1024
+
+
+def _abandon_reasons_tail_blocking() -> dict[str, Any]:
+    """Group a bounded tail of the durable abandon ledger by reason prefix.
+
+    Reads the last ``_ABANDON_REASONS_TAIL_LINES`` receipts from
+    ``RESULTS_DIR/abandoned_versions.jsonl`` (append-only; never truncated by
+    disk hygiene) using the same bounded-tail read pattern as
+    ``_read_structured_events_tail``.  Rows are aggregated by the raw reason
+    prefix before the first ``:`` — the prefix is displayed verbatim, no
+    invented taxonomy — plus the recent per-receipt details
+    (version / stage / reason / ts).  Missing or unreadable ledger fails
+    closed with ``available: False``.
+    """
+    import evolution_infra as infra
+
+    path = infra.ABANDONED_VERSIONS_FILE
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - _ABANDON_REASONS_TAIL_BYTES)
+            handle.seek(start)
+            if start > 0:
+                # Drop the (possibly partial) leading line from the window.
+                handle.readline()
+            payload = handle.read()
+    except FileNotFoundError:
+        return {
+            "available": False,
+            "reason": "ledger_missing",
+            "distribution": [],
+            "rows": [],
+        }
+    except OSError:
+        return {
+            "available": False,
+            "reason": "ledger_unreadable",
+            "distribution": [],
+            "rows": [],
+        }
+
+    lines = [
+        line
+        for line in payload.decode("utf-8", errors="replace").splitlines()
+        if line.strip()
+    ]
+    tail = lines[-_ABANDON_REASONS_TAIL_LINES:]
+    rows: list[dict[str, Any]] = []
+    for line in tail:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        reason = record.get("reason")
+        if not isinstance(reason, str) or not reason:
+            continue
+        rows.append({
+            "version": record.get("version"),
+            "stage": record.get("checkpoint_stage"),
+            "reason": reason,
+            "ts": record.get("timestamp"),
+        })
+    # Ledger is append-only: reverse so the newest receipt comes first.
+    rows.reverse()
+
+    counts: dict[str, int] = {}
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        prefix = row["reason"].split(":", 1)[0].strip() or "(无前缀)"
+        counts[prefix] = counts.get(prefix, 0) + 1
+        latest.setdefault(prefix, row)
+    distribution = [
+        {
+            "reason_prefix": prefix,
+            "count": count,
+            "latest_version": latest[prefix]["version"],
+            "latest_ts": latest[prefix]["ts"],
+        }
+        for prefix, count in sorted(
+            counts.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+    return {
+        "available": True,
+        "schema_version": 1,
+        "rows_scanned": len(tail),
+        "truncated": len(lines) > len(tail),
+        "distribution": distribution,
+        "rows": rows,
+    }
+
+
+@router.get("/abandon-reasons")
+async def control_abandon_reasons():
+    """Read-only abandon-reason distribution over the durable abandon ledger.
+
+    Answers "which failure classes killed the recent generations" (e.g. a
+    7-generation unpublished streak) directly from
+    ``RESULTS_DIR/abandoned_versions.jsonl``.  Bounded tail scan off the
+    shared event loop (``run_blocking_isolated``): the ledger rows embed
+    whole checkpoint envelopes, so a full-file read must never block the
+    single uvicorn worker.
+    """
+    return await run_blocking_isolated(
+        _abandon_reasons_tail_blocking,
+        thread_name_prefix="control-abandon-reasons",
+    )
 
 
 async def _start_evolution_transaction() -> dict[str, str]:

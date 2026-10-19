@@ -12,6 +12,25 @@ interface PhaseAProjectionStripProps {
 }
 
 /**
+ * 未发布候选版本段的操作员摘要：对版本号排序后做连续区间压缩。
+ * 全连续时『vX–vY · 连续 N 代』，存在缺口时『vX–vY · 共 N 代（非连续）』。
+ */
+function unpublishedCandidatesLabel(versions: number[] | null | undefined): string | null {
+  const nums = (versions ?? [])
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+    .sort((a, b) => a - b);
+  if (nums.length === 0) return null;
+  const min = nums[0];
+  const max = nums[nums.length - 1];
+  if (max - min + 1 === nums.length) {
+    return nums.length === 1
+      ? `未发布候选 v${min}`
+      : `未发布候选 v${min}–v${max} · 连续 ${nums.length} 代`;
+  }
+  return `未发布候选 v${min}–v${max} · 共 ${nums.length} 代（非连续）`;
+}
+
+/**
  * Compact Phase A contract summary: multi-slot / pipeline_mode / eval_wait /
  * version_authority / feature flags. Does not own start/stop/abandon.
  */
@@ -27,6 +46,7 @@ export function PhaseAProjectionStrip({
   const va = status.version_authority;
   const flags = status.feature_flags;
   const slots = status.active_generations ?? [];
+  const unpublishedLabel = unpublishedCandidatesLabel(status.unpublished_candidate_versions);
   const tips: string[] = [];
 
   if (mode?.enabled && mode.consumer_parked) {
@@ -63,6 +83,11 @@ export function PhaseAProjectionStrip({
         {va && (
           <EvolutionStatusBadge tone="info">
             版本高水位 v{va.high_water} · 已配对 {va.paired_versions?.length ?? 0}
+          </EvolutionStatusBadge>
+        )}
+        {unpublishedLabel && (
+          <EvolutionStatusBadge tone="warn">
+            {unpublishedLabel}
           </EvolutionStatusBadge>
         )}
         {flags?.staging_as_parent && (

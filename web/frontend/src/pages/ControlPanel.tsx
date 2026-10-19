@@ -8,6 +8,7 @@ import {
   controlSchedulerOwnsPrepareBoundary,
   controlStartBlocked,
   controlStartBlockedReason,
+  type AbandonReasonsSummary,
   type Decision,
   type AppConfig,
 } from "../api/control";
@@ -15,6 +16,11 @@ import { api } from "../api/client";
 import type { PipelineCheckpoint } from "../api/types";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { EvolutionPageScaffold } from "../components/evolution/EvolutionPageScaffold";
+import {
+  EvolutionSection,
+  EvolutionStatusBadge,
+  EvolutionSurface,
+} from "../components/evolution/ui";
 import { authorityNextVersion } from "../hooks/useControlStatus";
 import { useBoundPolling } from "../hooks/useBoundPolling";
 import { useControlStatusValue } from "../context/DataProvider";
@@ -31,6 +37,90 @@ const RefreshIcon = ({ className }: { className?: string }) => (
 interface ControlConfigProjection {
   decisions: Decision[];
   config: AppConfig | null;
+}
+
+/** 放弃时间戳（epoch 秒）的人读格式；缺失显示 —。 */
+function formatAbandonTs(ts: number | null | undefined): string {
+  if (ts == null || !Number.isFinite(ts)) return "—";
+  try {
+    return new Date(ts * 1000).toLocaleString();
+  } catch {
+    return "—";
+  }
+}
+
+/**
+ * 最近放弃原因分布：消费 GET /api/control/abandon-reasons（放弃台账有界
+ * 尾部扫描），按 reason 前缀聚合回答『最近这批代次死在哪类问题上、是否
+ * 同一根因』。前缀按后端原始 reason 截取，不做二次归类。
+ */
+function AbandonReasonsPanel() {
+  const [showDetails, setShowDetails] = useState(false);
+  const { data, error } = useBoundPolling<AbandonReasonsSummary | null>(
+    async () => controlApi.abandonReasons().catch(() => null),
+    { pollMs: 30_000 },
+  );
+
+  return (
+    <EvolutionSurface padding="sm">
+      <EvolutionSection title="最近放弃原因分布" />
+      <div className="mt-3 space-y-2">
+        {error != null && (
+          <p className="text-xs text-error-600 dark:text-error-400">放弃台账读取失败：{error.message}</p>
+        )}
+        {!error && data == null && <p className="text-xs text-gray-400">正在读取放弃台账…</p>}
+        {!error && data != null && data.available === false && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            台账不可用：{data.reason ?? "原因未知"}
+          </p>
+        )}
+        {!error && data?.available && data.distribution.length === 0 && (
+          <p className="text-xs text-gray-400">暂无放弃记录</p>
+        )}
+        {!error && data?.available && data.distribution.length > 0 && (
+          <>
+            <div className="space-y-1">
+              {data.distribution.map((bucket) => (
+                <div key={bucket.reason_prefix} className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-mono text-gray-700 dark:text-gray-300 break-all">{bucket.reason_prefix}</span>
+                  <EvolutionStatusBadge tone={bucket.count >= 3 ? "warn" : "neutral"}>
+                    {bucket.count} 次
+                  </EvolutionStatusBadge>
+                  <span className="ml-auto text-gray-500 dark:text-gray-400 shrink-0">
+                    最近 v{bucket.latest_version ?? "?"} · {formatAbandonTs(bucket.latest_ts)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDetails(!showDetails)}
+                className="text-xs text-brand-600 hover:underline dark:text-brand-400"
+              >
+                {showDetails ? "收起最近明细" : "展开最近明细"}
+              </button>
+              {data.truncated && (
+                <span className="text-[10px] text-gray-400">（仅统计最近 {data.rows_scanned} 条台账尾部）</span>
+              )}
+            </div>
+            {showDetails && (
+              <div className="max-h-48 space-y-1 overflow-y-auto">
+                {data.rows.slice(0, 30).map((row, i) => (
+                  <div key={`${row.version}-${i}`} className="flex flex-wrap items-baseline gap-x-2 text-[11px]">
+                    <span className="font-mono font-medium text-gray-700 dark:text-gray-300 shrink-0">v{row.version ?? "?"}</span>
+                    <span className="text-gray-500 shrink-0">{row.stage ?? "—"}</span>
+                    <span className="text-gray-400 shrink-0">{formatAbandonTs(row.ts)}</span>
+                    <span className="font-mono text-gray-600 dark:text-gray-400 break-all">{row.reason}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </EvolutionSurface>
+  );
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
@@ -385,6 +475,9 @@ export default function ControlPanel() {
           )}
         </div>
       </div>
+
+      {/* Recent abandon-reason distribution（承接 /failures 重定向的语义） */}
+      <AbandonReasonsPanel />
 
       {/* Settings */}
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">

@@ -8,6 +8,7 @@ analysis.
 """
 
 import json
+import re
 import time
 
 from fastapi import APIRouter, Query
@@ -20,6 +21,20 @@ from server.cache import cached_by_mtime
 METRICS_FILE = RESULTS_DIR / "llm_call_metrics.jsonl"
 
 router = APIRouter(prefix="/api/llm", tags=["llm-metrics"])
+
+_GENERATION_ORDINAL_RE = re.compile(r"(\d+)")
+
+
+def _generation_ordinal_sort_key(row: dict) -> tuple[int, int]:
+    """Sort key: numeric generation ordinal descending, unparseable ids last.
+
+    ``generation_id`` values are ``generation:<N>:workflow-v<M>`` strings; the
+    first integer run is the generation ordinal N.
+    """
+    match = _GENERATION_ORDINAL_RE.search(str(row.get("generation_id") or ""))
+    if match is None:
+        return (1, 0)
+    return (0, -int(match.group(1)))
 
 # Numeric fields aggregated in /metrics/summary.  ``avg_max`` fields produce
 # both average and max; ``total_only`` fields only produce a sum.
@@ -411,7 +426,12 @@ def _compute_metrics_by_generation() -> list[dict]:
             "output_tokens": int(round(b["output_tokens"])),
             "thinking_tokens": int(round(b["thinking_tokens"])),
         })
-    out.sort(key=lambda r: r["generation_id"], reverse=True)
+    # Numeric descending sort on the generation ordinal: ``generation_id`` is a
+    # ``generation:<N>:workflow-v<M>`` string, so the previous plain string
+    # sort ordered v1000 before v999 once the version number passed three
+    # digits.  Rows whose id carries no integer keep their relative order at
+    # the tail (stable sort).
+    out.sort(key=_generation_ordinal_sort_key)
     return out
 
 

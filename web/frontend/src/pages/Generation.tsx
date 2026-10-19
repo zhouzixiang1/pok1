@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { useEvolutionSSE } from "../api/evolution";
-import type { IOLine } from "../api/evolution";
+import type { GenerationCostPolicyState, IOLine } from "../api/evolution";
 import { useControlStatusValue } from "../context/DataProvider";
 import { useBoundAgentActivity } from "../hooks/useBoundAgentActivity";
 import { usePipelineCheckpoint } from "../hooks/usePipelineCheckpoint";
@@ -87,6 +87,17 @@ export default function Generation() {
   const [messages, setMessages] = useState<ConvMsg[]>([]);
   const [status2, setStatus2] = useState("连接中...");
   const [isWorking, setIsWorking] = useState(false);
+  // 传输层连接态：仅由 EventSource 的 onopen（→onConnect）与传输错误/epoch
+  // 栅栏（→onDisconnect）翻转，独立于任务权威文案——权威栅栏语义不变。
+  const [streamConnected, setStreamConnected] = useState(false);
+  // 本代成本投影：cost 事件给出 gen/grand 累计，generation_cost_policy 事件
+  // 给出策略口径（监控/硬限 + 上限 + 已花）。两者均随工作流身份切换清空。
+  const [costTotals, setCostTotals] = useState<{ gen: number; grand: number } | null>(null);
+  const [costPolicyState, setCostPolicyState] = useState<{
+    generation_id: string | null;
+    spent_usd: number;
+    policy: GenerationCostPolicyState | null;
+  } | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
@@ -107,6 +118,9 @@ export default function Generation() {
     setMessages([]);
     setStatus2("等待严格进化身份");
     setIsWorking(false);
+    setStreamConnected(false);
+    setCostTotals(null);
+    setCostPolicyState(null);
     openToolId.current = null;
     thinkingId.current = null;
     acceptedStatusRef.current = null;
@@ -122,6 +136,8 @@ export default function Generation() {
     setMessages([]);
     setStatus2("等待当前工作流活动任务权威");
     setIsWorking(false);
+    setCostTotals(null);
+    setCostPolicyState(null);
     openToolId.current = null;
     thinkingId.current = null;
     acceptedStatusRef.current = null;
@@ -315,6 +331,7 @@ export default function Generation() {
         )
       ) return;
       const role = line.role || "";
+      const slot = line.slot;
       if (line.streamType === "tool") {
         closeThinking();
         if (line.text.trim() && !line.text.startsWith("\n[tool:")) updateLastTool(line.text.trim());
@@ -325,7 +342,7 @@ export default function Generation() {
             const last = prev[prev.length - 1];
             return [...prev.slice(0, -1), { ...last, text: last.text + line.text }];
           }
-          return [...prev, { id: nextId(), type: "claude", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
+          return [...prev, { id: nextId(), type: "claude", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false }];
         });
       } else if (line.streamType === "thinking") {
         closeTool();
@@ -336,22 +353,22 @@ export default function Generation() {
           }
           const newId = nextId();
           thinkingId.current = newId;
-          return [...prev, { id: newId, type: "thinking", text: line.text, role: role || undefined, toolOutput: [], toolDone: false }];
+          return [...prev, { id: newId, type: "thinking", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false }];
         });
       } else if (line.streamType === "error") {
         closeTool(); closeThinking();
-        addMsg({ id: nextId(), type: "error", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
+        addMsg({ id: nextId(), type: "error", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false });
       } else if (line.streamType === "tool_result") {
         if (line.text.trim()) updateLastTool(line.text.trim());
       } else if (line.streamType === "prompt") {
         const cleanText = line.text.replace(/\n/g, " ").trim();
         if (cleanText) {
           closeTool(); closeThinking();
-          addMsg({ id: nextId(), type: "raw", text: cleanText, role: role || undefined, toolOutput: [], toolDone: false });
+          addMsg({ id: nextId(), type: "raw", text: cleanText, role: role || undefined, slot, toolOutput: [], toolDone: false });
         }
       } else if (line.text.trim()) {
         closeTool(); closeThinking();
-        addMsg({ id: nextId(), type: "raw", text: line.text, role: role || undefined, toolOutput: [], toolDone: false });
+        addMsg({ id: nextId(), type: "raw", text: line.text, role: role || undefined, slot, toolOutput: [], toolDone: false });
       }
     },
     onToolCall: (data) => {
@@ -386,6 +403,7 @@ export default function Generation() {
     onEpochBlocked: () => clearEpochProjection(),
     onConnect: () => {
       if (!epochReady) return;
+      setStreamConnected(true);
       setMessages([]);
       acceptedStatusRef.current = null;
       acceptedStatusAcceptedAtRef.current = null;
@@ -396,8 +414,25 @@ export default function Generation() {
       openToolId.current = null;
       thinkingId.current = null;
     },
-    onDisconnect: () => loseTaskAuthority(),
-    onHistory: () => {}, onHeader: () => {}, onCost: () => {}, onGenerationCostPolicy: () => {},
+    onDisconnect: () => {
+      // 传输层断开（指数退避自动重连中）——只翻连接态，不改变任务权威
+      // 栅栏文案语义；权威清空仍由 loseTaskAuthority 独立负责。
+      setStreamConnected(false);
+      loseTaskAuthority();
+    },
+    onCost: (data) => {
+      if (!epochReady) return;
+      setCostTotals({ gen: data.gen_total, grand: data.grand_total });
+    },
+    onGenerationCostPolicy: (data) => {
+      if (!epochReady) return;
+      setCostPolicyState({
+        generation_id: data.generation_id,
+        spent_usd: data.spent_usd,
+        policy: data.policy,
+      });
+    },
+    onHistory: () => {}, onHeader: () => {},
     onEvalTable: () => {}, onMetrics: () => {}, onDaemonStats: () => {},
   }, streamAuthorityKey);
 
@@ -450,6 +485,33 @@ export default function Generation() {
             handoff={handoff}
           />
         </div>
+        {/* 本代 LLM 成本（cost / generation_cost_policy 事件投影；策略缺失时只显示已花金额） */}
+        {(costTotals != null || costPolicyState != null) && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
+            <span>
+              本代 LLM 成本{" "}
+              <span className="font-mono font-semibold text-gray-800 dark:text-gray-100">
+                ${(costPolicyState?.spent_usd ?? costTotals?.gen ?? 0).toFixed(2)}
+              </span>
+            </span>
+            {costPolicyState?.policy != null && (
+              <span>
+                上限{" "}
+                <span className="font-mono font-semibold text-gray-800 dark:text-gray-100">
+                  {costPolicyState.policy.hard_limit_usd != null
+                    ? `$${costPolicyState.policy.hard_limit_usd.toFixed(2)}`
+                    : "—"}
+                </span>{" "}
+                · {costPolicyState.policy.enforcement_mode === "operator_hard_limit" ? "硬限" : "监控模式"}
+              </span>
+            )}
+            {costTotals != null && (
+              <span>
+                累计 <span className="font-mono text-gray-700 dark:text-gray-200">${costTotals.grand.toFixed(2)}</span>
+              </span>
+            )}
+          </div>
+        )}
       </EvolutionSurface>
 
       <HandoffEightStep handoff={handoff} className="mt-4" />
@@ -568,21 +630,23 @@ export default function Generation() {
         {/* LLM 实时输入输出流（右） */}
         <div className="lg:col-span-2">
           <EvolutionStreamPanel
-            connected={epochReady && status2 !== "连接中..."}
+            connected={epochReady && streamConnected}
             statusText={
               !epochReady
                 ? "等待初始化"
-                : authoritativeWorking
-                  ? "模型正在输出"
-                  : runFlagWithoutTask
-                    ? "运行标志存在但任务未活动"
-                    : streamInterrupted
-                      ? "状态未知（流中断）"
-                      : status2 === "连接中..."
-                        ? "连接中"
-                        : taskActive
-                          ? "等待下一次输出"
-                          : "当前无任务"
+                : !streamConnected
+                  ? "连接断开，自动重连中…"
+                  : authoritativeWorking
+                    ? "模型正在输出"
+                    : runFlagWithoutTask
+                      ? "运行标志存在但任务未活动"
+                      : streamInterrupted
+                        ? "状态未知（流中断）"
+                        : status2 === "连接中..."
+                          ? "连接中"
+                          : taskActive
+                            ? "等待下一次输出"
+                            : "当前无任务"
             }
             isWorking={authoritativeWorking}
             actions={

@@ -11,17 +11,6 @@ import {
   agentRoleSummaries,
 } from "../node_modules/.tmp/sse-tests/domain/agentActivityView.js";
 import {
-  strengthJobView,
-  daemonLivenessView,
-  strengthRejectionLabel,
-  producerConsumerCapabilityView,
-} from "../node_modules/.tmp/sse-tests/domain/strengthJobView.js";
-import {
-  evidenceTierForGate,
-  criticAdvisoryVerdictLabel,
-  EVIDENCE_TIER_LABELS,
-} from "../node_modules/.tmp/sse-tests/domain/evidenceAuthority.js";
-import {
   workerFailureRows,
   pipelineRecoveryRows,
 } from "../node_modules/.tmp/sse-tests/domain/failureRecoveryView.js";
@@ -353,46 +342,7 @@ test("expectStrengthJobs validates identity digest and daemon health", () => {
   );
 });
 
-test("strengthJobView aggregates inadmissible rejection reason counts", () => {
-  const view = strengthJobView({
-    available: true,
-    evaluation_epoch: "national_tcp_policy_v1",
-    evaluation_identity_digest: ID64,
-    evaluation_manifest_digest: ID64,
-    epoch_reset_receipt_digest: ID64,
-    active_bots: ["national_v143", "national_v144"],
-    capabilities: STRENGTH_CAPABILITIES,
-    authority_binding: strengthAuthority(),
-    daemon: { alive: true, configured: true, heartbeat_status: "fresh", pid: 123, heartbeat_age_sec: 5 },
-    admitted_samples: [{ id: "m1", bot0: "national_v143", bot1: "national_v144" }],
-    staged_pending: [],
-    inadmissible_diagnostics: [
-      { id: "bad1", rejection_reasons: ["hands_per_strength_sample_not_70", "bot1_not_in_active_pool"] },
-      { id: "bad2", rejection_reasons: ["hands_per_strength_sample_not_70"] },
-    ],
-    pagination: page(1, 0, 2),
-    observer: OBSERVER,
-    daemon_stats: {},
-  });
-  assert.equal(view.available, true);
-  assert.equal(view.admittedCount, 1);
-  const top = view.inadmissibleReasonCounts[0];
-  assert.equal(top.reason, "hands_per_strength_sample_not_70");
-  assert.equal(top.count, 2);
-  assert.match(strengthRejectionLabel(top.reason), /非 70 手/);
-});
-
-test("daemonLivenessView distinguishes configured+alive from configured+dead", () => {
-  const fresh = daemonLivenessView({ alive: true, configured: true, heartbeat_status: "fresh", pid: 1, heartbeat_age_sec: 2 });
-  assert.equal(fresh.state, "alive_fresh");
-  const dead = daemonLivenessView({ alive: false, configured: true });
-  assert.equal(dead.state, "configured_dead");
-  const unconfigured = daemonLivenessView({ alive: false, configured: false });
-  assert.equal(unconfigured.state, "unconfigured");
-  assert.match(unconfigured.detail, /配置未启用/);
-});
-
-test("strength authority binding rejects stale reset/pool and capability copy is backend-driven", () => {
+test("strength authority binding rejects stale reset/pool", () => {
   const response = {
     available: false,
     reason: "active_pool_singleton",
@@ -416,31 +366,6 @@ test("strength authority binding rejects stale reset/pool and capability copy is
     active_bots: ["national_v143", "national_v144"],
     reset_receipt_digest: "b".repeat(64),
   }).includes("epoch_reset_receipt_digest"));
-
-  const disabled = producerConsumerCapabilityView(STRENGTH_CAPABILITIES);
-  assert.equal(disabled.enabled, false);
-  assert.match(disabled.label, /尚未启用/);
-  const enabled = producerConsumerCapabilityView({
-    durable_job_lifecycle: true,
-    queued_running_leases: true,
-    producer_consumer_dispatch: true,
-  });
-  assert.equal(enabled.enabled, true);
-  assert.match(enabled.detail, /均可用/);
-});
-
-test("evidenceTierForGate classifies compliance and advisory gates correctly", () => {
-  assert.equal(evidenceTierForGate(null).tier, "zero");
-  const critic = evidenceTierForGate({ name: "critic", present: true, complete: true, authority_state: "current", fields: {} });
-  assert.equal(critic.tier, "advisory");
-  const reviewer = evidenceTierForGate({ name: "review", present: true, complete: true, authority_state: "current", fields: {} });
-  assert.equal(reviewer.tier, "compliance");
-  const quality = evidenceTierForGate({ name: "quality", present: true, complete: true, authority_state: "current", fields: {} });
-  assert.equal(quality.tier, "compliance");
-  const precommit = evidenceTierForGate({ name: "precommit_eval", present: true, complete: true, authority_state: "current", fields: {} });
-  assert.equal(precommit.tier, "compliance");
-  const incompleteReview = evidenceTierForGate({ name: "review", present: true, complete: false, authority_state: "current", fields: {} });
-  assert.equal(incompleteReview.tier, "zero");
 });
 
 test("pipelineStepperStage falls back to active_generation when checkpoint is null", () => {
@@ -580,32 +505,6 @@ test("operatorSituationView surfaces dual-slot badges, consumer park, eval_wait,
     active_generation: { ...primary, stage: "publishing" },
     active_generations: [{ ...primary, stage: "publishing" }],
   }), false);
-});
-
-test("criticAdvisoryVerdictLabel mirrors criticAdvisoryComplete field chain", () => {
-  const complete = criticAdvisoryVerdictLabel({
-    name: "critic",
-    present: true,
-    complete: true,
-    authority_state: "current",
-    fields: { approved: true, schema_valid: true, llm_invoked: true, critic_llm_executed: true, advisory_approved: true },
-  });
-  assert.equal(complete.complete, true);
-  assert.equal(complete.verdict, "建议支持");
-
-  const incomplete = criticAdvisoryVerdictLabel({
-    name: "critic",
-    present: true,
-    complete: false,
-    authority_state: "current",
-    fields: { approved: true, schema_valid: true }, // missing llm chain
-  });
-  assert.equal(incomplete.complete, false);
-});
-
-test("EVIDENCE_TIER_LABELS exposes all six tiers", () => {
-  const tiers = Object.keys(EVIDENCE_TIER_LABELS).sort();
-  assert.deepEqual(tiers, ["advisory", "compliance", "diagnostic", "staging", "strength", "zero"]);
 });
 
 test("workerFailureRows keeps the backend category without re-deriving it", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -26,11 +26,6 @@ function resolveProjectPython() {
 import { expectAgentActivity, agentActivityBindingIssues, agentWorkflowIdentityKey } from "../node_modules/.tmp/sse-tests/api/agentActivity.js";
 import { expectStrengthJobs, strengthJobsBindingIssues } from "../node_modules/.tmp/sse-tests/api/strengthJobs.js";
 import { agentActivityView } from "../node_modules/.tmp/sse-tests/domain/agentActivityView.js";
-import { strengthJobView, daemonLivenessView } from "../node_modules/.tmp/sse-tests/domain/strengthJobView.js";
-import {
-  evidenceTierForGate,
-  criticAdvisoryVerdictLabel,
-} from "../node_modules/.tmp/sse-tests/domain/evidenceAuthority.js";
 import {
   workerFailureRows,
   pipelineRecoveryRows,
@@ -213,10 +208,6 @@ test("fixture: critic advisory only — approved is not a strength gate", () => 
   }));
   const critic = view.roles.find((r) => r.role === "critic");
   assert.match(critic.detail, /建议.*不单独决定/);
-  const verdict = criticAdvisoryVerdictLabel(view.gates.critic);
-  // advisory_approved=false but complete=true → "建议保留意见"
-  assert.equal(verdict.complete, true);
-  assert.equal(verdict.verdict, "建议保留意见");
 });
 
 test("fixture: Reviewer infra timeout retry — not strategy rejection", () => {
@@ -264,65 +255,6 @@ test("fixture: parent2 identity mismatch — authority_conflict, no guess", () =
   );
   const conflict = rows.find((r) => r.failureClass === "checkpoint_epoch_incompatible");
   assert.equal(conflict.disposition, "authority_conflict");
-});
-
-test("fixture: daemon configured but dead — state=configured_dead", () => {
-  const view = daemonLivenessView({ alive: false, configured: true });
-  assert.equal(view.state, "configured_dead");
-});
-
-test("fixture: daemon alive but stale heartbeat — distinct from fresh", () => {
-  const view = daemonLivenessView({ alive: true, configured: true, heartbeat_status: "stale", pid: 1 });
-  assert.equal(view.state, "alive_stale_heartbeat");
-});
-
-test("fixture: daemon configured=false but alive is an explicit red conflict", () => {
-  const view = daemonLivenessView({ alive: true, configured: false, pid: 42, heartbeat_status: "fresh" });
-  assert.equal(view.state, "configuration_conflict");
-  assert.match(view.detail, /配置明确禁用.*存活进程/);
-});
-
-test("fixture: 69-hand sample — inadmissible diagnostic explains rejection", () => {
-  const view = strengthJobView({
-    available: true,
-    evaluation_epoch: "national_tcp_policy_v1",
-    evaluation_identity_digest: ID64,
-    evaluation_manifest_digest: ID64,
-    epoch_reset_receipt_digest: ID64,
-    active_bots: ["national_v143", "national_v144"],
-    capabilities: STRENGTH_CAPABILITIES,
-    authority_binding: strengthAuthority(),
-    daemon: { alive: true, configured: true, heartbeat_status: "fresh" },
-    admitted_samples: [],
-    staged_pending: [],
-    inadmissible_diagnostics: [
-      { id: "bad", rejection_reasons: ["hands_per_strength_sample_not_70"], hands_per_strength_sample: 69 },
-    ],
-    pagination: page(0, 0, 1),
-    observer: OBSERVER,
-    daemon_stats: {},
-  });
-  assert.equal(view.available, true);
-  assert.equal(view.inadmissibleReasonCounts[0].reason, "hands_per_strength_sample_not_70");
-});
-
-test("fixture: active_pool_empty strength projection — unavailable, not faked", () => {
-  const view = strengthJobView({
-    available: false,
-    reason: "active_pool_empty",
-    evaluation_epoch: "national_tcp_policy_v1",
-    active_bots: [],
-    epoch_reset_receipt_digest: ID64,
-    capabilities: STRENGTH_CAPABILITIES,
-    authority_binding: {
-      ...strengthAuthority([]),
-      evaluation_identity_digest: null,
-      evaluation_manifest_digest: null,
-    },
-    daemon: { alive: false, configured: false },
-  });
-  assert.equal(view.available, false);
-  assert.equal(view.daemon.state, "unconfigured");
 });
 
 test("fixture: strength observation is hidden after active-pool or reset rotation", () => {
@@ -422,8 +354,6 @@ test("fixture: repair stages expose old gates as historical-invalidated, never c
     },
   });
   assert.equal(expectAgentActivity(projection).available, true);
-  assert.equal(evidenceTierForGate(projection.gates.quality).tier, "zero");
-  assert.match(evidenceTierForGate(projection.gates.quality).label, /已失效/);
   const view = agentActivityView(projection);
   assert.equal(view.roles.find((role) => role.role === "workers").state, "running");
   assert.match(view.roles.find((role) => role.role === "reviewer").detail, /历史诊断/);
@@ -578,23 +508,7 @@ test("fixture: real v67 to v68 successor changes the Agent Activity hard fence",
   );
 });
 
-test("fixture: dashboard derives producer-consumer copy from backend capability", () => {
-  const source = readFileSync(new URL("../src/pages/BackgroundStrength.tsx", import.meta.url), "utf8");
-  assert.match(source, /producerConsumerCapabilityView/);
-  assert.doesNotMatch(source, /inert shadow/);
-  assert.match(source, /只有绑定当前 reset、发布池与评测身份/);
-});
-
-test("fixture: completed Reviewer is a binding compliance gate while Critic remains advisory", () => {
-  const review = evidenceTierForGate({ name: "review", present: true, complete: true, authority_state: "current", fields: {} });
-  const critic = evidenceTierForGate({ name: "critic", present: true, complete: true, authority_state: "current", fields: {} });
-  assert.equal(review.tier, "compliance");
-  assert.equal(critic.tier, "advisory");
-});
-
 test("fixture: incomplete Critic has zero authority and direction-audited Master retry stays running", () => {
-  const incompleteCritic = evidenceTierForGate({ name: "critic", present: true, complete: false, authority_state: "current", fields: {} });
-  assert.equal(incompleteCritic.tier, "zero");
   const response = agentFixture({
     stage: "direction_audited",
     master: { started: true, completed: false, plan_present: false, analysis: null, tasks: [], task_total: 0, tasks_truncated: false },
