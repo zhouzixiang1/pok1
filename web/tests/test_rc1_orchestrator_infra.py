@@ -11,6 +11,7 @@ from orchestrator import (
     _is_shutdown_cancel_error,
     _is_crossover_incompatible_result,
     _is_crossover_llm_exhausted_result,
+    _is_crossover_provenance_exhausted_result,
 )
 from claude_agent_sdk import ProcessError, CLINotFoundError, ClaudeSDKError
 import inspect
@@ -59,6 +60,32 @@ def test_crossover_incompatible_detector_matches_token():
 
 def test_crossover_llm_exhausted_detector_matches_token():
     assert _is_crossover_llm_exhausted_result({"error": "CROSSOVER_LLM_EXHAUSTED"}) is True
+
+
+def test_crossover_provenance_exhausted_detector_matches_token():
+    # 2026-10-20: all-provenance crossover exhaustion carries its own token;
+    # the generic exhausted detector also recognizes it as a safety net (so it
+    # can never fall into the generic route-failure re-route path), while the
+    # provenance-specific detector stays distinct for the recovery message.
+    assert (
+        _is_crossover_provenance_exhausted_result(
+            {"error": "CROSSOVER_PROVENANCE_EXHAUSTED"}
+        )
+        is True
+    )
+    assert (
+        _is_crossover_llm_exhausted_result(
+            {"error": "CROSSOVER_PROVENANCE_EXHAUSTED"}
+        )
+        is True
+    )
+    # The provenance detector does not swallow the legacy token.
+    assert (
+        _is_crossover_provenance_exhausted_result({"error": "CROSSOVER_LLM_EXHAUSTED"})
+        is False
+    )
+    assert _is_crossover_provenance_exhausted_result({"success": False}) is False
+    assert _is_crossover_provenance_exhausted_result(None) is False
 
 
 def test_crossover_detectors_distinguish_each_other_and_bare_failure():

@@ -388,7 +388,13 @@ MIN_DECISION_PASS_RATE = 0.7
 MIN_CROSSOVER_DECISION_RATE = 0.6
 MAX_WORKER_RETRIES = 4
 MAX_MASTER_RETRIES = 3
-MAX_CROSSOVER_RETRIES = 3
+# 2026-10-20: raised 3 -> 5. v572 (v566×v11) burned all 3 attempts on the same
+# provenance mistake (adapted Parent-A variant instead of an exact Parent-B
+# component copy) because the retry prompt carried no Parent-B inventory; with
+# the inventory now injected from attempt 2 on, two extra attempts give the
+# model room to actually copy the listed component. Provider/effect failures
+# still consume exactly one attempt each (unchanged semantics).
+MAX_CROSSOVER_RETRIES = 5
 MAX_GENESIS_RETRIES = 3
 MAX_PRECOMMIT_RETRIES = 3   # Max run_precommit_eval attempts against the SAME bot code (resets on worker rework)
 MAX_PRECOMMIT_REWORK_ROUNDS = int(os.environ.get("POK_MAX_PRECOMMIT_REWORK_ROUNDS", "3"))

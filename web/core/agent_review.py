@@ -265,6 +265,154 @@ def _crossover_projection_failure(component, issue, **extra):
     return projection_failure(component, issue, **extra)
 
 
+class CrossoverAttemptExhaustion:
+    """Structured FALSY result for ``_run_crossover`` attempt exhaustion.
+
+    Historically the exhausted return was a bare ``False`` and every consumer
+    only tests truthiness, so this object stays falsy (``__bool__`` →
+    ``False``) while carrying the per-attempt failure classes the tool layer
+    needs to distinguish "every consumed attempt died on the provenance gate"
+    (``exhaustion == "provenance"`` → distinct
+    ``crossover_provenance_exhausted`` abandon) from provider/infra/mixed
+    exhaustion (unchanged ``crossover_llm_exhausted`` path).  Monkeypatched
+    callers returning a literal ``False`` keep the legacy routing: any falsy
+    value without the ``exhaustion`` attribute is treated as mixed.
+    """
+
+    __slots__ = ("exhaustion", "attempt_failure_classes")
+
+    def __init__(self, attempt_failure_classes):
+        classes = [str(item) for item in attempt_failure_classes or []]
+        self.attempt_failure_classes = classes
+        self.exhaustion = (
+            "provenance"
+            if classes and all(item == "provenance" for item in classes)
+            else "mixed"
+        )
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return (
+            "CrossoverAttemptExhaustion(exhaustion={!r}, "
+            "attempt_failure_classes={!r})"
+        ).format(self.exhaustion, self.attempt_failure_classes)
+
+
+#: Bounds for the Parent-B component inventory appended to the provenance
+#: retry feedback (2026-10-20).  120 entries / 3000 chars keep the retry
+#: prompt bounded even for a very large frozen Parent-B ``policy.py``.
+_PARENT_B_INVENTORY_MAX_ENTRIES = 120
+_PARENT_B_INVENTORY_MAX_CHARS = 3000
+
+
+def _parent_b_component_inventory(frozen_parent_b_dir):
+    """Deterministic top-level component inventory of frozen Parent B.
+
+    Parses the frozen Parent-B snapshot's ``policy.py`` with ``ast`` and
+    returns the top-level ``FunctionDef`` / ``AsyncFunctionDef`` /
+    ``ClassDef`` names with their definition line numbers, in source order.
+    No regex, no live-bot reads: ``frozen_parent_b_dir`` is the same
+    content-addressed directory the provenance validator compares against,
+    so the list is exactly the set of components an AST-verbatim port may
+    copy.  Returns ``None`` when the snapshot or its ``policy.py`` is
+    missing or unparseable; the caller then omits the inventory section
+    rather than blocking the bounded retry loop (advisory prompt text).
+    """
+    import ast as _ast
+
+    try:
+        source = (Path(frozen_parent_b_dir) / "policy.py").read_text(
+            encoding="utf-8"
+        )
+        tree = _ast.parse(source)
+    except Exception:
+        return None
+    entries = []
+    for node in tree.body:
+        if isinstance(node, _ast.FunctionDef):
+            entries.append((node.name, "def", int(node.lineno)))
+        elif isinstance(node, _ast.AsyncFunctionDef):
+            entries.append((node.name, "def", int(node.lineno)))
+        elif isinstance(node, _ast.ClassDef):
+            entries.append((node.name, "class", int(node.lineno)))
+    return entries
+
+
+def _render_parent_b_component_inventory(entries):
+    """Render the inventory block bounded to 120 entries / 3000 chars.
+
+    The hard char budget trims list entries from the END (never the prose
+    header) and folds every unshown entry — both those beyond the 120-entry
+    cap and those dropped by the char budget — into a single preserved
+    ``... (+N more)`` tail, so the bounded block always ends with an accurate
+    count of what was omitted.
+    """
+    total = len(entries)
+    shown = entries[:_PARENT_B_INVENTORY_MAX_ENTRIES]
+    header = "\n".join([
+        "\n\n# Parent-B Importable Components (from the frozen snapshot, authoritative)",
+        "A valid port copies one of these components VERBATIM "
+        "(AST-identical; do not adapt, rename, or merge). Observed failure "
+        "mode: the previous attempt wrote an ADAPTED variant of a Parent-A "
+        "function instead of an exact Parent-B component copy; adapted, "
+        "paraphrased, renamed, or merged ports are rejected. Names "
+        "(def/class @line):",
+    ])
+    lines = [f"- {name} ({kind} @{lineno})" for name, kind, lineno in shown]
+    while True:
+        tail = (
+            f"... (+{total - len(lines)} more)" if total > len(lines) else ""
+        )
+        budget = (
+            _PARENT_B_INVENTORY_MAX_CHARS
+            - len(header)
+            - (len(tail) + 1 if tail else 0)
+        )
+        used = sum(len(line) + 1 for line in lines)
+        if used <= budget or not lines:
+            break
+        lines.pop()
+    block = header + "\n" + "\n".join(lines)
+    if tail:
+        block += "\n" + tail
+    return block[:_PARENT_B_INVENTORY_MAX_CHARS]
+
+
+def _crossover_provenance_retry_feedback(provenance_issues, frozen_parent_b_dir):
+    """Render the provenance-gate retry feedback for the next attempt.
+
+    Keeps the historical rejection header + raw issue JSON byte-identical,
+    then appends the deterministic Parent-B component inventory (2026-10-20):
+    in production (v572, v566×v11) every burned attempt rewrote a Parent-A
+    function as an *adapted* variant instead of copying an exact Parent-B
+    component, because the retry prompt named no Parent-B components at all.
+    The inventory names exactly what may be copied so the next attempt can
+    pick one and port it verbatim.  Safe for the digest-bound synthesis
+    effect: the feedback is consumed only when rendering the NEXT attempt's
+    fresh effect (attempt N+1 owns a new effect id).  Inventory read
+    failures omit the section; they never block the retry loop.
+    """
+    feedback = (
+        "\n\n# Previous Attempt Rejected By Crossover Provenance Contract\n"
+        "This stage is pure recombination. Every strategic diff must "
+        "contain a traceable Parent-B component; independent threshold, "
+        "heuristic, deletion, or novel-file mutations belong to the later "
+        "Master/Worker stage. Rebuild from Parent A and either import an "
+        "actual Parent-B component or leave Parent A unchanged.\n"
+        + json.dumps(
+            provenance_issues[:12],
+            indent=2,
+            ensure_ascii=False,
+        )[:5000]
+    )
+    entries = _parent_b_component_inventory(frozen_parent_b_dir)
+    if entries:
+        feedback += _render_parent_b_component_inventory(entries)
+    return feedback
+
+
 #: Bound on the crossover io-log tail scanned for sandbox write-rejection
 #: signatures when a crossover silently degrades to a parent copy.
 _CROSSOVER_IO_REJECTION_SCAN_BYTES = 256 * 1024
@@ -820,7 +968,7 @@ async def _run_crossover(
     )
     if not crossover_prompt_path.exists():
         ui.log_history("Crossover prompt not found — skipping crossover.", "error")
-        return False
+        return CrossoverAttemptExhaustion(["crossover_prompt_missing"])
     compatibility = compatibility if isinstance(compatibility, dict) else {}
     parent_snapshot_receipt = compatibility.get("parent_snapshot_receipt")
     compatibility_score = compatibility.get("compatibility_score")
@@ -996,6 +1144,12 @@ async def _run_crossover(
 
     architecture_retry_feedback = ""
     target_dir = None
+    # Per-attempt failure classes for the structured exhaustion result: each
+    # ``continue`` in the loop records WHY that consumed attempt died, so the
+    # tool layer can route all-provenance exhaustion to the distinct
+    # ``crossover_provenance_exhausted`` abandon while provider/infra/mixed
+    # exhaustion keeps the legacy ``crossover_llm_exhausted`` path.
+    attempt_failure_classes = []
     for attempt in range(MAX_CROSSOVER_RETRIES):
         try:
             # Every retry revalidates the same receipt/store pair.  It never
@@ -1058,6 +1212,7 @@ async def _run_crossover(
             )
         except Exception as exc:
             ui.log_history(f"Crossover native TCP entry preparation failed: {exc}", "warn")
+            attempt_failure_classes.append("native_entry_preparation")
             continue
 
         from crossover_provenance import python_source_snapshot
@@ -1169,6 +1324,7 @@ async def _run_crossover(
         elif synthesis_effect.get("status") in {"exhausted", "abandoned"}:
             # A provider/SDK failure terminally owns only this semantic attempt.
             # Continue to the next stable attempt id without rerunning it.
+            attempt_failure_classes.append("provider_effect_terminal")
             continue
         elif synthesis_effect.get("status") == "deferred":
             # P5 (2026-10-05): the effect was deferred by an availability
@@ -1335,6 +1491,7 @@ async def _run_crossover(
                         f"{type(fence_exc).__name__}:{str(fence_exc)[:200]}"
                     )
                 ui.log_history(f"Crossover LLM error: {e}", "warn")
+                attempt_failure_classes.append("provider_exception")
                 continue
 
             try:
@@ -1411,6 +1568,7 @@ async def _run_crossover(
                     pass
         except Exception as exc:
             ui.log_history(f"Crossover candidate hygiene failed: {exc}", "warn")
+            attempt_failure_classes.append("candidate_hygiene")
             continue
 
         # The provider receives a private directory for tool ergonomics, but
@@ -1446,6 +1604,7 @@ async def _run_crossover(
                 "Crossover artifact write boundary failed, retrying from Parent A...",
                 "warn",
             )
+            attempt_failure_classes.append("write_boundary")
             continue
 
         try:
@@ -1471,11 +1630,13 @@ async def _run_crossover(
                 f"Crossover policy identity refresh failed: {exc}",
                 "warn",
             )
+            attempt_failure_classes.append("identity_refresh")
             continue
 
         compile_errors = verify_code(target_dir)
         if compile_errors:
             ui.log_history("Crossover compile error, retrying...", "warn")
+            attempt_failure_classes.append("compile")
             continue
 
         import_errors = run_import_contract_test(target_dir)
@@ -1493,6 +1654,7 @@ async def _run_crossover(
             except Exception:
                 pass
             ui.log_history("Crossover runtime import contract failed, retrying...", "warn")
+            attempt_failure_classes.append("import_contract")
             continue
 
         from workflow_profiles import get_workflow_profile
@@ -1539,6 +1701,7 @@ async def _run_crossover(
                 )
             except Exception:
                 pass
+            attempt_failure_classes.append("native_smoke")
             continue
 
         from code_verification import check_code_size
@@ -1583,6 +1746,7 @@ async def _run_crossover(
                 "Crossover code-size contract failed, retrying from Parent A baseline...",
                 "warn",
             )
+            attempt_failure_classes.append("code_size")
             continue
 
         from crossover_provenance import (
@@ -1595,18 +1759,9 @@ async def _run_crossover(
             target_dir,
         )
         if provenance_issues:
-            architecture_retry_feedback = (
-                "\n\n# Previous Attempt Rejected By Crossover Provenance Contract\n"
-                "This stage is pure recombination. Every strategic diff must "
-                "contain a traceable Parent-B component; independent threshold, "
-                "heuristic, deletion, or novel-file mutations belong to the later "
-                "Master/Worker stage. Rebuild from Parent A and either import an "
-                "actual Parent-B component or leave Parent A unchanged.\n"
-                + json.dumps(
-                    provenance_issues[:12],
-                    indent=2,
-                    ensure_ascii=False,
-                )[:5000]
+            architecture_retry_feedback = _crossover_provenance_retry_feedback(
+                provenance_issues,
+                frozen_parent_b_dir,
             )
             try:
                 from system_log import log_system_event
@@ -1629,6 +1784,7 @@ async def _run_crossover(
                 "Crossover provenance contract failed, retrying from Parent A baseline...",
                 "warn",
             )
+            attempt_failure_classes.append("provenance")
             continue
 
         try:
@@ -1667,6 +1823,7 @@ async def _run_crossover(
                 "Crossover national position contract failed, retrying from parent A baseline...",
                 "warn",
             )
+            attempt_failure_classes.append("position_contract")
             continue
 
         if isinstance(architecture_policy, dict):
@@ -1829,6 +1986,7 @@ async def _run_crossover(
                     "Crossover runtime architecture policy failed, retrying from parent A baseline...",
                     "warn",
                 )
+                attempt_failure_classes.append("architecture_gate")
                 continue
             deferred_checks = list(
                 transition.get("deferred_unresolved_focus_checks") or []
@@ -1913,4 +2071,8 @@ async def _run_crossover(
 
     if target_dir is not None:
         shutil.rmtree(target_dir, ignore_errors=True)
-    return False
+    # Falsy structured result: every existing consumer only tests truthiness
+    # (``if success:``), so routing is byte-compatible with the historical
+    # bare ``False`` while the tool layer can additionally distinguish the
+    # all-provenance exhaustion (see CrossoverAttemptExhaustion).
+    return CrossoverAttemptExhaustion(attempt_failure_classes)

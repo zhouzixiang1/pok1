@@ -1916,6 +1916,35 @@ async def _try_deterministic_checkpoint_route(
                 pass
             return abandoned
 
+        # 2026-10-20: provenance exhaustion is checked FIRST — the broader
+        # _is_crossover_llm_exhausted_result also recognizes this token as a
+        # safety net, so this branch must win for the distinct message.
+        if next_tool == "run_crossover" and _o._is_crossover_provenance_exhausted_result(data):
+            abandoned = bool(data.get("abandoned"))
+            msg_abandon = (
+                f"crossover_provenance_exhausted reached for v{next_v}; "
+                f"{'abandoned generation' if abandoned else 'abandon did not complete'}."
+            )
+            if ui:
+                ui.log_history(f"[Recovery] {msg_abandon}", "warn" if abandoned else "error")
+            else:
+                _o.log.warning(msg_abandon) if abandoned else _o.log.error(msg_abandon)
+            try:
+                _o.log_system_event(
+                    "pipeline.deterministic_route_abandoned",
+                    "warn" if abandoned else "error",
+                    msg_abandon,
+                    {
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "stage": stage,
+                        "result": data,
+                    },
+                )
+            except Exception:
+                pass
+            return abandoned
+
         if next_tool == "run_crossover" and _o._is_crossover_llm_exhausted_result(data):
             abandoned = bool(data.get("abandoned"))
             msg_abandon = (

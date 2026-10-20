@@ -1179,6 +1179,7 @@ from orchestrator_tool_result_classification import (  # noqa: E402,F401
     _is_repair_contract_contradictory_result,
     _is_crossover_incompatible_result,
     _is_crossover_llm_exhausted_result,
+    _is_crossover_provenance_exhausted_result,
     _is_master_ensemble_pending_retry,
 )
 

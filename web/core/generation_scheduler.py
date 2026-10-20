@@ -974,7 +974,10 @@ def _last_abandon_block(*, max_n: int = 3) -> str:
             "poker leak. Do not answer it with a new change_symbol. Change "
             "parent2 / merge / capability snapshot so the contract validates."
         )
-    elif "crossover_llm_exhausted" in reason:
+    elif "crossover_llm_exhausted" in reason or "crossover_provenance_exhausted" in reason:
+        # 2026-10-20: provenance exhaustion (every attempt adapted a Parent-A
+        # function instead of copying an exact Parent-B component) gets the
+        # same pair-avoidance steering as provider exhaustion.
         lines.append(
             "Latest failure exhausted crossover LLM. Pick a different parent "
             "pair or a simpler merge; do not retry the same pair unchanged."

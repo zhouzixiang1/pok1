@@ -540,6 +540,204 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
     assert cleared == [True]
 
 
+def _exhausted_crossover_harness(tmp_path, monkeypatch, crossover_result, abandon_mock):
+    """Shared scaffold for the crossover attempt-exhaustion routing tests.
+
+    Mirrors ``test_run_crossover_llm_exhausted_abandons_generation``: the
+    compatibility audit passes and ``_run_crossover`` returns an exhausted
+    (falsy) result; the tool layer must abandon with the reason/token the
+    result's exhaustion classification demands.
+    """
+    import audit_agents
+    import evolution_core
+    import evolution_infra
+    import tool_bot_management
+    import tool_commit
+
+    parent_a_dir = tmp_path / "national_v149"
+    parent_b_dir = tmp_path / "national_v143"
+    target_dir = tmp_path / "national_v167"
+    for path in (parent_a_dir, parent_b_dir):
+        path.mkdir()
+        (path / "policy.py").write_text("# parent\n", encoding="utf-8")
+        (path / ".completed").touch()
+
+    def _bot_dir(version):
+        return {
+            149: parent_a_dir,
+            143: parent_b_dir,
+            167: target_dir,
+        }[int(version)]
+
+    async def _compat(_parent_a, _parent_b, _ui, **_kwargs):
+        return {"compatible": True, "compatibility_score": 8}
+
+    async def _crossover_exhausted(*_args, **_kwargs):
+        return crossover_result
+
+    fake_state = tmp_path / "pipeline_state.json"
+    fake_state.write_text("{}", encoding="utf-8")
+    exhausted_results_dir = tmp_path / "exhausted-results"
+    exhausted_results_dir.mkdir()
+    cleared = []
+
+    # Mirror the original test: the abandon mock's completion is recorded in
+    # ``cleared`` so the test can prove the abandon path was taken (the real
+    # checkpoint clear lives inside _do_abandon_generation, which is mocked).
+    async def _abandon_wrapper(*, reason, **checkpoint_identity):
+        result = await abandon_mock["abandon"](reason=reason, **checkpoint_identity)
+        cleared.append(True)
+        return result
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(tool_commit, "_run_crossover", _crossover_exhausted)
+    monkeypatch.setattr(audit_agents, "_run_crossover_compatibility_audit", _compat)
+
+    tool_bot_management._LAST_ABANDON_TS[0] = 0.0
+    tool_bot_management._LAST_ABANDON_TS[1] = ""
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
+    monkeypatch.setattr(
+        tool_bot_management,
+        "RESULTS_DIR",
+        exhausted_results_dir,
+    )
+    exhausted_checkpoint = _strict_checkpoint(
+        167,
+        149,
+        143,
+        stage="crossover_running",
+        workflow_run_id=abandon_mock["workflow_run_id"],
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "read_pipeline_checkpoint",
+        lambda: exhausted_checkpoint,
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "read_pipeline_checkpoint",
+        lambda: exhausted_checkpoint,
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "clear_pipeline_checkpoint",
+        lambda **_kwargs: cleared.append(True) or True,
+    )
+    monkeypatch.setattr(tool_bot_management, "get_bot_dir", _bot_dir)
+    monkeypatch.setattr(tool_bot_management, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(
+        tool_bot_management, "_do_abandon_generation", _abandon_wrapper
+    )
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 166)
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 149,
+        "parent_b": 143,
+        "target_v": 167,
+    }))
+    return _tool_json(result), cleared
+
+
+def test_run_crossover_provenance_exhausted_abandons_generation(tmp_path, monkeypatch):
+    # 2026-10-20 (v572, v566×v11): when EVERY consumed crossover attempt died
+    # on the deterministic provenance gate (the model adapted a Parent-A
+    # function instead of copying an exact Parent-B component), the tool layer
+    # must abandon with the DISTINCT crossover_provenance_exhausted reason and
+    # CROSSOVER_PROVENANCE_EXHAUSTED token so the orchestrator/scheduler can
+    # distinguish a model/strategy failure from a provider transport failure.
+    import agent_review
+
+    recorded = []
+
+    async def _abandon_provenance(*, reason, **checkpoint_identity):
+        assert reason == "crossover_provenance_exhausted:v149xv143"
+        assert checkpoint_identity == {
+            "expected_workflow_run_id": "test-crossover-provenance-167-149",
+            "expected_next_v": 167,
+            "expected_source_v": 149,
+            "expected_checkpoint_revision": 1,
+            "expected_checkpoint_stage": "crossover_running",
+        }
+        recorded.append(reason)
+        return {"abandoned": True, "abandoned_v": 167, "reason": reason}
+
+    data, cleared = _exhausted_crossover_harness(
+        tmp_path,
+        monkeypatch,
+        agent_review.CrossoverAttemptExhaustion(
+            ["provenance"] * agent_review.MAX_CROSSOVER_RETRIES
+        ),
+        {"workflow_run_id": "test-crossover-provenance-167-149",
+         "abandon": _abandon_provenance},
+    )
+
+    assert data["error"] == "CROSSOVER_PROVENANCE_EXHAUSTED"
+    assert data["success"] is False
+    assert data["abandoned"] is True, data
+    assert data["abandon_result"]["abandoned_v"] == 167
+    assert data["attempt_failure_classes"] == ["provenance"] * 5
+    assert recorded == ["crossover_provenance_exhausted:v149xv143"]
+    assert cleared == [True]
+
+
+def test_run_crossover_mixed_provenance_provider_exhaustion_stays_llm_exhausted(
+    tmp_path, monkeypatch
+):
+    # A provider-exception attempt inside the sequence makes the exhaustion
+    # "mixed": it must keep the legacy crossover_llm_exhausted routing (the
+    # provenance token is reserved for ALL-provenance exhaustion only).
+    import agent_review
+
+    recorded = []
+
+    async def _abandon_llm(*, reason, **_checkpoint_identity):
+        assert reason == "crossover_llm_exhausted:v149xv143"
+        recorded.append(reason)
+        return {"abandoned": True, "abandoned_v": 167, "reason": reason}
+
+    data, cleared = _exhausted_crossover_harness(
+        tmp_path,
+        monkeypatch,
+        agent_review.CrossoverAttemptExhaustion(
+            ["provenance", "provider_exception", "provenance"]
+        ),
+        {"workflow_run_id": "test-crossover-mixed-167-149",
+         "abandon": _abandon_llm},
+    )
+
+    assert data["error"] == "CROSSOVER_LLM_EXHAUSTED"
+    assert data["success"] is False
+    assert data["abandoned"] is True, data
+    assert recorded == ["crossover_llm_exhausted:v149xv143"]
+    assert cleared == [True]
+
+
+def test_run_crossover_bare_false_exhaustion_keeps_legacy_routing(
+    tmp_path, monkeypatch
+):
+    # A legacy/monkeypatched bare-False exhaustion result has no
+    # classification attribute and must keep the crossover_llm_exhausted path.
+    recorded = []
+
+    async def _abandon_llm(*, reason, **_checkpoint_identity):
+        assert reason == "crossover_llm_exhausted:v149xv143"
+        recorded.append(reason)
+        return {"abandoned": True, "abandoned_v": 167, "reason": reason}
+
+    data, _cleared = _exhausted_crossover_harness(
+        tmp_path,
+        monkeypatch,
+        False,
+        {"workflow_run_id": "test-crossover-bare-167-149",
+         "abandon": _abandon_llm},
+    )
+
+    assert data["error"] == "CROSSOVER_LLM_EXHAUSTED"
+    assert recorded == ["crossover_llm_exhausted:v149xv143"]
+
+
 def test_run_crossover_effect_prepare_conflict_abandons_without_deadloop(tmp_path, monkeypatch):
     # Bug B (v160): effect_prepare_conflict (WorkflowConflict: effect id reused
     # with different input) must NOT route through _record_crossover_infrastructure

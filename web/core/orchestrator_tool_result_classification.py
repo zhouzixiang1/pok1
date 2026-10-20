@@ -137,9 +137,28 @@ def _is_crossover_incompatible_result(data):
 
 
 def _is_crossover_llm_exhausted_result(data):
+    """Match any crossover attempt-exhaustion abandon token.
+
+    2026-10-20: also recognizes ``CROSSOVER_PROVENANCE_EXHAUSTED`` — the
+    provenance-flavored exhaustion must never fall through to the generic
+    route-failure path (that re-routes run_crossover forever, the v126
+    deadlock). The router checks the provenance-specific detector first, so
+    the distinct recovery message still wins; this broader matcher is the
+    safety net for any other exhaustion-shaped consumer.
+    """
     if not isinstance(data, dict):
         return False
-    return str(data.get("error") or "") == "CROSSOVER_LLM_EXHAUSTED"
+    return str(data.get("error") or "") in {
+        "CROSSOVER_LLM_EXHAUSTED",
+        "CROSSOVER_PROVENANCE_EXHAUSTED",
+    }
+
+
+def _is_crossover_provenance_exhausted_result(data):
+    """2026-10-20: every consumed crossover attempt died on the provenance gate."""
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("error") or "") == "CROSSOVER_PROVENANCE_EXHAUSTED"
 
 
 def _is_master_ensemble_pending_retry(data, checkpoint):

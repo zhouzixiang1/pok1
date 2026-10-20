@@ -181,6 +181,93 @@ async def _abandon_crossover_effect_conflict(
     })
 
 
+async def _finish_crossover_provenance_exhausted(
+    parent_a,
+    parent_b,
+    target_v,
+    ui,
+    *,
+    attempt_failure_classes=None,
+):
+    """Abandon a crossover whose every consumed attempt died on provenance.
+
+    2026-10-20 (v572, v566×v11): distinct from ``_finish_crossover_llm_exhausted``
+    — the provider DID return output on every attempt, and the deterministic
+    provenance gate rejected each one for the same class of mistake (an
+    adapted Parent-A variant instead of an exact Parent-B component copy;
+    historically 92 ``pipeline.crossover_llm_exhausted_abandoned`` events hid
+    this behind the provider-exhaustion token).  A distinct abandon reason
+    lets the scheduler/saturator pair-avoidance and the abandon-attribution
+    job recognize a model/strategy failure rather than a transport failure.
+    Mirrors the CROSSOVER_LLM_EXHAUSTED contract: abandon the generation,
+    return a distinct orchestrator-recognized token (reason prefix matches
+    the ``crossover_`` forced-rule family, disposable at
+    selected/crossover_running).
+    """
+    try:
+        _tc.log_system_event('pipeline.crossover_failed', 'error',
+            f'Crossover v{parent_a}×v{parent_b} → v{target_v} failed',
+            {'target_v': target_v, 'parent_a': parent_a, 'parent_b': parent_b})
+    except Exception:
+        pass
+    try:
+        from tool_bot_management import (
+            _do_abandon_generation,
+            expected_abandon_identity,
+        )
+        abandon_result = await _do_abandon_generation(
+            reason=f"crossover_provenance_exhausted:v{parent_a}xv{parent_b}",
+            **expected_abandon_identity(_tc.read_pipeline_checkpoint()),
+        )
+    except Exception as abandon_exc:
+        abandon_result = {
+            "abandoned": False,
+            "reason": f"{type(abandon_exc).__name__}: {abandon_exc}",
+        }
+        _tc._log.warning(
+            "Failed to abandon crossover-provenance-exhausted generation: %s",
+            abandon_result,
+        )
+
+    _tc.log_system_event(
+        "pipeline.crossover_provenance_exhausted_abandoned",
+        "warn" if abandon_result.get("abandoned") else "error",
+        f"Crossover v{parent_a}×v{parent_b} → v{target_v}: every consumed "
+        f"attempt was rejected by the provenance contract; "
+        f"{'generation abandoned' if abandon_result.get('abandoned') else 'abandon did not complete'}.",
+        {
+            "target_v": target_v,
+            "parent_a": parent_a,
+            "parent_b": parent_b,
+            "attempt_failure_classes": [
+                str(item)[:100] for item in attempt_failure_classes or []
+            ],
+            "abandon_result": abandon_result,
+        },
+    )
+    return _tc._json_tool_result({
+        "error": "CROSSOVER_PROVENANCE_EXHAUSTED",
+        "success": False,
+        "abandoned": bool(abandon_result.get("abandoned")),
+        "failure_class": "candidate_contract",
+        "directive": (
+            f"Crossover v{parent_a}×v{parent_b} → v{target_v}: every consumed "
+            "LLM attempt rewrote a Parent-A function as an adapted variant "
+            "instead of copying an exact Parent-B component. The generation was "
+            "abandoned; let prepare_generation select a fresh parent pair."
+        ),
+        "message": (
+            f"Crossover v{parent_a}×v{parent_b} failed after exhausting all "
+            "LLM attempts on the provenance contract."
+        ),
+        "attempt_failure_classes": [
+            str(item)[:100] for item in attempt_failure_classes or []
+        ],
+        "abandon_result": abandon_result,
+        "logs": ui.get_output(),
+    })
+
+
 async def _finish_crossover_llm_exhausted(parent_a, parent_b, target_v, ui):
     """Abandon a generation whose crossover LLM retries were exhausted.
 

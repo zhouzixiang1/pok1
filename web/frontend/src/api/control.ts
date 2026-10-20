@@ -676,6 +676,19 @@ export function draftGenerations(
   );
 }
 
+/**
+ * Backend-owned unpublished-candidate version list. The raw field is a typed
+ * projection field of the control API only — views must consume it through
+ * this selector and never derive a version-reusability claim from it (the
+ * backend version authority alone decides number reuse).
+ */
+export function unpublishedCandidateVersions(
+  status: ControlStatus | null | undefined,
+): number[] {
+  const versions = status?.unpublished_candidate_versions;
+  return Array.isArray(versions) ? versions : [];
+}
+
 /** Stages where HTTP/MCP generic abandon is refused (mirrors backend never_disposable). */
 export const CONTROL_NEVER_DISPOSABLE_STAGES = new Set([
   "verified",

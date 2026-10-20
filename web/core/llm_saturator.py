@@ -263,6 +263,7 @@ Phase 1: Read policy.py once.
 Phase 2: Map the receipt to a failure class:
   prepared_baseline_contract_* → merge/capability/digest/H2H bind, NOT a poker leak.
   crossover_llm_exhausted → parent pair or merge, not a new change_symbol.
+  crossover_provenance_exhausted → parent pair or verbatim-component port, not a new change_symbol.
   master_analysis_failed / master_exhausted → schema/evidence/symbol, not a new leak.
   other → name the class in the claim.
 

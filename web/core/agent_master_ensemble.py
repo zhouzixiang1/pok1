@@ -104,6 +104,28 @@ _ENSEMBLE_NEW_ERROR_RETRY_ROUNDS = 1
 # die (< required distinct valid proposals). See the rescue block below.
 _ENSEMBLE_PACKET_RESCUE_ROUNDS = 1
 
+# v576 rescue-blindness fix (2026-10-20): a retry attempt whose output
+# VALIDATES schema-wise but dies on a symbol-policy guard — pin switch,
+# avoid-set reuse, or a claim collision with another direction's accepted
+# proposal — left NO failure record, so the packet-terminal rescue below
+# never saw the direction and the packet died at 2/3 with the rescue
+# budget unspent (live v576: mechanism pinned
+# policy.py:_candidate_raise_fractions, counterfactual accepted that same
+# symbol, mechanism's schema-valid retry collided and died silently).
+# Each such death now appends a record shaped exactly like a validation
+# failure (the same 5-tuple ``_dispatch_retry_round`` returns) whose
+# fresh-hints carry one of these kind tokens — for collisions including
+# the claiming direction — recorded in ``retry_symbol_policy_failures``
+# and consumed ONLY by the rescue round.  The bounded new-error second
+# retry keeps reading ``retry_validation_failures`` alone, so its
+# documented "cross-direction pin/avoid/claim rejection never adds an
+# attempt" rule is unchanged.
+_SYMBOL_POLICY_FAILURE_PREFIXES = (
+    "master_retry_switched_pinned_symbol.",
+    "master_retry_avoided_symbol_reused.",
+    "master_retry_symbol_collision.",
+)
+
 
 def _proposal_error_classes(hints: object) -> frozenset[str]:
     """First error-code segment of every hint: the stable failure class.
@@ -407,6 +429,13 @@ async def _run_master_proposal_ensemble(
     retry_pinned_symbols: dict[str, str] = {}
     proposal_provider_errors: list[tuple[str, BaseException]] = []
     invalid_proposal_specs: list[tuple[str, str, dict]] = []
+    # See _SYMBOL_POLICY_FAILURE_PREFIXES: retry attempts that validated
+    # schema-wise but died on a symbol-policy guard (pin switch / avoid
+    # reuse / claim collision), recorded for the packet-terminal rescue
+    # round ONLY — the new-error second-retry gate deliberately ignores
+    # them.  Records use the exact validation-failure 5-tuple shape:
+    # (direction, directive, repair, output, fresh_hints).
+    retry_symbol_policy_failures: list[tuple] = []
     accepted_proposal_directions: dict[str, str] = {}
 
     def _ensemble_unavailable_change_symbols(*extra: str) -> list[str]:
@@ -831,6 +860,18 @@ async def _run_master_proposal_ensemble(
                         "%s -> %s; rejected (retry must keep its symbol)",
                         direction, pinned_symbol, proposal_symbol or "?",
                     )
+                    # Symbol-policy death (rescue-observable, v576 fix): the
+                    # output validated but abandoned its pin.
+                    retry_symbol_policy_failures.append((
+                        direction,
+                        _directive,
+                        repair,
+                        output,
+                        [
+                            "master_retry_switched_pinned_symbol."
+                            f"{pinned_symbol}.got.{proposal_symbol or 'unknown'}",
+                        ],
+                    ))
                     continue
                 if proposal_symbol and proposal_symbol in avoid_symbols:
                     if strict_authority_enabled:
@@ -842,6 +883,15 @@ async def _run_master_proposal_ensemble(
                         "conflicting symbol %s; rejected",
                         direction, proposal_symbol,
                     )
+                    # Symbol-policy death (rescue-observable, v576 fix): the
+                    # output validated but reused an unavailable symbol.
+                    retry_symbol_policy_failures.append((
+                        direction,
+                        _directive,
+                        repair,
+                        output,
+                        ["master_retry_avoided_symbol_reused." + proposal_symbol],
+                    ))
                     continue
                 if proposal_symbol and proposal_symbol in seen_change_symbols:
                     if strict_authority_enabled:
@@ -854,6 +904,20 @@ async def _run_master_proposal_ensemble(
                         direction, proposal_symbol,
                         seen_change_symbols[proposal_symbol],
                     )
+                    # Symbol-policy death (rescue-observable, v576 fix): the
+                    # output validated but its change_symbol is claimed by
+                    # another direction's accepted proposal.
+                    retry_symbol_policy_failures.append((
+                        direction,
+                        _directive,
+                        repair,
+                        output,
+                        [
+                            "master_retry_symbol_collision."
+                            f"{proposal_symbol}.claimed_by."
+                            f"{seen_change_symbols[proposal_symbol]}",
+                        ],
+                    ))
                     continue
                 if strict_authority_enabled:
                     from strict_authority_workflow import accept_role_result
@@ -1060,7 +1124,13 @@ async def _run_master_proposal_ensemble(
         and not (protocol_bootstrap_prepared_only or singleton_no_strength)
     ):
         latest_failures: dict[str, tuple] = {}
-        for record in [*retry_validation_failures, *second_failures]:
+        # Symbol-policy deaths come last so a direction's LATEST attempt
+        # (the guard rejection) wins over any earlier record.
+        for record in [
+            *retry_validation_failures,
+            *second_failures,
+            *retry_symbol_policy_failures,
+        ]:
             latest_failures[record[0]] = record
         taken_directions = set(accepted_proposal_directions.values())
         rescue_specs: list[tuple[str, str, dict]] = []
@@ -1071,6 +1141,20 @@ async def _run_master_proposal_ensemble(
             if record is None:
                 continue
             _direction, directive, prior_repair, failed_output, fresh_hints = record
+            # v576: a record whose hints carry a symbol-policy kind token
+            # (see _SYMBOL_POLICY_FAILURE_PREFIXES) died on a DETERMINISTIC
+            # symbol guard — pin switch, avoid reuse, or claim collision —
+            # not on field-level schema shape.  Its output symbol is not
+            # "innocent": re-proposing it is guaranteed death at the same
+            # guard on the rescue attempt, so it must be avoided below.
+            symbol_policy_failure_symbol = (
+                _resolve_output_change_symbol(failed_output)
+                if any(
+                    str(hint).startswith(_SYMBOL_POLICY_FAILURE_PREFIXES)
+                    for hint in (fresh_hints or ())
+                )
+                else ""
+            )
             # Constrain the rescue to the REAL ensemble invariant only:
             # other directions' claimed symbols and registered pins. The
             # direction's OWN registered pin is excluded (the same rule the
@@ -1081,13 +1165,28 @@ async def _run_master_proposal_ensemble(
             # measurement binding) with an innocent symbol, and re-proposing
             # it with fixed fields is the most probable rescue success.
             # Symbol-level failures still die at the same schema validators
-            # as every other attempt.
+            # as every other attempt — EXCEPT the symbol-policy guard
+            # deaths parsed above, whose rejected symbol is forced into the
+            # avoid set below.
             own_pin = str(retry_pinned_symbols.get(direction) or "")
             unavailable = [
                 symbol
                 for symbol in _ensemble_unavailable_change_symbols()
                 if symbol != own_pin
             ]
+            if (
+                symbol_policy_failure_symbol
+                and symbol_policy_failure_symbol not in unavailable
+            ):
+                # For a claim collision the symbol usually arrives via the
+                # claiming direction's live claim — EXCEPT when it equals
+                # this direction's own registered pin (v576: mechanism
+                # pinned the very symbol counterfactual accepted), which
+                # the own-pin exclusion above would strip back out.  Force
+                # it in: the attempt-time avoid guard enforces exactly the
+                # list the prompt renders, so the rejected symbol can never
+                # be re-proposed.
+                unavailable.append(symbol_policy_failure_symbol)
             hints = list(fresh_hints)
             hints.extend(
                 f"schema_retry_avoid_claimed_symbol.{symbol}"

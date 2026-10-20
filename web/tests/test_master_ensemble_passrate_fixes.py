@@ -417,6 +417,178 @@ async def test_packet_terminal_rescue_fires_only_when_packet_would_die(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# (d) The packet-terminal rescue SEES symbol-policy retry deaths (2026-10-20,
+#     live v576).  A retry attempt whose output VALIDATES schema-wise but dies
+#     on a symbol-policy guard — pin switch, avoid-set reuse, or a claim
+#     collision — used to leave NO failure record, so the rescue never fired
+#     and the packet died 2/3 with the rescue budget unspent.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _claims_mechanism_symbol() -> str:
+    """A fully valid attempt-1 output whose change_symbol is mechanism's _M
+    with a DISTINCT proposal_id (``targeted_failure`` is a substantive
+    identity field), so another direction can accept-claim _M before
+    mechanism's retry runs."""
+
+    payload = json.loads(_raw_proposal("mechanism", snapshot=True))
+    payload["targeted_failure"] = (
+        "A distinct first-round claim on the mechanism symbol identifies "
+        "one repeated reachable decision failure."
+    )
+    return json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_packet_rescue_sees_claim_collision_death_v576(
+    monkeypatch, tmp_path, caplog
+):
+    """v576 regression: mechanism's attempt-1 fails schema and pins a clean
+    retry to _M; counterfactual ACCEPTS on attempt 1 claiming _M; mechanism's
+    retry then validates schema-wise but re-proposes its pin, dying on the
+    claim-collision guard.  Historically that death left no failure record and
+    the packet died 2/3 (master_exhausted); the rescue round must now dispatch
+    for mechanism — with the collided symbol forced into the avoid context
+    even though it equals mechanism's own registered pin — and save the
+    generation."""
+
+    import logging
+
+    harness = _RoundHarness(
+        monkeypatch,
+        tmp_path,
+        attempt1={
+            "mechanism": _mutated_raw("mechanism", _measurement_missing),
+            "counterfactual": _claims_mechanism_symbol(),
+        },
+        # The clean-pinned retry validates but re-proposes its pin _M,
+        # which counterfactual has since claimed: symbol-policy collision.
+        retry1={"mechanism": _proposal("mechanism", snapshot=True)},
+        # The rescue retargets to a genuinely free symbol and is accepted.
+        retry2={"mechanism": _retargeted_proposal("mechanism", "_choose_intent")},
+    )
+    with caplog.at_level(logging.WARNING, logger="pok.master"):
+        packet = await harness.run(tmp_path)
+
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    # Exactly one colliding retry plus exactly one rescue dispatch (the
+    # second-retry machinery never fires: a collision is not a validation
+    # failure).
+    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 2
+    assert any(
+        "packet-terminal rescue for directions ['mechanism']"
+        in record.getMessage()
+        for record in caplog.records
+    )
+    rescue_inputs = harness.retry_inputs("mechanism", "schema")[-1]
+    hints = rescue_inputs["projection_hints"]
+    # The record's kind token names the collided symbol AND its claimer.
+    assert (
+        "master_retry_symbol_collision."
+        "policy.py:_choose_intent_mechanism.claimed_by.counterfactual"
+        in hints
+    )
+    # The collided symbol is in the rescue avoid context even though it is
+    # mechanism's own registered pin (the own-pin exclusion must not strip
+    # a symbol another direction already accepted).
+    assert _token(_M) in hints
+    # The rendered rescue prompt explains the claim and demands a different
+    # validated symbol.
+    rescue_prompt = [
+        prompt for name, prompt in harness.calls
+        if name == "MASTER PROPOSAL mechanism SCHEMA RETRY"
+    ][-1]
+    assert "already claimed by another direction" in rescue_prompt
+    assert _M in rescue_prompt
+    # counterfactual's accepted claim is _M, compute_memory's is _C, and the
+    # rescued mechanism proposal retargets to the free symbol.
+    assert {p["change_symbol"] for p in packet["ordered_proposals"]} == {
+        _M, _C, _FREE,
+    }
+    # The accepted directions never needed a rescue.
+    assert harness.retry_inputs("counterfactual") == []
+    assert harness.retry_inputs("compute_memory") == []
+
+
+@pytest.mark.asyncio
+async def test_packet_rescue_sees_pin_switch_death(monkeypatch, tmp_path):
+    """The pin-switch guard death is the same rescue-blind class: mechanism's
+    clean-pinned retry abandons its pin for a free symbol and dies.  The
+    rescue must dispatch once more with the switched-to symbol avoided — the
+    direction's own pin stays eligible (the rescue deliberately drops pins),
+    so the stock retry-2 output re-proposing _M is accepted."""
+
+    harness = _RoundHarness(
+        monkeypatch,
+        tmp_path,
+        attempt1={
+            "mechanism": _mutated_raw("mechanism", _measurement_missing),
+        },
+        # The retry validates on a FREE symbol but abandons its pin: the
+        # pin-switch guard rejects it.
+        retry1={"mechanism": _retargeted_proposal("mechanism", "_choose_intent")},
+        # Rescue falls back to the valid stock mechanism proposal (_M).
+    )
+    packet = await harness.run(tmp_path)
+
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 2
+    rescue_inputs = harness.retry_inputs("mechanism", "schema")[-1]
+    hints = rescue_inputs["projection_hints"]
+    assert (
+        "master_retry_switched_pinned_symbol."
+        "policy.py:_choose_intent_mechanism.got.policy.py:_choose_intent"
+        in hints
+    )
+    # The switched-to symbol is forced into the avoid context, while the
+    # direction's own pin is NOT avoided (the rescue's own-pin exclusion).
+    assert _token(_FREE) in hints
+    assert _token(_M) not in hints
+    assert _M in {p["change_symbol"] for p in packet["ordered_proposals"]}
+
+
+@pytest.mark.asyncio
+async def test_packet_rescue_sees_avoid_symbol_reuse_death(monkeypatch, tmp_path):
+    """The avoid-guard death is the same rescue-blind class: a target-
+    infeasible unpin repair finalizes the complete unavailable set (own
+    infeasible symbol + both claims), and the retry that re-proposes its own
+    infeasible symbol dies on the avoid guard.  The rescue must dispatch once
+    more, keep the reused symbol avoided, and retarget to a free symbol."""
+
+    harness = _RoundHarness(
+        monkeypatch,
+        tmp_path,
+        attempt1={
+            # Infeasible target shape: the pin is released and the repair
+            # finalizes avoid = {own _M, _CF, _C}.
+            "mechanism": json.dumps(_strip_deadline_literals(
+                json.loads(_raw_proposal("mechanism", snapshot=True))
+            )),
+        },
+        # The unpin retry validates but re-proposes its own infeasible _M
+        # from the finalized avoid set: avoid-guard death.
+        retry1={"mechanism": _proposal("mechanism", snapshot=True)},
+        retry2={"mechanism": _retargeted_proposal("mechanism", "_choose_intent")},
+    )
+    packet = await harness.run(tmp_path)
+
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    assert harness.role_count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 2
+    rescue_inputs = harness.retry_inputs("mechanism", "schema")[-1]
+    hints = rescue_inputs["projection_hints"]
+    assert (
+        "master_retry_avoided_symbol_reused.policy.py:_choose_intent_mechanism"
+        in hints
+    )
+    # The reused symbol stays avoided on the rescue attempt.
+    assert _token(_M) in hints
+    assert _FREE in {p["change_symbol"] for p in packet["ordered_proposals"]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # (c) proposal_contract_invalid fallback carries field-level detail.
 # ═══════════════════════════════════════════════════════════════════════════
 

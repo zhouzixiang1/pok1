@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import type { ControlStatus } from "../../api/control";
+import { unpublishedCandidateVersions } from "../../api/control";
 import { EvolutionSurface, EvolutionStatusBadge } from "./ui";
 import { notStuckLabel } from "../../lib/notStuckReasons";
 import { cn } from "../../lib/utils";
@@ -46,7 +47,7 @@ export function PhaseAProjectionStrip({
   const va = status.version_authority;
   const flags = status.feature_flags;
   const slots = status.active_generations ?? [];
-  const unpublishedLabel = unpublishedCandidatesLabel(status.unpublished_candidate_versions);
+  const unpublishedLabel = unpublishedCandidatesLabel(unpublishedCandidateVersions(status));
   const tips: string[] = [];
 
   if (mode?.enabled && mode.consumer_parked) {

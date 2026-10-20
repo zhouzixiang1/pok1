@@ -1855,6 +1855,22 @@ async def run_crossover(args):
         except Exception:
             pass
     else:
+        # Distinct provenance exhaustion (2026-10-20): every consumed attempt
+        # died on the deterministic provenance gate (the model adapted a
+        # Parent-A function instead of copying an exact Parent-B component),
+        # not on the provider. Duck-typed read: a legacy/monkeypatched bare
+        # ``False`` has no ``exhaustion`` attribute and keeps the historical
+        # crossover_llm_exhausted routing.
+        if getattr(success, "exhaustion", None) == "provenance":
+            return await _cx._finish_crossover_provenance_exhausted(
+                parent_a,
+                parent_b,
+                target_v,
+                ui,
+                attempt_failure_classes=list(
+                    getattr(success, "attempt_failure_classes", None) or []
+                ),
+            )
         return await _cx._finish_crossover_llm_exhausted(parent_a, parent_b, target_v, ui)
 
     result = {
