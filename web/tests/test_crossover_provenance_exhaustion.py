@@ -163,10 +163,17 @@ def test_exhaustion_result_is_falsy_and_classifies_provenance():
 
 def test_exhaustion_max_crossover_retries_is_five():
     import agent_review
+    import evolution_infra
 
     # (b) 2026-10-20: 3 -> 5, two extra attempts for the model to act on the
-    # newly injected Parent-B inventory.
+    # newly injected Parent-B inventory.  The raise is a module-level rebind
+    # in agent_review ONLY: evolution_infra.py is a byte-frozen SEMANTIC_PATHS
+    # rating-identity carrier (its sha256 feeds the frozen
+    # evaluation_data_manifest base identity) and must keep the legacy
+    # constant — editing it wedges every frozen generation snapshot at the
+    # handoff identity rebuild (v579, 2026-10-20).
     assert agent_review.MAX_CROSSOVER_RETRIES == 5
+    assert evolution_infra.MAX_CROSSOVER_RETRIES == 3
 
 
 # ---------------------------------------------------------------------------

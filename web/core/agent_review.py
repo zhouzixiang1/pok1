@@ -24,6 +24,19 @@ from evolution_infra import (
     MAX_CROSSOVER_RETRIES, copy_bot_tree_for_candidate,
 )
 
+# 2026-10-20: crossover attempts 3 -> 5 (v572: every burned attempt repeated
+# the same provenance mistake; with the Parent-B component inventory now
+# injected into the retry feedback, two extra attempts give the model room to
+# act on it).  The raise lives HERE, not in evolution_infra.py:
+# evolution_infra.py is a SEMANTIC_PATHS rating-identity carrier
+# (evaluation_data_identity.py) — changing one byte invalidates the frozen
+# evaluation_data_manifest base identity, which makes every frozen generation
+# evidence snapshot read as unavailable and blocks the whole runtime at the
+# handoff identity rebuild (v579, 2026-10-20).  evolution_infra keeps the
+# legacy constant (3) byte-frozen; this module-level rebind is the single
+# retry-loop consumer.
+MAX_CROSSOVER_RETRIES = 5
+
 
 def _active_bot_name(version: int) -> str:
     """Render a bot identity label from the ACTIVE namespace (P3, 2026-10-05).
