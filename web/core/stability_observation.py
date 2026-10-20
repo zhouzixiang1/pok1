@@ -464,7 +464,26 @@ def _state_errors(state: Any) -> list[str]:
                 errors.append(f"{prefix}_remote_main_oid_invalid")
             elif str(remote.get("remote_main_oid")) != str(
                 row.get("commit_oid") or ""
+            ) and not _git_command_succeeds(
+                "merge-base",
+                "--is-ancestor",
+                str(row.get("commit_oid") or ""),
+                str(remote.get("remote_main_oid")),
             ):
+                # Nineteenth exact-pin convergence defect (v579, 2026-10-20):
+                # the frozen row records origin's tip AT RECORD TIME.  When an
+                # operator merge/push legitimately advanced origin past the
+                # publication commit before the row was recorded (v579: merge
+                # 9a66db1b reconciling operator 2e8166d2 with publication
+                # 50a02077), equality can never hold and every later read
+                # returns count=0 — wedging the handoff's stability reproof
+                # forever.  The durable record-time proof is the ANCESTOR
+                # relation (the publication path already proved
+                # ``merge-base --is-ancestor commit_oid remote_main`` via
+                # verify_remote_bot_publication before this row was frozen),
+                # mirroring the deploy-advance ancestor rule used by the
+                # worktree/HEAD re-proofs.  A remote_main_oid whose object is
+                # absent locally fails the git call and stays fail-closed.
                 errors.append(f"{prefix}_remote_main_not_publication_commit")
             for name in (bot_tag(version), high_water_tag(version)):
                 ref = (remote.get("refs") or {}).get(name)

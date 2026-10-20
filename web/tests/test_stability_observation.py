@@ -779,6 +779,81 @@ def test_publication_requires_local_and_remote_main_at_exact_commit(monkeypatch)
         )
 
 
+def test_record_time_remote_main_advance_keeps_row_valid(monkeypatch):
+    """Nineteenth exact-pin convergence defect (v579, 2026-10-20).
+
+    The frozen row's ``remote_main_oid`` records origin's tip AT RECORD TIME.
+    When an operator merge/push legitimately advanced origin past the
+    publication commit before the row was recorded (v579: merge 9a66db1b
+    reconciling operator fixes with publication commit 50a02077), the row
+    permanently carries a tip != commit_oid and the row validator's exact
+    equality returned ``observation_N_remote_main_not_publication_commit`` on
+    every later read — count=0, wedging the post-publication handoff's
+    stability reproof forever.  The row must stay valid when the recorded tip
+    is ancestor-proven (the publication path already proved
+    ``merge-base --is-ancestor commit_oid remote_main`` at record time); a
+    non-ancestral tip still fails closed.
+    """
+
+    import stability_observation as observation
+
+    current = _install_identity(monkeypatch, observation)
+    observation.initialize_stability_observation()
+    result, checkpoint = _publication(V0)
+    current["repository_head"] = result["commit_oid"]
+    # v579 shape: origin's tip at record time is an operator merge commit,
+    # not the publication commit itself.
+    merge_tip = "e" * 40
+    result["remote_proof"]["remote_main_oid"] = merge_tip
+    projection = observation.record_published_generation(
+        version=V0,
+        publication_result=result,
+        publishing_checkpoint=checkpoint,
+    )
+    assert projection["count"] == 1
+    assert (
+        projection["observations"][0]["remote_publication"]["remote_main_oid"]
+        == merge_tip
+    )
+
+    # Isolate the row-internal check: no live remote/daemon drift noise.
+    monkeypatch.setattr(
+        observation, "_remote_publication_errors", lambda _state: []
+    )
+    monkeypatch.setattr(
+        observation, "_live_daemon_errors", lambda _state: []
+    )
+
+    def ancestor_only(*args):
+        return (
+            len(args) >= 4
+            and args[0] == "merge-base"
+            and args[1] == "--is-ancestor"
+            and args[2] == result["commit_oid"]
+            and args[3] == merge_tip
+        )
+
+    monkeypatch.setattr(observation, "_git_command_succeeds", ancestor_only)
+    valid = observation.stability_observation_projection()
+    assert "observation_0_remote_main_not_publication_commit" not in (
+        valid["errors"]
+    )
+    assert valid["count"] == 1
+    assert valid["status"] == "observing"
+
+    # A tip that is NOT an ancestor of the publication commit still fails
+    # closed exactly as before.
+    monkeypatch.setattr(
+        observation, "_git_command_succeeds", lambda *_args: False
+    )
+    failed = observation.stability_observation_projection()
+    assert "observation_0_remote_main_not_publication_commit" in (
+        failed["errors"]
+    )
+    assert failed["count"] == 0
+    assert failed["status"] == "reset_required"
+
+
 def test_first_publication_after_restart_with_head_already_at_commit(monkeypatch):
     """A process/daemon restart after the publication commit exists but before
     it is recorded must not block the first observation row.
