@@ -24,6 +24,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -706,3 +708,208 @@ def test_run_disk_hygiene_wires_candidate_ledger_compaction(
 
     assert len(calls) == 1
     assert calls[0][0][0].name == "candidates.jsonl"
+
+
+# ---------------------------------------------------------------------------
+# (c) candidate-ledger retention window env knob (G1, 2026-10-20)
+# ---------------------------------------------------------------------------
+
+WINDOW_ENV = "POK_CANDIDATE_LEDGER_KEEP_VERSIONS"
+SCRIPT_PATH = (
+    Path(disk_hygiene.__file__).resolve().parents[2]
+    / "scripts"
+    / "compact_candidate_ledger.py"
+)
+
+
+def _fake_compaction_collector(calls):
+    import candidate_store
+
+    def _fake_compact(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"receipt_persisted": False}
+
+    return _fake_compact, candidate_store
+
+
+def _seed_window_ledger(ledger: Path, versions) -> None:
+    from candidate_store import append_candidate_event
+
+    for version in versions:
+        source_v = version - 1 if version > 1 else None
+        append_candidate_event(
+            "quality_started",
+            version=version,
+            source_v=source_v,
+            stage="quality",
+            path=ledger,
+        )
+        append_candidate_event(
+            "quality_finished",
+            version=version,
+            source_v=source_v,
+            gate="quality",
+            scorecard={
+                "name": "quality",
+                "passed": version % 2 == 0,
+                "filler": "q" * 4096,
+            },
+            metrics={
+                "all_passed": version % 2 == 0,
+                "decision_pass_rate": round(0.5 + version / 1000, 4),
+            },
+            path=ledger,
+        )
+
+
+def test_candidate_ledger_step_env_window_reaches_compaction(
+    tmp_path: Path, monkeypatch
+):
+    # G1: the janitor's production call used the hard-coded library default
+    # (50). POK_CANDIDATE_LEDGER_KEEP_VERSIONS now tightens the window at the
+    # janitor call site — identical production behavior to changing the
+    # candidate_store signature default, without touching that module.
+    results = _make_results(tmp_path)
+    (results / "candidates.jsonl").write_text("{}", encoding="utf-8")
+    calls: list[tuple] = []
+    fake, candidate_store = _fake_compaction_collector(calls)
+    monkeypatch.setattr(candidate_store, "compact_candidate_ledger", fake)
+    monkeypatch.setenv(WINDOW_ENV, "7")
+
+    disk_hygiene.run_disk_hygiene(results, min_free_bytes=1)
+
+    assert len(calls) == 1
+    assert calls[0][1]["keep_versions"] == 7
+
+
+def test_candidate_ledger_step_env_window_clamps_and_falls_back(
+    tmp_path: Path, monkeypatch
+):
+    results = _make_results(tmp_path)
+    (results / "candidates.jsonl").write_text("{}", encoding="utf-8")
+    seen: list[int | None] = []
+    fake, candidate_store = _fake_compaction_collector(seen)
+    monkeypatch.setattr(candidate_store, "compact_candidate_ledger", fake)
+    from candidate_store import DEFAULT_KEEP_VERSIONS
+
+    for raw, expected in (
+        ("0", 1),
+        ("-5", 1),
+        (" 12 ", 12),
+        ("garbage", DEFAULT_KEEP_VERSIONS),
+    ):
+        seen.clear()
+        monkeypatch.setenv(WINDOW_ENV, raw)
+        disk_hygiene.run_disk_hygiene(results, min_free_bytes=1)
+        windows = [kwargs.get("keep_versions") for _args, kwargs in seen]
+        assert windows == [expected], raw
+
+    # Unset: the library default is still forwarded explicitly so the
+    # compaction receipt always records the effective window.
+    seen.clear()
+    monkeypatch.delenv(WINDOW_ENV, raising=False)
+    disk_hygiene.run_disk_hygiene(results, min_free_bytes=1)
+    windows = [kwargs.get("keep_versions") for _args, kwargs in seen]
+    assert windows == [DEFAULT_KEEP_VERSIONS]
+
+
+def test_run_disk_hygiene_applies_env_candidate_window_to_real_ledger(
+    tmp_path: Path, monkeypatch
+):
+    # End to end through the canonical compact_candidate_ledger transaction:
+    # the env window must reach the receipt and actually compact old
+    # quality_finished rows.
+    results = _make_results(tmp_path)
+    ledger = results / "candidates.jsonl"
+    _seed_window_ledger(ledger, range(1, 16))
+    before = ledger.read_bytes()
+    monkeypatch.setenv(WINDOW_ENV, "5")
+
+    report = disk_hygiene.run_disk_hygiene(results, min_free_bytes=1)
+
+    compaction = report["candidate_ledger_compaction"]
+    assert compaction["keep_versions"] == 5
+    assert compaction["version_floor"] == 11
+    assert compaction["rows_compacted"] == 10  # quality_finished v1..v10
+    assert compaction["receipt_persisted"] is True
+    assert len(ledger.read_bytes()) < len(before)
+    receipts = (
+        results / "candidates_compaction_receipt.jsonl"
+    ).read_text(encoding="utf-8")
+    assert json.loads(receipts.strip().splitlines()[-1])["keep_versions"] == 5
+
+
+def test_compact_candidate_ledger_script_dry_run_reads_only(tmp_path: Path):
+    # Operator one-shot entry (review follow-up: no bare `python -c`): dry run
+    # is lock-free and byte-preserving; it writes no receipt and compacts
+    # nothing.
+    results = _make_results(tmp_path)
+    ledger = results / "candidates.jsonl"
+    _seed_window_ledger(ledger, range(1, 31))
+    before = ledger.read_bytes()
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--ledger",
+            str(ledger),
+            "--keep-versions",
+            "10",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    plan_lines = [
+        line for line in proc.stdout.splitlines() if line.startswith("PLAN ")
+    ]
+    assert len(plan_lines) == 1
+    plan = json.loads(plan_lines[0][len("PLAN ") :])
+    assert plan["keep_versions"] == 10
+    assert plan["version_floor"] == 21  # versions 30..21 stay full
+    assert plan["rows_to_compact"] == 20
+    assert ledger.read_bytes() == before
+    assert not (results / "candidates_compaction_receipt.jsonl").exists()
+
+
+def test_compact_candidate_ledger_script_execute_compacts(tmp_path: Path):
+    results = _make_results(tmp_path)
+    ledger = results / "candidates.jsonl"
+    _seed_window_ledger(ledger, range(1, 31))
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--ledger",
+            str(ledger),
+            "--keep-versions",
+            "10",
+            "--execute",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    receipts_path = results / "candidates_compaction_receipt.jsonl"
+    assert receipts_path.exists()
+    last = json.loads(
+        receipts_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    )
+    assert last["keep_versions"] == 10
+    assert last["rows_compacted"] == 20  # quality_finished v1..v20
+    assert last["receipt_persisted"] is True
+    # Old rows became summary rows; the ledger shrank.
+    rows = [
+        json.loads(line)
+        for line in ledger.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    summarized = [
+        row for row in rows if row.get("ledger_compaction")
+    ]
+    assert len(summarized) == 20
+    assert all(row["version"] < 21 for row in summarized)

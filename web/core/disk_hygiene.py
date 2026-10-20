@@ -106,6 +106,16 @@ DEFAULT_COST_LEDGER_RETENTION_DAYS = 30.0
 DEFAULT_COST_LEDGER_COMPACTION_MIN_INTERVAL_SEC = 6.0 * 3600.0
 REAPED_TREES_LEDGER_NAME = "reaped_generation_trees.jsonl"
 
+# G1 (2026-10-20): the janitor's candidates-ledger call used the hard-coded
+# library default (``candidate_store.DEFAULT_KEEP_VERSIONS`` = 50), so the
+# only production knob was a code change. ``POK_CANDIDATE_LEDGER_KEEP_VERSIONS``
+# tightens the retention window at the janitor call site — behaviorally
+# identical to re-defaulting ``compact_candidate_ledger`` itself, without
+# touching that module. Values < 1 clamp to 1; unparsable values fall back to
+# the library default; unset forwards the library default explicitly so the
+# compaction receipt always records the effective window.
+CANDIDATE_LEDGER_KEEP_VERSIONS_ENV = "POK_CANDIDATE_LEDGER_KEEP_VERSIONS"
+
 
 def _env_flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).strip().lower() in _YES
@@ -561,13 +571,36 @@ def _orphan_reference_versions(results_dir: Path, live: set[int]) -> set[int] | 
     return references
 
 
+def _candidate_ledger_keep_versions() -> int:
+    """Resolve the janitor's candidates-ledger window from the environment.
+
+    Single source of truth shared with the operator one-shot entry
+    ``scripts/compact_candidate_ledger.py`` so the janitor cadence and a
+    manual tighten can never disagree about what a window value means.
+    """
+    try:
+        from candidate_store import DEFAULT_KEEP_VERSIONS
+    except Exception:  # pragma: no cover - import guard mirrors the step
+        DEFAULT_KEEP_VERSIONS = 50
+    raw = os.environ.get(CANDIDATE_LEDGER_KEEP_VERSIONS_ENV)
+    if raw is None or not str(raw).strip():
+        return int(DEFAULT_KEEP_VERSIONS)
+    try:
+        window = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return int(DEFAULT_KEEP_VERSIONS)
+    return max(1, window)
+
+
 def _compact_candidate_ledger_step(results_dir: Path) -> dict[str, Any] | None:
     """Run the sidecar-locked candidates-ledger retention window (T3 wiring).
 
     ``compact_candidate_ledger`` shipped as library code with no production
     caller (red-team finding 2026-10-15); the janitor owns its cadence here.
     It holds the append sidecar lock, rewrites only when there is something
-    to compact, and a no-op run touches nothing on disk.
+    to compact, and a no-op run touches nothing on disk. The window comes
+    from ``POK_CANDIDATE_LEDGER_KEEP_VERSIONS`` (G1, 2026-10-20), clamped to
+    >= 1, defaulting to the library's 50.
     """
     ledger = results_dir / "candidates.jsonl"
     if not ledger.is_file():
@@ -578,7 +611,9 @@ def _compact_candidate_ledger_step(results_dir: Path) -> dict[str, Any] | None:
         log.warning("candidate ledger compaction unavailable: %s", exc)
         return None
     try:
-        return compact_candidate_ledger(ledger)
+        return compact_candidate_ledger(
+            ledger, keep_versions=_candidate_ledger_keep_versions()
+        )
     except Exception as exc:
         log.warning("candidate ledger compaction failed: %s", exc)
         return None

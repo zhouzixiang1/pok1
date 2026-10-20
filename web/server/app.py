@@ -124,6 +124,214 @@ app_state.add_task_snapshot_listener(_publish_task_owner)
 
 from logging_config import configure_logging
 
+# ── Cgroup-aware memory observability (2026-10-20 fix: monitoring only) ──
+# That day's investigation found the heartbeat blind to (a) the ~1.4-1.5G
+# reclaimable file cache, (b) the ~115MB one-shot codex transport children,
+# and (c) memory.pressure — every cgroup conclusion had to be rebuilt from
+# governor ratios instead.  The review downgraded the fix to observability:
+# the capacity evidence chain (anon demand vs cache fill vs throttle harm)
+# is not closed, so these helpers only EXTEND the heartbeat line; they never
+# gate, trim, or otherwise change behavior.  All reads are best-effort and
+# individually guarded: one unreadable file omits its fields, never the
+# heartbeat itself.
+
+_MEMORY_CGROUP_DIR_ENV = "POK_MEMORY_HEARTBEAT_CGROUP_DIR"
+_CGROUP_FS_ROOT = Path("/sys/fs/cgroup")
+_PROC_ROOT = Path("/proc")
+#: distinct child names logged per heartbeat (sorted by total RSS desc)
+_CHILDREN_NAME_CAP = 8
+
+
+def _resolve_memory_cgroup_dir(
+    proc_self_cgroup_text: str | None = None,
+    fs_root: Path | None = None,
+) -> Path | None:
+    """Locate this process's cgroup v2 directory for the memory heartbeat.
+
+    Same resolution pattern as ``elo_daemon_governor._resolve_cgroup_dir``
+    (the ``0::<path>`` line of /proc/self/cgroup joined onto the cgroup2
+    mount), with an env override for operators and tests — but WITHOUT that
+    module's hard-coded system.slice fallback: an unresolvable cgroup
+    resolves to ``None`` and the heartbeat simply omits the cgroup fields
+    instead of reading some other service's counters.
+    """
+
+    override = os.environ.get(_MEMORY_CGROUP_DIR_ENV)
+    if override:
+        return Path(override)
+    fs_root = fs_root if fs_root is not None else _CGROUP_FS_ROOT
+    try:
+        if proc_self_cgroup_text is None:
+            proc_self_cgroup_text = (_PROC_ROOT / "self" / "cgroup").read_text(
+                encoding="ascii"
+            )
+        for line in proc_self_cgroup_text.splitlines():
+            parts = line.split(":", 2)
+            if len(parts) == 3 and parts[0] == "0" and parts[2].strip():
+                candidate = fs_root / parts[2].strip().lstrip("/")
+                if (candidate / "memory.current").exists():
+                    return candidate
+    except OSError:
+        pass
+    return None
+
+
+def _read_cgroup_memory_fields(cgroup_dir: Path) -> dict[str, int]:
+    """Read memory.current plus memory.stat anon/file, in bytes.
+
+    Missing/unreadable files or keys are omitted — this is a 600s-cadence
+    observation, not an accounting fence.
+    """
+
+    fields: dict[str, int] = {}
+    try:
+        fields["current"] = int(
+            (cgroup_dir / "memory.current").read_text(encoding="ascii").strip()
+        )
+    except (OSError, ValueError):
+        pass
+    try:
+        stat_text = (cgroup_dir / "memory.stat").read_text(encoding="ascii")
+        for line in stat_text.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] in ("anon", "file"):
+                fields.setdefault(parts[0], int(parts[1]))
+    except (OSError, ValueError):
+        pass
+    return fields
+
+
+def _read_cgroup_memory_pressure(
+    cgroup_dir: Path,
+) -> dict[str, tuple[float, float, float]]:
+    """Parse memory.pressure PSI as {kind: (avg10, avg60, avg300)}.
+
+    PSI is the direct "throttle harm" quantity that memory.current cannot
+    provide (the reviewer's live sample: ratio 0.75 with all-zero PSI); a
+    kind missing its full avg10/avg60/avg300 triple is omitted.
+    """
+
+    pressure: dict[str, tuple[float, float, float]] = {}
+    try:
+        psi_text = (cgroup_dir / "memory.pressure").read_text(encoding="ascii")
+    except OSError:
+        return pressure
+    for line in psi_text.splitlines():
+        parts = line.split()
+        if not parts or parts[0] not in ("some", "full"):
+            continue
+        avgs: dict[str, float] = {}
+        for token in parts[1:]:
+            if "=" in token:
+                key, _, value = token.partition("=")
+                if key in ("avg10", "avg60", "avg300"):
+                    try:
+                        avgs[key] = float(value)
+                    except ValueError:
+                        pass
+        if {"avg10", "avg60", "avg300"} <= avgs.keys():
+            pressure[parts[0]] = (avgs["avg10"], avgs["avg60"], avgs["avg300"])
+    return pressure
+
+
+def _census_direct_children(
+    parent_pid: int | None = None,
+    proc_root: Path | None = None,
+) -> dict[str, tuple[int, int]]:
+    """Aggregate DIRECT children of parent_pid from /proc/<pid>/stat.
+
+    Returns {comm: (count, rss_kb)} so one heartbeat line can show e.g. the
+    codex transport's per-stream footprint without naming individual pids.
+    Every per-pid read races with process exit: a vanished, malformed, or
+    truncated entry is skipped, never fatal.
+    """
+
+    if parent_pid is None:
+        parent_pid = os.getpid()
+    proc_root = proc_root if proc_root is not None else _PROC_ROOT
+    try:
+        page_bytes = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, AttributeError):
+        page_bytes = 4096
+    census: dict[str, tuple[int, int]] = {}
+    try:
+        entries = os.listdir(proc_root)
+    except OSError:
+        return census
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            stat_text = (proc_root / entry / "stat").read_text(encoding="ascii")
+            close = stat_text.rfind(")")
+            open_paren = stat_text.find("(")
+            if close < 0 or open_paren < 0 or close <= open_paren:
+                continue
+            comm = stat_text[open_paren + 1 : close]
+            fields = stat_text[close + 1 :].split()
+            # After the comm parens: index 0 = state (field 3), index 1 =
+            # ppid (field 4), index 21 = rss in pages (field 24).
+            if len(fields) < 22 or int(fields[1]) != parent_pid:
+                continue
+            rss_pages = int(fields[21])
+        except (OSError, ValueError):
+            # pid exited between listdir and read, or malformed stat — skip.
+            continue
+        count, rss_kb = census.get(comm, (0, 0))
+        census[comm] = (count + 1, rss_kb + rss_pages * page_bytes // 1024)
+    return census
+
+
+def _format_memory_heartbeat_line(
+    rss_mb: int,
+    threads: int,
+    cgroup_dir: Path | None,
+    parent_pid: int | None = None,
+) -> str:
+    """Render one heartbeat line: the historical prefix plus new fields.
+
+    The ``memory heartbeat: rss_mb=%d threads=%d`` prefix is byte-stable
+    (``journalctl -t pok-evolution | grep pok.memory`` keeps working); the
+    cgroup fields and the direct-child census are appended independently of
+    each other, and this function never raises.
+    """
+
+    line = f"memory heartbeat: rss_mb={rss_mb} threads={threads}"
+    if cgroup_dir is not None:
+        try:
+            mem = _read_cgroup_memory_fields(cgroup_dir)
+            if "current" in mem:
+                line += f" cgroup_current_mb={mem['current'] // 1048576}"
+            if "anon" in mem:
+                line += f" cgroup_anon_mb={mem['anon'] // 1048576}"
+            if "file" in mem:
+                line += f" cgroup_file_mb={mem['file'] // 1048576}"
+            pressure = _read_cgroup_memory_pressure(cgroup_dir)
+            # avg10/avg60/avg300 order.
+            for kind in ("some", "full"):
+                if kind in pressure:
+                    avg10, avg60, avg300 = pressure[kind]
+                    line += f" psi_{kind}={avg10:.2f}/{avg60:.2f}/{avg300:.2f}"
+        except Exception:
+            pass
+    try:
+        census = _census_direct_children(parent_pid=parent_pid)
+        if census:
+            ranked = sorted(
+                census.items(), key=lambda kv: kv[1][1], reverse=True
+            )
+            rendered = [
+                f"{name}({count},{rss_kb // 1024}mb)"
+                for name, (count, rss_kb) in ranked[:_CHILDREN_NAME_CAP]
+            ]
+            hidden = len(ranked) - _CHILDREN_NAME_CAP
+            if hidden > 0:
+                rendered.append(f"+{hidden}more")
+            line += " children=" + ",".join(rendered)
+    except Exception:
+        pass
+    return line
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -234,6 +442,11 @@ async def lifespan(app: FastAPI):
         from malloc_trim import malloc_trim_interval_sec, maybe_malloc_trim
 
         trim_interval_sec = malloc_trim_interval_sec()
+        # Resolve the cgroup v2 dir once per heartbeat start, like the trim
+        # interval: it is a process-launch property (this service runs inside
+        # one cgroup for its whole life).  Unresolvable -> None -> the line
+        # keeps its historical rss/threads shape only.
+        memory_cgroup_dir = _resolve_memory_cgroup_dir()
         heartbeat_log = _mem_log.getLogger("pok.memory")
         warn_mb = 1536
         while not (
@@ -253,7 +466,12 @@ async def lifespan(app: FastAPI):
                     heartbeat_log.warning if rss_mb > warn_mb
                     else heartbeat_log.info
                 )
-                log_at("memory heartbeat: rss_mb=%d threads=%d", rss_mb, threads)
+                log_at(
+                    "%s",
+                    _format_memory_heartbeat_line(
+                        rss_mb, threads, memory_cgroup_dir
+                    ),
+                )
             except Exception:
                 pass
             for _ in range(int(interval_sec)):
