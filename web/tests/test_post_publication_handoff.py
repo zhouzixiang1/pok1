@@ -1328,6 +1328,59 @@ def test_external_reproof_reopens_housekeeping_instead_of_trusting_booleans(
     module.release_post_publication_handoff_claim(V, S, claim_id)
 
 
+def test_external_reproof_housekeeping_accepts_ancestor_head_advance(
+    handoff_env, monkeypatch
+):
+    # Twenty-first exact-pin (v579, 2026-10-20): the housekeeping receipt
+    # froze the HEAD observed at step-completion time; a legitimate
+    # post-publication operator deploy (the fixes unblocking this very
+    # handoff) advances HEAD past it, and _verify_post_publication_worktree
+    # accepts that advance — the finalization reproof must grade the head
+    # with the same ancestor rule instead of strict-comparing the frozen
+    # receipt head_oid against the live one.  A non-ancestral head still
+    # fails closed.
+    import tool_commit
+    import tool_commit_archivist
+
+    module, _results = handoff_env
+    _write_pair(module)
+    record, claim_id = _complete_all_steps(module, finalize=False)
+    receipt = record["steps"]["housekeeping"]["receipt"]["output"]
+    advanced = "f" * 40
+    monkeypatch.setattr(
+        tool_commit,
+        "_verify_post_publication_worktree",
+        lambda **_kwargs: {
+            "head_oid": advanced,
+            "worktree_status_digest": receipt["worktree_status_digest"],
+            "tracked_housekeeping_commit": False,
+        },
+    )
+
+    monkeypatch.setattr(
+        tool_commit_archivist,
+        "_publication_head_advance_allowed",
+        lambda old, new: (
+            old == record["identity"]["commit_oid"] and new == advanced
+        ),
+    )
+    # Ancestor deploy advance: the frozen receipt stays valid.
+    module._test_original_reprove_external_steps(record)
+
+    # A head that is NOT a descendant of the receipt's head fails closed.
+    monkeypatch.setattr(
+        tool_commit_archivist,
+        "_publication_head_advance_allowed",
+        lambda *_args: False,
+    )
+    with pytest.raises(
+        module.PostPublicationHandoffError,
+        match="handoff_housekeeping_worktree_reproof_mismatch",
+    ):
+        module._test_original_reprove_external_steps(record)
+    module.release_post_publication_handoff_claim(V, S, claim_id)
+
+
 def _install_archivist_dirty_fixture(
     tool_commit,
     monkeypatch,

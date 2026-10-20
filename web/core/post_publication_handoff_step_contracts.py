@@ -748,11 +748,26 @@ def _reprove_external_steps(record: dict[str, Any]) -> None:
         expected_dirty=set(housekeeping_plan["expected_dirty_paths"]),
     )
     housekeeping_output = housekeeping_row["receipt"]["output"]
+    from tool_commit_archivist import _publication_head_advance_allowed
+
     for key, value in actual_worktree.items():
-        if housekeeping_output.get(key) != value:
-            raise _pph.PostPublicationHandoffError(
-                "handoff_housekeeping_worktree_reproof_mismatch"
-            )
+        if housekeeping_output.get(key) == value:
+            continue
+        if key == "head_oid" and _publication_head_advance_allowed(
+            str(housekeeping_output.get(key) or ""), str(value)
+        ):
+            # Twenty-first exact-pin convergence defect (v579, 2026-10-20):
+            # the frozen receipt recorded HEAD at housekeeping-completion time;
+            # a legitimate post-publication operator deploy (the fixes that
+            # unblocked this very handoff) advances HEAD past it, and
+            # _verify_post_publication_worktree already accepts that advance —
+            # but this reproof then strict-compared the OLD receipt head_oid
+            # against the NEW live one and wedged the finalization.  Grade the
+            # head on the same ancestor rule; every other field stays strict.
+            continue
+        raise _pph.PostPublicationHandoffError(
+            "handoff_housekeeping_worktree_reproof_mismatch"
+        )
     if (
         housekeeping_output.get("reap_proofs") != final_proofs
         or housekeeping_output.get("reap_proof_set_digest")
