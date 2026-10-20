@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import subprocess
 import threading
 import time
 
@@ -1189,11 +1191,30 @@ def test_remote_publication_reopens_exact_annotated_refs_without_fetch(monkeypat
 
     assert observation._remote_publication_errors(state) == []
 
+    # Twenty-second exact-pin convergence defect (2026-10-20): the main-head
+    # leg is now the convergence-family rule (equal or descending), and a
+    # live tip that is not locally resolvable is skipped.  Isolate the one
+    # fail-closed shape here: pin the tip-known probe True and every ancestry
+    # predicate False, so the swapped remote main is a locally KNOWN
+    # non-descendant — the only shape that must still report the token.
+    def known_tip_but_non_ancestor(*args):
+        return tuple(args[:2]) == ("cat-file", "-e")
+
+    monkeypatch.setattr(
+        observation,
+        "_git_command_succeeds",
+        known_tip_but_non_ancestor,
+    )
     lines[0] = f"{'f' * 40}\trefs/heads/{EVOLUTION_BRANCH}"
     assert "remote_main_head_mismatch" in observation._remote_publication_errors(
         state
     )
     lines[0] = f"{state['repository_head']}\trefs/heads/{EVOLUTION_BRANCH}"
+    monkeypatch.setattr(
+        observation,
+        "_git_command_succeeds",
+        lambda *args: True,
+    )
 
     completion_index = next(
         index
@@ -1263,3 +1284,443 @@ def test_publication_without_remote_or_checkpoint_proof_is_rejected(monkeypatch)
             publishing_checkpoint=checkpoint,
         )
     assert observation.stability_observation_projection()["count"] == 0
+
+
+# --- Twenty-second exact-pin convergence defect (v579 wedge, 2026-10-20) ---
+#
+# The LIVE remote re-proof (``_remote_publication_errors``) must tolerate an
+# operator who legitimately advanced ``origin/<branch>`` past the recorded
+# repository head AFTER the row was frozen (v579: origin's tip was the
+# reconciling merge 9a66db1b while the runtime's recorded head was the
+# publication commit 50a02077), without fetching in the read path and without
+# weakening the fail-closed legs.  These fixtures therefore drive REAL
+# scratch git repositories (bare origin + operator clone + runtime clone,
+# plain local paths, fully offline), point ``evolution_infra.PROJECT_ROOT``
+# at the runtime clone — the real ``_git``/``_git_command_succeeds``
+# delegates resolve their cwd from it at call time — and write the
+# observation row through the REAL ``record_published_generation`` with a
+# ``remote_proof`` shaped exactly like ``verify_remote_bot_publication``
+# output: annotated tags (tag object oid != peeled commit oid) and a
+# merge-commit ``remote_main_oid``.  The autouse fixtures' fake
+# ``_git``/``_git_command_succeeds`` are deliberately overridden back to the
+# real delegates because rc=128 (object absent locally) vs rc=1 (genuine
+# non-ancestor) is exactly the behaviour under test.
+
+
+def _scratch_git(workdir, *args, check=True):
+    """Real offline git plumbing for the scratch publication world."""
+
+    env = dict(os.environ)
+    env.update({
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_TERMINAL_PROMPT": "0",
+    })
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(workdir),
+            "-c",
+            "user.email=observer@example.invalid",
+            "-c",
+            "user.name=observer",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    if check and result.returncode != 0:
+        raise AssertionError(
+            f"git {' '.join(args)} exited {result.returncode}: "
+            f"{result.stderr.strip()}"
+        )
+    return result.stdout.strip()
+
+
+class _PublicationWorld:
+    """Offline scratch topology mirroring the production publication shape."""
+
+    def __init__(self, root):
+        branch = EVOLUTION_BRANCH
+        root.mkdir(parents=True, exist_ok=True)
+        self.branch = branch
+        self.origin = root / "origin.git"
+        _scratch_git(root, "init", "--bare", "-b", branch, "origin.git")
+        # The branch-delete leg (T6) needs the scratch origin to accept
+        # deleting its HEAD branch; production origins accept this too.
+        _scratch_git(self.origin, "config", "receive.denyDeleteCurrent", "ignore")
+        seed = root / "seed"
+        _scratch_git(root, "init", "-b", branch, "seed")
+        (seed / "README.md").write_text("base\n", encoding="utf-8")
+        _scratch_git(seed, "add", "-A")
+        _scratch_git(seed, "commit", "-m", "base")
+        _scratch_git(seed, "remote", "add", "origin", str(self.origin))
+        _scratch_git(seed, "push", "-q", "origin", f"refs/heads/{branch}")
+        self.runtime = root / "runtime"
+        _scratch_git(
+            root, "clone", "-q", "--no-hardlinks", str(self.origin), "runtime"
+        )
+        self.operator = root / "operator"
+        _scratch_git(
+            root, "clone", "-q", "--no-hardlinks", str(self.origin), "operator"
+        )
+        # v{V0} publication: the runtime commits P, creates BOTH annotated
+        # completion tags (tag object oid != peeled commit oid), and pushes
+        # the branch and the tags to origin.
+        (self.runtime / "bot.txt").write_text(
+            f"publication v{V0}\n", encoding="utf-8"
+        )
+        _scratch_git(self.runtime, "add", "-A")
+        _scratch_git(self.runtime, "commit", "-m", f"publish v{V0}")
+        self.publication_commit = _scratch_git(
+            self.runtime, "rev-parse", "HEAD"
+        )
+        for name in (bot_tag(V0), high_water_tag(V0)):
+            _scratch_git(self.runtime, "tag", "-a", name, "-m", name)
+        _scratch_git(
+            self.runtime,
+            "push",
+            "-q",
+            "origin",
+            f"refs/heads/{branch}",
+            f"refs/tags/{bot_tag(V0)}",
+            f"refs/tags/{high_water_tag(V0)}",
+        )
+        # Snapshot clone taken while origin's tip is still the publication
+        # commit: it knows P and the tags but never any later operator tip.
+        self.snapshot_runtime = root / "runtime_without_merge"
+        _scratch_git(
+            root,
+            "clone",
+            "-q",
+            "--no-hardlinks",
+            str(self.origin),
+            "runtime_without_merge",
+        )
+        self.merge_tip = None
+
+    def operator_merge_advances_origin(self):
+        """v579 shape: operator fixes diverge from the base, then a merge of
+        the publication commit is pushed — origin's tip is a MERGE commit
+        (not P) already at record time."""
+
+        _scratch_git(self.operator, "checkout", "-q", "-b", "operator-fixes")
+        (self.operator / "fix.txt").write_text(
+            "operator fix\n", encoding="utf-8"
+        )
+        _scratch_git(self.operator, "add", "-A")
+        _scratch_git(self.operator, "commit", "-m", "operator fixes")
+        _scratch_git(
+            self.operator,
+            "fetch",
+            "-q",
+            "--no-tags",
+            "origin",
+            f"refs/heads/{self.branch}:refs/remotes/origin/{self.branch}",
+        )
+        _scratch_git(
+            self.operator,
+            "merge",
+            f"refs/remotes/origin/{self.branch}",
+            "-m",
+            "reconcile operator fixes with publication",
+        )
+        _scratch_git(
+            self.operator,
+            "push",
+            "-q",
+            "origin",
+            f"HEAD:refs/heads/{self.branch}",
+        )
+        self.merge_tip = _scratch_git(self.operator, "rev-parse", "HEAD")
+
+    def operator_advance_origin(self, filename):
+        """One more ordinary commit on the operator line, pushed."""
+
+        (self.operator / filename).write_text(f"{filename}\n", encoding="utf-8")
+        _scratch_git(self.operator, "add", "-A")
+        _scratch_git(self.operator, "commit", "-m", filename)
+        tip = _scratch_git(self.operator, "rev-parse", "HEAD")
+        _scratch_git(
+            self.operator,
+            "push",
+            "-q",
+            "origin",
+            f"HEAD:refs/heads/{self.branch}",
+        )
+        return tip
+
+    def operator_force_push_unrelated_root(self):
+        """Force-push an unrelated root commit as the branch tip."""
+
+        _scratch_git(self.operator, "checkout", "-q", "--orphan", "unrelated")
+        _scratch_git(self.operator, "rm", "-r", "-q", "-f", "--", ".")
+        (self.operator / "unrelated.txt").write_text(
+            "unrelated root\n", encoding="utf-8"
+        )
+        _scratch_git(self.operator, "add", "-A")
+        _scratch_git(self.operator, "commit", "-m", "unrelated root")
+        _scratch_git(
+            self.operator,
+            "push",
+            "-q",
+            "-f",
+            "origin",
+            f"HEAD:refs/heads/{self.branch}",
+        )
+        return _scratch_git(self.operator, "rev-parse", "HEAD")
+
+    def operator_retag_completion_tag(self, target):
+        """Rewrite the completion tag onto ``target`` (annotated, force).
+
+        The operator clone predates the publication push and the single-ref
+        fetches never fetch tags, so pull the live tag down first (this is
+        the operator's own privileged action — the RUNTIME must stay
+        tagless by fetch construction)."""
+
+        name = bot_tag(V0)
+        _scratch_git(
+            self.operator,
+            "fetch",
+            "-q",
+            "origin",
+            f"+refs/tags/{name}:refs/tags/{name}",
+        )
+        _scratch_git(self.operator, "tag", "-d", name)
+        _scratch_git(self.operator, "tag", "-a", name, target, "-m", "rewritten")
+        _scratch_git(
+            self.operator, "push", "-q", "-f", "origin", f"refs/tags/{name}"
+        )
+
+    def operator_delete_branch(self):
+        _scratch_git(
+            self.operator, "push", "-q", "origin", "--delete", self.branch
+        )
+
+    def runtime_fetch_main(self, *, force=False):
+        """The publication path's exact single-ref ``--no-tags`` fetch."""
+
+        leading = "+" if force else ""
+        _scratch_git(
+            self.runtime,
+            "fetch",
+            "-q",
+            "--no-tags",
+            "origin",
+            (
+                f"{leading}refs/heads/{self.branch}:"
+                f"refs/remotes/origin/{self.branch}"
+            ),
+        )
+
+    def completion_tag_object_oids(self):
+        return {
+            name: _scratch_git(self.runtime, "rev-parse", f"refs/tags/{name}")
+            for name in (bot_tag(V0), high_water_tag(V0))
+        }
+
+
+def _use_real_git(monkeypatch, observation, project_root):
+    """Restore the REAL git delegates and steer them at a scratch checkout."""
+
+    import evolution_infra
+
+    monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(observation, "_git", evolution_infra._git)
+    monkeypatch.setattr(
+        observation,
+        "_git_command_succeeds",
+        evolution_infra._git_command_succeeds,
+    )
+
+
+def _record_scratch_publication(monkeypatch, observation, world):
+    """Record the v{V0} row through the REAL record path with a
+    verify_remote_bot_publication-shaped remote_proof (merge tip + annotated
+    tag object oids, peeled to the publication commit)."""
+
+    current = dict(_identity())
+    current["repository_head"] = world.publication_commit
+    _install_identity(monkeypatch, observation, current)
+    observation.initialize_stability_observation()
+    result, checkpoint = _publication(V0)
+    tag_objects = world.completion_tag_object_oids()
+    result["commit_oid"] = world.publication_commit
+    result["remote_proof"] = {
+        "valid": True,
+        "remote_main_oid": world.merge_tip,
+        "remote_refs": {
+            f"refs/tags/{bot_tag(V0)}": tag_objects[bot_tag(V0)],
+            f"refs/tags/{bot_tag(V0)}^{{}}": world.publication_commit,
+            f"refs/tags/{high_water_tag(V0)}": tag_objects[high_water_tag(V0)],
+            f"refs/tags/{high_water_tag(V0)}^{{}}": world.publication_commit,
+        },
+    }
+    return observation.record_published_generation(
+        version=V0,
+        publication_result=result,
+        publishing_checkpoint=checkpoint,
+    )
+
+
+def _ready_v579_world(monkeypatch, tmp_path):
+    """World at the exact v579 record-time shape + one recorded row."""
+
+    import stability_observation as observation
+
+    world = _PublicationWorld(tmp_path / "world")
+    world.operator_merge_advances_origin()
+    world.runtime_fetch_main()
+    _use_real_git(monkeypatch, observation, world.runtime)
+    recorded = _record_scratch_publication(monkeypatch, observation, world)
+    assert recorded["count"] == 1
+    return observation, world
+
+
+def test_v579_operator_advance_keeps_live_reproof_green_without_fetch(
+    monkeypatch,
+    tmp_path,
+):
+    """Twenty-second exact-pin convergence defect (v579 wedge, 2026-10-20).
+
+    T1 replays the exact v579 shape: origin's tip at record time is the
+    operator's reconciling MERGE commit M (not the publication commit P),
+    the runtime knows M through the publication path's single-ref fetch, and
+    the recorded head is P.  The old exact-equality live re-proof reported
+    ``remote_main_head_mismatch`` from the moment the row was recorded and
+    permanently wedged the post-publication handoff's stability reproof
+    (count=0).  T2: the operator pushes one more ordinary commit F and the
+    runtime does NOT fetch — git exits 128 for the locally absent object and
+    the old code additionally misread that as a genuine
+    ``publication_commit_not_on_remote_main``.  T3: after the producer-style
+    fetch the known+descendant legs re-prove cleanly.  In every phase the
+    projection must stay green with the row rendered (T7), so the handoff
+    reproof's expected-count comparison and publication-row presence check
+    both pass.
+    """
+
+    observation, world = _ready_v579_world(monkeypatch, tmp_path)
+
+    # T1 — v579 replay: no error may fire (old code: remote_main_head_mismatch).
+    projection = observation.stability_observation_projection()
+    assert projection["errors"] == []
+    assert projection["count"] == 1
+    assert projection["status"] == "observing"
+    assert [row["version"] for row in projection["observations"]] == [V0]
+
+    # T2 — operator pushes F; the runtime does NOT fetch.
+    world.operator_advance_origin("operator-followup.txt")
+    projection = observation.stability_observation_projection()
+    assert projection["errors"] == []
+    assert "remote_main_head_mismatch" not in projection["errors"]
+    assert (
+        f"v{V0}:publication_commit_not_on_remote_main"
+        not in projection["errors"]
+    )
+    assert projection["count"] == 1
+    assert projection["observations"]
+
+    # T3 — runtime fetches F with the producer's exact single-ref fetch.
+    world.runtime_fetch_main()
+    projection = observation.stability_observation_projection()
+    assert projection["errors"] == []
+    assert projection["count"] == 1
+    assert projection["status"] == "observing"
+
+
+def test_live_reproof_fails_closed_on_locally_known_unrelated_main(
+    monkeypatch,
+    tmp_path,
+):
+    """T4 — fail-closed preserved: a force-pushed unrelated root that the
+    runtime HAS fetched is locally known and non-descendant, so BOTH
+    main-ancestry legs must still fail closed while the untouched tag
+    proofs stay green."""
+
+    observation, world = _ready_v579_world(monkeypatch, tmp_path)
+
+    world.operator_force_push_unrelated_root()
+    world.runtime_fetch_main(force=True)
+    projection = observation.stability_observation_projection()
+    assert "remote_main_head_mismatch" in projection["errors"]
+    assert f"v{V0}:publication_commit_not_on_remote_main" in projection[
+        "errors"
+    ]
+    assert not any("remote_tag_" in item for item in projection["errors"])
+    assert projection["count"] == 0
+    assert projection["status"] == "reset_required"
+
+
+def test_live_tag_proof_stays_unconditional_when_main_tip_unknown(
+    monkeypatch,
+    tmp_path,
+):
+    """T5 — guardrail: the remote tag string checks are the one
+    unconditional live proof and never depend on local objects (the
+    publication-path fetch is ``--no-tags``, so tag objects are normally
+    absent locally).  With the main tip unknown to the runtime, a rewritten
+    completion tag — new tag object AND peeled commit pointing at a commit
+    the runtime has never fetched — must still fail closed; only the two
+    main-ancestry legs may skip."""
+
+    observation, world = _ready_v579_world(monkeypatch, tmp_path)
+
+    followup = world.operator_advance_origin("operator-followup.txt")
+    world.operator_retag_completion_tag(followup)
+    projection = observation.stability_observation_projection()
+    errors = projection["errors"]
+    assert f"v{V0}:remote_tag_object_mismatch:{bot_tag(V0)}" in errors
+    assert f"v{V0}:remote_tag_peeled_mismatch:{bot_tag(V0)}" in errors
+    assert (
+        f"v{V0}:remote_tag_object_mismatch:{high_water_tag(V0)}" not in errors
+    )
+    assert "remote_main_head_mismatch" not in errors
+    assert f"v{V0}:publication_commit_not_on_remote_main" not in errors
+    assert projection["count"] == 0
+    assert projection["status"] == "reset_required"
+
+
+def test_live_reproof_reports_missing_remote_branch(monkeypatch, tmp_path):
+    """T6 — a deleted remote branch still fails closed exactly as before."""
+
+    observation, world = _ready_v579_world(monkeypatch, tmp_path)
+
+    world.operator_delete_branch()
+    projection = observation.stability_observation_projection()
+    assert projection["errors"] == ["remote_main_missing"]
+    assert projection["count"] == 0
+
+
+def test_frozen_row_remote_main_stays_fail_closed_when_locally_unknown(
+    monkeypatch,
+    tmp_path,
+):
+    """T8 — boundary: only the LIVE re-proof degrades.  The frozen row's own
+    tip check in ``_state_errors`` keeps the nineteenth defect's fail-closed
+    posture: reading the SAME recorded state from a checkout that has P and
+    the tags but never fetched the merge tip must report
+    ``observation_0_remote_main_not_publication_commit`` (count=0) while the
+    live main-ancestry legs skip the locally unknown tip."""
+
+    observation, world = _ready_v579_world(monkeypatch, tmp_path)
+    world.operator_advance_origin("operator-followup.txt")
+
+    _use_real_git(monkeypatch, observation, world.snapshot_runtime)
+    projection = observation.stability_observation_projection()
+    assert "observation_0_remote_main_not_publication_commit" in projection[
+        "errors"
+    ]
+    assert "remote_main_head_mismatch" not in projection["errors"]
+    assert (
+        f"v{V0}:publication_commit_not_on_remote_main"
+        not in projection["errors"]
+    )
+    assert projection["count"] == 0
+    assert projection["status"] == "reset_required"

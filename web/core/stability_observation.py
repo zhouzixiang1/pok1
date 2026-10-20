@@ -737,6 +737,29 @@ def _live_publication_errors(state: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(errors))
 
 
+def _remote_tip_locally_known(oid: str) -> bool:
+    """Whether a live branch tip's commit object exists in this checkout.
+
+    ONLY valid for a BRANCH tip reached through the runtime's single-ref
+    fetch (``refs/remotes/origin/<EVOLUTION_BRANCH>``).  The
+    publication-path fetch is ``--no-tags``, so a tag's ``object_oid`` is
+    normally absent locally and must NEVER be probed through this helper —
+    the remote tag string comparisons in ``_remote_publication_errors`` are
+    the one unconditional live proof and stay independent of local objects.
+    ``_git_command_succeeds`` folds every failure (the rc=128 ``fatal: Not
+    a valid commit name`` of an absent object, but also a timeout or an
+    OSError) into False, i.e. "unknown": the LIVE re-proof treats that as
+    "skip the main-ancestry sub-checks", which is slightly fail-open for
+    infrastructure-level probe failures — accepted because ls-remote has
+    already proven the remote reachable immediately before (an unreachable
+    remote reports ``remote_refs_unavailable`` first) and the next
+    publication's fetch-backed ``verify_remote_bot_publication`` re-proof
+    fails hard on any real divergence.
+    """
+
+    return _git_command_succeeds("cat-file", "-e", f"{oid}^{{commit}}")
+
+
 def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
     """Re-open origin refs without fetching or mutating the operator checkout."""
 
@@ -758,10 +781,51 @@ def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
         if separator and _is_hex(oid, 40) and ref:
             refs[ref] = oid
     remote_main = refs.get(f"refs/heads/{EVOLUTION_BRANCH}", "")
+    recorded_head = str(state.get("repository_head") or "")
+    # Twenty-second exact-pin convergence defect (v579 wedge, 2026-10-20):
+    # this LIVE re-proof used exact equality/ancestry against a tip the
+    # operator may have legitimately advanced past the recorded head AFTER
+    # the row was frozen (v579: origin's tip was the reconciling merge
+    # 9a66db1b while the recorded head was publication commit 50a02077).
+    # Two false positives followed whenever the runtime checkout had not
+    # fetched the newer tip: git exits 128 ("fatal: Not a valid commit
+    # name") for an object absent locally, and ``_git_command_succeeds``
+    # folds rc=128 and the genuine rc=1 non-ancestor answer into the same
+    # False — so a legitimate operator push looked like main divergence and
+    # returned count=0, wedging the post-publication handoff's stability
+    # reproof exactly like the nineteenth defect.  The convergence-family
+    # rule (mirroring ``_preflight_head_issues`` and the handoff's
+    # ``remote_main_oid`` ancestor drift rule): the live tip may equal or
+    # descend from the recorded head; a tip whose object is absent locally
+    # skips BOTH main-ancestry sub-checks (its durable record-time proof is
+    # the fetch-backed ``verify_remote_bot_publication`` ancestor check the
+    # publication path ran before freezing the row, and the frozen row's own
+    # tip is independently re-proven fail-closed by ``_state_errors``); a
+    # tip that IS locally known and does NOT descend still fails closed.
+    # The degradation applies ONLY to this live re-proof — the frozen-record
+    # checks keep the nineteenth defect's fail-closed posture — and the
+    # remote tag string checks below remain unconditional, so deleting or
+    # rewriting a tag is still caught with no local objects.  Residual
+    # exposure (declared): an operator force-push of an unrelated main that
+    # keeps the tags, on a runtime that never fetches, defers detection to
+    # the next publication/handoff, where the fetch-backed re-verification
+    # fails hard.
+    remote_tip_known = _is_hex(remote_main, 40) and _remote_tip_locally_known(
+        remote_main
+    )
     errors: list[str] = []
     if not _is_hex(remote_main, 40):
         errors.append("remote_main_missing")
-    elif remote_main != str(state.get("repository_head") or ""):
+    elif (
+        remote_main != recorded_head
+        and remote_tip_known
+        and not _git_command_succeeds(
+            "merge-base",
+            "--is-ancestor",
+            recorded_head,
+            remote_main,
+        )
+    ):
         errors.append("remote_main_head_mismatch")
     for row in rows:
         version = int(row["version"])
@@ -773,7 +837,7 @@ def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
                 errors.append(f"v{version}:remote_tag_object_mismatch:{name}")
             if refs.get(f"refs/tags/{name}^{{}}") != commit_oid:
                 errors.append(f"v{version}:remote_tag_peeled_mismatch:{name}")
-        if remote_main and not _git_command_succeeds(
+        if remote_main and remote_tip_known and not _git_command_succeeds(
             "merge-base",
             "--is-ancestor",
             commit_oid,
