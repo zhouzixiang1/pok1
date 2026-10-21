@@ -73,7 +73,12 @@ _GLM_QUOTA_CODE = "[1308]"
 # durable availability pause (``llm_availability_store.persist_llm_pause``)
 # and the saturator's non-quota launch pause — so they can never diverge.
 _SERVICE_COOLDOWN_BASE_SECONDS = 8
-_SERVICE_COOLDOWN_CAP_SECONDS = 120
+# Operator directive 2026-10-21: cap the FREQUENCY-class (1302/bare-429)
+# cooldown ceiling at 30s (env-tunable) instead of the historical 120s --
+# the provider enforces the real rate; long self-imposed sleeps only idle the
+# pool. The quota class (1308) is untouched: its waits follow the provider
+# reset timestamp, never this curve.
+_SERVICE_COOLDOWN_CAP_SECONDS = max(_SERVICE_COOLDOWN_BASE_SECONDS, int(os.environ.get("POK_LLM_SERVICE_COOLDOWN_CAP_SECONDS", "30")))
 
 
 def service_unavailable_cooldown_seconds(occurrences: int) -> int:
