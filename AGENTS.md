@@ -757,11 +757,16 @@ Active implementation is under `web/core/`. Major responsibilities include:
 - `disk_hygiene.py` — process-lifetime janitor that bounds **non-authority**
   runtime artifacts (saturator sessions/findings, orphan `draft_candidates/`,
   abandoned `results/vN` trees, stale consumer checkpoints, tmp files) so a
-  small VM cannot fill the root disk. It never truncates `events.jsonl`, the
-  abandon ledger, ratings, `match_history`, or the live primary checkpoint.
-  Started from the FastAPI lifespan beside the LLM saturator; retention
-  tightens when free space falls below `POK_DISK_MIN_FREE_GB` (see
-  `deploy/tencent-cloud/env.runtime`).
+  small VM cannot fill the root disk. Publication rotation is copy-only; the
+  separate events auto-compression step (`POK_EVENTS_AUTO_ROTATION_ENABLED`)
+  may re-head `events.jsonl` only at the critical disk tier inside an open
+  safe window, and only after the dropped prefix is committed as a
+  digest-bound gzip batch (crash-safe rebase with recovery). It never
+  truncates the abandon ledger, ratings, `match_history`, or the live primary
+  checkpoint. Started from the FastAPI lifespan beside the LLM saturator;
+  retention tightens when free space falls below `POK_DISK_MIN_FREE_GB` (see
+  `deploy/tencent-cloud/env.runtime` and
+  `docs/events-auto-compression-2026-10-21.md`).
 - `evaluation_bundle.py`, `evidence_snapshot.py`, `rating_snapshot.py` — frozen
   evaluation publication and generation cutoffs;
 - `master_context_contract.py`, `plan_compiler.py`,

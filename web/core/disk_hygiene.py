@@ -178,9 +178,10 @@ ABANDON_TXN_DAYS_ENV = "POK_ABANDON_TXN_RETENTION_DAYS"
 DEFAULT_ABANDON_TXN_DAYS = 30.0
 ABANDON_TXN_CRITICAL_DAYS = 7.0
 
-# Events auto-rotation (A-track entry, frozen signature): default OFF so the
-# production step is inert until the operator explicitly enables it AND the
-# disk tier is critical AND the safe window is open.
+# Events auto-compression (A-track entry, frozen signature): default OFF so
+# the production step is inert until the operator explicitly enables it AND
+# the disk tier is critical AND the safe window is open. When enabled, the
+# entry gzips the cold prefix and re-heads events.jsonl after digest proof.
 EVENTS_ROTATION_ENV = "POK_EVENTS_AUTO_ROTATION_ENABLED"
 EVENTS_ROTATION_ACTOR = "disk_hygiene_janitor"
 
@@ -1290,19 +1291,18 @@ def _reap_aged_abandon_transactions(
 def _events_auto_rotation_step(
     results_dir: Path, *, window: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Copy-only events auto-rotation behind the A-track frozen signature.
+    """Digest-proven events auto-compression behind the A-track entry.
 
     Calls ``autonomous_rotate_append_only_sources(*, actor, sources=None,
     max_batch_bytes=None) -> list[dict]`` from
-    ``evolution_infra_archive_rotation`` (A-track-owned module; never edited
-    here). Gating: ``POK_EVENTS_AUTO_ROTATION_ENABLED`` (default 0 — the
-    production step is inert until the operator flips it), the safe window
-    open, and the critical disk tier. A missing entry (ImportError) is the
-    designed mock posture — skipped:"unavailable" plus a
-    ``pipeline.events_auto_rotation_skipped`` event, never an error. The
-    rotation itself is copy-only by contract
-    (``source_preserved_append_only``); live ``events.jsonl`` is never
-    truncated here.
+    ``evolution_infra_archive_rotation``. Gating:
+    ``POK_EVENTS_AUTO_ROTATION_ENABLED`` (default 0 — the production step is
+    inert until the operator flips it), the safe window open, and the
+    critical disk tier. A missing entry (ImportError) degrades to
+    skipped:"unavailable" plus a ``pipeline.events_auto_rotation_skipped``
+    event, never an error. The entry re-heads live ``events.jsonl`` only
+    after the dropped prefix is committed as a digest-bound gzip batch
+    (``source_preserved_append_only`` is False).
     """
     if not _env_flag(EVENTS_ROTATION_ENV, "0"):
         return None
@@ -1335,8 +1335,8 @@ def _events_auto_rotation_step(
             "pipeline.events_auto_rotation_done",
             "info",
             (
-                "events auto-rotation copied "
-                f"{len(receipts)} append-only source prefix(es)"
+                "events auto-compression re-headed "
+                f"{len(receipts)} append-only source(s)"
             ),
             {
                 "actor": EVENTS_ROTATION_ACTOR,
@@ -1346,9 +1346,12 @@ def _events_auto_rotation_step(
                         "rotation_id": row.get("rotation_id"),
                         "start_offset": row.get("start_offset"),
                         "end_offset": row.get("end_offset"),
+                        "plaintext_bytes": row.get("plaintext_bytes"),
+                        "gzip_bytes": row.get("gzip_bytes"),
                         "source_preserved_append_only": row.get(
                             "source_preserved_append_only"
                         ),
+                        "reheaded": row.get("reheaded"),
                     }
                     for row in receipts
                 ],

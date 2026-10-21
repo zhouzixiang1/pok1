@@ -318,9 +318,14 @@ def test_disk_hygiene_janitor_wires_retention(tmp_path, monkeypatch):
     assert report["evaluation_identity_retention"]["moved"] == 1
 
 
-def test_disk_hygiene_janitor_skips_within_budget(tmp_path):
+def test_disk_hygiene_janitor_skips_within_budget(tmp_path, monkeypatch):
     import disk_hygiene
 
+    # Pin a normal disk tier: the critical tier caps the identity keep at 4,
+    # so the host's real free space must not decide this within-budget test.
+    monkeypatch.setattr(
+        disk_hygiene, "disk_free_bytes", lambda _path: 10 * 1024 ** 3
+    )
     results = tmp_path / "results"
     results.mkdir()
     archive = retention.archive_dir(results)

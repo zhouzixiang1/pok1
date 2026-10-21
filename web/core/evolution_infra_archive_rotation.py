@@ -29,12 +29,15 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import stat
 import uuid
 from pathlib import Path
 
 import evolution_infra as _ei
+
+log = logging.getLogger(__name__)
 
 
 _ROTATION_PLAN_KIND = "append-log-nondestructive-rotation-v2"
@@ -1313,6 +1316,114 @@ def archive_rotate_files(version, rotation_plan):
         receipts,
         rotation_plan=rotation_plan,
     )
+    return receipts
+
+
+_APPEND_ONLY_REBASE_SOURCES = frozenset({"events.jsonl"})
+
+
+def autonomous_rotate_append_only_sources(
+    *, actor: str, sources=None, max_batch_bytes: int | None = None
+) -> list[dict]:
+    """Compress cold ``events.jsonl`` prefixes into digest-bound gzip batches.
+
+    Frozen entry point for the disk-hygiene janitor.  The byte-preserving
+    re-head (source lock, crash recovery, v3 watermark rebase) belongs to
+    ``evolution_infra_rotation_rebase``; this adapter maps its outcome to
+    the janitor receipt shape.  Unlike publication rotation, the live file
+    IS re-headed: the dropped prefix remains recoverable from the gzip
+    batch, so ``source_preserved_append_only`` is False.
+    """
+
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError("append-only rotation requires a non-empty actor")
+    from evolution_infra_rotation_rebase import (
+        REBASE_SOURCE_NAME,
+        apply_archive_batch_retention,
+        gzip_batch_paths,
+        load_rebase_state,
+        try_rebase_rotation_source,
+    )
+
+    results_dir = Path(_ei.RESULTS_DIR)
+    canonical = results_dir / REBASE_SOURCE_NAME
+    Path(_ei.ARCHIVE_DIR).mkdir(parents=True, exist_ok=True)
+    if sources is None:
+        requested = [canonical]
+    else:
+        requested = []
+        for entry in sources:
+            candidate = Path(str(entry))
+            if candidate == Path(REBASE_SOURCE_NAME):
+                candidate = canonical
+            if (
+                candidate.name not in _APPEND_ONLY_REBASE_SOURCES
+                or candidate.parent != results_dir
+            ):
+                raise ValueError(
+                    f"unsupported append-only rotation source: {entry}"
+                )
+            requested.append(candidate)
+
+    receipts: list[dict] = []
+    for source_path in requested:
+        outcome = try_rebase_rotation_source(
+            source_path,
+            results_dir=results_dir,
+            max_span_bytes=max_batch_bytes,
+        )
+        status = str(outcome.get("status") or "")
+        if status == "error":
+            raise RuntimeError(
+                "append-only rotation failed: "
+                f"{outcome.get('reason') or 'unknown'}"
+            )
+        if status == "skipped":
+            continue
+        if status == "recovered" and not outcome.get("applied"):
+            continue
+        if status not in {"rebased", "recovered"}:
+            raise RuntimeError(
+                f"unexpected append-only rotation status: {status or 'missing'}"
+            )
+        state = load_rebase_state(source_path)
+        batches = state.get("gzip_batches") if isinstance(state, dict) else None
+        if (
+            not isinstance(state, dict)
+            or state.get("state") != "completed"
+            or not isinstance(batches, list)
+            or not batches
+        ):
+            raise RuntimeError(
+                "append-only rotation state invalid after commit: "
+                f"{source_path.name}"
+            )
+        batch = batches[-1]
+        gz_path, _receipt_path = gzip_batch_paths(
+            source_path, str(state.get("rebase_id") or "")
+        )
+        receipts.append(
+            {
+                "source": str(source_path),
+                "rotation_id": str(state.get("rebase_id") or ""),
+                "start_offset": int(batch.get("range_start") or 0),
+                "end_offset": int(batch.get("range_end") or 0),
+                "archive": str(gz_path),
+                "archive_sha256": batch.get("gzip_sha256"),
+                "plaintext_sha256": batch.get("plaintext_sha256"),
+                "plaintext_bytes": int(batch.get("plaintext_bytes") or 0),
+                "gzip_bytes": int(batch.get("gzip_bytes") or 0),
+                "source_preserved_append_only": False,
+                "reheaded": True,
+                "actor": actor,
+            }
+        )
+
+    if requested:
+        try:
+            apply_archive_batch_retention(canonical)
+        except Exception as exc:
+            log.warning("append-only archive retention failed: %s", exc)
     return receipts
 
 

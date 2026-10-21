@@ -121,7 +121,10 @@ the freed permits.
 
 `web/core/disk_hygiene.py` runs from the FastAPI lifespan (beside the LLM
 saturator) and periodically reaps **non-authority** caches so a 40G cloud
-disk cannot return to ENOSPC. It does **not** truncate `events.jsonl`, the
+disk cannot return to ENOSPC. Publication rotation remains copy-only. The
+separate events auto-compression step may re-head `events.jsonl` only at the
+critical disk tier inside an open safe window, and only after the dropped
+prefix is committed as a digest-bound gzip batch; it never truncates the
 abandon ledger, ratings, match history, or `pipeline_state.json`.
 
 | Variable | Default | Meaning |
@@ -129,9 +132,15 @@ abandon ledger, ratings, match history, or `pipeline_state.json`.
 | `POK_DISK_HYGIENE_ENABLED` | `1` | Start the janitor loop |
 | `POK_DISK_HYGIENE_INTERVAL_SEC` | `300` | Seconds between cycles (min 30) |
 | `POK_DISK_MIN_FREE_GB` | `4` | Below this, retention tightens |
+| `POK_EVENTS_AUTO_ROTATION_ENABLED` | `1` | gzip/re-head cold `events.jsonl` at the critical tier |
+| `POK_EVENTS_REBASE_MIN_INTERVAL_SEC` | `1800` | Min seconds between re-heads (library default 21600) |
 
 A cycle emits `pipeline.disk_hygiene_done` when it actually freed bytes or
-is in pressure mode. Watch `journalctl -u pok-evolution | grep 'disk hygiene'`.
+is in pressure mode; a successful re-head emits
+`pipeline.events_auto_rotation_done`. Watch
+`journalctl -u pok-evolution | grep 'disk hygiene'` and
+`rg 'events_auto_rotation' .evolution_pok/web/core/results/events.jsonl`.
+Full design and verification: `docs/events-auto-compression-2026-10-21.md`.
 
 ### Daemon monitor (rating-daemon liveness poll)
 

@@ -12,13 +12,14 @@ Design (2026-10-21, post-review R1-R5):
   ledger floor find_abandoned_version_floor() (R3 iii), reaps only receipt-
   complete quarantine transactions strictly below the floor, older than the
   window, receipt-first, and never touches the ledger itself;
-- events rotation stays default-off, tier-gated, and imports the A-track
-  frozen signature ``autonomous_rotate_append_only_sources(*, actor, ...)``
-  with an ImportError -> skipped:"unavailable" mock posture.
+- events auto-compression stays default-off and tier-gated, and drives the
+  real A-track entry ``autonomous_rotate_append_only_sources(*, actor, ...)``;
+  an ImportError still degrades to skipped:"unavailable" as a fail-safe.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import sys
@@ -458,9 +459,13 @@ def test_rotation_unavailable_emits_skipped_event(monkeypatch, tmp_path: Path):
         "log_system_event",
         lambda name, sev, msg, data=None: events.append((name, sev, msg, data)),
     )
-    # The A-track frozen entry is not importable today (grep of
-    # evolution_infra_archive_rotation.py finds no such def) -> the step must
+    # Simulate a deployment where the A-track entry is absent: the step must
     # degrade to skipped:"unavailable" and say so via the canonical event.
+    monkeypatch.setitem(
+        sys.modules,
+        "evolution_infra_archive_rotation",
+        types.ModuleType("evolution_infra_archive_rotation"),
+    )
     report = disk_hygiene._events_auto_rotation_step(
         tmp_path, window=_window(tier="critical", rotation_tier=True)
     )
@@ -512,6 +517,56 @@ def test_rotation_success_uses_frozen_signature_and_emits_done(
     assert report["receipts"][0]["source_preserved_append_only"] is True
     done = [item for item in events if item[0] == "pipeline.events_auto_rotation_done"]
     assert done and done[0][3]["sources"][0]["end_offset"] == 128
+
+
+def test_rotation_entry_really_compresses_events(monkeypatch, tmp_path: Path):
+    """The real A-track entry must gzip and re-head, not just report a row."""
+
+    import evolution_infra
+    import evolution_infra_rotation_rebase as rebase
+
+    results = tmp_path / "results"
+    archive = results / "archive"
+    results.mkdir()
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
+    monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", archive)
+    _no_handoff(monkeypatch)
+    monkeypatch.setenv(disk_hygiene.EVENTS_ROTATION_ENV, "1")
+    monkeypatch.setenv(rebase.EVENTS_REBASE_ENABLED_ENV, "1")
+    monkeypatch.setenv(rebase.EVENTS_REBASE_MIN_COLD_BYTES_ENV, "16")
+    monkeypatch.setenv(rebase.EVENTS_REBASE_MAX_SPAN_BYTES_ENV, "2048")
+    monkeypatch.setenv(rebase.EVENTS_REBASE_MIN_INTERVAL_SEC_ENV, "0")
+    events = []
+    monkeypatch.setattr(
+        system_log,
+        "log_system_event",
+        lambda name, sev, msg, data=None: events.append((name, sev, msg, data)),
+    )
+    source = results / "events.jsonl"
+    original = b"".join(
+        json.dumps({"row": index, "pad": "x" * 60}).encode("utf-8") + b"\n"
+        for index in range(400)
+    )
+    source.write_bytes(original)
+
+    report = disk_hygiene._events_auto_rotation_step(
+        results, window=_window(tier="critical", rotation_tier=True)
+    )
+
+    assert report is not None and report["rotated"] == 1
+    receipt = report["receipts"][0]
+    assert receipt["source_preserved_append_only"] is False
+    assert receipt["reheaded"] is True
+    assert receipt["start_offset"] == 0
+    assert 0 < receipt["end_offset"] < len(original)
+    live = source.read_bytes()
+    assert live == original[receipt["end_offset"]:]
+    with gzip.open(receipt["archive"], "rb") as handle:
+        assert handle.read() == original[: receipt["end_offset"]]
+    state = rebase.load_rebase_state(source)
+    assert state is not None and state["state"] == "completed"
+    done = [item for item in events if item[0] == "pipeline.events_auto_rotation_done"]
+    assert done and done[0][3]["sources"][0]["reheaded"] is True
 
 
 # --- run_disk_hygiene wiring -------------------------------------------------
