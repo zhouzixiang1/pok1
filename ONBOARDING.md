@@ -26,7 +26,9 @@ repository-wide working contract.
 
 ## Version and evidence authority
 
-This cloud line uses the `national_cloud_v` namespace and restarts version
+This cloud line uses the `national_cloud_v` namespace (first strict
+candidate `national_cloud_v1`, representative published line
+`national_cloud_v13`) and restarts version
 numbering at 1 (`ARCHIVED_VERSION_HIGH_WATER = 0`,
 `FIRST_STRICT_POLICY_VERSION = 1`). The active high-water is parsed from
 annotated `national-cloud-bot-v*` / `national-cloud-high-water-v*` tags, never

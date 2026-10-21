@@ -228,18 +228,55 @@ class CrossLoopSemaphore:
 # children/MemAvailable/cgroup-headroom gates re-read live machine state at
 # every launch.
 
-AIMD_MIN_LIMIT = 2
-AIMD_MAX_LIMIT = 32
-AIMD_WINDOW_SEC = 300.0
-AIMD_FAILURE_THRESHOLD = 3
+def _aimd_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _aimd_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# 2026-10-21 解限流 (throttle release): every AIMD pacing constant reads its
+# env override at import time, and the DEFAULTS are the aggressive production
+# posture — no env required:
+#   * AIMD_MIN_LIMIT 2 -> 8: a storm used to unload the pool to 2 permits and
+#     the recovery crawl lasted 17-25 minutes while permits idled; the raised
+#     floor keeps the post-storm baseline at 8 (the deployed learned level of
+#     5-6 is re-floored upward at the next _aimd_load). Guard (review 必改2):
+#     the floor is clamped to GLOBAL_LLM_CONCURRENCY so exporting only
+#     POK_LLM_AIMD_MIN_LIMIT=8 over a lower static ceiling can never split
+#     the controller's floor from _aimd_load's fail-open recovery limit
+#     (4-vs-8 diverged pre-clamp).
+#   * raise intervals 300/90 -> 60/30: post-storm recovery to the static
+#     baseline takes minutes instead of tens of minutes.
+# The downshift DISCIPLINE is unchanged (供应商纪律本体, review-confirmed keep):
+# failure threshold 3 inside the 300s window, step limit - max(2, limit // 4),
+# ceiling 32. GLM 1308 quota bodies are still filtered at the reporting hook
+# (llm_query_retry) and never reach these controls; the launch-side RAM gates
+# (transport children / MemAvailable / cgroup gradient) still bound the
+# ACTUAL load, so probing toward 32 is stopped by machine state, not permits.
+AIMD_MIN_LIMIT = max(
+    1, min(_aimd_env_int("POK_LLM_AIMD_MIN_LIMIT", 8), GLOBAL_LLM_CONCURRENCY)
+)
+AIMD_MAX_LIMIT = max(AIMD_MIN_LIMIT, _aimd_env_int("POK_LLM_AIMD_MAX_LIMIT", 32))
+AIMD_WINDOW_SEC = _aimd_env_float("POK_LLM_AIMD_WINDOW_SEC", 300.0)
+AIMD_FAILURE_THRESHOLD = max(1, _aimd_env_int("POK_LLM_AIMD_FAILURE_THRESHOLD", 3))
 # Cautious probe pace above the static baseline (where 1302 storms live) and
-# a fast recovery pace below it: a storm's decrease lands the
-# limit far under the static value, and the slow probe pace made the dip
-# last ~50 minutes against a provider that historically sustains the static
-# level. Operator direction 2026-10-07: climb back faster.
-AIMD_RAISE_INTERVAL_SEC = 300.0
-AIMD_FAST_RAISE_INTERVAL_SEC = 90.0
-AIMD_RAISE_MIN_SUCCESSES = 4
+# a fast recovery pace below it: a storm's decrease lands the limit far under
+# the static value, so recovery must be quick while exploration stays spaced.
+AIMD_RAISE_INTERVAL_SEC = _aimd_env_float("POK_LLM_AIMD_RAISE_INTERVAL_SEC", 60.0)
+AIMD_FAST_RAISE_INTERVAL_SEC = _aimd_env_float(
+    "POK_LLM_AIMD_FAST_RAISE_INTERVAL_SEC", 30.0
+)
+AIMD_RAISE_MIN_SUCCESSES = max(
+    1, _aimd_env_int("POK_LLM_AIMD_RAISE_MIN_SUCCESSES", 4)
+)
 
 _AIMD_LOCK = threading.Lock()
 #: Current dynamic limit; None until first recovered from the state file.
@@ -533,7 +570,7 @@ def get_active_stream_count() -> int:
     were still in flight, the gauge showed 2. Reading the real holders
     observes the true occupancy; the drain-complete predicate
     (``active == 0``) is unchanged because capacity never drops below
-    AIMD_MIN_LIMIT (2), so ``min(capacity, holders) == 0`` exactly when
+    AIMD_MIN_LIMIT (>= 1), so ``min(capacity, holders) == 0`` exactly when
     ``holders == 0``.
 
     Returns 0 if the semaphore has never been instantiated (no LLM call has
