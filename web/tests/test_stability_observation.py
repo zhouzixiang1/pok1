@@ -144,6 +144,15 @@ def live_daemon_identity(monkeypatch):
         "_daemon_process_identity",
         lambda: "d" * 64,
     )
+    # Save the real implementation BEFORE the stub replaces it: the
+    # twenty-third exact-pin defect (v585, 2026-10-21) hid in the real body
+    # for two months precisely because every test consumed this stub.
+    monkeypatch.setattr(
+        observation,
+        "_test_original_live_publication_errors",
+        observation._live_publication_errors,
+        raising=False,
+    )
     monkeypatch.setattr(observation, "_live_publication_errors", lambda _state: [])
     monkeypatch.setattr(observation, "_daemon_heartbeat_errors", lambda: [])
     def fake_remote_refs(*args):
@@ -1724,3 +1733,74 @@ def test_frozen_row_remote_main_stays_fail_closed_when_locally_unknown(
     )
     assert projection["count"] == 0
     assert projection["status"] == "reset_required"
+
+
+def test_live_publication_proof_passes_empty_certificate_path(monkeypatch):
+    """Twenty-third exact-pin convergence defect (v585, 2026-10-21).
+
+    The certification-removal rewrite (2026-08-08) dropped the REQUIRED
+    keyword-only ``certificate_path`` argument from the stability observer's
+    ``validate_completion_tag`` call, so every execution of the real
+    ``_live_publication_errors`` raised TypeError — surfaced as
+    ``live_publication_validation_failed:TypeError`` in the cached projection,
+    count=0, wedging v585's post-publication handoff stability reproof for
+    hours.  The bug survived two months of green suites because this file's
+    autouse fixture stubs the whole function; this regression drives the REAL
+    implementation and pins the post-removal contract: native-tier rows carry
+    no certificate, so the validator must be called with the EMPTY path
+    (skipping the tag's certificate-tree checks while keeping tag/commit/
+    metadata validation)."""
+
+    import bot_artifact
+    import stability_observation as observation
+
+    captured: dict = {}
+
+    def fake_validate(path_or_token, *, expected_metadata, certificate_path):
+        captured["certificate_path"] = certificate_path
+        captured["expected_metadata"] = expected_metadata
+        return {
+            "valid": True,
+            "issues": [],
+            "identity": {"commit_oid": "a" * 40},
+        }
+
+    monkeypatch.setattr(bot_artifact, "validate_completion_tag", fake_validate)
+    frozen_evidence = {"schema_version": 1, "mode": "frozen_native_evaluation"}
+    monkeypatch.setattr(
+        observation,
+        "_generation_evidence_binding",
+        lambda version, source_v: frozen_evidence,
+    )
+    state = {
+        "observations": [
+            {
+                "version": V0,
+                "candidate_artifact_hash": f"{V0 + 2:064x}",
+                "commit_oid": "a" * 40,
+                "source_v": V0 - 1,
+                "generation_evidence": frozen_evidence,
+            }
+        ]
+    }
+
+    errors = observation._test_original_live_publication_errors(state)
+
+    assert errors == []
+    assert captured["certificate_path"] == ""
+    assert captured["expected_metadata"] == {
+        "official-candidate-hash": f"{V0 + 2:064x}",
+    }
+
+    # The validator's own verdict still flows through fail-closed.
+    monkeypatch.setattr(
+        bot_artifact,
+        "validate_completion_tag",
+        lambda *_a, **_k: {
+            "valid": False,
+            "issues": ["completion_tag_not_annotated"],
+            "identity": {"commit_oid": "a" * 40},
+        },
+    )
+    failed = observation._test_original_live_publication_errors(state)
+    assert f"v{V0}:publication_proof:completion_tag_not_annotated" in failed

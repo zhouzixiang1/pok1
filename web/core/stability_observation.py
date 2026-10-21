@@ -713,6 +713,18 @@ def _live_publication_errors(state: dict[str, Any]) -> list[str]:
             expected_metadata={
                 "official-candidate-hash": str(row["candidate_artifact_hash"]),
             },
+            # Twenty-third exact-pin convergence defect (v585, 2026-10-21):
+            # certificate_path is a REQUIRED keyword-only argument, but the
+            # 2026-08-08 certification-removal rewrite (1c146961) dropped it,
+            # so every execution of this live re-proof raised TypeError —
+            # surfaced as live_publication_validation_failed:TypeError in the
+            # cached projection, count=0, wedging v585's post-publication
+            # handoff stability reproof for hours.  The bug stayed dormant
+            # because this call only executes on the background projection
+            # refresh path.  Native-tier rows carry no certificate: the empty
+            # path skips the tag's certificate-tree checks and keeps the
+            # tag/commit/metadata validation.
+            certificate_path="",
         )
         if not validation.get("valid"):
             errors.extend(
