@@ -455,6 +455,22 @@ def _register_saturator_role() -> None:
 
 _register_saturator_role()
 
+# Disk-governance steward (2026-10-21): register the zero-tool governance
+# review role contract at runtime too, PREPENDED so the specific
+# ``^SATURATOR DISK GOVERNANCE`` pattern resolves before this file's generic
+# ``^SATURATOR(?:\s|$)`` contract (first match wins in
+# resolve_llm_role_contract). The role name keeps the ``SATURATOR`` prefix
+# deliberately: provider failures of this background role must neither arm
+# the durable availability pause (llm_query._PAUSE_PERSISTENCE_EXEMPT_
+# ROLE_PREFIXES) nor fall out of the SATURATOR timeout bucket. Both modules
+# are outside SEMANTIC_PATHS and the evaluation contract.
+try:
+    import disk_governance_steward as _disk_governance_steward
+
+    _disk_governance_steward.register_disk_governance_role()
+except Exception as _role_exc:  # never block the saturator on registration
+    log.warning("disk governance role registration failed: %s", _role_exc)
+
 
 SATURATOR_ROLE = "SATURATOR STRATEGY RESEARCH"
 
@@ -534,53 +550,148 @@ def _append_findings_record(record: dict) -> None:
         f.write(_json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _claim_governance_dispatch(results_dir) -> "dict | None":
+    """Claim the pending disk-governance review for THIS fill (explicit priority).
+
+    Returns the dispatch spec (request id, role, producer, prompt, log file,
+    zero tools) or None. The code-study job rotation stays modulo
+    (``saturator_job_for``); a dispatchable governance request preempts the
+    rotation for THIS fill only (review correction, 2026-10-21: the design's
+    "the next fill consumes the request" was really modulo-rotation latency
+    of ~30-60 min; this seam makes the priority exact while every saturator
+    gate — permits, RAM, cgroup, quota pacing, preemption — still applies).
+
+    Registry note: the governance dispatch deliberately shares
+    ``_one_saturator_session``'s already-registered provider call point —
+    no NEW ``run_claude_query``/``render_llm_prompt`` call site is created
+    (test_llm_role_contract_registry pins the human-reviewed provider-call
+    inventory; a 22nd site would need a registry change outside this
+    module's ownership).
+    """
+    try:
+        import disk_governance_steward as _dgs
+
+        if not _dgs.has_dispatchable_request(results_dir):
+            return None
+        claim = _dgs.claim_dispatch_slot(results_dir)
+        if claim is None:
+            return None
+        request = claim["request"]
+        log_dir = _dgs.governance_dir(results_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "request_id": str(request["request_id"]),
+            "role": _dgs.ROLE_NAME,
+            "producer": _dgs._disk_governance_producer,
+            "prompt": _dgs.build_review_prompt(request.get("packet") or {}),
+            "tools": [],  # zero-tool contract — the reviewer only answers
+            "read_dirs": None,
+            "log_file": log_dir / f"session_{int(time.time()):010d}.txt",
+        }
+    except Exception as e:
+        log.warning("disk governance dispatch claim failed: %s", e)
+        return None
+
+
 async def _one_saturator_session(session_id: int) -> dict:
-    """Run one bounded packet. Returns a small result summary."""
+    """Run one bounded packet. Returns a small result summary.
+
+    One provider call point serves BOTH packet families: the modulo-rotated
+    code-study jobs (Read tools, findings.jsonl consumption loop) and the
+    explicitly-prioritized zero-tool disk-governance review (no findings
+    write — governance output is process metadata, never Master evidence).
+    """
     from llm_query import run_claude_query, render_llm_prompt
     from tool_helpers import ToolUI
     from evolution_infra import RESULTS_DIR
 
-    job = saturator_job_for(
-        session_id,
-        abandon_reason=_latest_abandon_reason_for_prompt() or None,
-    )
-    bots = _saturator_bots(session_id, limit=int(job["bot_limit"]))
-    focus = bots[0] if bots else None
-    prompt = str(job["prompt"])
-    if bots:
-        listing = "\n".join(f"  - {b.resolve()}" for b in bots)
-        prompt = (
-            prompt
-            + f"\n\nJob: {job['name']}\n"
-            + f"FOCUS bot: {focus.resolve()}\n"
-            + f"Bot directories ({len(bots)}):\n{listing}\n"
+    governance = _claim_governance_dispatch(RESULTS_DIR)
+    if governance is not None:
+        job_name = "disk_governance"
+        role = governance["role"]
+        producer = governance["producer"]
+        prompt = governance["prompt"]
+        tools = governance["tools"]
+        read_dirs = governance["read_dirs"]
+        log_file = governance["log_file"]
+        focus = None
+        bots: "list[Path]" = []
+    else:
+        job = saturator_job_for(
+            session_id,
+            abandon_reason=_latest_abandon_reason_for_prompt() or None,
         )
-    read_dirs = _saturator_read_dirs(bots)
+        job_name = str(job["name"])
+        bots = _saturator_bots(session_id, limit=int(job["bot_limit"]))
+        focus = bots[0] if bots else None
+        prompt = str(job["prompt"])
+        if bots:
+            listing = "\n".join(f"  - {b.resolve()}" for b in bots)
+            prompt = (
+                prompt
+                + f"\n\nJob: {job['name']}\n"
+                + f"FOCUS bot: {focus.resolve()}\n"
+                + f"Bot directories ({len(bots)}):\n{listing}\n"
+            )
+        read_dirs = _saturator_read_dirs(bots)
+        role = SATURATOR_ROLE
+        producer = _saturator_producer
+        tools = ["Read"]  # match the contract's allowed Read tool set
+        log_dir = Path(RESULTS_DIR) / "saturator"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"session_{session_id:05d}.txt"
     # No context_files (contract forbids them): the agent Reads policy.py etc.
     # itself via the Read tool across multiple turns (context compounds).
     context_files = []
     ui = ToolUI()
-    log_dir = Path(RESULTS_DIR) / "saturator"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"session_{session_id:05d}.txt"
     t0 = time.time()
     try:
         rendered = render_llm_prompt(
-            SATURATOR_ROLE,
-            producer=_saturator_producer,
+            role,
+            producer=producer,
             renderer_inputs={"prompt": prompt},
         )
         output, _cost, usage = await run_claude_query(
             rendered,
             context_files,
             ui,
-            SATURATOR_ROLE,
+            role,
             str(log_file),
-            tools=["Read"],  # match the contract's allowed Read tool set
+            tools=tools,
             allowed_read_dirs=read_dirs,
         )
         out_len = len(output or "")
         tokens = _usage_tokens(usage)
+        if governance is not None:
+            # Zero-tool review consumption: validated whitelist
+            # recommendation sidecar or bounded discard — never findings.
+            try:
+                import disk_governance_steward as _dgs
+
+                outcome = _dgs.record_review_output(
+                    RESULTS_DIR, governance["request_id"], output or ""
+                )
+            except Exception as e:
+                outcome = {"ok": False, "class": f"error:{e}"}
+            if outcome.get("ok"):
+                log.info(
+                    "disk governance review %s recorded action=%s in %.0fs",
+                    governance["request_id"][:8], outcome.get("action"),
+                    time.time() - t0,
+                )
+            else:
+                log.warning(
+                    "disk governance review %s discarded (%s)",
+                    governance["request_id"][:8], outcome.get("class"),
+                )
+            return {
+                "session": session_id,
+                "job": job_name,
+                "ok": True,
+                "request_id": governance["request_id"],
+                "recorded": bool(outcome.get("ok")),
+                "class": outcome.get("class"),
+            }
         log.info(
             "saturator session %d job=%s done: %d chars, %d tokens in %.0fs (focus=%s, bots=%d)",
             session_id, job["name"], out_len, tokens, time.time() - t0,
@@ -612,9 +723,20 @@ async def _one_saturator_session(session_id: int) -> dict:
                 log.warning("saturator findings append failed: %s", e)
         return {
             "session": session_id, "chars": out_len,
-            "tokens": tokens, "ok": True,
+            "tokens": tokens, "ok": True, "job": job_name,
         }
     except Exception as e:
+        if governance is not None:
+            # Provider/timeout failure of the claimed review: provider-class
+            # errors never consume the attempt budget (steward classifies).
+            try:
+                import disk_governance_steward as _dgs
+
+                _dgs.note_dispatch_outcome(
+                    RESULTS_DIR, governance["request_id"], error=e
+                )
+            except Exception:
+                pass
         _log_session_failure(session_id, e)
         _note_saturator_provider_failure(e)
         return {"session": session_id, "ok": False, "error": str(e)[:200]}
@@ -1424,6 +1546,16 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 _housekeep_session_files(
                     Path(RESULTS_DIR) / "saturator"
                 )
+                # Disk-governance steward tick (2026-10-21): the deterministic
+                # half of the governance loop (observe → maybe request →
+                # execute awaiting whitelist recommendation). Runs off the
+                # event loop like the janitor; failures never kill the loop.
+                try:
+                    import disk_governance_steward as _dgs
+
+                    await asyncio.to_thread(_dgs.run_steward_tick, RESULTS_DIR)
+                except Exception as exc:
+                    log.warning("disk governance steward tick failed: %s", exc)
             try:
                 from llm_concurrency import GLOBAL_LLM_CONCURRENCY, get_capacity
 

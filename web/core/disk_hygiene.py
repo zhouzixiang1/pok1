@@ -35,6 +35,38 @@ Two bounded-retention additions (T7, 2026-10-15):
   receipt is written before the ledger rewrite; a crash between the two
   only duplicates receipt accounting, never loses a row.
 
+Governance additions (2026-10-21, post-review R1-R5):
+
+- **Janitor safe window** (``janitor_safe_window``): the single testable
+  predicate gating the destructive governance steps. A: no active/blocked
+  post-publication handoff claim. B: generation-gap or pre-Master stage
+  (``selected``/``prepared``/``crossover_running``/``direction_audited``),
+  never an unparseable checkpoint, never with a live-ahead draft slot. C:
+  disk-pressure tiers (normal/tight/critical) that only *widen* which steps
+  may run — A/B always dominate; closed means closed.
+- **Identity keep knob** ``POK_EVALUATION_IDENTITY_KEEP_SNAPSHOTS`` (G1
+  pattern): tightens the retention window at the janitor call site without
+  touching ``evaluation_identity_retention`` (its library default stays 20).
+- **Retired-identity purge**: physically removes staged
+  ``archive/evaluation_identity_retired/`` snapshots that a retention
+  receipt moved at least ``POK_IDENTITY_RETIRED_PURGE_AFTER_DAYS`` (7) days
+  ago and that a freshly re-run
+  ``live_evaluation_identity_references`` proves still unreferenced.
+  Fail-closed on ANY reference-check exception; receipt-first via a
+  self-digesting ``evaluation_identity_retired_purged`` receipt.
+  ``retention_receipts/`` is never touched.
+- **Aged abandon-transaction reap**: removes
+  ``policy_epoch_abandon_transactions/<64hex>/`` trees only when the
+  receipt proves ``checkpoint_cleared`` + ``candidate_state == quarantine``,
+  the claimed ``next_v`` is strictly below
+  ``max(live next_v, published high-water, find_abandoned_version_floor())``
+  and the tree is older than ``POK_ABANDON_TXN_RETENTION_DAYS`` (30). Skips
+  the whole round while ``policy_epoch_reconciliation_claim.json`` exists
+  (an active claim re-proves those claim bytes byte-for-byte). Receipt-first
+  into ``reaped_abandon_transactions.jsonl``; the abandon ledger itself is
+  never read-for-write here and version re-allocation keeps reading the
+  ledger (``abandoned_version_attempt_count``), not these directories.
+
 It runs from the app lifespan beside the LLM saturator so it keeps working
 even when the orchestrator is mid-call. Failures are logged and swallowed.
 """
@@ -81,8 +113,11 @@ _PROTECTED_RESULT_NAMES = frozenset({
     "llm_availability_pause.json",
     "generation_cost_pending.json",
     "reaped_generation_trees.jsonl",
+    "reaped_replays.jsonl",
+    "reaped_abandon_transactions.jsonl",
     "policy_epoch_reset_receipt.json",
     "policy_epoch_reconciliation_receipt.json",
+    "policy_epoch_reconciliation_claim.json",
 })
 
 DEFAULT_MIN_FREE_BYTES = 4 * 1024 * 1024 * 1024
@@ -115,6 +150,50 @@ REAPED_TREES_LEDGER_NAME = "reaped_generation_trees.jsonl"
 # the library default; unset forwards the library default explicitly so the
 # compaction receipt always records the effective window.
 CANDIDATE_LEDGER_KEEP_VERSIONS_ENV = "POK_CANDIDATE_LEDGER_KEEP_VERSIONS"
+
+# --- Governance (2026-10-21) -------------------------------------------------
+# Disk-pressure tiers for the janitor safe window. ``tight`` (< 6 GiB free)
+# enables the retired-identity purge and abandon-transaction reap at their
+# default windows; ``critical`` (< POK_DISK_MIN_FREE_GB, default 4 GiB, the
+# same threshold the loop already uses for retention pressure) tightens them
+# (retired 1 day / transactions 7 days) and caps the identity keep window at
+# 4. Tiers only widen what may run; the A/B window rules always dominate.
+DEFAULT_DISK_TIGHT_FREE_GB = 6.0
+DISK_TIGHT_FREE_GB_ENV = "POK_DISK_TIGHT_FREE_GB"
+
+# G1-pattern knob for the evaluation-identity retention window: identical in
+# spirit to POK_CANDIDATE_LEDGER_KEEP_VERSIONS — the janitor call site
+# tightens the window without touching evaluation_identity_retention (the
+# library default KEEP_RECENT_SNAPSHOTS = 20 stays authoritative for every
+# other caller). Values < 1 clamp to 1; unparsable values fall back to the
+# library default.
+IDENTITY_KEEP_ENV = "POK_EVALUATION_IDENTITY_KEEP_SNAPSHOTS"
+IDENTITY_KEEP_CRITICAL_CAP = 4
+
+# Retired-identity purge + abandon-transaction reap windows (days).
+RETIRED_PURGE_DAYS_ENV = "POK_IDENTITY_RETIRED_PURGE_AFTER_DAYS"
+DEFAULT_RETIRED_PURGE_DAYS = 7.0
+RETIRED_PURGE_CRITICAL_DAYS = 1.0
+ABANDON_TXN_DAYS_ENV = "POK_ABANDON_TXN_RETENTION_DAYS"
+DEFAULT_ABANDON_TXN_DAYS = 30.0
+ABANDON_TXN_CRITICAL_DAYS = 7.0
+
+# Events auto-rotation (A-track entry, frozen signature): default OFF so the
+# production step is inert until the operator explicitly enables it AND the
+# disk tier is critical AND the safe window is open.
+EVENTS_ROTATION_ENV = "POK_EVENTS_AUTO_ROTATION_ENABLED"
+EVENTS_ROTATION_ACTOR = "disk_hygiene_janitor"
+
+# Receipt ledgers for the governance steps (receipt-first deletions).
+REAPED_ABANDON_TXN_LEDGER_NAME = "reaped_abandon_transactions.jsonl"
+
+# Pre-Master checkpoint stages at which no strict-invocation / consumer-gate
+# evidence is being produced and a generation may be safely quiesced. Mirrors
+# STAGE_ORDER in pipeline_state.py (keep in sync when stages change):
+# ``preparing`` (materializing) and ``master_planned`` onwards are excluded.
+JANITOR_OPEN_STAGES = frozenset(
+    {"selected", "prepared", "crossover_running", "direction_audited"}
+)
 
 
 def _env_flag(name: str, default: str = "1") -> bool:
@@ -592,6 +671,214 @@ def _candidate_ledger_keep_versions() -> int:
     return max(1, window)
 
 
+def _env_gib(name: str, default_gb: float) -> int:
+    """Parse a GiB-denominated env threshold the way the hygiene loop does."""
+    try:
+        value = float(os.environ.get(name, str(default_gb)))
+    except (TypeError, ValueError):
+        value = default_gb
+    return int(max(0.5, value) * 1024 * 1024 * 1024)
+
+
+def _identity_keep_snapshots() -> int:
+    """Resolve the janitor's identity-snapshot window from the environment.
+
+    G1 pattern (mirrors ``_candidate_ledger_keep_versions``): the knob lives
+    at the janitor call site, the library default
+    (``evaluation_identity_retention.KEEP_RECENT_SNAPSHOTS`` = 20) stays
+    authoritative for the migration writer. Values < 1 clamp to 1; unparsable
+    or unset values fall back to the library default.
+    """
+    try:
+        from evaluation_identity_retention import KEEP_RECENT_SNAPSHOTS
+    except Exception:  # pragma: no cover - import guard mirrors the step
+        KEEP_RECENT_SNAPSHOTS = 20
+    raw = os.environ.get(IDENTITY_KEEP_ENV)
+    if raw is None or not str(raw).strip():
+        return int(KEEP_RECENT_SNAPSHOTS)
+    try:
+        keep = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return int(KEEP_RECENT_SNAPSHOTS)
+    return max(1, keep)
+
+
+# Sentinel distinguishing "caller did not pass free_bytes" (measure it) from
+# an explicit None ("unmeasurable" -> tier unknown, never a destructive tier).
+_UNMEASURED: Any = object()
+
+
+def janitor_safe_window(
+    results_dir: Path,
+    *,
+    published: set[int] | None = None,
+    free_bytes: Any = _UNMEASURED,
+    tight_free_bytes: int | None = None,
+    critical_free_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Decide whether the destructive governance steps may run this cycle.
+
+    One independently testable predicate (the operator's safe-window rule):
+
+    A. **No active handoff claim.** ``pending_handoff_route()["status"]``
+       must be ``"none"``. ``"pending"`` (including running / awaiting
+       takeover) and ``"blocked"`` (unreadable = unprovable) both close the
+       window — fail closed, mirroring the discover posture.
+    B. **Stage gate.** A missing primary checkpoint (generation gap) opens
+       the window. A parseable checkpoint opens it only at
+       {selected, prepared, crossover_running, direction_audited}
+       (JANITOR_OPEN_STAGES; ``preparing`` is materializing, ``master_planned``
+       onwards means active LLM / strict-log / consumer gates). An
+       unparseable-but-present checkpoint closes it (same fail-closed posture
+       as ``_orphan_reference_versions``). Any live-ahead draft slot
+       (``_live_draft_slot_names``) — or any unparseable draft checkpoint —
+       closes it: a draft behind the promotion barrier can publish and freeze
+       rotation plans without passing ``direction_audited`` again.
+    C. **Disk-pressure tier.** normal (>= POK_DISK_TIGHT_FREE_GB, default
+       6 GiB) / tight (< 6 GiB) / critical (< POK_DISK_MIN_FREE_GB, default
+       4 GiB — the loop's existing pressure threshold). Tight enables the
+       retired purge (7 d) and transaction reap (30 d); critical tightens
+       them (1 d / 7 d), caps identity keep at 4 and is the only tier where
+       events auto-rotation may run (still behind its own env flag).
+       Unmeasurable free space maps to ``"unknown"`` and never unlocks a
+       destructive tier (same posture as the pressure flag).
+
+    A/B always dominate: with any closed reason the window is closed at
+    every tier — tiers only widen what may run, they never weaken A/B.
+    """
+    results_dir = Path(results_dir)
+    closed: list[str] = []
+
+    # A — active post-publication handoff.
+    try:
+        from post_publication_handoff import pending_handoff_route
+
+        handoff_status = str(pending_handoff_route().get("status") or "")
+    except Exception:
+        handoff_status = "blocked"
+    if handoff_status != "none":
+        closed.append(f"handoff_{handoff_status or 'unknown'}")
+
+    # B — stage gate.
+    primary = results_dir / "pipeline_state.json"
+    payload: dict[str, Any] | None = None
+    if primary.exists():
+        payload = _load_json(primary)
+        if payload is None:
+            closed.append("primary_checkpoint_unreadable")
+        else:
+            stage = str(payload.get("stage") or "")
+            if stage not in JANITOR_OPEN_STAGES:
+                closed.append(f"stage_{stage or 'unknown'}")
+    published_set = set(published or set())
+    if payload:
+        binding = payload.get("epoch_binding")
+        if isinstance(binding, dict):
+            try:
+                binding_high = int(binding.get("published_high_water") or 0)
+            except (TypeError, ValueError):
+                binding_high = 0
+            if binding_high > 0:
+                published_set.add(binding_high)
+    if _live_draft_slot_names(results_dir, published_set):
+        closed.append("live_ahead_draft")
+    for draft_path in results_dir.glob("pipeline_state_draft*.json"):
+        if draft_path.name.endswith(".lock"):
+            continue
+        if _load_json(draft_path) is None:
+            closed.append("draft_checkpoint_unreadable")
+            break
+
+    # C — disk-pressure tier.
+    if free_bytes is _UNMEASURED:
+        free_bytes = disk_free_bytes(results_dir)
+    tight = (
+        _env_gib(DISK_TIGHT_FREE_GB_ENV, DEFAULT_DISK_TIGHT_FREE_GB)
+        if tight_free_bytes is None
+        else int(tight_free_bytes)
+    )
+    critical = (
+        _env_gib("POK_DISK_MIN_FREE_GB", 4.0)
+        if critical_free_bytes is None
+        else int(critical_free_bytes)
+    )
+    if free_bytes is None:
+        tier = "unknown"
+    elif int(free_bytes) < critical:
+        tier = "critical"
+    elif int(free_bytes) < tight:
+        tier = "tight"
+    else:
+        tier = "normal"
+
+    eligible = tier in ("tight", "critical")
+    return {
+        "open": not closed,
+        "closed_reasons": closed,
+        "tier": tier,
+        "free_bytes": free_bytes,
+        "retired_purge_days": (
+            (
+                RETIRED_PURGE_CRITICAL_DAYS
+                if tier == "critical"
+                else _env_float(RETIRED_PURGE_DAYS_ENV, DEFAULT_RETIRED_PURGE_DAYS)
+            )
+            if eligible
+            else None
+        ),
+        "abandon_txn_days": (
+            (
+                ABANDON_TXN_CRITICAL_DAYS
+                if tier == "critical"
+                else _env_float(ABANDON_TXN_DAYS_ENV, DEFAULT_ABANDON_TXN_DAYS)
+            )
+            if eligible
+            else None
+        ),
+        "identity_keep_cap": (
+            IDENTITY_KEEP_CRITICAL_CAP if tier == "critical" else None
+        ),
+        "events_rotation_tier_allowed": tier == "critical",
+    }
+
+
+def _emit_governance_event(
+    event_type: str, severity: str, message: str, data: dict[str, Any]
+) -> None:
+    try:
+        from system_log import log_system_event
+
+        log_system_event(event_type, severity, message, data)
+    except Exception:  # pragma: no cover - event emission is best-effort
+        pass
+
+
+def _append_locked_jsonl_receipt(
+    results_dir: Path, ledger_name: str, row: dict[str, Any]
+) -> None:
+    """Durably append one governance receipt row under the sidecar lock."""
+    path = Path(results_dir) / ledger_name
+    payload = json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n"
+    try:
+        from evolution_infra import locked_file
+    except Exception:
+        locked_file = None
+    handle: Any
+    try:
+        if locked_file is not None:
+            with locked_file(path, "a+", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+    except OSError as exc:
+        raise RuntimeError(f"{ledger_name} receipt append failed: {exc}") from exc
+
+
 def _compact_candidate_ledger_step(results_dir: Path) -> dict[str, Any] | None:
     """Run the sidecar-locked candidates-ledger retention window (T3 wiring).
 
@@ -619,7 +906,9 @@ def _compact_candidate_ledger_step(results_dir: Path) -> dict[str, Any] | None:
         return None
 
 
-def _evaluation_identity_retention_step(results_dir: Path) -> dict[str, Any] | None:
+def _evaluation_identity_retention_step(
+    results_dir: Path, *, window: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     """T6 wiring on a non-identity carrier: keep the newest identity snapshots.
 
     ``evaluation_data_identity.py`` and ``elo_daemon.py`` both sit inside the
@@ -628,9 +917,19 @@ def _evaluation_identity_retention_step(results_dir: Path) -> dict[str, Any] | N
     exclusive cycle + manifest locks the migration writer holds. A lock-free
     pre-check skips the pass entirely while the archive is within budget, so
     the steady-state janitor cycle never touches those locks.
-    """
-    from evaluation_identity_retention import KEEP_RECENT_SNAPSHOTS
 
+    The window comes from ``POK_EVALUATION_IDENTITY_KEEP_SNAPSHOTS`` (G1,
+    2026-10-21): clamp >= 1, unparsable/unset -> library default 20, never
+    touching ``evaluation_identity_retention`` itself. The critical disk tier
+    additionally caps the effective keep at
+    ``IDENTITY_KEEP_CRITICAL_CAP`` (4).
+    """
+    from evaluation_identity_retention import KEEP_RECENT_SNAPSHOTS  # noqa: F401
+
+    keep = _identity_keep_snapshots()
+    cap = (window or {}).get("identity_keep_cap")
+    if cap:
+        keep = min(keep, int(cap))
     archive_dir = results_dir / "archive" / "evaluation_identity"
     if not archive_dir.is_dir():
         return None
@@ -642,7 +941,7 @@ def _evaluation_identity_retention_step(results_dir: Path) -> dict[str, Any] | N
         ]
     except OSError:
         return None
-    if len(snapshots) <= KEEP_RECENT_SNAPSHOTS:
+    if len(snapshots) <= keep:
         return None
     try:
         from evaluation_bundle import evaluation_cycle_lock
@@ -656,35 +955,411 @@ def _evaluation_identity_retention_step(results_dir: Path) -> dict[str, Any] | N
             results_dir
         ):
             return run_evaluation_identity_retention(
-                results_dir, triggered_by="disk_hygiene_janitor"
+                results_dir,
+                triggered_by="disk_hygiene_janitor",
+                keep=keep,
             )
     except Exception as exc:
         log.warning("evaluation identity retention failed: %s", exc)
         return None
 
 
+def _purge_retired_identity_snapshots(
+    results_dir: Path, *, window: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Physically purge aged retired evaluation-identity snapshots.
+
+    The retirement staging area (``archive/evaluation_identity_retired/``)
+    is operator-purgeable by design (its module docstring says so); this
+    automates that purge under four conditions, all of which must hold:
+
+    - the janitor safe window is open and the disk tier is tight/critical
+      (the window's ``retired_purge_days`` carries the effective age, 7 d
+      tight / 1 d critical);
+    - the snapshot directory matches ``SNAPSHOT_NAME_RE`` AND appears in the
+      ``moved[]`` list of a retention receipt whose ``created_at`` is older
+      than the window (a receipt that cannot be read protects the entry by
+      omission);
+    - a freshly re-run ``live_evaluation_identity_references`` proves its
+      archived ``manifest_digest`` is still unreferenced. ANY exception from
+      that check fails the WHOLE round closed (review R2: never catch broad
+      and continue with an empty reference set — that would delete a
+      still-referenced snapshot);
+    - receipt-first: one self-digesting ``evaluation_identity_retired_purged``
+      receipt (name/bytes/manifest digest/source receipt digest) is durably
+      written before the first ``rmtree``; a receipt failure keeps everything.
+
+    ``retention_receipts/`` itself is never purged (it never matches
+    ``SNAPSHOT_NAME_RE`` and is skipped explicitly).
+    """
+    if not window.get("open"):
+        return {"skipped": "window_closed"}
+    days = window.get("retired_purge_days")
+    if days is None:
+        return {"skipped": "tier_not_eligible"}
+    retired = results_dir / "archive" / "evaluation_identity_retired"
+    if not retired.is_dir() or retired.is_symlink():
+        return None
+    try:
+        from evaluation_identity_retention import (
+            RECEIPTS_DIRNAME,
+            SNAPSHOT_NAME_RE,
+            _snapshot_manifest_digest,
+            _write_receipt,
+            live_evaluation_identity_references,
+        )
+    except Exception as exc:  # pragma: no cover - import guard
+        log.warning("retired identity purge unavailable: %s", exc)
+        return {"skipped": f"import_failed:{type(exc).__name__}"}
+
+    receipts_dir = retired / RECEIPTS_DIRNAME
+    moved_at: dict[str, tuple[float, str, str]] = {}
+    if receipts_dir.is_dir() and not receipts_dir.is_symlink():
+        try:
+            receipt_files = sorted(receipts_dir.iterdir())
+        except OSError:
+            receipt_files = []
+        for receipt_path in receipt_files:
+            try:
+                if (
+                    not receipt_path.is_file()
+                    or receipt_path.is_symlink()
+                    or receipt_path.suffix != ".json"
+                ):
+                    continue
+            except OSError:
+                continue
+            body = _load_json(receipt_path)
+            if not body:
+                continue
+            created = _as_float(body.get("created_at"))
+            if created <= 0:
+                continue
+            for item in body.get("moved") or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                if not SNAPSHOT_NAME_RE.fullmatch(name):
+                    continue
+                previous = moved_at.get(name)
+                if previous is None or created > previous[0]:
+                    moved_at[name] = (
+                        created,
+                        str(body.get("receipt_digest") or ""),
+                        receipt_path.name,
+                    )
+
+    # R2 fail-closed: an unreadable live reference surface aborts the whole
+    # round — it may be the one file that pins a still-live identity.
+    try:
+        live_references = live_evaluation_identity_references(results_dir)
+    except Exception as exc:
+        log.warning(
+            "retired identity purge skipped (live reference check failed): %s",
+            exc,
+        )
+        return {"skipped": f"live_reference_check_failed:{type(exc).__name__}"}
+
+    cutoff = time.time() - float(days) * 24.0 * 3600.0
+    targets: list[tuple[Path, str | None, tuple[float, str, str], int]] = []
+    try:
+        entries = sorted(retired.iterdir())
+    except OSError:
+        return {"purged": [], "bytes_freed": 0}
+    for entry in entries:
+        if entry.name == RECEIPTS_DIRNAME:
+            continue
+        if not SNAPSHOT_NAME_RE.fullmatch(entry.name):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+        except OSError:
+            continue
+        record = moved_at.get(entry.name)
+        if record is None:
+            continue  # never proven moved by a retention receipt
+        created, _source_digest, _source_name = record
+        if created > cutoff:
+            continue  # staged too recently
+        try:
+            digest = _snapshot_manifest_digest(entry)
+        except Exception:
+            continue  # unreadable archived manifest protects the snapshot
+        if digest is None or digest in live_references:
+            continue  # unprovable or still live-referenced
+        targets.append((entry, digest, record, _path_size(entry)))
+    if not targets:
+        return {"purged": [], "bytes_freed": 0}
+
+    receipt = {
+        "schema_version": 1,
+        "kind": "evaluation_identity_retired_purged",
+        "created_at": time.time(),
+        "triggered_by": "disk_hygiene_janitor",
+        "retention_days": float(days),
+        "results_dir": str(results_dir),
+        "purged": [
+            {
+                "name": entry.name,
+                "manifest_digest": digest,
+                "bytes": size,
+                "moved_by_receipt": {
+                    "name": record[2],
+                    "receipt_digest": record[1],
+                    "created_at": record[0],
+                },
+            }
+            for entry, digest, record, size in targets
+        ],
+        "bytes_total": sum(size for _e, _d, _r, size in targets),
+        "live_reference_count": len(live_references),
+    }
+    try:
+        _write_receipt(receipts_dir, receipt)
+    except Exception as exc:
+        log.warning(
+            "retired identity purge kept everything (receipt failed): %s", exc
+        )
+        return {"skipped": f"receipt_failed:{type(exc).__name__}"}
+
+    freed = 0
+    purged: list[str] = []
+    for entry, _digest, _record, _size in targets:
+        gone = _rm(entry)
+        if gone:
+            purged.append(entry.name)
+            freed += gone
+    return {
+        "purged": purged,
+        "bytes_freed": freed,
+        "receipt_kind": "evaluation_identity_retired_purged",
+    }
+
+
+def _reap_aged_abandon_transactions(
+    results_dir: Path, *, window: dict[str, Any], published_high: int = 0
+) -> dict[str, Any] | None:
+    """Reap receipt-complete, aged abandon transaction quarantine trees.
+
+    ``policy_epoch_abandon_transactions/<64hex>/`` directories hold the
+    quarantined candidate + claim/receipt of publication-linearized
+    abandons. They are safe to remove only when ALL of these hold:
+
+    - the janitor safe window is open and the tier is tight/critical, with
+      the window's ``abandon_txn_days`` (30 d tight / 7 d critical);
+    - no ``policy_epoch_reconciliation_claim.json`` exists (review R3 ii):
+      an active epoch-reconciliation claim re-proves transaction claim
+      bytes byte-for-byte, and a crash between receipt-write and claim-clear
+      leaves exactly a receipt-complete transaction under a live claim;
+    - ``receipt.json`` proves ``checkpoint_cleared is True`` and
+      ``candidate_state == "quarantine"`` (transactions in ``absent`` /
+      ``source`` states are NEVER reaped — deliberate conservatism, R3 iv);
+    - the claim's ``checkpoint.next_v`` is strictly below
+      ``max(live next_v, published high-water, find_abandoned_version_floor())``
+      — the version label is fully re-allocatable via the ledger, whose
+      attempt counter (``abandoned_version_attempt_count``) reads the
+      ledger rows, not these directories (verified read-only);
+    - the tree is older than the window (max of directory and receipt
+      mtimes).
+
+    Known cost (R3 i, accepted): ``_finalized_canonical_abandon``
+    (bootstrap_contract_recovery_historical.py) scans every transaction
+    directory to re-prove a vanished checkpoint as a completed abandon;
+    after a purge that workflow's recovery is permanently unprovable. The
+    30-day default dwarfs the 4-hour cycle timeout, and the durable abandon
+    ledger row (never touched here) remains the canonical record.
+
+    Receipt-first: each reap appends to ``reaped_abandon_transactions.jsonl``
+    before the ``rmtree``; a ledger-append failure keeps the tree. An
+    unreadable floor input (primary checkpoint, ledger floor) skips the
+    whole round — fail closed, mirroring ``_orphan_reference_versions``.
+    """
+    if not window.get("open"):
+        return {"skipped": "window_closed"}
+    days = window.get("abandon_txn_days")
+    if days is None:
+        return {"skipped": "tier_not_eligible"}
+    if (results_dir / "policy_epoch_reconciliation_claim.json").exists():
+        return {"skipped": "reconciliation_claim_active"}
+    root = results_dir / "policy_epoch_abandon_transactions"
+    if not root.is_dir() or root.is_symlink():
+        return None
+
+    live_next = 0
+    binding_high = 0
+    primary = results_dir / "pipeline_state.json"
+    if primary.exists():
+        payload = _load_json(primary)
+        if payload is None:
+            return {"skipped": "primary_checkpoint_unreadable"}
+        try:
+            live_next = int(payload.get("next_v") or 0)
+        except (TypeError, ValueError):
+            live_next = 0
+        binding = payload.get("epoch_binding")
+        if isinstance(binding, dict):
+            try:
+                binding_high = int(binding.get("published_high_water") or 0)
+            except (TypeError, ValueError):
+                binding_high = 0
+    try:
+        from abandoned_version_ledger import find_abandoned_version_floor
+
+        ledger_floor = int(find_abandoned_version_floor())
+    except Exception as exc:
+        log.warning(
+            "abandon transaction reap skipped (floor unreadable): %s", exc
+        )
+        return {"skipped": f"abandon_floor_unreadable:{type(exc).__name__}"}
+    floor = max(live_next, binding_high, int(published_high or 0), ledger_floor)
+
+    min_age_sec = float(days) * 24.0 * 3600.0
+    now = time.time()
+    reaped = 0
+    freed = 0
+    try:
+        transaction_dirs = sorted(root.iterdir())
+    except OSError:
+        return {"reaped": 0, "bytes_freed": 0, "floor": floor}
+    for transaction in transaction_dirs:
+        name = transaction.name
+        if not re.fullmatch(r"[0-9a-f]{64}", name):
+            continue
+        claim = _load_json(transaction / "claim.json")
+        receipt = _load_json(transaction / "receipt.json")
+        if not claim or not receipt:
+            continue  # no-receipt / no-claim transactions are never reaped
+        checkpoint = claim.get("checkpoint")
+        try:
+            next_v = (
+                int(checkpoint.get("next_v") or 0)
+                if isinstance(checkpoint, dict)
+                else 0
+            )
+        except (TypeError, ValueError):
+            next_v = 0
+        if next_v <= 0 or next_v >= floor:
+            continue
+        if receipt.get("checkpoint_cleared") is not True:
+            continue
+        if receipt.get("candidate_state") != "quarantine":
+            continue
+        try:
+            age = now - max(
+                transaction.stat().st_mtime,
+                (transaction / "receipt.json").stat().st_mtime,
+            )
+        except OSError:
+            continue
+        if age < min_age_sec:
+            continue
+        size = _path_size(transaction)
+        try:
+            _append_locked_jsonl_receipt(
+                results_dir,
+                REAPED_ABANDON_TXN_LEDGER_NAME,
+                {
+                    "schema_version": 1,
+                    "kind": "abandon_transaction_reaped",
+                    "reaped_at": now,
+                    "transaction_id": name,
+                    "next_v": next_v,
+                    "candidate_state": "quarantine",
+                    "checkpoint_cleared": True,
+                    "claim_digest": claim.get("claim_digest"),
+                    "receipt_digest": receipt.get("receipt_digest"),
+                    "age_sec": round(age, 3),
+                    "floor": floor,
+                    "retention_days": float(days),
+                    "bytes_freed": size,
+                },
+            )
+        except Exception as exc:
+            log.warning(
+                "abandon transaction %s kept (receipt failed): %s", name, exc
+            )
+            continue
+        gone = _rm(transaction)
+        if gone:
+            reaped += 1
+            freed += gone
+    return {"reaped": reaped, "bytes_freed": freed, "floor": floor}
+
+
+def _events_auto_rotation_step(
+    results_dir: Path, *, window: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Copy-only events auto-rotation behind the A-track frozen signature.
+
+    Calls ``autonomous_rotate_append_only_sources(*, actor, sources=None,
+    max_batch_bytes=None) -> list[dict]`` from
+    ``evolution_infra_archive_rotation`` (A-track-owned module; never edited
+    here). Gating: ``POK_EVENTS_AUTO_ROTATION_ENABLED`` (default 0 — the
+    production step is inert until the operator flips it), the safe window
+    open, and the critical disk tier. A missing entry (ImportError) is the
+    designed mock posture — skipped:"unavailable" plus a
+    ``pipeline.events_auto_rotation_skipped`` event, never an error. The
+    rotation itself is copy-only by contract
+    (``source_preserved_append_only``); live ``events.jsonl`` is never
+    truncated here.
+    """
+    if not _env_flag(EVENTS_ROTATION_ENV, "0"):
+        return None
+    if not window.get("open"):
+        return {"skipped": "window_closed"}
+    if not window.get("events_rotation_tier_allowed"):
+        return {"skipped": "tier_not_critical"}
+    try:
+        from evolution_infra_archive_rotation import (
+            autonomous_rotate_append_only_sources,
+        )
+    except ImportError as exc:
+        _emit_governance_event(
+            "pipeline.events_auto_rotation_skipped",
+            "warn",
+            f"events auto-rotation entry unavailable: {exc}",
+            {"actor": EVENTS_ROTATION_ACTOR, "reason": "unavailable"},
+        )
+        return {"skipped": "unavailable"}
+    try:
+        receipts = autonomous_rotate_append_only_sources(
+            actor=EVENTS_ROTATION_ACTOR
+        )
+    except Exception as exc:
+        log.warning("events auto-rotation failed: %s", exc)
+        return {"skipped": f"error:{type(exc).__name__}"}
+    receipts = [row for row in (receipts or []) if isinstance(row, dict)]
+    if receipts:
+        _emit_governance_event(
+            "pipeline.events_auto_rotation_done",
+            "info",
+            (
+                "events auto-rotation copied "
+                f"{len(receipts)} append-only source prefix(es)"
+            ),
+            {
+                "actor": EVENTS_ROTATION_ACTOR,
+                "sources": [
+                    {
+                        "source": Path(str(row.get("source") or "")).name,
+                        "rotation_id": row.get("rotation_id"),
+                        "start_offset": row.get("start_offset"),
+                        "end_offset": row.get("end_offset"),
+                        "source_preserved_append_only": row.get(
+                            "source_preserved_append_only"
+                        ),
+                    }
+                    for row in receipts
+                ],
+            },
+        )
+    return {"rotated": len(receipts), "receipts": receipts}
+
+
 def _append_reaped_tree_receipt(results_dir: Path, row: dict[str, Any]) -> None:
     """Durably append one orphan-tree receipt row under the sidecar lock."""
-    path = results_dir / REAPED_TREES_LEDGER_NAME
-    payload = json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n"
-    try:
-        from evolution_infra import locked_file
-    except Exception:
-        locked_file = None
-    handle: Any
-    try:
-        if locked_file is not None:
-            with locked_file(path, "a+", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-        else:
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-    except OSError as exc:
-        raise RuntimeError(f"reaped-tree receipt append failed: {exc}") from exc
+    _append_locked_jsonl_receipt(results_dir, REAPED_TREES_LEDGER_NAME, row)
 
 
 def _reap_generation_trees(
@@ -1337,12 +2012,61 @@ def run_disk_hygiene(
     if compaction and compaction.get("receipt_persisted"):
         report["candidate_ledger_compaction"] = compaction
 
-    retention = _evaluation_identity_retention_step(results_dir)
+    # Governance safe window (2026-10-21): one predicate for the destructive
+    # governance steps. (2) identity retention runs at every tier (it only
+    # *stages* into the retired area; the critical tier merely caps its keep
+    # window); the retired purge, abandon-transaction reap and events
+    # auto-rotation require the open window plus their tier.
+    window = janitor_safe_window(
+        results_dir, published=published, free_bytes=free
+    )
+    report["janitor_window"] = {
+        "open": window["open"],
+        "tier": window["tier"],
+        "closed_reasons": window["closed_reasons"],
+    }
+
+    retention = _evaluation_identity_retention_step(results_dir, window=window)
     if retention and retention.get("moved"):
         report["evaluation_identity_retention"] = {
             "moved": len(retention["moved"]),
             "receipt_path": retention.get("receipt_path"),
         }
+
+    try:
+        retired_purge = _purge_retired_identity_snapshots(
+            results_dir, window=window
+        )
+        if retired_purge is not None:
+            report["evaluation_identity_retired_purge"] = retired_purge
+            if retired_purge.get("bytes_freed"):
+                report["bytes_freed"] += int(retired_purge["bytes_freed"])
+                report["removed"] += int(len(retired_purge.get("purged") or []))
+    except Exception as exc:
+        log.warning("retired identity purge failed: %s", exc)
+
+    try:
+        txn_reap = _reap_aged_abandon_transactions(
+            results_dir,
+            window=window,
+            published_high=max(published) if published else 0,
+        )
+        if txn_reap is not None:
+            report["abandon_transaction_reap"] = txn_reap
+            if txn_reap.get("bytes_freed"):
+                report["bytes_freed"] += int(txn_reap["bytes_freed"])
+                report["removed"] += int(txn_reap.get("reaped") or 0)
+    except Exception as exc:
+        log.warning("abandon transaction reap failed: %s", exc)
+
+    try:
+        rotation_report = _events_auto_rotation_step(
+            results_dir, window=window
+        )
+        if rotation_report is not None:
+            report["events_auto_rotation"] = rotation_report
+    except Exception as exc:
+        log.warning("events auto-rotation step failed: %s", exc)
 
     metrics = results_dir / "llm_call_metrics.jsonl"
     trimmed = _trim_jsonl(metrics, keep_metrics_lines)

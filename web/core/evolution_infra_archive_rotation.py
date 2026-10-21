@@ -39,6 +39,10 @@ import evolution_infra as _ei
 
 _ROTATION_PLAN_KIND = "append-log-nondestructive-rotation-v2"
 _ROTATION_WATERMARK_KIND = "append-log-archive-watermark-v2"
+# Rebase-v2 baseline watermark (events rotation rebase, 2026-10-21):
+# exists only between a completed re-head and the next publication
+# rotation; same key set as v2 with end_offset=0 and null last_* fields.
+_ROTATION_WATERMARK_KIND_V3 = "append-log-archive-watermark-v3"
 _ROTATION_SET_PLAN_KIND = "append-log-nondestructive-rotation-plan"
 _ROTATION_PLAN_KEYS = frozenset({
     "schema_version", "kind", "version", "source", "start_offset",
@@ -552,8 +556,59 @@ def _validate_rotation_plan(
     return archived
 
 
+def _watermark_file_kind(watermark_path: Path):
+    """Best-effort kind peek used only to dispatch the v3 baseline.
+
+    Malformed/unreadable watermarks return None here and are then
+    rejected with the precise v2-path error by ``_rotation_record``.
+    """
+
+    try:
+        with _ei._locked_state_sidecar(
+            watermark_path, lock_type=fcntl.LOCK_SH
+        ):
+            raw = _ei._read_regular_state_text(
+                watermark_path, allow_missing=True
+            )
+    except Exception:
+        return None
+    if not raw or not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload.get("kind") if isinstance(payload, dict) else None
+
+
+def _ensure_rotation_source_reconciled(source_path: Path):
+    """Review B2 (2026-10-21): converge a prepared rotation rebase (if
+    any) BEFORE this module freezes or re-proves a plan against the live
+    prefix.  Recovery is recovery, not rebase enablement: it runs
+    regardless of ``POK_EVENTS_REBASE_ENABLED`` /
+    ``POK_DISK_HYGIENE_ENABLED``.  No-ops when no rebase state exists; a
+    corrupt rebase state propagates (fail-closed).  Lazy import keeps
+    the module graph acyclic in every import order."""
+
+    from evolution_infra_rotation_rebase import (
+        ensure_rotation_source_reconciled,
+    )
+
+    return ensure_rotation_source_reconciled(source_path)
+
+
 def _load_rotation_watermark(source_path: Path, raw: bytes):
     _archive, _plan, watermark_path = _ei._rotation_paths(source_path, 0)
+    if (
+        _watermark_file_kind(watermark_path)
+        == _ROTATION_WATERMARK_KIND_V3
+    ):
+        # Rebase-v2 baseline: the live prefix proof restarts at offset 0
+        # after a digest-proven re-head.  The v2 bytes/semantics below
+        # are untouched.
+        from evolution_infra_rotation_rebase import load_rotation_watermark_v3
+
+        return load_rotation_watermark_v3(source_path, raw)
     watermark = _ei._rotation_record(
         watermark_path,
         kind=_ROTATION_WATERMARK_KIND,
@@ -905,6 +960,7 @@ def build_archive_rotation_plan(version, publication_id):
     snapshots = []
     rotations = []
     for source_path, keep_lines in _ei._rotation_rules():
+        _ensure_rotation_source_reconciled(source_path)
         current_archive, current_plan, watermark_path = _ei._rotation_paths(
             source_path,
             version,
@@ -1014,6 +1070,7 @@ def validate_archive_rotation_plan(
         rotation_plan["source_snapshots"],
         _ei._rotation_rules(),
     ):
+        _ensure_rotation_source_reconciled(source_path)
         if not os.path.lexists(source_path):
             if snapshot["snapshot_exists"]:
                 raise RuntimeError(
@@ -1145,6 +1202,7 @@ def archive_rotate_files(version, rotation_plan):
     _ei._fsync_directory(_ei.ARCHIVE_DIR)
     receipts = []
     for source_path, _keep_lines in _ei._rotation_rules():
+        _ensure_rotation_source_reconciled(source_path)
         expected = expected_by_source.get(source_path.name)
         if expected is None:
             continue
@@ -1311,6 +1369,7 @@ def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
         item["source"]: item for item in expected_receipts
     }
     for source_path, _keep_lines in _ei._rotation_rules():
+        _ensure_rotation_source_reconciled(source_path)
         source_name = source_path.name
         if source_name not in expected_by_source:
             continue

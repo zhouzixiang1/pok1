@@ -325,6 +325,21 @@ def cleanup_old_replays():
     bytes behind an admitted match-history row or a retained immutable cycle.
     When all old files remain evidence-referenced we keep them and let normal
     cycle/history retention decide when they become removable.
+
+    2026-10-21 (post-review R1): the reference set keeps its FULL-pin
+    semantics — live ``match_history.jsonl`` (never truncated here), every
+    retained immutable cycle copy, and every verified evidence snapshot pin
+    their replay ids unconditionally, because the publish gate
+    (``evaluation_bundle._append_log_semantic_issues`` /
+    ``_load_published_evaluation_bundle_locked``) re-verifies every admitted
+    row against the raw bytes. The only widening beyond the count cap is the
+    removal of TRUE orphans — files no leg references at all — once they are
+    older than ``POK_REPLAY_ORPHAN_MIN_AGE_SEC`` (default 3600 s; the save
+    path writes the replay file before appending its history row, so a fresh
+    unreferenced file may simply be inside that window). Every deletion,
+    cap-overage or orphan, is receipt-first into
+    ``results/reaped_replays.jsonl``; a deletion whose receipt cannot be
+    durably appended keeps the file.
     """
 
     try:
@@ -580,10 +595,71 @@ def cleanup_old_replays():
         ),
         key=lambda f: f.name,
     )
+
+    # 2026-10-21 (R1): true orphans — unreferenced by the live history, any
+    # retained cycle copy, or any verified evidence snapshot — are removed
+    # once older than the write-before-append race window, even below the
+    # count cap. The cap branch keeps its exact historical selection
+    # (oldest-name-first unreferenced overage).
+    import time as _time
+
+    try:
+        orphan_min_age_sec = float(
+            os.environ.get("POK_REPLAY_ORPHAN_MIN_AGE_SEC", "3600")
+        )
+    except (TypeError, ValueError):
+        orphan_min_age_sec = 3600.0
+    orphan_min_age_sec = max(0.0, orphan_min_age_sec)
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    now = _time.time()
+    targets: dict[str, str] = {}
+    for path in files:
+        if path.name in referenced:
+            continue
+        if orphan_min_age_sec > 0.0 and (now - _mtime(path)) >= orphan_min_age_sec:
+            targets[path.name] = "unreferenced_orphan_aged_out"
     if len(files) > _ed.MAX_REPLAY_FILES:
         removable = [path for path in files if path.name not in referenced]
         for old_file in removable[: max(0, len(files) - _ed.MAX_REPLAY_FILES)]:
-            old_file.unlink()
+            targets.setdefault(old_file.name, "max_replay_files_overage")
+
+    for path in files:
+        reason = targets.get(path.name)
+        if reason is None:
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        # Receipt first: a deletion whose receipt cannot be durably appended
+        # keeps the file (same posture as the orphan-tree reap).
+        try:
+            _ed.append_locked_jsonl(
+                Path(_ed.RESULTS_DIR) / "reaped_replays.jsonl",
+                {
+                    "schema_version": 1,
+                    "kind": "replay_reaped",
+                    "reaped_at": now,
+                    "id": path.name,
+                    "bytes": size,
+                    "reason": reason,
+                    "max_replay_files": _ed.MAX_REPLAY_FILES,
+                    "pinned_reference_count": len(referenced),
+                },
+            )
+        except Exception as e:
+            _ed.log.warning("reaped-replay receipt write failed for %s: %s", path.name, e)
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
 
 
 
