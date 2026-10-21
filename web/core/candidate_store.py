@@ -20,6 +20,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import stat
@@ -43,6 +44,8 @@ _IMPORT_CANDIDATE_EVENTS_FILE = _IMPORT_RESULTS_DIR / "candidates.jsonl"
 
 CANDIDATE_EVENTS_FILE = _IMPORT_CANDIDATE_EVENTS_FILE
 CANDIDATE_DB_FILE = _IMPORT_RESULTS_DIR / "candidates.sqlite3"
+
+log = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 2
@@ -657,6 +660,12 @@ def append_candidate_event(
         entry["gate_results"] = []
     append_locked_jsonl(events_path, entry)
     _upsert_sqlite_record(record, path=events_path, persisted_entry=entry)
+    try:
+        from precommit_report import write_precommit_report
+
+        write_precommit_report(events_path.parent, entry)
+    except Exception:
+        log.warning("precommit evaluation report export failed", exc_info=True)
     return entry
 
 

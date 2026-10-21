@@ -38,6 +38,8 @@ from precommit_eval_contract import (
     build_evaluation_contract,
     create_precommit_plan,
     opponents_from_plan,
+    plan_seed_round,
+    rebuild_precommit_plan_for_seed_round,
     validate_evaluation_contract,
     validate_precommit_plan,
 )
@@ -136,6 +138,49 @@ def precommit_pool_weakest_n_games() -> int:
     return value
 
 
+# Parent-leg sample depth (2026-10-22 power calibration).  The parent gate is
+# a strict-majority screen: at p=0.5 its per-sample false-admission is 0.387
+# at n=12 (need >=7W) and 0.419 at n=24 (need >=13W), so it is deliberately
+# NOT a 5% test.  What a deeper parent leg buys is a lower score variance
+# (SD 0.144 -> 0.102) and a higher pass rate for a genuinely stronger
+# candidate (a true 0.55 edge passes ~0.56 at n=12 vs ~0.61 at n=24), at the
+# cost of 12 extra 70-hand matches (~24 min at the measured ~2 min/match).
+# Unset = inherit the plan-wide count (historical behavior).  When set, the
+# value is read ONCE at the plan-freeze moment and frozen as the parent
+# opponent's ``matches``; the plan-wide parent gate thresholds are unchanged.
+PRECOMMIT_PARENT_N_GAMES_ENV = "POK_PRECOMMIT_PARENT_N_GAMES"
+# Must stay >= strength_order.PRECOMMIT_PARENT_MIN_SAMPLES (6): below it the
+# parent gate's blocker branch never engages.
+PRECOMMIT_PARENT_MIN_N_GAMES = 6
+PRECOMMIT_PARENT_MAX_N_GAMES = 48
+
+
+def precommit_parent_n_games() -> int | None:
+    """Resolve the parent-leg match count override (freeze moment).
+
+    ``None`` means inherit ``matches_per_opponent`` — the historical shape.
+    """
+
+    raw = str(os.environ.get(PRECOMMIT_PARENT_N_GAMES_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not (
+        PRECOMMIT_PARENT_MIN_N_GAMES
+        <= value
+        <= PRECOMMIT_PARENT_MAX_N_GAMES
+    ):
+        raise ValueError(
+            f"parent_n_games_invalid:{raw}:expected integer in "
+            f"[{PRECOMMIT_PARENT_MIN_N_GAMES}, "
+            f"{PRECOMMIT_PARENT_MAX_N_GAMES}]"
+        )
+    return value
+
+
 def _pool_gate_max_score_for_matches(matches: int) -> float:
     """Derive the pool-leg score threshold from its frozen sample count.
 
@@ -148,6 +193,342 @@ def _pool_gate_max_score_for_matches(matches: int) -> float:
 
     n = max(2, int(matches))
     return (n // 2 + 1) / n
+
+
+# ──────────────────────────────────────────────
+# Pre-registered independent-seed repair round
+# ──────────────────────────────────────────────
+# One generation gets at most TWO precommit samples with independent deck
+# seeds: the original frozen plan (round 1) and, after a Workers repair round
+# changed the candidate, exactly one rebuild under a fresh one-time nonce
+# (round 2).  Gates, alpha and per-opponent sample depths are carried over
+# verbatim; a pass is only ever the unchanged native precommit gate passing.
+# There is no retry-until-pass: a third independent sample is refused, and
+# infrastructure retries keep the SAME plan (a harness stall is not a policy
+# result and must never buy a fresh sample).
+PRECOMMIT_SEED_REPAIR_ROUNDS_MAX = 1
+PRECOMMIT_SEED_ROUNDS_MAX = 1 + PRECOMMIT_SEED_REPAIR_ROUNDS_MAX
+PRECOMMIT_ATTEMPT_HISTORY_KEY = "precommit_eval_attempts"
+PRECOMMIT_ATTEMPT_HISTORY_MAX = 4
+
+
+def _precommit_rework_seed_round(ckpt) -> int:
+    """The seed round the checkpoint's current repair state requires."""
+
+    rework_count = int((ckpt or {}).get("precommit_rework_count", 0) or 0)
+    return max(0, rework_count) + 1
+
+
+def _precommit_attempt_record(
+    *,
+    result: dict,
+    precommit_plan: dict,
+    precommit_attempt: int,
+) -> dict:
+    """Bound one attempt's durable record (complete scorecard included)."""
+
+    settings = precommit_plan.get("settings") or {}
+    blockers = []
+    for blocker in result.get("blockers") or []:
+        if not isinstance(blocker, dict):
+            continue
+        blockers.append({
+            key: blocker.get(key)
+            for key in ("reason", "opponent", "details")
+            if blocker.get(key) is not None
+        })
+    return {
+        "schema_version": 1,
+        "attempt": int(precommit_attempt),
+        "seed_round": int(plan_seed_round(precommit_plan)),
+        "plan_digest": str(precommit_plan.get("plan_digest") or ""),
+        "deck_seed_base": settings.get("deck_seed_base"),
+        "matches_by_opponent": dict(result.get("matches_by_opponent") or {}),
+        "total_wins": int(result.get("total_wins") or 0),
+        "total_losses": int(result.get("total_losses") or 0),
+        "total_draws": int(result.get("total_draws") or 0),
+        "passed": bool(result.get("passed")),
+        "failure_class": str(result.get("failure_class") or ""),
+        "blockers": blockers[:12],
+        "scorecard": result.get("scorecard"),
+        "recorded_at": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        ),
+    }
+
+
+def _record_precommit_attempt_history(
+    v: int,
+    source_v: int,
+    *,
+    result: dict,
+    precommit_plan: dict,
+    precommit_attempt: int,
+) -> bool:
+    """Persist the attempt's complete scorecard into the checkpoint history.
+
+    Both independent samples must stay inspectable after the later stage
+    transition prunes ``gate_results.precommit_eval``.  The append-only
+    candidate ledger also keeps every precommit row; this checkpoint copy is
+    the content-bound evaluation record the repair rule is re-proved from.
+    """
+
+    checkpoint = _matching_checkpoint(v, source_v)
+    if not isinstance(checkpoint, dict):
+        return False
+    context = checkpoint.get("audit_context") or {}
+    records = [
+        item
+        for item in (context.get(PRECOMMIT_ATTEMPT_HISTORY_KEY) or [])
+        if isinstance(item, dict)
+    ]
+    record = _precommit_attempt_record(
+        result=result,
+        precommit_plan=precommit_plan,
+        precommit_attempt=precommit_attempt,
+    )
+    records = [
+        item
+        for item in records
+        if item.get("seed_round") != record["seed_round"]
+    ]
+    records.append(record)
+    return bool(
+        write_pipeline_checkpoint(
+            v,
+            source_v,
+            checkpoint.get("stage"),
+            audit_context={
+                PRECOMMIT_ATTEMPT_HISTORY_KEY: (
+                    records[-PRECOMMIT_ATTEMPT_HISTORY_MAX:]
+                ),
+            },
+            expected_checkpoint_revision=checkpoint.get(
+                "checkpoint_revision"
+            ),
+            expected_checkpoint_stage=checkpoint.get("stage"),
+            expected_workflow_run_id=checkpoint.get("workflow_run_id"),
+        )
+    )
+
+
+def _rotate_precommit_plan_for_repair_round(
+    *,
+    v: int,
+    source_v: int,
+    checkpoint: dict,
+    stored_plan: dict,
+    workflow_profile,
+) -> tuple[dict | None, dict | None]:
+    """Return ``(rotated_plan, None)`` or ``(None, error_payload)``.
+
+    Rotation happens exactly once per Workers repair round: the checkpoint's
+    ``precommit_rework_count`` is the pre-registered trigger, and the rebuilt
+    plan carries the same opponents, per-opponent sample depths, evaluator
+    identity and gate thresholds with a fresh independent nonce.
+    """
+
+    try:
+        current_round = plan_seed_round(stored_plan)
+    except PrecommitEvalContractError as exc:
+        return None, {
+            "error": f"PRECOMMIT PLAN SEED ROUND INVALID: {exc}",
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "failure_class": "control_plane",
+            "intent": make_intent(
+                "pause",
+                failure_class="control_plane",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=False,
+                reason="precommit_seed_round_invalid",
+            ),
+        }
+    target_round = _precommit_rework_seed_round(checkpoint)
+    if target_round <= current_round:
+        return None, None
+    settings = stored_plan.get("settings") or {}
+    if any(
+        str(item.get("authority") or "") == "system_first_strict_control"
+        for item in (stored_plan.get("opponents") or [])
+        if isinstance(item, dict)
+    ):
+        # The empty-pool system-control plan carries no strength gate and is
+        # governed by its own execution journal; it is never re-sampled.
+        return None, None
+    if target_round > PRECOMMIT_SEED_ROUNDS_MAX:
+        return None, {
+            "error": (
+                "PRECOMMIT INDEPENDENT REPAIR ROUND EXHAUSTED: one generation "
+                "gets at most one fresh-seed repair sample "
+                f"(seed rounds {current_round}/{PRECOMMIT_SEED_ROUNDS_MAX}, "
+                f"rework_count={int(checkpoint.get('precommit_rework_count') or 0)})."
+            ),
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "failure_class": "candidate",
+            "blockers": [{
+                "reason": "precommit_repair_round_exhausted",
+                "details": (
+                    "The pre-registered decision rule allows the original "
+                    "sample plus exactly one independent-seed repair sample; "
+                    "no retry-until-pass is permitted."
+                ),
+            }],
+            "intent": make_intent(
+                "abandon",
+                next_tool=None,
+                failure_class="candidate",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=True,
+                reason="precommit_repair_round_exhausted",
+            ),
+        }
+    try:
+        rotated = rebuild_precommit_plan_for_seed_round(
+            stored_plan,
+            seed_round=target_round,
+            path_resolver=lambda item: (
+                item.get("path")
+                or get_bot_dir(parse_bot_version(item["name"]))
+            ),
+        )
+    except Exception as exc:
+        return None, {
+            "error": (
+                "PRECOMMIT SEED ROTATION FAILED: "
+                f"{type(exc).__name__}: {str(exc)[:400]}"
+            ),
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "failure_class": "control_plane",
+            "intent": make_intent(
+                "pause",
+                failure_class="control_plane",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=False,
+                reason="precommit_seed_rotation_failed",
+            ),
+        }
+    if rotated.get("plan_digest") == stored_plan.get("plan_digest"):
+        return None, {
+            "error": (
+                "PRECOMMIT SEED ROTATION DID NOT CHANGE THE PLAN: the repair "
+                "sample would replay the failed sample plan."
+            ),
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "failure_class": "control_plane",
+            "intent": make_intent(
+                "pause",
+                failure_class="control_plane",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=False,
+                reason="precommit_seed_rotation_noop",
+            ),
+        }
+    context = checkpoint.get("audit_context") or {}
+    prior_records = [
+        item
+        for item in (context.get(PRECOMMIT_ATTEMPT_HISTORY_KEY) or [])
+        if isinstance(item, dict)
+    ]
+    # Best-effort backfill for a first attempt that ran before the history
+    # writer existed (or whose write was interrupted) while its gate receipt
+    # is still on the checkpoint.  The later rework stage prunes that receipt,
+    # so this is the only remaining moment to keep its scorecard bound.
+    if not any(
+        int(item.get("seed_round") or 0) == current_round
+        for item in prior_records
+    ):
+        prior_gate = ((checkpoint.get("gate_results") or {}).get(
+            "precommit_eval"
+        ))
+        if isinstance(prior_gate, dict):
+            try:
+                prior_records.append(
+                    _precommit_attempt_record(
+                        result=prior_gate,
+                        precommit_plan=stored_plan,
+                        precommit_attempt=int(
+                            checkpoint.get("precommit_attempt") or 0
+                        ),
+                    )
+                )
+            except Exception:
+                pass
+    persisted = write_pipeline_checkpoint(
+        v,
+        source_v,
+        checkpoint.get("stage"),
+        audit_context={
+            "precommit_eval_plan": rotated,
+            PRECOMMIT_ATTEMPT_HISTORY_KEY: (
+                prior_records[-PRECOMMIT_ATTEMPT_HISTORY_MAX:]
+            ),
+        },
+        expected_checkpoint_revision=checkpoint.get("checkpoint_revision"),
+        expected_checkpoint_stage=checkpoint.get("stage"),
+        expected_workflow_run_id=checkpoint.get("workflow_run_id"),
+    )
+    if not persisted:
+        return None, {
+            "error": (
+                "STATE BLOCKED: failed to persist the independent-seed "
+                "repair plan for the precommit repair round."
+            ),
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "checkpoint_stage": checkpoint.get("stage"),
+            "failure_class": "control_plane",
+            "intent": make_intent(
+                "pause",
+                failure_class="control_plane",
+                authority="tool:precommit_eval",
+                safe_to_auto_execute=False,
+                reason="precommit_seed_rotation_persist_failed",
+            ),
+        }
+    try:
+        log_system_event(
+            "pipeline.precommit_seed_rotated",
+            "info",
+            (
+                f"Precommit deck seed rotated for v{v}: round "
+                f"{current_round} -> {target_round} "
+                f"(deck_seed_base={(rotated.get('settings') or {}).get('deck_seed_base')})"
+            ),
+            {
+                "version": v,
+                "source_v": source_v,
+                "precommit_rework_count": int(
+                    checkpoint.get("precommit_rework_count") or 0
+                ),
+                "from_seed_round": current_round,
+                "to_seed_round": target_round,
+                "prior_plan_digest": stored_plan.get("plan_digest"),
+                "plan_digest": rotated.get("plan_digest"),
+                "seed_derivation": (rotated.get("settings") or {}).get(
+                    "seed_derivation"
+                ),
+                "deck_seed_base": (rotated.get("settings") or {}).get(
+                    "deck_seed_base"
+                ),
+                "deck_seed_nonce": (rotated.get("settings") or {}).get(
+                    "deck_seed_nonce"
+                ),
+                "seed_rounds_max": PRECOMMIT_SEED_ROUNDS_MAX,
+            },
+        )
+    except Exception:
+        pass
+    return rotated, None
+
 
 
 def set_precommit_shutdown(token: threading.Event | None = None):
@@ -921,6 +1302,12 @@ async def _run_national_precommit_backend(
     settings = precommit_plan.get("settings") or {}
     national_hands = int(settings.get("hands_per_match") or 0)
     national_matches = int(settings.get("matches_per_opponent") or 0)
+    # Pre-registered independent-sample round carried by the frozen plan
+    # (1 = original plan, 2 = the single fresh-seed repair sample).
+    try:
+        precommit_seed_round = int(plan_seed_round(precommit_plan))
+    except PrecommitEvalContractError:
+        precommit_seed_round = 0
     try:
         from national_native import (
             LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
@@ -1513,6 +1900,19 @@ async def _run_national_precommit_backend(
         "national": national_result,
         "official_platform": official_platform_result,
         "code_fingerprint": code_fingerprint,
+        # Non-secret independent-sample identity: the seed round that produced
+        # this scorecard, the repair round it belongs to, and the fixed
+        # pre-registered decision rule.  The plan (with its nonce) itself
+        # remains only in the checkpoint audit_context.
+        "precommit_seed_round": precommit_seed_round,
+        "precommit_repair_round": max(0, precommit_seed_round - 1),
+        "precommit_seed_rounds_max": PRECOMMIT_SEED_ROUNDS_MAX,
+        "precommit_decision_rule": {
+            "independent_samples_max": PRECOMMIT_SEED_ROUNDS_MAX,
+            "fresh_seed_on_repair": True,
+            "thresholds_unchanged": True,
+            "pass_requires_native_precommit_pass": True,
+        },
         # Leak-surface guard (2026-10-11): the frozen plan (which now carries
         # the deck-seed nonce) is deliberately NOT copied into the result
         # payload / checkpoint gate_results.  Its two remaining carriers are
@@ -1559,6 +1959,8 @@ async def _run_national_precommit_backend(
             "strength_admitted": not system_control_plan,
             "rating_eligible": not system_control_plan,
             "official_opponent_eligible": not system_control_plan,
+            "precommit_seed_round": precommit_seed_round,
+            "precommit_seed_rounds_max": PRECOMMIT_SEED_ROUNDS_MAX,
         },
     )
     scorecard.add(GateResult.from_bool(
@@ -1628,10 +2030,13 @@ async def _run_national_precommit_backend(
             )
         else:
             result["directive"] = (
-                f"National precommit FAILED (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}) — "
+                f"National precommit FAILED (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}, "
+                f"seed round {precommit_seed_round}/{PRECOMMIT_SEED_ROUNDS_MAX}) — "
                 f"the final gate now uses {'native TCP ' if native_tcp_mode else ''}national 70-hand rules, not local mirror battle. "
                 f"Do NOT call run_precommit_eval again on unchanged code. Rework the bot against "
-                f"{worst_opponent} ({worst_wins}W-{worst_losses}L) and the listed blockers."
+                f"{worst_opponent} ({worst_wins}W-{worst_losses}L) and the listed blockers. "
+                "A repaired candidate is re-sampled exactly once with a fresh independent "
+                "deck seed under the same unchanged gates (pre-registered; no retry-until-pass)."
             )
             # Infrastructure attribution: when every blocker is infra-class
             # (a native run killed mid-match by a startup-watchdog kill,
@@ -1704,6 +2109,29 @@ async def _run_national_precommit_backend(
     )
     result["checkpoint_recorded"] = checkpoint_recorded
 
+    # Durable two-sample evaluation record.  The later rework stage prunes
+    # gate_results.precommit_eval, so a failed attempt's complete scorecard
+    # must be captured now for the pre-registered repair-round rule to stay
+    # inspectable.  On failure this record is load-bearing: an unrecorded
+    # attempt would let a repair sample run without its pre-registered
+    # predecessor, so the tool fails closed instead of reworking anyway.
+    attempt_history_recorded = _record_precommit_attempt_history(
+        v,
+        source_v,
+        result=result,
+        precommit_plan=precommit_plan,
+        precommit_attempt=precommit_attempt,
+    )
+    result["precommit_attempt_history_recorded"] = attempt_history_recorded
+    if not attempt_history_recorded and not passed and not system_control_plan:
+        return _state_blocked(
+            "Failed to persist the durable precommit attempt record; the "
+            "pre-registered independent-seed repair round cannot start.",
+            v,
+            source_v,
+            _matching_checkpoint(v, source_v),
+        )
+
     if append_candidate_event:
         try:
             append_candidate_event(
@@ -1728,6 +2156,8 @@ async def _run_national_precommit_backend(
                     "total_losses": total_losses,
                     "total_draws": total_draws,
                     "net_chips_mean": paired_bootstrap_payload.get("net_chips_mean"),
+                    "precommit_seed_round": precommit_seed_round,
+                    "precommit_repair_round": max(0, precommit_seed_round - 1),
                 },
                 failures=[str(b)[:500] for b in blockers],
                 failure_class=(
@@ -2242,6 +2672,32 @@ async def run_precommit_eval(args):
                     reason="first_strict_control_plan_drift",
                 )
             return _json_tool_result(payload)
+        if not declared_first_strict:
+            # Pre-registered independent-seed repair round: a Workers repair
+            # round increments ``precommit_rework_count``, and the next
+            # precommit must NOT replay the failed plan's deck schedule.  The
+            # rotated plan keeps every opponent, per-opponent sample depth,
+            # evaluator identity and gate threshold; only the one-time nonce
+            # changes.  Infrastructure retries never increment the counter and
+            # therefore keep the exact same plan.
+            rotated_plan, rotation_error = (
+                _rotate_precommit_plan_for_repair_round(
+                    v=v,
+                    source_v=source_v,
+                    checkpoint=ckpt,
+                    stored_plan=stored_plan,
+                    workflow_profile=workflow_profile,
+                )
+            )
+            if rotation_error is not None:
+                return _json_tool_result(rotation_error)
+            if rotated_plan is not None:
+                stored_plan = rotated_plan
+                stored_plan_issues = []
+                current_evaluation_contract = build_evaluation_contract(
+                    rotated_plan,
+                    candidate_code_fingerprint=code_fingerprint,
+                )
         opponents = opponents_from_plan(stored_plan)
         frozen_settings = stored_plan.get("settings") or {}
         n_games = int(frozen_settings.get("matches_per_opponent") or n_games)
@@ -2367,6 +2823,39 @@ async def run_precommit_eval(args):
                 and str(item.get("reason") or "") == "pool_weakest_gate"
             ):
                 item["matches"] = pool_weakest_matches
+        # Parent-leg sample depth (2026-10-22 power calibration): freeze the
+        # parent opponent's own count (POK_PRECOMMIT_PARENT_N_GAMES, default
+        # 12 = historical behavior).  The parent gate threshold and every
+        # other leg are untouched; only the number of fresh 70-hand parent
+        # samples changes.
+        try:
+            parent_matches = precommit_parent_n_games()
+        except ValueError as exc:
+            return _json_tool_result({
+                "error": f"PRECOMMIT PLAN CREATION FAILED: {exc}",
+                "version": v,
+                "source_v": source_v,
+                "passed": False,
+                "blockers": [{
+                    "reason": "precommit_plan_creation_failed",
+                    "details": str(exc)[:800],
+                }],
+                "failure_class": "infrastructure",
+                "intent": make_intent(
+                    "pause",
+                    failure_class="infrastructure",
+                    authority="tool:precommit_eval",
+                    safe_to_auto_execute=False,
+                    reason="precommit_plan_creation_failed",
+                ),
+            })
+        for item in opponents:
+            if (
+                isinstance(item, dict)
+                and str(item.get("reason") or "") == "parent"
+                and parent_matches is not None
+            ):
+                item["matches"] = parent_matches
         # Pool-ratchet admission gate spec: resolved once at this plan-freeze
         # moment from the live publication mode and the selected opponents,
         # then frozen into the plan settings (retries re-prove the frozen
@@ -2396,6 +2885,14 @@ async def run_precommit_eval(args):
             }
             return _json_tool_result(payload)
         try:
+            # A plan frozen after a Workers repair round is the pre-registered
+            # repair sample (round 2), not a second "original" sample.
+            new_plan_seed_round = 1
+            if not declared_first_strict:
+                new_plan_seed_round = min(
+                    PRECOMMIT_SEED_ROUNDS_MAX,
+                    _precommit_rework_seed_round(ckpt),
+                )
             precommit_plan = create_precommit_plan(
                 candidate_version=v,
                 source_version=source_v,
@@ -2411,6 +2908,7 @@ async def run_precommit_eval(args):
                 ),
                 require_published_opponents=True,
                 pool_gate=pool_gate_spec,
+                seed_round=new_plan_seed_round,
             )
         except PrecommitEvalContractError as exc:
             payload = {
@@ -2483,6 +2981,9 @@ async def run_precommit_eval(args):
                     "plan_digest": precommit_plan.get("plan_digest"),
                     "seed_derivation": frozen_seed_settings.get(
                         "seed_derivation"
+                    ),
+                    "seed_round": frozen_seed_settings.get(
+                        "precommit_seed_round"
                     ),
                     "deck_seed_base": frozen_seed_settings.get(
                         "deck_seed_base"

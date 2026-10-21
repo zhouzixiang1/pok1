@@ -20,6 +20,11 @@ PLAN_SCHEMA_VERSION = 8
 EVALUATION_CONTRACT_SCHEMA_VERSION = 5
 DEFAULT_DECK_SEED_BASE = 91_000
 NATIVE_PRECOMMIT_BATCH_PLAN_SCHEMA_VERSION = 1
+# Pre-registered independent-sample round for one generation's precommit
+# evidence.  Round 1 is the original frozen plan; round 2 is the single
+# repair sample after a Workers rework (fresh one-time nonce, identical
+# opponents/gates).  Historical plans without the settings key are round 1.
+PRECOMMIT_SEED_ROUND_SETTINGS_KEY = "precommit_seed_round"
 
 SEMANTIC_PATHS = (
     "sever/engine/deck.py",
@@ -130,6 +135,24 @@ def _per_opponent_matches(opponent: dict[str, Any], default_matches: int) -> int
     if type(raw) is int and raw >= 1:
         return raw
     return max(1, int(default_matches))
+
+
+def plan_seed_round(plan: dict[str, Any]) -> int:
+    """Return the plan's pre-registered independent-sample round.
+
+    Round 1 is the original frozen plan (every historical plan, which has no
+    settings key).  A single repair round (checkpoint ``precommit_rework_count
+    >= 1``) rebuilds the plan under round 2 with a fresh one-time nonce while
+    every opponent/gate field is carried over verbatim.
+    """
+
+    settings = plan.get("settings") if isinstance(plan, dict) else None
+    raw = (settings or {}).get(PRECOMMIT_SEED_ROUND_SETTINGS_KEY, 1)
+    if type(raw) is not int or raw < 1:
+        raise PrecommitEvalContractError(
+            f"precommit plan seed round is invalid: {raw!r}"
+        )
+    return raw
 
 
 def build_sample_plan(
@@ -371,8 +394,14 @@ def create_precommit_plan(
     require_published_opponents: bool,
     deck_seed_base: int | None = None,
     pool_gate: dict[str, Any] | None = None,
+    seed_round: int = 1,
 ) -> dict[str, Any]:
     from bot_namespace import ARCHIVED_VERSION_HIGH_WATER
+
+    if type(seed_round) is not int or seed_round < 1:
+        raise PrecommitEvalContractError(
+            f"precommit seed round must be a positive integer: {seed_round!r}"
+        )
 
     # Deck seed provenance.  The production path (deck_seed_base=None)
     # generates a fresh one-time 128-bit nonce and derives the base through
@@ -594,6 +623,10 @@ def create_precommit_plan(
         "deck_seed_base": int(effective_deck_seed_base),
         "deck_seed_nonce": deck_seed_nonce,
         "seed_derivation": seed_derivation,
+        # Pre-registered independent-sample round (1 = original plan; 2 = the
+        # single fresh-seed repair sample).  Part of the plan digest and
+        # re-proved by validate_precommit_plan.
+        PRECOMMIT_SEED_ROUND_SETTINGS_KEY: int(seed_round),
         "publish_mode": resolved_publish_mode,
         "pool_gate": pool_gate,
         "parent_min_samples": PRECOMMIT_PARENT_MIN_SAMPLES,
@@ -676,6 +709,66 @@ def opponents_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
         for item in plan.get("opponents", [])
         if isinstance(item, dict)
     ]
+
+
+def rebuild_precommit_plan_for_seed_round(
+    plan: dict[str, Any],
+    *,
+    seed_round: int,
+    path_resolver: Callable[[dict[str, Any]], str | Path] | None = None,
+) -> dict[str, Any]:
+    """Rebuild one frozen plan under a fresh independent seed round.
+
+    The opponent set, per-opponent match counts, evaluator identity, gate
+    thresholds and the frozen pool-gate spec are carried over verbatim; ONLY
+    the seed derivation is re-generated (a fresh one-time nonce).  A repair
+    sample therefore cannot replay the failed plan's deck schedule, while the
+    pre-registered decision rule — same gates, same alpha — is unchanged.
+    """
+
+    if not isinstance(plan, dict):
+        raise PrecommitEvalContractError(
+            "precommit plan to rebuild is missing"
+        )
+    settings = plan.get("settings")
+    if not isinstance(settings, dict):
+        raise PrecommitEvalContractError(
+            "precommit plan to rebuild has no settings"
+        )
+    if type(seed_round) is not int or seed_round < 2:
+        raise PrecommitEvalContractError(
+            f"precommit seed rotation requires round >= 2: {seed_round!r}"
+        )
+    opponents = opponents_from_plan(plan)
+    if not opponents:
+        raise PrecommitEvalContractError(
+            "precommit plan to rebuild has no opponents"
+        )
+    hands = int(settings.get("hands_per_match") or 0)
+    matches = int(settings.get("matches_per_opponent") or 0)
+    if hands != 70 or matches < 1:
+        raise PrecommitEvalContractError(
+            "precommit plan to rebuild has an invalid sample shape"
+        )
+    resolver = path_resolver or (
+        lambda item: item.get("path") or item["name"]
+    )
+    return create_precommit_plan(
+        candidate_version=int(plan.get("candidate_version")),
+        source_version=int(plan.get("source_version")),
+        profile_id=str(plan.get("profile_id")),
+        execution_mode=str(plan.get("execution_mode")),
+        evaluation_protocol=str(plan.get("evaluation_protocol")),
+        opponents=opponents,
+        hands_per_match=hands,
+        matches_per_opponent=matches,
+        path_resolver=resolver,
+        require_published_opponents=bool(
+            plan.get("require_published_opponents", True)
+        ),
+        pool_gate=settings.get("pool_gate"),
+        seed_round=seed_round,
+    )
 
 
 def validate_precommit_plan(
@@ -800,6 +893,9 @@ def validate_precommit_plan(
     # (and in the plan digest) instead of silently re-seeding a replay.
     seed_derivation = settings.get("seed_derivation")
     expected_bot_seed_root = None
+    raw_seed_round = settings.get(PRECOMMIT_SEED_ROUND_SETTINGS_KEY, 1)
+    if type(raw_seed_round) is not int or raw_seed_round < 1:
+        issues.append("precommit_seed_round_invalid")
     if seed_derivation == "nonce_sha256_v1":
         from pool_ratchet_gate import (
             derive_bot_seed_root,

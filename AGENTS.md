@@ -1002,7 +1002,14 @@ sibling. Pool reaping is a schema-2 frozen selection snapshot and target
 sequence, including the zero-target case; it cannot recompute victims after a
 crash. Signal producers and daemon consumers share the same stable sidecar
 lock, so publish/read/unlink cannot race. A missing, corrupt, ambiguous, or
-unreprovable handoff is an active launch barrier.
+unreprovable handoff is an active launch barrier. A retryable Archivist failure
+is bounded, not an unbounded loop: the deterministic route backs off
+30s→600s for at most 8 attempts per handoff identity, then emits
+`pipeline.post_publication_archivist_blocked` and parks the orchestrator at the
+typed operator boundary. That path never completes or clears the handoff
+journal, so the launch barrier stays in force (`prepare_generation` remains
+blocked until a real Archivist completion); a process restart resets the
+attempt counter after a repair.
 
 Generation abandonment is a publication-linearized schema-2 transaction, not
 directory cleanup. Its transaction id binds the exact checkpoint CAS identity,
@@ -1349,9 +1356,23 @@ systematically overrated fold-heavy bots. Precommit defaults to
 `PRECOMMIT_DEFAULT_N_GAMES=12` per opponent (the parent gate needs >=6
 samples vs the parent to be reachable), and an exact W/L tie passes only when
 the paired net-chip bootstrap CI LOWER bound is positive
-(`PRECOMMIT_PARENT_TIE_CI_LOWER_MIN`). The rating daemon adds a
-resolve-unresolved-top-pairs scheduling term (conservative-rating top-5
-pairs weighted by rating-deviation-vs-gap unresolvedness).
+(`PRECOMMIT_PARENT_TIE_CI_LOWER_MIN`). Every precommit outcome (pass or fail)
+is persisted as a seed-free, digest-bound evaluation report at
+`RESULTS_DIR/precommit_reports/v<N>.json`; a failed candidate's exact
+five-file artifact remains in the canonical abandon quarantine and is exposed
+through `RESULTS_DIR/diagnostics/v<N>/manifest.json` as `non_publishable`.
+Publication still requires the unchanged native precommit gate to pass. A
+Workers repair round after a precommit failure gets exactly ONE fresh
+independent seed round (`precommit_rework_count >= 1` rebuilds the frozen
+plan with a new one-time nonce; opponents, sample depths and gate thresholds
+are carried over; both scorecards are persisted; a third sample is refused).
+Infrastructure retries keep the same plan. The optional
+`POK_PRECOMMIT_PARENT_N_GAMES` power knob is frozen at plan time and leaves
+the gate thresholds unchanged; it is off by default because the parent
+strict-majority false-admission rate is ~0.39-0.42 at n=12 or n=24, so the
+extra 12 matches mainly reduce variance at ~24 minutes of cost. The rating
+daemon adds a resolve-unresolved-top-pairs scheduling term (conservative-rating
+top-5 pairs weighted by rating-deviation-vs-gap unresolvedness).
 Glicko/H2H/selection rows are published as one immutable content-addressed
 cycle, then copied into a generation evidence snapshot. Match-history cutoffs
 and deterministic replay-spotlight text/citations are frozen in that same

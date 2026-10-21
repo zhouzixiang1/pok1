@@ -33,6 +33,8 @@ monkeypatched on ``orchestrator``); ``asyncio`` is used for the timed sleeps.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import orchestrator as _o
 from blocking_runtime import run_async_off_event_loop
@@ -53,6 +55,110 @@ _SLICE2B_CONSUMER_OWNED_GATES = frozenset({
     "run_critic",
     "run_precommit_eval",
 })
+
+
+# Bounded post-publication Archivist retry (2026-10-21 v585 loop).
+#
+# ``run_archivist`` is the only owner of the durable post-publication handoff,
+# and a failed step legitimately has to be retried.  The deterministic route
+# previously returned a bare ``POST_PUBLICATION_ARCHIVIST_PENDING`` failure on
+# every attempt, the outer loop re-entered the provider stream, and the next
+# cycle ran the route again a few seconds later.  v585 produced 214 identical
+# failures over 4.1 hours (8-30s apart) until a deploy restart reset the
+# observation row that the reproof was comparing against.
+#
+# The retry stays authority-preserving: the handoff journal is never marked
+# completed or cleared here, and the launch barrier (a pending handoff blocks
+# ``prepare_generation`` / successor preparation) is untouched.  What changes
+# is only the retry cadence: exponential backoff with a hard cap, then one
+# typed operator boundary instead of an unbounded loop.  A process restart
+# deliberately resets the counter (an operator restart is the documented safe
+# window after a repair), and a successful route resets it too.
+_ARCHIVIST_PENDING_ERROR = "POST_PUBLICATION_ARCHIVIST_PENDING"
+_ARCHIVIST_RETRY_BASE_SEC = 30.0
+_ARCHIVIST_RETRY_MAX_SEC = 600.0
+_ARCHIVIST_RETRY_MAX_ATTEMPTS = 8
+_ARCHIVIST_RETRY_LOCK = threading.Lock()
+_ARCHIVIST_RETRY_STATE: dict[tuple, dict] = {}
+
+
+def _archivist_pending_retry_key(checkpoint, data) -> tuple:
+    def _int(value) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    version = _int(
+        data.get("version") if isinstance(data, dict) else None
+    ) or _int((checkpoint or {}).get("next_v"))
+    source_v = _int(
+        data.get("source_v") if isinstance(data, dict) else None
+    ) or _int((checkpoint or {}).get("source_v"))
+    identity = str(
+        (checkpoint or {}).get("post_publication_handoff_identity_digest")
+        or (checkpoint or {}).get("post_publication_id")
+        or (checkpoint or {}).get("workflow_run_id")
+        or ""
+    )
+    return (version, source_v, identity)
+
+
+def _archivist_pending_retry_step(checkpoint, data, detail) -> dict:
+    """Record one pending failure and return the bounded retry decision."""
+
+    key = _archivist_pending_retry_key(checkpoint, data)
+    now = time.time()
+    with _ARCHIVIST_RETRY_LOCK:
+        state = _ARCHIVIST_RETRY_STATE.get(key)
+        if state is None:
+            if len(_ARCHIVIST_RETRY_STATE) >= 64:
+                oldest = min(
+                    _ARCHIVIST_RETRY_STATE,
+                    key=lambda item: _ARCHIVIST_RETRY_STATE[item].get(
+                        "last_failed_at", 0.0
+                    ),
+                )
+                _ARCHIVIST_RETRY_STATE.pop(oldest, None)
+            state = {"attempts": 0, "first_failed_at": now}
+            _ARCHIVIST_RETRY_STATE[key] = state
+        state["attempts"] += 1
+        state["last_failed_at"] = now
+        state["last_error"] = str(detail or "")[:500]
+        attempts = int(state["attempts"])
+        delay = min(
+            _ARCHIVIST_RETRY_MAX_SEC,
+            _ARCHIVIST_RETRY_BASE_SEC * (2 ** min(attempts - 1, 8)),
+        )
+        first_failed_at = state["first_failed_at"]
+    return {
+        "attempt": attempts,
+        "max_attempts": _ARCHIVIST_RETRY_MAX_ATTEMPTS,
+        "delay_sec": delay,
+        "exhausted": attempts >= _ARCHIVIST_RETRY_MAX_ATTEMPTS,
+        "first_failed_at": first_failed_at,
+        "last_error": str(detail or "")[:500],
+    }
+
+
+def _reset_post_publication_archivist_retry(checkpoint, data=None) -> None:
+    """Clear the bounded retry state after a non-pending Archivist route."""
+
+    key = _archivist_pending_retry_key(checkpoint, data or {})
+    with _ARCHIVIST_RETRY_LOCK:
+        _ARCHIVIST_RETRY_STATE.pop(key, None)
+
+
+async def _wait_post_publication_archivist_backoff(shutdown_mgr, seconds) -> None:
+    """Sleep the bounded retry delay, remaining responsive to shutdown."""
+
+    remaining = max(0.0, float(seconds))
+    while remaining > 0:
+        if shutdown_mgr is not None and shutdown_mgr.is_shutting_down:
+            return
+        step = min(5.0, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
 
 
 def _slice2b_consumer_in_flight(checkpoint, next_v) -> bool:
@@ -1985,7 +2091,100 @@ async def _try_deterministic_checkpoint_route(
             )
         except Exception:
             pass
+
+        # Bounded post-publication Archivist retry (v585 loop class).  A
+        # pending handoff must be retried, but never at an unbounded cadence:
+        # back off exponentially (cap 600s), then surface one typed operator
+        # boundary.  The durable handoff journal and the launch barrier are
+        # untouched -- only the retry schedule changes.
+        if (
+            next_tool == "run_archivist"
+            and str(error) == _ARCHIVIST_PENDING_ERROR
+        ):
+            retry = _archivist_pending_retry_step(
+                checkpoint, data, data.get("detail")
+            )
+            data["retry"] = retry
+            if retry["exhausted"]:
+                data["recovery_blocked"] = True
+                data["failure_class"] = "post_publication_handoff_blocked"
+                data["action"] = "operator_action_required"
+                data["validation_errors"] = [
+                    "post_publication_archivist_retry_exhausted:"
+                    f"{retry['attempt']}/{retry['max_attempts']}"
+                    f":{str(data.get('detail') or '')[:200]}"
+                ]
+                try:
+                    _o.log_system_event(
+                        "pipeline.post_publication_archivist_blocked",
+                        "error",
+                        (
+                            f"Post-publication Archivist for v{next_v} exhausted "
+                            f"{retry['attempt']} bounded retry attempts; "
+                            "operator action required"
+                        ),
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "stage": stage,
+                            "publication_id": checkpoint.get(
+                                "post_publication_id"
+                            ),
+                            "handoff_identity_digest": checkpoint.get(
+                                "post_publication_handoff_identity_digest"
+                            ),
+                            "attempts": retry["attempt"],
+                            "max_attempts": retry["max_attempts"],
+                            "backoff_sec": retry["delay_sec"],
+                            "first_failed_at": retry["first_failed_at"],
+                            "last_error": retry["last_error"],
+                            "operator_action_required": True,
+                            "handoff_state": "pending",
+                            "handoff_authority_preserved": True,
+                        },
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    _o.log_system_event(
+                        "pipeline.post_publication_archivist_retry_pending",
+                        "warn",
+                        (
+                            f"Post-publication Archivist for v{next_v} remains "
+                            f"pending (attempt {retry['attempt']}/"
+                            f"{retry['max_attempts']}); retrying in "
+                            f"{retry['delay_sec']:g}s"
+                        ),
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "stage": stage,
+                            "attempt": retry["attempt"],
+                            "max_attempts": retry["max_attempts"],
+                            "backoff_sec": retry["delay_sec"],
+                            "retry_after_sec": retry["delay_sec"],
+                            "last_error": retry["last_error"],
+                        },
+                    )
+                except Exception:
+                    pass
+                # Park this route on the backoff instead of falling through to
+                # a fresh provider stream.  The caller records ``routed=True``
+                # and re-enters the same pending-handoff recovery, so the next
+                # attempt runs only after the delay and never prepares a
+                # successor (the pending handoff remains the launch barrier).
+                await _wait_post_publication_archivist_backoff(
+                    shutdown_mgr, retry["delay_sec"]
+                )
+                return True
+
         return False
+
+    if next_tool == "run_archivist":
+        # A non-error Archivist outcome ends this bounded retry episode; the
+        # next pending failure starts a fresh cap.
+        _reset_post_publication_archivist_retry(checkpoint, data)
 
     try:
         route_succeeded = success is not False

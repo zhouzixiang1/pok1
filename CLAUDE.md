@@ -63,8 +63,11 @@ provider ends its stream; only the outer scheduler owns non-MCP
 first/crash-recovery `prepare_next_gen`; an unbound target preimage triggers
 system canonical abandon. Timeout states are active leases: `timed_out`
 abandons, while `infra_timed_out` retries native precommit only after exact
-artifact/gate/baseline reproof and CAS. Post-publication handoff makes the
-provider end its stream while outer deterministic recovery owns Archivist.
+artifact/gate/baseline reproof and CAS. Every precommit outcome is persisted
+as a seed-free report with a non-publishable diagnostic manifest for failed
+candidates; one fresh-seed repair round is allowed, never retry-until-pass.
+Post-publication handoff makes the provider end its stream while outer
+deterministic recovery owns Archivist.
 `--one-gen` follows one workflow through as many fresh streams and deterministic
 stages as needed and never prepares its successor after abandon.
 
