@@ -1361,8 +1361,15 @@ is persisted as a seed-free, digest-bound evaluation report at
 `RESULTS_DIR/precommit_reports/v<N>.json`; a failed candidate's exact
 five-file artifact remains in the canonical abandon quarantine and is exposed
 through `RESULTS_DIR/diagnostics/v<N>/manifest.json` as `non_publishable`.
-Publication still requires the unchanged native precommit gate to pass. A
-Workers repair round after a precommit failure gets exactly ONE fresh
+That manifest is materialized automatically by the lifespan diagnostic scan
+(`web/core/diagnostic_manifest.py`, default every 120s, idempotent) once that
+attempt's completed abandon transaction exists — the terminal receipt must
+postdate the report, so an older quarantine for a re-allocated version is never
+bound. It scans only the one-file-per-version report directory and one
+quarantine receipt walk, never executes/copies candidate code, and owns no
+publication authority. `scripts/export_precommit_reports.py` can still
+backfill. Publication still requires the unchanged native precommit gate to
+pass. A Workers repair round after a precommit failure gets exactly ONE fresh
 independent seed round (`precommit_rework_count >= 1` rebuilds the frozen
 plan with a new one-time nonce; opponents, sample depths and gate thresholds
 are carried over; both scorecards are persisted; a third sample is refused).

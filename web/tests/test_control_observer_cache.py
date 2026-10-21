@@ -629,18 +629,239 @@ def test_control_health_maps_expected_authority_drift_to_retryable_503(
     assert time.monotonic() - started < 0.5
     assert unavailable.status_code == 503
     assert unavailable.headers["Retry-After"] == "1"
-    assert unavailable.json()["detail"] == {
-        "code": "observer_projection_refreshing",
-        "reason": "observer_projection_authority_changed_during_refresh",
-        "retryable": True,
-        "authority": "strict_epoch_projection",
+    detail = unavailable.json()["detail"]
+    assert detail["code"] == "observer_projection_refreshing"
+    assert detail["retryable"] is True
+    assert detail["authority"] == "strict_epoch_projection"
+    # Both reasons are the same fail-closed boundary: either the superseded
+    # build is still in flight for the old key, or the cache already handed the
+    # new key's refresh to its background thread.  Neither may serve old bytes
+    # or park the request; which one is observed depends on whether the
+    # background refresh of the *health* cache had already completed.
+    assert detail["reason"] in {
+        "observer_projection_authority_changed_during_refresh",
+        "observer_projection_authority_rebuild_in_progress",
     }
 
     old_release.set()
     deadline = time.monotonic() + 2
     while status_cache._inflight and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert asyncio.run(control.control_health())["revision"] == 3
+    # After drift the superseding authority is rebuilt on the caches' background
+    # threads; while that runs a deferred HTTP read fails closed fast instead of
+    # parking on it.  Poll like a real client until the new authority resolves,
+    # and assert every observation is a retryable 503 or the superseding build
+    # (never a superseded snapshot served under the new key).
+    resolved = None
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        response = client.get("/api/control/health")
+        if response.status_code == 200:
+            resolved = response.json()
+            break
+        assert response.status_code == 503
+        assert response.json()["detail"]["retryable"] is True
+        time.sleep(0.02)
+    assert resolved is not None, "superseding authority never resolved"
+    assert resolved["revision"] >= 3
+
+
+def test_observer_cache_deferred_mode_never_builds_inline_after_authority_move():
+    from server.routes.control import (
+        _ObserverProjectionUnavailable,
+        _ObserverSingleflightCache,
+    )
+
+    cache = _ObserverSingleflightCache(
+        ttl_sec=1.0,
+        stale_while_revalidate_sec=60.0,
+    )
+    assert cache.get(lambda: {"revision": 1}, key="content-a") == {
+        "revision": 1
+    }
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def builder():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        assert release.wait(timeout=5)
+        return {"revision": 2}
+
+    started = time.monotonic()
+    with pytest.raises(_ObserverProjectionUnavailable) as moved:
+        cache.get(builder, key="content-b", allow_inline_rebuild=False)
+    # The authority move must not run the multi-second builder on the caller's
+    # thread; it hands the refresh slot to the background daemon and fails
+    # closed (retryable) immediately.
+    assert time.monotonic() - started < 0.1
+    assert "authority_rebuild_in_progress" in str(moved.value)
+    assert entered.wait(timeout=1)
+
+    # A same-key follower arriving while that rebuild runs fails closed just as
+    # fast; it never parks on the build and never receives content-a bytes.
+    started = time.monotonic()
+    with pytest.raises(_ObserverProjectionUnavailable) as follower:
+        cache.get(builder, key="content-b", allow_inline_rebuild=False)
+    assert time.monotonic() - started < 0.1
+    assert "authority_rebuild_in_progress" in str(follower.value)
+    assert calls == 1
+
+    release.set()
+    deadline = time.monotonic() + 2
+    while cache._inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    # Once the background rebuild lands, same-key reads serve it (and its
+    # bounded stale window) without another build.
+    assert cache.get(builder, key="content-b", allow_inline_rebuild=False) == {
+        "revision": 2
+    }
+    assert cache.get(builder, key="content-b", allow_inline_rebuild=False) == {
+        "revision": 2
+    }
+    assert calls == 1
+
+
+def test_control_status_serves_stale_snapshot_while_slow_build_runs(
+    monkeypatch,
+    client,
+):
+    from server.routes import control
+
+    status_cache = control._ObserverSingleflightCache(
+        ttl_sec=0.01,
+        stale_while_revalidate_sec=5.0,
+    )
+    monkeypatch.setattr(control, "_OBSERVER_STATUS_CACHE", status_cache)
+    monkeypatch.setattr(control, "_observer_cache_key", lambda **_kwargs: "same")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def builder():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return {"revision": calls}
+
+    monkeypatch.setattr(control, "_observer_control_status_snapshot", builder)
+
+    assert client.get("/api/control/status").json() == {"revision": 1}
+    time.sleep(0.02)
+
+    started = time.monotonic()
+    stale = client.get("/api/control/status")
+    # A slow revalidation must never block the status poll: the prior verified
+    # same-key snapshot is returned immediately and one background refresh
+    # starts.
+    assert time.monotonic() - started < 0.5
+    assert stale.status_code == 200
+    assert stale.json() == {"revision": 1}
+    assert entered.wait(timeout=1)
+
+    release.set()
+    deadline = time.monotonic() + 2
+    while status_cache._inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert status_cache._value is not None
+    assert client.get("/api/control/status").json() == {"revision": 2}
+
+
+def test_control_status_authority_move_fails_closed_quickly(
+    monkeypatch,
+    client,
+):
+    from server.routes import control
+
+    status_cache = control._ObserverSingleflightCache(
+        ttl_sec=1.0,
+        stale_while_revalidate_sec=60.0,
+    )
+    monkeypatch.setattr(control, "_OBSERVER_STATUS_CACHE", status_cache)
+    current_key = ["content-a"]
+    monkeypatch.setattr(
+        control,
+        "_observer_cache_key",
+        lambda **_kwargs: current_key[0],
+    )
+    monkeypatch.setattr(control, "_OBSERVER_HTTP_RETRY_DELAY_SEC", 0.001)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def builder():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return {"revision": calls}
+
+    monkeypatch.setattr(control, "_observer_control_status_snapshot", builder)
+
+    assert client.get("/api/control/status").json() == {"revision": 1}
+
+    current_key[0] = "content-b"
+    started = time.monotonic()
+    moved = client.get("/api/control/status")
+    assert time.monotonic() - started < 1.0
+    assert moved.status_code == 503
+    assert moved.headers["Retry-After"] == "1"
+    # The superseded authority's bytes are never served under the new key.
+    assert moved.json()["detail"] == {
+        "code": "observer_projection_refreshing",
+        "reason": "observer_projection_authority_rebuild_in_progress",
+        "retryable": True,
+        "authority": "strict_epoch_projection",
+    }
+    assert entered.wait(timeout=1)
+
+    # Every poll during the background rebuild stays fast and fail-closed.
+    started = time.monotonic()
+    again = client.get("/api/control/status")
+    assert time.monotonic() - started < 0.5
+    assert again.status_code == 503
+
+    release.set()
+    deadline = time.monotonic() + 2
+    while status_cache._inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert status_cache._value is not None
+    resolved = client.get("/api/control/status")
+    assert resolved.status_code == 200
+    assert resolved.json() == {"revision": 2}
+    assert calls == 2
+
+
+def test_control_status_cold_cache_still_builds_inline(monkeypatch, client):
+    from server.routes import control
+
+    status_cache = control._ObserverSingleflightCache(
+        ttl_sec=1.0,
+        stale_while_revalidate_sec=60.0,
+    )
+    monkeypatch.setattr(control, "_OBSERVER_STATUS_CACHE", status_cache)
+    monkeypatch.setattr(control, "_observer_cache_key", lambda **_kwargs: "cold")
+    calls = 0
+
+    def builder():
+        nonlocal calls
+        calls += 1
+        return {"revision": calls}
+
+    monkeypatch.setattr(control, "_observer_control_status_snapshot", builder)
+
+    # First read of a cold (never verified) cache keeps the existing behavior:
+    # it builds inline and returns the snapshot instead of a retryable 503.
+    first = client.get("/api/control/status")
+    assert first.status_code == 200
+    assert first.json() == {"revision": 1}
+    assert calls == 1
 
 
 def test_launch_barrier_uses_fresh_projection_not_observer_cache(monkeypatch):

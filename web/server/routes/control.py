@@ -66,6 +66,17 @@ class _ObserverSingleflightCache:
     content key is unchanged.  One daemon refresh then runs in the background.
     A changed key never consumes stale bytes, and launch/mutation paths do not
     call this cache at all.
+
+    ``allow_inline_rebuild=False`` is the HTTP observer mode.  Once this cache
+    has verified any snapshot, a request that finds no usable same-key snapshot
+    (an authority move, or a stale window that already elapsed) never runs the
+    multi-second builder on the request thread: it hands the single refresh slot
+    to a background daemon thread and fails closed with a retryable
+    ``_ObserverProjectionUnavailable`` immediately.  Same-key requests keep
+    receiving the verified snapshot (stale-while-revalidate) while that refresh
+    runs.  The very first read of a cold/invalidated cache still builds inline
+    so first-load and post-mutation semantics are unchanged, and internal
+    builders (``/health`` reuses ``/status``) may always build inline.
     """
 
     def __init__(
@@ -89,6 +100,10 @@ class _ObserverSingleflightCache:
         self._pending_builder: Callable[[], dict[str, Any]] | None = None
         self._generation = 0
         self._key: object = None
+        # True once a build completed for the current (post-invalidate)
+        # authority generation.  It survives a content-key move so a rebuild
+        # after local authority churn is never mistaken for a cold start.
+        self._verified = False
 
     def _start_pending_refresh_locked(self) -> None:
         """Hand the single refresh slot to the newest invalidated authority."""
@@ -151,6 +166,7 @@ class _ObserverSingleflightCache:
                 self._error = None
                 self._error_expires_at = 0.0
                 self._pending_builder = None
+                self._verified = True
             else:
                 self._start_pending_refresh_locked()
             self._condition.notify_all()
@@ -164,6 +180,7 @@ class _ObserverSingleflightCache:
             self._error_expires_at = 0.0
             self._pending_builder = None
             self._key = None
+            self._verified = False
             self._condition.notify_all()
 
     def get(
@@ -171,8 +188,10 @@ class _ObserverSingleflightCache:
         builder: Callable[[], dict[str, Any]],
         *,
         key: object = None,
+        allow_inline_rebuild: bool = True,
     ) -> dict[str, Any]:
         cached_value: dict[str, Any] | None = None
+        deferred_reason: str | None = None
         while True:
             with self._condition:
                 if self._key != key:
@@ -226,6 +245,26 @@ class _ObserverSingleflightCache:
                             daemon=True,
                         ).start()
                     break
+                if not allow_inline_rebuild and self._verified:
+                    # HTTP observer mode: a prior snapshot was verified for this
+                    # process (possibly under an earlier content key) and none is
+                    # usable now (authority move, elapsed stale window, or a
+                    # prior refresh failure).  Never build on the request
+                    # thread -- that is the 5-20s projection stall.  Keep one
+                    # background rebuild in flight (respecting the short error
+                    # backoff) and fail closed with a retryable reason; later
+                    # same-key polls get the verified snapshot (stale-while-
+                    # revalidate) while its refresh runs.
+                    if not self._inflight and not (
+                        self._error is not None
+                        and now < self._error_expires_at
+                    ):
+                        self._pending_builder = builder
+                        self._start_pending_refresh_locked()
+                    deferred_reason = (
+                        "observer_projection_authority_rebuild_in_progress"
+                    )
+                    break
                 if self._error is not None and now < self._error_expires_at:
                     raise RuntimeError(self._error)
                 if self._inflight:
@@ -276,6 +315,8 @@ class _ObserverSingleflightCache:
                 generation = self._generation
                 self._inflight_generation = generation
                 break
+        if deferred_reason is not None:
+            raise _ObserverProjectionUnavailable(deferred_reason)
         if cached_value is not None:
             # Copy outside the condition: status payloads are bounded, but a
             # deep copy must not serialize unrelated cache readers.
@@ -318,6 +359,7 @@ class _ObserverSingleflightCache:
                 self._error = None
                 self._error_expires_at = 0.0
                 self._pending_builder = None
+                self._verified = True
             else:
                 self._start_pending_refresh_locked()
             self._condition.notify_all()
@@ -2279,12 +2321,19 @@ def _observer_control_status_snapshot() -> dict[str, Any]:
     )
 
 
-def _control_status_snapshot() -> dict[str, Any]:
-    """Short-lived singleflight snapshot for read-only HTTP observers."""
+def _control_status_snapshot(*, allow_inline_rebuild: bool = True) -> dict[str, Any]:
+    """Short-lived singleflight snapshot for read-only HTTP observers.
+
+    HTTP routes pass ``allow_inline_rebuild=False`` so a content-key move is
+    rebuilt on the cache's background thread and the request fails closed
+    immediately instead of blocking 5-20s on the projection builder.  Internal
+    builders (``/health`` embeds this exact snapshot) keep the inline default.
+    """
 
     return _OBSERVER_STATUS_CACHE.get(
         _observer_control_status_snapshot,
         key=_observer_cache_key(),
+        allow_inline_rebuild=allow_inline_rebuild,
     )
 
 
@@ -2566,7 +2615,7 @@ async def _reserve_runtime_launch_owner() -> dict[str, Any]:
 @router.get("/status")
 async def control_status():
     return await _run_control_observer_http_snapshot(
-        _control_status_snapshot,
+        lambda: _control_status_snapshot(allow_inline_rebuild=False),
         thread_name_prefix="control-status-snapshot",
     )
 
@@ -2578,10 +2627,11 @@ def _fresh_control_health_snapshot() -> dict[str, Any]:
     return _health_summary(status)
 
 
-def _control_health_snapshot() -> dict[str, Any]:
+def _control_health_snapshot(*, allow_inline_rebuild: bool = True) -> dict[str, Any]:
     return _OBSERVER_HEALTH_CACHE.get(
         _fresh_control_health_snapshot,
         key=_observer_cache_key(health=True),
+        allow_inline_rebuild=allow_inline_rebuild,
     )
 
 
@@ -2589,7 +2639,7 @@ def _control_health_snapshot() -> dict[str, Any]:
 async def control_health():
     """Return a single read-only health snapshot for observers/supervisors."""
     return await _run_control_observer_http_snapshot(
-        _control_health_snapshot,
+        lambda: _control_health_snapshot(allow_inline_rebuild=False),
         thread_name_prefix="control-health-snapshot",
     )
 

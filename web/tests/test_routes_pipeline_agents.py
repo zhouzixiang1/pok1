@@ -391,7 +391,12 @@ class TestPipelineAgents:
 
         monkeypatch.setattr(pipeline, "load_strict_pipeline_checkpoint", slow_checkpoint)
         monkeypatch.setattr(pipeline, "read_strict_worker_failures", lambda *_a, **_k: [])
-        monkeypatch.setattr(control, "_control_health_snapshot", lambda: {"overall": "healthy"})
+        monkeypatch.setattr(
+            control,
+            "_control_health_snapshot",
+            # HTTP routes pass allow_inline_rebuild=False (observer mode).
+            lambda **_kwargs: {"overall": "healthy"},
+        )
         pipeline._AGENTS_OBSERVER_CACHE.clear()
 
         async def exercise():

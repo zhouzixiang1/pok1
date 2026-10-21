@@ -424,6 +424,24 @@ async def lifespan(app: FastAPI):
         _hyg_log.getLogger("pok.disk").warning(
             "disk hygiene launch failed: %s", _hyg_exc)
 
+    # Diagnostic manifests: a low-frequency, read-only scan that materializes
+    # RESULTS_DIR/diagnostics/v<N>/manifest.json for an abandoned precommit
+    # failure once the canonical abandon quarantine exists. It never executes
+    # or copies candidate code and owns no publication authority. Cancelled in
+    # the finally below alongside the saturator/janitor.
+    diagnostic_task = None
+    try:
+        from diagnostic_manifest import run_diagnostic_manifest_loop
+
+        diagnostic_task = asyncio.create_task(
+            run_diagnostic_manifest_loop(shutdown_mgr)
+        )
+        app.state.diagnostic_manifest_task = diagnostic_task
+    except Exception as _diag_exc:
+        import logging as _diag_log
+        _diag_log.getLogger("pok.diagnostics").warning(
+            "diagnostic manifest launch failed: %s", _diag_exc)
+
     # Memory heartbeat: the process historically grows to its MemoryMax
     # ceiling over hours (2026-08-11 finding) with zero in-code
     # observability, so every growth cycle was a black box. A periodic
@@ -713,6 +731,13 @@ async def lifespan(app: FastAPI):
             _hyg.cancel()
             try:
                 await asyncio.wait_for(_hyg, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        _diag = getattr(app.state, "diagnostic_manifest_task", None)
+        if _diag is not None and not _diag.done():
+            _diag.cancel()
+            try:
+                await asyncio.wait_for(_diag, timeout=5)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         _mem = getattr(app.state, "memory_heartbeat_task", None)

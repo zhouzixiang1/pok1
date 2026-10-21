@@ -202,3 +202,57 @@ poll-supplement only for multi-slot UI. Staging bots may project
 `POST /api/control/abandon` (`abandon_active_generation`). Cloud
 `POK_GLOBAL_LLM_CONCURRENCY=2` (Phase B) is unrelated to observer latency but
 is co-deployed with this projection in Phase E.
+
+## Follow-up (2026-10-21): `/status` authority-move rebuilds leave the request
+
+Measured on the live cloud checkout (`web/core/results/pipeline_state.json`
+~4.3 MB at checkpoint revision 18):
+
+- `_sync_evolution_fields(ledger_fresh=False)` — the observer build — takes
+  **4.8–6.3 s** (`strict_epoch_projection` ~1.3–1.5 s called for the bracket
+  sample plus the `_refined_operator_transition` resample, and
+  `unpublished_candidate_versions` ~1.3 s; `_attach_phase_a_projections`
+  ~0.1 s, `_llm_usage_by_caliber_projection` ~0.2 s).
+- `_observer_cache_key()` itself takes **0.07–0.12 s** per request (it runs
+  `version_namespace_authority()`: one `git for-each-ref` plus two
+  `git rev-parse` spawns per paired tag).
+- Same-key stale-while-revalidate worked (a 5 s poll loop served 0.08–0.4 s
+  hits and one background revalidation per TTL), but **any content-key move**
+  (checkpoint/handoff/stability token writes during an active generation)
+  cleared the verified snapshot and the changed-key request rebuilt **inline**
+  on the request thread: a 3 s stand-in builder returned a normal 3 s 200, and
+  the real build measured 5–6 s idle / 5–20 s under match+LLM load. That is the
+  reported `curl --max-time 20` stall.
+
+Fix (`web/server/routes/control.py`): `_ObserverSingleflightCache.get` gained
+`allow_inline_rebuild` (default `True`, preserving every internal/legacy
+caller) and a `_verified` flag (set on any successful build, cleared by
+`invalidate()`). The HTTP observer routes pass `allow_inline_rebuild=False`:
+
+- **Cold start / post-mutation**: the first read of a never-verified cache still
+  builds inline (unchanged first-load and mutation-fresh semantics).
+- **Authority move or elapsed stale window after a verified snapshot**: the
+  request never runs the builder; it hands the one refresh slot to the
+  background daemon thread and fails closed immediately with the retryable
+  `observer_projection_authority_rebuild_in_progress` reason (the HTTP layer
+  still emits the existing 503 `observer_projection_refreshing`). Repeated
+  polls during the rebuild fail closed just as fast and never receive the
+  superseded key's bytes.
+- **Same-key requests** keep returning the last verified snapshot
+  (stale-while-revalidate) while its background refresh runs; once the new key's
+  build lands, that snapshot is served and refreshed normally.
+- `/health` embeds the same cached status snapshot through the default
+  inline-allowed builder, so health rebuilds are never starved by the status
+  cache's deferred mode.
+
+Invariants preserved: no cross-key bytes, no fabricated identity, launch and
+mutation paths still use the uncached `_fresh_control_status_snapshot`, and the
+`strict_epoch_projection` sample count/bracketing is untouched.
+
+Tests (`web/tests/test_control_observer_cache.py`): deferred authority-move
+fail-fast + single background builder + same-key new snapshot; HTTP
+`/status` stale fast return during a slow build; HTTP `/status` drift 503 that
+does not serve old bytes and converges on the superseding build; cold-cache
+inline build unchanged. `web/tests/conftest.py` resets the process-global
+observer caches per `client` fixture so a warmed cache from one test cannot
+turn another test's first read into an authority move.

@@ -503,7 +503,12 @@ class TestPipelineStrengthJobs:
 
         monkeypatch.setattr(pipeline, "load_strict_strength_snapshot", slow_snapshot)
         monkeypatch.setattr(pipeline, "_daemon_health_snapshot", lambda: {"alive": False})
-        monkeypatch.setattr(control, "_control_health_snapshot", lambda: {"overall": "healthy"})
+        monkeypatch.setattr(
+            control,
+            "_control_health_snapshot",
+            # HTTP routes pass allow_inline_rebuild=False (observer mode).
+            lambda **_kwargs: {"overall": "healthy"},
+        )
         pipeline._STRENGTH_OBSERVER_CACHE.clear()
 
         async def exercise():

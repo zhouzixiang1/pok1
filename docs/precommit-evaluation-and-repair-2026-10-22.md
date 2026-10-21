@@ -47,6 +47,39 @@ candidate preserved by the canonical abandon transaction. It is marked
 by this exporter. v589's report and manifest were generated from the real
 ledger on 2026-10-22.
 
+## Automatic diagnostic manifests
+
+The report is written while precommit fails, but the quarantine directory only
+appears later when the canonical abandon transaction runs. The web lifespan
+therefore starts a low-frequency scanner
+(`web/core/diagnostic_manifest.py::run_diagnostic_manifest_loop`) beside the
+LLM saturator and disk janitor, and cancels it on shutdown:
+
+- `POK_DIAGNOSTIC_MANIFEST_ENABLED` (default `1`);
+- `POK_DIAGNOSTIC_MANIFEST_INTERVAL_SEC` (default `120`, clamped to 60-300).
+
+Each cycle lists only `RESULTS_DIR/precommit_reports/v<N>.json` (the bounded,
+one-file-per-version projection of precommit ledger events) and makes one
+receipt walk over `policy_epoch_abandon_transactions/`. For every report whose
+`precommit_passed` is exactly `False`, it writes the manifest once a
+*completed* abandon transaction for that version postdates the report (terminal
+`receipt.json` proves `candidate_state=quarantine` and `checkpoint_cleared`;
+its mtime is the abandon time). An older quarantine left by a previous attempt
+at a re-allocated version is never bound, so the manifest always waits for the
+current attempt's abandon. It never rescans the multi-hundred-MB
+`candidates.jsonl`, never copies/imports/executes candidate code, never writes
+reports/checkpoints/abandon transactions, and never grants publication
+authority. The operation is idempotent: a manifest already bound to the same
+`report_digest` and quarantine snapshot is left byte-identical; a newer failed
+report (e.g. a repair round) rewrites only the manifest digest. A later passing
+report for the same version suppresses manifest creation. Failures are
+logged and never block the lifespan or the pipeline.
+
+Tests: `web/tests/test_diagnostic_manifest.py` covers report-without-quarantine
+(no manifest), quarantine arrival (manifest written, report bytes untouched),
+idempotency, digest refresh, passing-report suppression, and malformed/symlink
+report rejection.
+
 ## One fresh-seed repair round
 
 `POK_MAX_PRECOMMIT_REWORK_ROUNDS=1` now means:
@@ -86,15 +119,19 @@ fixed by b50e19c8; the route is now bounded as well: 30s exponential backoff,
 path never completes or clears the handoff journal, so the launch barrier
 remains in force until a real Archivist completion.
 
-## Saturator cap
+## Saturator consumption (operator directive 2026-10-21)
 
-`POK_LLM_SATURATOR_MAX_INFLIGHT` is now 4 (was 8). Measured 7d: saturator was
-91% of calls and 95.5% of tokens; capping at 4 cuts stream-hours ~32% and
-requests ~30%, lowers 5h quota burn ~18-25%, and still leaves 3 permits at
-AIMD limit 7 (a saturator packet is preemptible after 15s). Do not go to 2:
-p50 streams are ~281s and pipeline roles can consume every permit.
-`POK_LLM_SATURATOR_MAX_READ_CALLS` and `POK_GLOBAL_LLM_CONCURRENCY` are
-unchanged.
+The earlier 8 -> 4 conservation cap is removed. Per the operator directive,
+LLM consumption must not be clamped and may exhaust the provider quota early:
+`POK_LLM_SATURATOR_MAX_INFLIGHT=16` may use the entire global permit pool
+(`POK_GLOBAL_LLM_CONCURRENCY=16`) whenever pipeline roles are idle. The
+provider's 1302/1308 response and the AIMD remain the dynamic bound;
+`POK_LLM_QUOTA_WINDOW_BUDGET_TOKENS` stays 0 (no pacer).
+`POK_LLM_SATURATOR_MIN_FREE_MB=300` is only a last-resort cgroup/OOM guard,
+not a throughput cap. Raise `GLOBAL` beyond 16 only with memory monitoring:
+the cgroup MemoryMax is 3.4G and each stream accounts ~130MB.
+`POK_LLM_SATURATOR_MAX_READ_CALLS=40` is unchanged (per-stream read budget,
+not concurrency).
 
 ## Verification
 
@@ -102,6 +139,7 @@ unchanged.
 cd web
 TMPDIR=/tmp python -m pytest \
   tests/test_precommit_report_export.py \
+  tests/test_diagnostic_manifest.py \
   tests/test_precommit_independent_seed_repair_round_20261022.py \
   tests/test_precommit_attempt_checkpoint.py \
   tests/test_precommit_eval_contract.py \

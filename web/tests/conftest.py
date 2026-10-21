@@ -222,6 +222,15 @@ def app():
 @pytest.fixture
 def client(app):
     """Synchronous test client -- no lifespan, no orchestrator."""
+    # The observer projection caches are process-global.  A prior test that
+    # warmed them under its own monotonic/content key would otherwise make this
+    # test's first authority key look like an authority *move* (retryable 503 +
+    # background rebuild) instead of the cold-start read it is written against.
+    # Reset them so every client-based test starts from the canonical
+    # cold-cache behavior.
+    from server.routes import control
+
+    control._invalidate_observer_projection_cache()
     # Operator mutation routes require the same boundary as production: an
     # actual loopback peer and an explicit same-origin browser Origin.  Keep
     # ordinary route tests realistic while adversarial tests override either

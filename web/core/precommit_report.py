@@ -244,18 +244,77 @@ def write_precommit_report(
     return path
 
 
-def _quarantined_candidate(results_dir: str | Path, version: int) -> Path | None:
+def quarantined_candidate_index(results_dir: str | Path) -> dict[int, Path]:
+    """Map every abandoned version to its canonical quarantine candidate dir.
+
+    One directory walk per caller instead of one walk per version.  The first
+    sorted candidate receipt for a version wins, exactly matching
+    ``_quarantined_candidate``.  Corrupt or foreign receipts are skipped.
+    """
+
     root = Path(results_dir) / ABANDON_TXN_DIR_NAME
+    index: dict[int, Path] = {}
     if not root.is_dir():
-        return None
+        return index
     for receipt in sorted(root.glob("*/candidate/policy_epoch_receipt.json")):
         try:
             payload = json.loads(receipt.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
-        if payload.get("version") == version:
-            return receipt.parent
-    return None
+        version = payload.get("version")
+        if type(version) is not int:
+            continue
+        index.setdefault(version, receipt.parent)
+    return index
+
+
+def quarantined_candidate_entries(
+    results_dir: str | Path,
+) -> dict[int, list[tuple[float, Path]]]:
+    """Map version -> *completed* abandon quarantines, newest first.
+
+    A transaction counts only when its terminal ``receipt.json`` proves the
+    candidate is in quarantine and the checkpoint was cleared, and the
+    quarantined candidate receipt is readable.  ``abandoned_at`` is the
+    terminal receipt mtime, which is strictly after the precommit evaluation
+    that caused the abandon.  A batch caller (the automatic diagnostic scan)
+    uses that ordering to bind a report to the quarantine created *after* it
+    instead of an older quarantine left by a previous attempt at the same
+    re-allocated version.
+    """
+
+    root = Path(results_dir) / ABANDON_TXN_DIR_NAME
+    entries: dict[int, list[tuple[float, Path]]] = {}
+    if not root.is_dir():
+        return entries
+    for receipt in sorted(root.glob("*/receipt.json")):
+        candidate = receipt.parent / "candidate"
+        try:
+            terminal = json.loads(receipt.read_text(encoding="utf-8"))
+            if (
+                terminal.get("candidate_state") != "quarantine"
+                or terminal.get("checkpoint_cleared") is not True
+            ):
+                continue
+            payload = json.loads(
+                (candidate / "policy_epoch_receipt.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            abandoned_at = receipt.stat().st_mtime
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        version = payload.get("version")
+        if type(version) is not int:
+            continue
+        entries.setdefault(version, []).append((abandoned_at, candidate))
+    for rows in entries.values():
+        rows.sort(key=lambda item: item[0], reverse=True)
+    return entries
+
+
+def _quarantined_candidate(results_dir: str | Path, version: int) -> Path | None:
+    return quarantined_candidate_index(results_dir).get(int(version))
 
 
 def write_diagnostic_manifest(
@@ -265,15 +324,33 @@ def write_diagnostic_manifest(
     report_path_value: Path,
     report_digest: str | None,
     source_v: int | None = None,
+    candidate_dir: str | Path | None = None,
 ) -> Path | None:
     """Point at the canonical abandon quarantine for a failed candidate.
 
     The candidate code is never copied or executed here; the abandon
     transaction already preserves the exact five-file artifact.  The manifest
     makes that non-publishable snapshot discoverable next to its report.
+
+    ``candidate_dir`` lets a batch caller reuse one quarantine index walk; it
+    is re-validated against the receipt's version so a stale or foreign path
+    can never be bound.
     """
 
-    candidate = _quarantined_candidate(results_dir, version)
+    if candidate_dir is None:
+        candidate = _quarantined_candidate(results_dir, version)
+    else:
+        candidate = Path(candidate_dir)
+        try:
+            payload = json.loads(
+                (candidate / "policy_epoch_receipt.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if payload.get("version") != int(version) or not candidate.is_dir():
+            return None
     if candidate is None:
         return None
     root = Path(results_dir)
@@ -344,6 +421,7 @@ def export_precommit_reports(
                 continue
             latest[version] = entry
     paths = []
+    quarantine_index = quarantined_candidate_index(root)
     for version in sorted(latest):
         path = write_precommit_report(
             root, latest[version], generated_at=generated_at
@@ -351,12 +429,14 @@ def export_precommit_reports(
         if path is not None:
             paths.append(path)
             report = json.loads(path.read_text(encoding="utf-8"))
-            if not report.get("publishable"):
+            candidate = quarantine_index.get(version)
+            if not report.get("publishable") and candidate is not None:
                 write_diagnostic_manifest(
                     root,
                     version=version,
                     report_path_value=path,
                     report_digest=report.get("report_digest"),
                     source_v=report.get("source_v"),
+                    candidate_dir=candidate,
                 )
     return paths

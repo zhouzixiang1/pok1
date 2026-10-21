@@ -672,7 +672,10 @@ class TestStatus:
                 monkeypatch.setattr(
                     control,
                     builder_name,
-                    lambda: time.sleep(0.08) or {"snapshot": builder_name},
+                    # Production HTTP routes pass allow_inline_rebuild=False to
+                    # the snapshot helpers; the fake must accept it and still
+                    # build inline here because it is the cold-start read.
+                    lambda **_kwargs: time.sleep(0.08) or {"snapshot": builder_name},
                 )
                 ticked = asyncio.Event()
 
