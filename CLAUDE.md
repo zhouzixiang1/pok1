@@ -23,7 +23,11 @@ branches cut from this line are merged back into `origin/tencent-cloud-runtime`
 and deleted once the work lands (see the branch-management working rule in
 `AGENTS.md`); keep the branch tree clean. The FastAPI lifespan runs
 `disk_hygiene` beside the LLM saturator so non-authority runtime caches
-cannot fill a small VM (see `web/core/disk_hygiene.py`).
+cannot fill a small VM (see `web/core/disk_hygiene.py`). Publication rotation
+is copy-only; the gated events auto-compression step may re-head
+`events.jsonl` only after a digest-bound gzip batch is committed, and only at
+the critical disk tier inside an open janitor window (see
+`docs/events-auto-compression-2026-10-21.md`).
 
 Strict Master/Reviewer/Critic calls never share a flat role log. Each accepted
 call binds exactly one generation-scoped `strict_invocations/<invocation_id>`
