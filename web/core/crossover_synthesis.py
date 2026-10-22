@@ -100,11 +100,39 @@ def ensure_synthesis_effect(
     input_payload: dict[str, Any],
     definition_version: int,
 ) -> dict[str, Any]:
-    """Durably request one immutable synthesis effect, idempotently."""
+    """Durably request one immutable synthesis effect, idempotently.
+
+    Re-entry reuse (2026-10-22, v593/v594/v596): a provider outage that kills
+    the stream mid-attempt makes the deterministic route re-enter run_crossover
+    for the SAME effect id.  The rebuild then produces different bytes -- the
+    isolated workspace path carries a fresh random suffix, so even a
+    semantically identical rebuild cannot be byte-equal -- and feeding those
+    bytes to ``request_effect`` turned every such re-entry into an
+    unrecoverable ``WorkflowConflict`` (three generations abandoned in one
+    night of quota storms).  An existing effect with the SAME semantic
+    identity (workflow_run_id, attempt, parents) is now returned as-is: the
+    caller MUST adopt the frozen ``input_payload`` (prompt, invocation_id)
+    instead of its freshly built one.  Identity drift still goes through
+    ``request_effect``'s authoritative full-input equality check.
+    """
     store.ensure_instance(
         run_id,
         definition_version=int(definition_version),
     )
+    existing = None
+    try:
+        existing = store.effect(effect_id)
+    except Exception:
+        existing = None
+    if isinstance(existing, dict) and existing.get("input_payload"):
+        frozen = existing["input_payload"]
+        fresh = input_payload or {}
+        if (
+            frozen.get("workflow_run_id") == fresh.get("workflow_run_id")
+            and frozen.get("attempt") == fresh.get("attempt")
+            and (frozen.get("parents") or {}) == (fresh.get("parents") or {})
+        ):
+            return existing
     # request_effect performs the authoritative full-input equality check.  Its
     # existing-row fast path is a raw SQLite row, so always reread through the
     # decoded public accessor before returning to the domain layer.

@@ -1299,6 +1299,25 @@ async def _run_crossover(
                 input_payload=synthesis_input,
                 definition_version=WORKER_WORKFLOW_DEFINITION_VERSION,
             )
+            frozen_synthesis_input = synthesis_effect.get("input_payload") or {}
+            synthesis_reused_frozen_input = False
+            if (
+                isinstance(frozen_synthesis_input, dict)
+                and frozen_synthesis_input.get("invocation_id")
+                and frozen_synthesis_input.get("invocation_id") != invocation_id
+            ):
+                # Provider-outage re-entry (2026-10-22, v593/v594/v596): the
+                # effect already exists for this attempt; the freshly rebuilt
+                # input differs only by unhashed context (the isolated
+                # workspace path carries a fresh random suffix).  Adopt the
+                # frozen input bytes -- prompt and invocation_id -- so the
+                # re-dispatch is byte-identical to what the effect recorded
+                # and the same id can never be re-entered with a different
+                # prompt.  Identity drift never reaches here (it still raises
+                # WorkflowConflict inside ensure_synthesis_effect).
+                synthesis_input = frozen_synthesis_input
+                invocation_id = str(frozen_synthesis_input["invocation_id"])
+                synthesis_reused_frozen_input = True
         except WorkflowBusy as exc:
             shutil.rmtree(target_dir, ignore_errors=True)
             return _crossover_synthesis_in_progress(
@@ -1431,10 +1450,31 @@ async def _run_crossover(
                     f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v} "
                     f"[{invocation_id}]"
                 )
+                # Re-entry dispatch renders the FROZEN prompt bytes (the
+                # effect's recorded contract), not a re-render from live
+                # renderer inputs whose workspace paths differ; the echo
+                # producer is replay-deterministic (validation re-invokes it
+                # from the stored inputs and gets the same bytes).  Kept as
+                # ONE registered call site: the producer/inputs pair is chosen
+                # conditionally, never by adding a second render_llm_prompt
+                # caller (the role-contract registry counts call sites).
+                reuse_frozen_prompt = (
+                    str((synthesis_input or {}).get("prompt") or "")
+                    if synthesis_reused_frozen_input
+                    else ""
+                )
                 rendered_prompt = render_llm_prompt(
                     crossover_role,
-                    producer=_render_crossover_provider_prompt,
-                    renderer_inputs=crossover_renderer_inputs,
+                    producer=(
+                        (lambda **_inputs: reuse_frozen_prompt)
+                        if reuse_frozen_prompt
+                        else _render_crossover_provider_prompt
+                    ),
+                    renderer_inputs=(
+                        {"frozen_prompt": reuse_frozen_prompt}
+                        if reuse_frozen_prompt
+                        else crossover_renderer_inputs
+                    ),
                 )
                 await run_claude_query(
                     rendered_prompt, [], ui,

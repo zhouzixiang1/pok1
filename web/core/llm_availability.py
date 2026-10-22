@@ -73,12 +73,14 @@ _GLM_QUOTA_CODE = "[1308]"
 # durable availability pause (``llm_availability_store.persist_llm_pause``)
 # and the saturator's non-quota launch pause — so they can never diverge.
 _SERVICE_COOLDOWN_BASE_SECONDS = 8
-# Operator directive 2026-10-21: cap the FREQUENCY-class (1302/bare-429)
-# cooldown ceiling at 30s (env-tunable) instead of the historical 120s --
-# the provider enforces the real rate; long self-imposed sleeps only idle the
-# pool. The quota class (1308) is untouched: its waits follow the provider
-# reset timestamp, never this curve.
-_SERVICE_COOLDOWN_CAP_SECONDS = max(_SERVICE_COOLDOWN_BASE_SECONDS, int(os.environ.get("POK_LLM_SERVICE_COOLDOWN_CAP_SECONDS", "30")))
+# The shared curve keeps its historical 120s ceiling: it is the PIPELINE
+# durable-pause authority (zero-change lock,
+# test_protected_throttle_semantics_unchanged).  The unthrottle directive is
+# enforced one lane over, in llm_saturator._rate_limit_pause_cap_sec (default
+# 30s, POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC) — the fill lane clamps on
+# top of this curve without rewriting it.  An earlier 391fc266 draft lowered
+# this shared cap to 30 and was reverted 2026-10-22 after the lock caught it.
+_SERVICE_COOLDOWN_CAP_SECONDS = 120
 
 
 def service_unavailable_cooldown_seconds(occurrences: int) -> int:

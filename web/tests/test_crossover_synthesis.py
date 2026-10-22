@@ -185,7 +185,53 @@ def test_synthesis_effect_immediately_fences_provably_dead_process_owner(
     assert replacement.attempt == 2
 
 
-def test_same_synthesis_effect_id_rejects_changed_prompt(tmp_path):
+def test_same_synthesis_effect_id_reuses_frozen_prompt_on_reentry(tmp_path):
+    """v593/v594/v596 regression (2026-10-22): a provider outage kills the
+    crossover stream mid-attempt; the deterministic route re-enters
+    run_crossover for the SAME effect id, and the rebuilt input differs only
+    by unhashed context (the isolated workspace path carries a fresh random
+    suffix).  The re-entry must REUSE the frozen input (no WorkflowConflict,
+    no generation abandon); the caller adopts the frozen prompt and
+    invocation_id so the re-dispatch is byte-identical."""
+
+    import crossover_synthesis as synthesis
+    from workflow_kernel import WorkflowStore
+
+    store = WorkflowStore(tmp_path / "events.sqlite3")
+    effect_id, invocation_id, payload = _payload(synthesis, prompt="prompt one")
+    first = synthesis.ensure_synthesis_effect(
+        store=store,
+        run_id=payload["workflow_run_id"],
+        effect_id=effect_id,
+        input_payload=payload,
+        definition_version=2,
+    )
+    # Stream dies mid-attempt: the effect stays non-terminal.
+    assert first.get("status") != "completed"
+    same_effect_id, _other_invocation, changed = _payload(
+        synthesis, prompt="prompt two"
+    )
+    assert same_effect_id == effect_id
+    reused = synthesis.ensure_synthesis_effect(
+        store=store,
+        run_id=changed["workflow_run_id"],
+        effect_id=same_effect_id,
+        input_payload=changed,
+        definition_version=2,
+    )
+    # The caller is expected to adopt the frozen input bytes.
+    assert reused.get("input_payload", {}).get("prompt") == "prompt one"
+    assert reused.get("input_payload", {}).get("invocation_id") == invocation_id
+    assert reused.get("input_payload", {}).get("attempt") == 1
+
+
+def test_synthesis_effect_identity_drift_still_conflicts(tmp_path):
+    """Same effect id but a genuinely different intent (parents changed) is
+    NOT a re-entry: request_effect's authoritative equality check must still
+    fire WorkflowConflict."""
+
+    import copy
+
     import crossover_synthesis as synthesis
     from workflow_kernel import WorkflowConflict, WorkflowStore
 
@@ -198,16 +244,14 @@ def test_same_synthesis_effect_id_rejects_changed_prompt(tmp_path):
         input_payload=payload,
         definition_version=2,
     )
-    same_effect_id, _other_invocation, changed = _payload(
-        synthesis, prompt="prompt two"
-    )
-    assert same_effect_id == effect_id
+    drifted = copy.deepcopy(payload)
+    drifted["parents"]["parent_b_artifact_hash"] = "d" * 64
     with pytest.raises(WorkflowConflict):
         synthesis.ensure_synthesis_effect(
             store=store,
-            run_id=changed["workflow_run_id"],
-            effect_id=same_effect_id,
-            input_payload=changed,
+            run_id=drifted["workflow_run_id"],
+            effect_id=effect_id,
+            input_payload=drifted,
             definition_version=2,
         )
 
