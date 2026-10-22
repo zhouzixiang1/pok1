@@ -710,12 +710,47 @@ def test_repository_head_or_branch_drift_immediately_hides_streak(monkeypatch):
     _record(observation, V0 + 1)
 
     current["repository_head"] = "e" * 40
+    # Twenty-sixth defect (2026-10-22): the recorded head may stay an ANCESTOR
+    # of the current HEAD (post-publication deploy advance); only a divergent
+    # HEAD is a mismatch.  Pin BOTH directions with a realistic merge-base
+    # answer -- the autouse stub tolerates everything and cannot decide
+    # ancestry.
+    monkeypatch.setattr(
+        observation,
+        "_git_command_succeeds",
+        lambda *args: (
+            len(args) >= 4
+            and args[0] == "merge-base"
+            and args[1] == "--is-ancestor"
+            and False
+        ),
+    )
     projection = observation.stability_observation_projection()
     assert projection["count"] == 0
     assert projection["continuity_valid"] is False
     assert projection["identity_mismatches"] == ["repository_head"]
     assert projection["recorded_repository_head"] == f"{V0 + 1:040x}"
     assert projection["current_repository_head"] == "e" * 40
+
+    # Ancestor direction: a legitimate post-publication deploy advanced HEAD
+    # past the recorded publication commit -- the streak must survive.
+    advanced = "f" * 40
+    current["repository_head"] = advanced
+    monkeypatch.setattr(
+        observation,
+        "_git_command_succeeds",
+        lambda *args: (
+            len(args) >= 4
+            and args[0] == "merge-base"
+            and args[1] == "--is-ancestor"
+            and args[2] == f"{V0 + 1:040x}"
+            and args[3] == advanced
+        ),
+    )
+    kept = observation.stability_observation_projection()
+    assert kept["identity_mismatches"] == []
+    assert kept["count"] == 2
+    assert kept["continuity_valid"] is True
 
     current["repository_head"] = f"{V0 + 1:040x}"
     current["repository_branch"] = "unexpected-worktree"

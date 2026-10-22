@@ -665,11 +665,31 @@ def _identity_mismatches(
     ]
     if compare_process:
         keys.extend(("process_boot_id", "process_pid", "process_start_ticks"))
-    return [
+    mismatches = [
         key
         for key in keys
         if state.get(key) != identity.get(key)
     ]
+    if "repository_head" in mismatches:
+        # Twenty-sixth exact-pin convergence defect (v598, 2026-10-22): the
+        # recorded head is the publication-time commit; ANY legitimate
+        # post-publication operator deploy (bug fix, test companion) advances
+        # HEAD past it and the exact compare reset the streak to 0, wedging an
+        # in-flight handoff's stability reproof (three commits landed between
+        # v598's publication and its archivist retries).  Same family rule as
+        # the worktree/remote legs: the recorded head may stay an ANCESTOR of
+        # the current HEAD; only a divergent/unrelated HEAD is a mismatch.
+        recorded = str(state.get("repository_head") or "")
+        current = str(identity.get("repository_head") or "")
+        if (
+            _is_hex(recorded, 40)
+            and _is_hex(current, 40)
+            and _git_command_succeeds(
+                "merge-base", "--is-ancestor", recorded, current
+            )
+        ):
+            mismatches.remove("repository_head")
+    return mismatches
 
 
 def _owner_process_errors(state: dict[str, Any]) -> list[str]:
