@@ -820,7 +820,19 @@ def validate_completion_tag(
                 "candidate-hash"
             ]
     for key, expected in expected_metadata.items():
-        if metadata_values.get(key, []) != [str(expected)]:
+        actual = metadata_values.get(key)
+        if actual is None and key == "official-candidate-hash":
+            # Spelling alias (2026-10-22, v598 handoff): publication tags carry
+            # MIXED metadata spellings across the no-certificate era -- the
+            # value is byte-identical, but some writers emit the staging-*
+            # key (e.g. v598's staging-candidate-hash) while consumers ask
+            # for the official-* name (v585's tag carries the official one).
+            # The artifact-hash comparison above already accepts either
+            # spelling; extend the same alias to the exact-match loop.  The
+            # VALUE remains an exact-match requirement -- this widens only
+            # which key NAME may carry it, never what it must equal.
+            actual = metadata_values.get("staging-candidate-hash")
+        if actual != [str(expected)]:
             issues.append(f"completion_tag_metadata_mismatch:{key}")
 
     commit_oid = str(identity.get("commit_oid") or "")
