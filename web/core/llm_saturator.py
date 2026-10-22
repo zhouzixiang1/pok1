@@ -15,7 +15,8 @@ structured ``change_symbol`` hypotheses (and last-abandon class) instead of
 unread 60-turn essays. Consumption is still dominated by per-turn cache
 re-reads; the lever is *completed* packets, not unfinished depth.
 
-Launch is RAM-aware: extra ``claude`` children leftover from cancel (the
+Launch is RAM-aware: extra provider-transport children (``claude`` or
+``codex``, depending on POK_LLM_TRANSPORT) leftover from cancel (the
 semaphore can read 4 while 5–6 processes still live) block new sessions
 until they exit. Pipeline bursts batch-preempt the youngest packets rather
 than waiting 30s per slot.
@@ -799,6 +800,16 @@ _QUOTA_PAUSE_SECONDS = 600.0
 # successfully or a failure is not quota/429/unavailable-shaped.  The journal
 # showed two of those 10-minute mis-pauses per 20 minutes.
 _FAIL_PAUSE_CAP_SECONDS = 30.0
+# 2026-10-21 解限流: cap on the saturator's OWN frequency-class backoff. The
+# shared exponential curve (llm_availability.service_unavailable_cooldown_
+# seconds, ceiling 120s) stays authoritative for the PIPELINE durable pause
+# and is untouched; a 1302 storm's tail used to idle the fill lane for the
+# curve's full 120s even after the durable pause had already expired/cleared.
+# Clamping the saturator-local pause at 30s keeps the lane cycling on the
+# provider's live response instead of our own tail penalty. The knob floors
+# at the curve base 8s — it tightens/loosens the cap, it can never CANCEL
+# the backoff curve (the first-step 8s discipline always applies).
+_RATE_LIMIT_PAUSE_CAP_DEFAULT_SEC = 30.0
 _quota_pause_until: float = 0.0
 _fail_pause_until: float = 0.0
 _fail_streak: int = 0
@@ -817,6 +828,21 @@ _rate_limit_streak_last_failure_ts: float = 0.0
 _RATE_LIMIT_STREAK_DECAY_SEC = float(
     os.environ.get("POK_SATURATOR_STREAK_DECAY_SEC", "600")
 )
+
+
+def _rate_limit_pause_cap_sec() -> float:
+    """Saturator-local cap on the frequency-class backoff pause (see above)."""
+    try:
+        return max(
+            8.0,
+            float(
+                os.environ.get(
+                    "POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC", "30"
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return _RATE_LIMIT_PAUSE_CAP_DEFAULT_SEC
 
 
 def _log_session_failure(session_id: int, error: object) -> None:
@@ -880,7 +906,15 @@ def _note_saturator_provider_failure(error: object) -> None:
     else:
         _rate_limit_streak += 1
         _rate_limit_streak_last_failure_ts = time.time()
-        pause = float(service_unavailable_cooldown_seconds(_rate_limit_streak))
+        # 解限流 (2026-10-21): clamp the saturator-LOCAL pause at
+        # POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC (default 30s). The curve
+        # itself is unchanged and remains the pipeline durable-pause
+        # authority; this only stops our own 120s tail from idling the fill
+        # lane after the durable pause is gone.
+        pause = min(
+            float(service_unavailable_cooldown_seconds(_rate_limit_streak)),
+            _rate_limit_pause_cap_sec(),
+        )
         reason = (
             "rate-limit/unavailable cooldown "
             f"(streak {_rate_limit_streak}, exponential backoff)"
@@ -934,23 +968,48 @@ def _saturator_provider_paused() -> bool:
     return _saturator_pause_remaining_sec() > 0.0
 
 
+#: Provider-transport child comm names for the RAM oversell guard.
+#: 2026-10-21 fix (review 必改1): under POK_LLM_TRANSPORT=codex every
+#: provider child's comm is ``codex`` (live service observed six of them),
+#: and a guard matching only ``claude`` read 0 forever — the
+#: ``claude_children`` launch gate was inert and the machine relied on just
+#: MemAvailable + the cgroup gradient. Matching both transports restores the
+#: third line of RAM defence as AIMD probes past the static cap.
+_TRANSPORT_CHILD_COMM_NAMES = frozenset({"claude", "codex"})
+
+
+def _child_comm(pid_token: str) -> "str | None":
+    """One child's comm field, or None when unreadable (never raises)."""
+    try:
+        return Path(f"/proc/{pid_token}/comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _count_transport_children(raw_children: str) -> int:
+    """Count comm-matched transport children from a /proc children payload."""
+    count = 0
+    for token in raw_children.split():
+        comm = _child_comm(token)
+        if comm is not None and comm in _TRANSPORT_CHILD_COMM_NAMES:
+            count += 1
+    return count
+
+
 def _claude_child_count() -> int:
-    """Live ``claude`` children of this process (RAM occupancy, not the semaphore)."""
+    """Live transport (``claude``/``codex``) children of this process.
+
+    RAM occupancy, not the semaphore: leftover provider children from a
+    cancelled stream still hold their ~110-130 MB until they exit, so a
+    launch is refused while the live child count has reached the dynamic
+    capacity even if the semaphore says a permit is free."""
     try:
         pid = os.getpid()
         children_path = Path(f"/proc/{pid}/task/{pid}/children")
         raw = children_path.read_text(encoding="utf-8") if children_path.is_file() else ""
-        count = 0
-        for token in raw.split():
-            try:
-                comm = Path(f"/proc/{token}/comm").read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-            if comm == "claude":
-                count += 1
-        return count
     except OSError:
         return 0
+    return _count_transport_children(raw)
 
 
 def _mem_available_mb() -> int | None:

@@ -29,8 +29,65 @@ from typing import Any
 
 from bot_artifact import canonical_digest
 from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name
+from publication_reproof import (
+    FieldSpec,
+    ReproofContract,
+    register_contract,
+    run_reproof,
+)
 
 import post_publication_handoff as _pph  # for intra-companion + stay-behind refs
+
+
+# ---------------------------------------------------------------------------
+# Frozen-vs-live reproof engine seam (2026-10-22 migration)
+# ---------------------------------------------------------------------------
+# Every frozen-vs-live drift judgment in this module grades through the pure
+# engine in ``publication_reproof.py`` (engine catalog sites:
+# ``handoff.stability_observation_step`` — the reset witness, ``handoff
+# .reap_signal`` / ``handoff.priority_eval`` — the reissue digests,
+# ``archivist.pool_reap_ring`` — the five-field pool ring, ``handoff
+# .housekeeping`` — the worktree ring, ``handoff.housekeeping.reap_proofs``
+# — the per-bot reap proofs).  The probes reuse the main module's GitProbe
+# adapter so the operator/test monkeypatch surfaces (the handoff module's
+# ancestry predicate, the archivist's ``_publication_head_advance_allowed``)
+# keep governing every ancestry judgment.
+
+# The housekeeping output contract's observed-head leg: the receipt records
+# the head observed at verification time, which legitimately advanced past
+# the publication commit (eleventh exact-pin, v579).
+_OUTPUT_HEAD_PROBE = _pph._SeamGitProbe(
+    lambda frozen_oid, live_oid: _pph._publication_commit_is_ancestor_of(
+        frozen_oid, live_oid
+    )
+)
+
+register_contract(ReproofContract(
+    site_id="handoff.housekeeping_output_head",
+    fields=(
+        FieldSpec(
+            "head_oid", "git_ancestry", "frozen_observation",
+            "handoff_step_output_contract_invalid:housekeeping:identity",
+            {"tip_kind": "literal_oid", "hex": 40, "equal_passes": True},
+        ),
+    ),
+    status="wired",
+))
+# Explicit-test-mode (local-only) reap proofs carry a remote_proof mapping of
+# ``{"required": False}`` only; the engine catalog's per-bot contract
+# (handoff.housekeeping.reap_proofs) declares the required-remote field set,
+# which a local-only mapping can never carry.  Those env-gated shapes keep
+# the historical whole-record equality grade through this exact site.
+register_contract(ReproofContract(
+    site_id="handoff.housekeeping.reap_proofs_exact",
+    fields=(
+        FieldSpec(
+            "reap_proofs", "exact", "container",
+            "handoff_housekeeping_reap_reproof_mismatch", {},
+        ),
+    ),
+    status="wired",
+))
 
 
 _STEP_RECEIPT_KEYS = frozenset({
@@ -459,16 +516,18 @@ def _step_output_contract_errors(
         # at verification time, which legitimately advanced past the
         # publication commit when a post-publication bug-fix deploy landed
         # (this campaign itself).  The executor already applies the ancestor
-        # rule (_verify_post_publication_worktree); the contract grades the
-        # same way — exact equality stays the common no-deploy case and any
+        # rule (_verify_post_publication_worktree); the head leg grades
+        # through the reproof engine (equal-or-ancestor, probe failure folds
+        # closed) — exact equality stays the common no-deploy case and any
         # non-ancestral divergence still fails closed.
+        head_ok = run_reproof(
+            "handoff.housekeeping_output_head",
+            frozen={"head_oid": identity.get("commit_oid")},
+            live={"head_oid": output.get("head_oid")},
+            probe=_OUTPUT_HEAD_PROBE,
+        ).ok
         if (
-            not (
-                output.get("head_oid") == identity.get("commit_oid")
-                or _pph._publication_commit_is_ancestor_of(
-                    identity.get("commit_oid"), output.get("head_oid")
-                )
-            )
+            not head_ok
             or not _pph._is_hex(output.get("worktree_status_digest"), 64)
             or output.get("tracked_housekeeping_commit") is not False
             or output.get("archive_rotation_revalidated") is not True
@@ -481,52 +540,6 @@ def _step_output_contract_errors(
 
 
 
-def _stability_reset_proves_receipt(
-    projection: dict[str, Any],
-    receipt: dict[str, Any],
-    identity: dict[str, Any],
-) -> bool:
-    """Durable proof for a process-scoped observation row that was reset.
-
-    2026-10-18 (twelfth convergence defect, v566): the stability observation
-    row is process-scoped BY DESIGN — a runtime restart (bug-fix deploy,
-    crash recovery) or any documented continuity break resets it to zero.
-    A handoff that spans such a reset can therefore never re-prove its
-    frozen receipt against live state, wedging the generation forever.  The
-    reset history entry is the durable witness: it fired after the receipt
-    was completed and it recorded the pre-reset row (``previous_last_version``,
-    ``previous_count``) this receipt observed.  Forging it requires writing
-    the operator-owned observation state file itself.
-    """
-
-    completed_at = receipt.get("completed_at")
-    output = receipt.get("output") or {}
-    version = identity.get("version")
-    count = output.get("count")
-    history = projection.get("reset_history")
-    if (
-        not isinstance(history, list)
-        or not isinstance(completed_at, (int, float))
-        or type(count) is not int
-    ):
-        return False
-    for entry in history:
-        if not isinstance(entry, dict):
-            continue
-        # reset_stability_observation appends the pre-reset row binding at
-        # ENTRY level: {"at", "reason", "details", "previous_count",
-        # "previous_last_version"} (stability_observation.py).
-        if (
-            isinstance(entry.get("at"), (int, float))
-            and entry.get("at") >= completed_at
-            and entry.get("previous_last_version") == version
-            and isinstance(entry.get("previous_count"), int)
-            and entry.get("previous_count") >= count
-        ):
-            return True
-    return False
-
-
 def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
     """Re-open stability state and idempotently reissue daemon capabilities.
 
@@ -535,6 +548,16 @@ def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
     row and re-publish the exact content-bound signal/priority payload.  The
     daemon may consume either file immediately after the sidecar lock releases;
     that consumption is the intended effect.
+
+    The stability row is process-scoped BY DESIGN (twelfth convergence defect,
+    v566): a runtime restart or documented continuity break resets it to zero,
+    so the frozen receipt can never re-prove byte-exactly across a reset.  The
+    row and its reset witness grade through the reproof engine site
+    ``handoff.stability_observation_step`` (witness_reset): an equal row is a
+    match, a row proven reset by a qualifying reset-history entry is
+    drift_allowed, anything else is the hard reproof mismatch.  The sidecar
+    reissue (locked write + re-read) stays in this adapter; the engine only
+    grades the reissued digests.
     """
 
     steps = record.get("steps") or {}
@@ -551,24 +574,38 @@ def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
         projection = stability_observation_projection()
         receipt = stability.get("receipt") or {}
         output = receipt.get("output") or {}
-        expected = {
-            "continuity_id": projection.get("continuity_id"),
-            "count": projection.get("count"),
-            "target": projection.get("target"),
-            "complete": projection.get("complete"),
-        }
-        if any(output.get(key) != value for key, value in expected.items()):
-            # The observation row is process-scoped and legitimately resets
-            # (runtime_process_start et al.); a reset recorded after this
-            # receipt, carrying the pre-reset row this receipt observed, is
-            # the durable proof.  Anything else is still a mismatch.
-            if not _stability_reset_proves_receipt(
-                projection, receipt, identity
-            ):
-                raise _pph.PostPublicationHandoffError(
-                    "handoff_stability_observation_reproof_mismatch"
-                )
-        else:
+        row_fields = ("continuity_id", "count", "target", "complete")
+        reproof = run_reproof(
+            "handoff.stability_observation_step",
+            frozen={"row": {key: output.get(key) for key in row_fields}},
+            live={
+                "row": {
+                    "continuity_id": projection.get("continuity_id"),
+                    "count": projection.get("count"),
+                    "target": projection.get("target"),
+                    "complete": projection.get("complete"),
+                }
+            },
+            context={
+                # The witness history is the projection's reset record:
+                # stability_observation renders it whenever the state row is
+                # internally consistent, including immediately after a
+                # documented reset (the pre-reset row binding lives at ENTRY
+                # level: at / previous_count / previous_last_version).
+                "witness_history": projection.get("reset_history"),
+                "receipt": receipt,
+                "identity": identity,
+                "output": output,
+            },
+        )
+        row_verdict = next(
+            (row for row in reproof.results if row.field == "row"), None
+        )
+        if row_verdict is None or row_verdict.outcome == "mismatch":
+            raise _pph.PostPublicationHandoffError(
+                "handoff_stability_observation_reproof_mismatch"
+            )
+        if row_verdict.outcome == "match":
             publication_id = identity.get("publication_id")
             observations = projection.get("observations")
             if not isinstance(observations, list) or not any(
@@ -598,11 +635,21 @@ def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
             _atomic_publish_state_text(path, raw)
             reopened = _read_regular_state_text(path, allow_missing=False)
         digest = hashlib.sha256(reopened.encode("utf-8")).hexdigest()
-        if digest != plan.get("signal_sha256") or digest != output.get(
-            "signal_sha256"
-        ):
+        reissue_issues = [
+            *run_reproof(
+                "handoff.reap_signal",
+                frozen={"signal_sha256": plan.get("signal_sha256")},
+                live={"signal_sha256": digest},
+            ).issues,
+            *run_reproof(
+                "handoff.reap_signal",
+                frozen={"signal_sha256": output.get("signal_sha256")},
+                live={"signal_sha256": digest},
+            ).issues,
+        ]
+        if reissue_issues:
             raise _pph.PostPublicationHandoffError(
-                "handoff_reap_signal_reproof_mismatch"
+                ";".join(dict.fromkeys(reissue_issues))
             )
         result["reap_signal"] = True
 
@@ -622,9 +669,29 @@ def _reprove_operational_steps(record: dict[str, Any]) -> dict[str, bool]:
             _atomic_publish_state_text(path, encoded)
             reopened = _read_regular_state_text(path, allow_missing=False)
         digest = hashlib.sha256(reopened.encode("utf-8")).hexdigest()
-        if reopened != encoded or digest != output.get("payload_sha256"):
+        # The raw write/read-back equality (reopened != encoded) is graded by
+        # the same digest site over the canonical re-encoding — byte-equal
+        # inputs produce byte-equal digests, so only a corrupted write/read
+        # round-trip can diverge.
+        reissue_issues = [
+            *run_reproof(
+                "handoff.priority_eval",
+                frozen={
+                    "payload_sha256": hashlib.sha256(
+                        encoded.encode("utf-8")
+                    ).hexdigest()
+                },
+                live={"payload_sha256": digest},
+            ).issues,
+            *run_reproof(
+                "handoff.priority_eval",
+                frozen={"payload_sha256": output.get("payload_sha256")},
+                live={"payload_sha256": digest},
+            ).issues,
+        ]
+        if reissue_issues:
             raise _pph.PostPublicationHandoffError(
-                "handoff_priority_eval_reproof_mismatch"
+                ";".join(dict.fromkeys(reissue_issues))
             )
         result["priority_eval"] = True
     return result
@@ -691,17 +758,25 @@ def _reprove_external_steps(record: dict[str, Any]) -> None:
         if isinstance(proof, dict)
     }
     final_proofs = []
+    # The five-field per-bot ring (version / completion commit / tombstone
+    # identity) grades through the engine's pool ring site: exact values with
+    # the producer's historical double-None tolerance, one shared token.
+    _POOL_RING_FIELDS = (
+        "version", "completion_commit_oid", "tombstone_tag",
+        "tombstone_object_oid", "tombstone_commit_oid",
+    )
     for name in target_names:
         proof = _converge_and_verify_reaped_target(name, record)
         prior = prior_proofs.get(name) or {}
-        for field in (
-            "version", "completion_commit_oid", "tombstone_tag",
-            "tombstone_object_oid", "tombstone_commit_oid",
-        ):
-            if proof.get(field) != prior.get(field):
-                raise _pph.PostPublicationHandoffError(
-                    "handoff_pool_reap_external_reproof_mismatch"
-                )
+        ring_issues = run_reproof(
+            "archivist.pool_reap_ring",
+            frozen={field: prior.get(field) for field in _POOL_RING_FIELDS},
+            live={field: proof.get(field) for field in _POOL_RING_FIELDS},
+        ).issues
+        if ring_issues:
+            raise _pph.PostPublicationHandoffError(
+                ";".join(dict.fromkeys(ring_issues))
+            )
         final_proofs.append(proof)
 
     archive = _pph._read_json(_pph._archive_path(version))
@@ -750,31 +825,69 @@ def _reprove_external_steps(record: dict[str, Any]) -> None:
     housekeeping_output = housekeeping_row["receipt"]["output"]
     from tool_commit_archivist import _publication_head_advance_allowed
 
-    for key, value in actual_worktree.items():
-        if housekeeping_output.get(key) == value:
-            continue
-        if key == "head_oid" and _publication_head_advance_allowed(
-            str(housekeeping_output.get(key) or ""), str(value)
-        ):
-            # Twenty-first exact-pin convergence defect (v579, 2026-10-20):
-            # the frozen receipt recorded HEAD at housekeeping-completion time;
-            # a legitimate post-publication operator deploy (the fixes that
-            # unblocked this very handoff) advances HEAD past it, and
-            # _verify_post_publication_worktree already accepts that advance —
-            # but this reproof then strict-compared the OLD receipt head_oid
-            # against the NEW live one and wedged the finalization.  Grade the
-            # head on the same ancestor rule; every other field stays strict.
-            continue
+    worktree_probe = _pph._SeamGitProbe(_publication_head_advance_allowed)
+    # Worktree ring: every field stays strict except the frozen head, which
+    # grades equal-or-ancestor (twenty-first exact-pin, v579: the frozen
+    # receipt recorded HEAD at housekeeping-completion time; a legitimate
+    # post-publication operator deploy advanced it and the reproof strict-
+    # compared the OLD receipt head against the NEW live one and wedged the
+    # finalization).  One shared token, exactly like the inline loop before.
+    worktree_issues = run_reproof(
+        "handoff.housekeeping",
+        frozen={
+            "head_oid": housekeeping_output.get("head_oid"),
+            "worktree_status_digest": housekeeping_output.get(
+                "worktree_status_digest"
+            ),
+            "tracked_housekeeping_commit": housekeeping_output.get(
+                "tracked_housekeeping_commit"
+            ),
+        },
+        live=dict(actual_worktree),
+        probe=worktree_probe,
+    ).issues
+    if worktree_issues:
         raise _pph.PostPublicationHandoffError(
-            "handoff_housekeeping_worktree_reproof_mismatch"
+            ";".join(dict.fromkeys(worktree_issues))
         )
-    if (
-        housekeeping_output.get("reap_proofs") != final_proofs
-        or housekeeping_output.get("reap_proof_set_digest")
-        != canonical_digest(final_proofs)
-    ):
+    # Reap proofs, per bot (U1, the whole-dict wedge): every publication-
+    # bound field grades exact through the engine's per-bot contract and the
+    # nested remote leg's verified tip grades under the SAME ancestor rule
+    # (a legitimate operator push between housekeeping and finalization
+    # advances origin past the publication-time verification).  The raw
+    # reap_proof_set_digest re-derivation the old second leg performed is
+    # subsumed: the receipt-internal output contract already binds the
+    # stored digest to the frozen raw bytes, and re-deriving a digest over
+    # live raw bytes is exactly what wedged v566.  Explicit-test-mode
+    # (local-only) proofs — remote_proof {"required": False} only, which the
+    # engine's nested required-remote contract can never carry — keep the
+    # historical whole-record equality grade.
+    def _required_remote_only(proofs: Any) -> bool:
+        return all(
+            isinstance(proof, dict)
+            and isinstance(proof.get("remote_proof"), dict)
+            and proof["remote_proof"].get("required") is True
+            for proof in (proofs or [])
+        )
+
+    frozen_reap_proofs = housekeeping_output.get("reap_proofs")
+    reap_site = (
+        "handoff.housekeeping.reap_proofs"
+        if (
+            _required_remote_only(frozen_reap_proofs)
+            and _required_remote_only(final_proofs)
+        )
+        else "handoff.housekeeping.reap_proofs_exact"
+    )
+    reap_issues = run_reproof(
+        reap_site,
+        frozen={"reap_proofs": frozen_reap_proofs or []},
+        live={"reap_proofs": final_proofs},
+        probe=worktree_probe,
+    ).issues
+    if reap_issues:
         raise _pph.PostPublicationHandoffError(
-            "handoff_housekeeping_reap_reproof_mismatch"
+            ";".join(dict.fromkeys(reap_issues))
         )
 
 

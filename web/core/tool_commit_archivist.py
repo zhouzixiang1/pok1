@@ -38,7 +38,150 @@ import stat
 import uuid
 from pathlib import Path
 
+from publication_reproof import (
+    FieldSpec,
+    ReproofContract,
+    register_contract,
+    run_reproof,
+)
+
 import tool_commit as _tc
+
+
+# ---------------------------------------------------------------------------
+# Frozen-vs-live reproof engine seam (2026-10-22 migration)
+# ---------------------------------------------------------------------------
+# The frozen-vs-live drift judgments in this module and its orchestrator
+# companion grade through the pure engine in ``publication_reproof.py``
+# (engine catalog sites consumed: ``archivist.worktree`` — the post-
+# publication worktree proof, ``archivist.pool_reap_targets`` — the live-
+# pool subset rule; module-local sites declared below for the producer-local
+# families).  PARKED catalog registrations this module deliberately does NOT
+# consume: ``archivist.strict_log_archives`` (its directional_subset kind
+# tolerates a live manifest losing a member or carrying a None-valued member
+# — a fail-open relaxation against the historical full-equality-when-present
+# rule; see the archivist.strict_log_source_tree registration below).  The
+# probes route through the archivist's existing ancestry seam
+# (``_publication_head_advance_allowed``, read off the live ``tool_commit``
+# attribute so the operator/test monkeypatch surface keeps governing every
+# ancestry judgment).
+
+
+class _ArchivistGitProbe:
+    """GitProbe adapter over an existing module-level ancestry seam."""
+
+    def __init__(self, seam):
+        self._seam = seam
+
+    def is_ancestor(self, frozen_oid: str, live_oid: str) -> bool:
+        return bool(self._seam(str(frozen_oid), str(live_oid)))
+
+    def object_locally_known(self, oid: str) -> bool:
+        # No site graded from this module uses the degrade posture; delegate
+        # to the engine's default cat-file seam for protocol completeness.
+        from publication_reproof import DefaultGitProbe
+
+        return bool(DefaultGitProbe().object_locally_known(str(oid)))
+
+
+_WORKTREE_PROBE = _ArchivistGitProbe(
+    lambda frozen_oid, live_oid: _tc._publication_head_advance_allowed(
+        frozen_oid, live_oid
+    )
+)
+
+# Module-local site declarations (byte-preserved issue tokens).
+
+register_contract(ReproofContract(
+    # _validate_pool_reap_plan: the frozen plan's pool-ratchet mode binding
+    # against the LIVE mode-resolved values (an operator changing the mode
+    # knobs while a handoff is in flight fails closed here).
+    site_id="archivist.pool_reap_mode",
+    fields=(
+        FieldSpec(
+            "selection_policy", "exact", "container",
+            "pool_reap_plan_contract_invalid", {},
+        ),
+        FieldSpec(
+            "max_active_bots", "exact", "container",
+            "pool_reap_plan_contract_invalid", {},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _converge_and_verify_reaped_target: the observed remote tombstone refs
+    # against the locally proven tombstone identity.
+    site_id="archivist.reap_remote_refs",
+    fields=(
+        FieldSpec(
+            "tombstone_object_oid", "exact", "container",
+            "reap_remote_proof_mismatch", {},
+        ),
+        FieldSpec(
+            "tombstone_commit_oid", "exact", "container",
+            "reap_remote_proof_mismatch", {},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _converge_and_verify_reaped_target: the publication commit must be an
+    # ancestor of the observed remote main (the fetch-then-ancestry leg; the
+    # adapter owns the conditional tracking-ref fetch, mirroring the engine
+    # catalog's archivist.reap_remote_proof precondition).
+    site_id="archivist.reap_publication_on_remote_main",
+    fields=(
+        FieldSpec(
+            "remote_main_oid", "git_ancestry", "frozen_observation",
+            "reap_publication_not_on_remote_main",
+            {"tip_kind": "literal_oid", "hex": 40, "equal_passes": True},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _converge_and_verify_reaped_target: the reaped-target HEAD rule
+    # (v566 wedge class: HEAD legitimately advanced past the publication
+    # commit by a post-publication deploy).
+    site_id="archivist.reap_head",
+    fields=(
+        FieldSpec(
+            "head_oid", "git_ancestry", "frozen_observation",
+            "reap_changed_head",
+            {"tip_kind": "literal_oid", "hex": 40, "equal_passes": True},
+        ),
+    ),
+    status="wired",
+))
+
+
+register_contract(ReproofContract(
+    # _revalidate_strict_log_archives: a live source tree that STILL EXISTS
+    # must byte-match the frozen preimage — every manifest member present on
+    # both sides, non-None, and equal (any missing/extra/changed/None-valued
+    # member fails closed, exactly like the historical inline ``!=``).  The
+    # engine catalog's ``archivist.strict_log_archives`` (directional_subset)
+    # is PARKED for this adapter: its kind semantics additionally tolerate a
+    # live tree losing a member or carrying a None-valued member — a fail-
+    # open relaxation against both the historical rule and the site's own
+    # "diverged fails closed" intent.  The reaped-skip (FileNotFoundError →
+    # no live side at all) stays adapter-side: it has no frozen-vs-live pair.
+    site_id="archivist.strict_log_source_tree",
+    fields=(
+        FieldSpec(
+            "source_tree", "stable_subset", "container",
+            "strict_log_final_source_mismatch",
+            {"stable_keys": (
+                "schema_version", "kind", "version",
+                "source_relative_path", "entries", "tree_digest",
+            ),
+             "none_pairs_match": True},
+        ),
+    ),
+    status="wired",
+))
+
 
 _ARCHIVIST_STORAGE_OWNER_LOCK = "web/core/national_arena/storage_owner.lock"
 
@@ -194,23 +337,37 @@ def _verify_post_publication_worktree(
     Consequently there is no authorized tracked housekeeping commit.  Any HEAD
     move that is not the legitimate "publication commit is an ancestor of the
     observed HEAD" deploy advance, and any porcelain change, is a hard failure
-    and remains for operator inspection.
+    and remains for operator inspection.  Both legs grade through the reproof
+    engine (``archivist.worktree``): the head under the ancestor rule (probe
+    failure folds closed), the dirty-path set by digest; the engine's field
+    order preserves the historical head-before-dirty failure order.
     """
 
     _tc._git_ensure_main_branch()
     actual_head = _tc._git("rev-parse", "HEAD").strip()
     actual_dirty = _git_dirty_paths()
-    if actual_head != expected_head and not (
-        _tc._publication_head_advance_allowed(expected_head, actual_head)
-    ):
-        raise RuntimeError("post_publication_head_changed")
-    if actual_dirty != set(expected_dirty):
-        raise RuntimeError("post_publication_worktree_changed")
+    actual_digest = hashlib.sha256(
+        "\n".join(sorted(actual_dirty)).encode("utf-8")
+    ).hexdigest()
+    issues = run_reproof(
+        "archivist.worktree",
+        frozen={
+            "head_oid": expected_head,
+            "worktree_status_digest": hashlib.sha256(
+                "\n".join(sorted(set(expected_dirty))).encode("utf-8")
+            ).hexdigest(),
+        },
+        live={
+            "head_oid": actual_head,
+            "worktree_status_digest": actual_digest,
+        },
+        probe=_WORKTREE_PROBE,
+    ).issues
+    if issues:
+        raise RuntimeError(";".join(issues))
     return {
         "head_oid": actual_head,
-        "worktree_status_digest": hashlib.sha256(
-            "\n".join(sorted(actual_dirty)).encode("utf-8")
-        ).hexdigest(),
+        "worktree_status_digest": actual_digest,
         "tracked_housekeeping_commit": False,
     }
 
@@ -922,16 +1079,25 @@ def _revalidate_strict_log_archives(
         # 2026-10-18 (fourteenth convergence defect, v566): disk hygiene may
         # have legitimately reaped an orphan generation's live log tree after
         # the receipt froze (v186). For such versions the immutable tar.gz +
-        # manifest evidence validated above IS the proof; a source tree that
-        # still exists but diverged keeps failing closed below.
+        # manifest evidence validated above IS the proof.  A source tree that
+        # still exists must byte-match the frozen preimage — any missing,
+        # extra, changed, or None-valued member fails closed — through the
+        # reproof engine's full-equality site; the reaped skip (no live side
+        # at all) stays adapter-side.
         try:
             live_tree = _tc._safe_log_tree_manifest(
                 source, version=item["version"]
             )
         except FileNotFoundError:
             live_tree = None
-        if live_tree is not None and live_tree != expected_tree:
-            raise RuntimeError("strict_log_final_source_mismatch")
+        if live_tree is not None:
+            source_issues = run_reproof(
+                "archivist.strict_log_source_tree",
+                frozen={"source_tree": expected_tree},
+                live={"source_tree": live_tree},
+            ).issues
+            if source_issues:
+                raise RuntimeError(";".join(source_issues))
         expected_receipt = {
             "version": item["version"],
             "tree_digest": item["tree_digest"],
@@ -1094,14 +1260,27 @@ def _validate_pool_reap_plan(
     # value; the cap must equal the LIVE mode-resolved target size.  An
     # operator changing POK_POOL_RATCHET_TARGET_SIZE while a handoff is in
     # flight therefore fails closed here (pool_reap_plan_contract_invalid)
-    # instead of executing a plan against a cap it was not built for.
+    # instead of executing a plan against a cap it was not built for.  The
+    # frozen-plan-vs-live-mode legs grade through the reproof engine
+    # (``archivist.pool_reap_mode``); the known-policy membership check
+    # stays a shape gate in front of it.
     expected_selection_policy = reap_selection_policy_for_mode(publish_mode())
+    mode_issues = run_reproof(
+        "archivist.pool_reap_mode",
+        frozen={
+            "selection_policy": reap_plan.get("selection_policy"),
+            "max_active_bots": reap_plan.get("max_active_bots"),
+        },
+        live={
+            "selection_policy": expected_selection_policy,
+            "max_active_bots": pool_target_size(),
+        },
+    ).issues
     if (
         type(reap_plan.get("schema_version")) is not int
         or reap_plan["schema_version"] != 2
         or reap_plan.get("kind") != "strict-active-pool-reap-plan"
         or reap_plan.get("selection_policy") not in REAP_SELECTION_POLICIES
-        or reap_plan.get("selection_policy") != expected_selection_policy
         or not _lower_hex(reap_plan.get("publication_id"), 64)
         or not _lower_hex(reap_plan.get("expected_head_oid"), 40)
         or (
@@ -1109,7 +1288,7 @@ def _validate_pool_reap_plan(
             and not _lower_hex(reap_plan.get("expected_remote_main_oid"), 40)
         )
         or type(reap_plan.get("max_active_bots")) is not int
-        or reap_plan["max_active_bots"] != pool_target_size()
+        or mode_issues
         or type(reap_plan.get("required_reaps")) is not int
         or not isinstance(reap_plan.get("active_bots"), list)
         or not isinstance(reap_plan.get("targets"), list)
@@ -1227,8 +1406,17 @@ async def _execute_pool_reap_plan(reap_plan: dict, record: dict) -> dict:
         record,
     )
     current = sorted(_tc.get_active_bots())
-    if not set(current).issubset(set(initial)):
-        raise RuntimeError("pool_changed_after_reap_plan")
+    # Live pool vs frozen initial pool: live members may only disappear (the
+    # engine's directional site); a new live member is pool drift and a
+    # removed member outside the frozen target sequence is the composite
+    # adapter judgment below.
+    pool_issues = run_reproof(
+        "archivist.pool_reap_targets",
+        frozen={"active_bots": initial},
+        live={"active_bots": current},
+    ).issues
+    if pool_issues:
+        raise RuntimeError(";".join(pool_issues))
     removed = sorted(set(initial) - set(current))
     if not set(removed).issubset(set(target_names)):
         raise RuntimeError("unplanned_pool_member_removed")

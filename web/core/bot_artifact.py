@@ -11,11 +11,103 @@ from pathlib import Path
 from typing import Any
 
 from bot_namespace import bot_tag, parse_bot_version, strict_artifact_layout_errors, EVOLUTION_BRANCH
+from publication_reproof import (
+    FieldSpec,
+    ReproofContract,
+    register_contract,
+    run_reproof,
+)
 
 # Configurable publication-branch ref (default refs/heads/main). Publication
 # identity checks verify reachability against this branch so a deployment can
 # publish into an isolated branch without touching origin/main.
 _LOCAL_PUB_REF = f"refs/heads/{EVOLUTION_BRANCH}"
+
+
+# ---------------------------------------------------------------------------
+# Frozen-vs-live reproof engine seam (2026-10-22 migration)
+# ---------------------------------------------------------------------------
+# The completion-tag metadata alias ring grades through the engine catalog
+# site ``bot_artifact.completion_tag_metadata``; this module's other
+# producer-local judgments (the scalar candidate-hash fallback, the exact
+# single-row grade for non-alias metadata keys, the tag-commit-on-main
+# ancestry, the completion-tree equality) grade through the module-local
+# declarations below.  The probe routes through this module's ``_git`` seam
+# so the operator/test monkeypatch surface keeps governing the ancestry.
+
+
+class _BotArtifactGitProbe:
+    """GitProbe adapter over this module's existing merge-base seam."""
+
+    def is_ancestor(self, frozen_oid: str, live_oid: str) -> bool:
+        return (
+            _git("merge-base", "--is-ancestor", str(frozen_oid), str(live_oid))
+            .returncode
+            == 0
+        )
+
+    def object_locally_known(self, oid: str) -> bool:
+        from publication_reproof import DefaultGitProbe
+
+        return bool(DefaultGitProbe().object_locally_known(str(oid)))
+
+
+_ANCESTRY_PROBE = _BotArtifactGitProbe()
+
+register_contract(ReproofContract(
+    site_id="bot_artifact.tag_commit_on_main",
+    fields=(
+        FieldSpec(
+            "commit_on_main", "git_ancestry", "frozen_observation",
+            "completion_tag_commit_not_on_main",
+            {"tip_kind": "literal_oid", "hex": 40, "equal_passes": True},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    site_id="bot_artifact.completion_tree_matches_main",
+    fields=(
+        FieldSpec(
+            "bot_tree_oid", "exact", "container",
+            "completion_tag_bot_tree_differs_from_main", {},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # The scalar official/staging candidate-hash fallback: the frozen side is
+    # the expected-metadata mapping itself (resolved official-first, exactly
+    # like the producer's ``or`` chain), the live side the observed tag
+    # artifact hash.
+    site_id="bot_artifact.completion_candidate_hash",
+    fields=(
+        FieldSpec(
+            "candidate_hash", "spelling_alias", "container",
+            "completion_tag_candidate_hash_mismatch",
+            {"alias_groups": {
+                "official-candidate-hash": (
+                    "official-candidate-hash", "staging-candidate-hash",
+                ),
+             },
+             "none_normalization": True, "value_shape": "scalar"},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # The exact single-row grade for non-alias metadata keys (e.g.
+    # official-certificate / official-policy): one row equal to the expected
+    # value passes, duplicates or missing rows fail, token carries the key.
+    site_id="bot_artifact.completion_tag_metadata_exact",
+    fields=(
+        FieldSpec(
+            "row", "exact", "container",
+            "completion_tag_metadata_mismatch:{name}", {},
+        ),
+    ),
+    status="wired",
+))
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -638,15 +730,17 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
         if not main_commit_oid:
             issues.append("main_branch_commit_unavailable")
         else:
+            # The tag commit must be on the configured publication branch
+            # (equal-or-ancestor, graded by the reproof engine; the probe
+            # routes through this module's merge-base seam).
             tag_commit_on_main = bool(
                 commit_oid
-                and _git(
-                    "merge-base",
-                    "--is-ancestor",
-                    commit_oid,
-                    main_commit_oid,
-                ).returncode
-                == 0
+                and run_reproof(
+                    "bot_artifact.tag_commit_on_main",
+                    frozen={"commit_on_main": commit_oid},
+                    live={"commit_on_main": main_commit_oid},
+                    probe=_ANCESTRY_PROBE,
+                ).ok
             )
             if commit_oid and not tag_commit_on_main:
                 issues.append("completion_tag_commit_not_on_main")
@@ -661,10 +755,16 @@ def published_bot_identity(path_or_token: str | Path) -> dict[str, Any]:
             )
             if not main_tree_oid:
                 issues.append("main_missing_bot_tree")
+            # The completion-tag bot tree must equal the main-branch bot tree
+            # (graded by the reproof engine); the presence guards stay here.
             completion_tree_matches_main = bool(
                 completion_tree_oid
                 and main_tree_oid
-                and completion_tree_oid == main_tree_oid
+                and run_reproof(
+                    "bot_artifact.completion_tree_matches_main",
+                    frozen={"bot_tree_oid": completion_tree_oid},
+                    live={"bot_tree_oid": main_tree_oid},
+                ).ok
             )
             if completion_tree_oid and main_tree_oid and not completion_tree_matches_main:
                 issues.append("completion_tag_bot_tree_differs_from_main")
@@ -778,13 +878,26 @@ def validate_completion_tag(
         issues.append("completion_tag_object_invalid")
     if identity.get("migrated_since_completion"):
         issues.append("completion_tag_bot_tree_differs_from_head")
+    # The scalar candidate-hash fallback: the frozen-side resolution (the
+    # historical ``or`` chain — official spelling first, then staging, else
+    # NO expectation at all) stays in this adapter as the availability gate,
+    # exactly like the old inline producer; the resolved-expectation-vs-
+    # observed drift judgment itself grades through the engine's spelling-
+    # alias site (scalar frozen side, the engine's single-key
+    # normalization bridge).
     expected_hash = str(
         expected_metadata.get("official-candidate-hash")
         or expected_metadata.get("staging-candidate-hash")
         or ""
     )
-    if not expected_hash or identity.get("tag_artifact_hash") != expected_hash:
+    if not expected_hash:
         issues.append("completion_tag_candidate_hash_mismatch")
+    else:
+        issues.extend(run_reproof(
+            "bot_artifact.completion_candidate_hash",
+            frozen={"candidate_hash": expected_hash},
+            live={"candidate_hash": str(identity.get("tag_artifact_hash") or "")},
+        ).issues)
 
     contents_result = _git(
         "for-each-ref",
@@ -819,27 +932,67 @@ def validate_completion_tag(
             metadata_values["staging-candidate-hash"] = metadata_values[
                 "candidate-hash"
             ]
+    # The exact-match metadata ring grades through the reproof engine.  The
+    # candidate-hash expectations (any of the three spellings) grade in ONE
+    # call through the engine catalog's alias site, whose final-review
+    # revision restored the ONE-WAY #24 rule: an official-* EXPECTATION may
+    # fall back to a staging-* observation and the live bare legacy key
+    # pre-maps onto staging, while the reverse direction (staging/bare
+    # expectation accepting an official observation) fails closed with the
+    # historical completion_tag_metadata_mismatch:<expected-key> token.  An
+    # empty candidate-hash expectation set skips the call (the old loop
+    # graded nothing); every other metadata key grades through the exact
+    # single-row site.  In every direction the VALUE stays an exact
+    # single-element list comparison, so duplicate rows ([v, v]) fail.
+    candidate_hash_spellings = (
+        "official-candidate-hash",
+        "staging-candidate-hash",
+        "candidate-hash",
+    )
+    candidate_expectations = {
+        key: value
+        for key, value in expected_metadata.items()
+        if key in candidate_hash_spellings
+    }
+    if candidate_expectations:
+        issues.extend(run_reproof(
+            "bot_artifact.completion_tag_metadata",
+            frozen={"candidate_hash": candidate_expectations},
+            live={"candidate_hash": metadata_values},
+        ).issues)
     for key, expected in expected_metadata.items():
-        actual = metadata_values.get(key)
-        if actual is None and key == "official-candidate-hash":
-            # Spelling alias (2026-10-22, v598 handoff): publication tags carry
-            # MIXED metadata spellings across the no-certificate era -- the
-            # value is byte-identical, but some writers emit the staging-*
-            # key (e.g. v598's staging-candidate-hash) while consumers ask
-            # for the official-* name (v585's tag carries the official one).
-            # The artifact-hash comparison above already accepts either
-            # spelling; extend the same alias to the exact-match loop.  The
-            # VALUE remains an exact-match requirement -- this widens only
-            # which key NAME may carry it, never what it must equal.
-            actual = metadata_values.get("staging-candidate-hash")
-        if actual != [str(expected)]:
-            issues.append(f"completion_tag_metadata_mismatch:{key}")
+        if key in candidate_expectations:
+            continue
+        issues.extend(run_reproof(
+            "bot_artifact.completion_tag_metadata_exact",
+            frozen={"row": [str(expected)]},
+            live={"row": metadata_values.get(key)},
+            context={"name": key},
+        ).issues)
 
     commit_oid = str(identity.get("commit_oid") or "")
     if not commit_oid:
         issues.append("completion_tag_commit_missing")
-    elif _git("merge-base", "--is-ancestor", commit_oid, EVOLUTION_BRANCH).returncode != 0:
-        issues.append("completion_tag_commit_not_on_main")
+    else:
+        # The tag commit must be on the configured publication branch.  The
+        # engine's ancestry kind grades oid-vs-oid, so resolve the branch tip
+        # through this module's _git seam first (the probe consults the same
+        # merge-base seam; an unresolvable branch, a garbage oid, or a real
+        # non-ancestor verdict all fold into the same not-on-main token,
+        # exactly like the inline merge-base it replaces).
+        branch_tip = _git("rev-parse", "--verify", EVOLUTION_BRANCH)
+        issues.extend(run_reproof(
+            "bot_artifact.tag_commit_on_main",
+            frozen={"commit_on_main": commit_oid},
+            live={
+                "commit_on_main": (
+                    branch_tip.stdout.strip()
+                    if branch_tip.returncode == 0
+                    else ""
+                )
+            },
+            probe=_ANCESTRY_PROBE,
+        ).issues)
     if certificate_path:
         listed = _git(
             "ls-tree",

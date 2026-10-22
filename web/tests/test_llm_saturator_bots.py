@@ -434,9 +434,34 @@ def test_saturator_provider_pause_classifies_exception_bodies(monkeypatch):
 
 def test_saturator_rate_limit_pause_escalates_along_shared_curve(monkeypatch):
     """P1 (2026-10-05): consecutive non-quota provider failures back off
-    8 → 16 → 32 → 64 → 120 → 120 along the shared curve, not a flat 120s."""
-    from llm_availability import service_unavailable_cooldown_seconds
+    exponentially along the shared curve — NOT a flat 120s.
 
+    2026-10-21 解限流: the saturator's OWN pause is additionally capped at
+    POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC (default 30s), so the visible
+    escalation is 8 → 16 → 30 → 30 … The shared curve itself (min(120,
+    8*2**(n-1)) in llm_availability) is unchanged and stays authoritative
+    for the PIPELINE durable pause — pinned in
+    test_llm_concurrency.py::test_protected_throttle_semantics_unchanged and
+    restorable here via the env override test below."""
+    monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
+    monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
+    import time as _time
+
+    for expected in (8, 16, 30, 30, 30, 30):
+        before = _time.time()
+        llm_saturator._note_saturator_provider_failure(RuntimeError(GLM_1302_TEXT))
+        after = _time.time()
+        assert llm_saturator._quota_pause_until == pytest.approx(
+            min(before, after) + expected, abs=2.0
+        ), (expected, llm_saturator._quota_pause_until - min(before, after))
+    assert llm_saturator._rate_limit_streak == 6
+
+
+def test_saturator_rate_limit_pause_cap_env_restores_full_curve(monkeypatch):
+    """The cap is a clamp on top of the shared curve, never a rewrite: with
+    the cap raised to the curve's own ceiling (120) the historic full
+    escalation 8 → 16 → 32 → 64 → 120 → 120 reappears byte-for-byte."""
+    monkeypatch.setenv("POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC", "120")
     monkeypatch.setattr(llm_saturator, "_quota_pause_until", 0.0)
     monkeypatch.setattr(llm_saturator, "_rate_limit_streak", 0)
     import time as _time
@@ -449,6 +474,39 @@ def test_saturator_rate_limit_pause_escalates_along_shared_curve(monkeypatch):
             min(before, after) + expected, abs=2.0
         ), (expected, llm_saturator._quota_pause_until - min(before, after))
     assert llm_saturator._rate_limit_streak == 6
+
+
+def test_saturator_rate_limit_pause_cap_floors_at_curve_base(monkeypatch):
+    """The cap knob can tighten the tail but never CANCEL the curve: a
+    sub-base value (4 < 8) clamps to the curve base so the first step still
+    backs off 8s, and a bogus value falls back to the 30s default."""
+    monkeypatch.setenv("POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC", "4")
+    assert llm_saturator._rate_limit_pause_cap_sec() == 8.0
+    monkeypatch.setenv("POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC", "bogus")
+    assert llm_saturator._rate_limit_pause_cap_sec() == 30.0
+    monkeypatch.delenv("POK_LLM_SATURATOR_RATE_LIMIT_PAUSE_CAP_SEC", raising=False)
+    assert llm_saturator._rate_limit_pause_cap_sec() == 30.0
+
+
+def test_saturator_child_count_guard_matches_codex_transport(monkeypatch):
+    """Review 必改1 (2026-10-21): under POK_LLM_TRANSPORT=codex every provider
+    child's comm is ``codex`` (service MainPID 1016656 carried six of them);
+    the RAM oversell guard matched only ``claude`` and read 0 forever, so the
+    ``claude_children`` launch gate was inert. The match set must cover both
+    transports while still ignoring unrelated children."""
+    comms = {"101": "codex", "102": "claude", "103": "python3", "104": "bwrap"}
+    monkeypatch.setattr(llm_saturator, "_child_comm", lambda token: comms.get(token))
+    assert llm_saturator._count_transport_children("101 102 103 104") == 2
+    assert llm_saturator._count_transport_children("") == 0
+    assert llm_saturator._count_transport_children("201 202") == 0  # unreadable comm
+    assert "codex" in llm_saturator._TRANSPORT_CHILD_COMM_NAMES
+    assert "claude" in llm_saturator._TRANSPORT_CHILD_COMM_NAMES
+
+
+def test_saturator_child_count_live_proc_read_is_safe():
+    """The live /proc read never raises — a read failure counts 0 (fail-open
+    to the other RAM gates), never a launch crash."""
+    assert isinstance(llm_saturator._claude_child_count(), int)
 
 
 def test_saturator_rate_limit_streak_decays_on_launch_success(monkeypatch):

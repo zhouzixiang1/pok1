@@ -47,6 +47,8 @@ import stat
 import time
 from pathlib import Path
 
+from publication_reproof import run_reproof
+
 import tool_commit as _tc
 
 
@@ -193,24 +195,43 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
     remote = record["identity"]["remote_publication"]
     remote_proof = {"required": remote.get("required") is True}
     if remote.get("required") is True:
+        from tool_commit_archivist import _ArchivistGitProbe
+
         wanted = (
             f"refs/heads/{_tc.EVOLUTION_BRANCH}",
             tombstone_ref,
             f"{tombstone_ref}^{{}}",
         )
+        tombstone_refs_frozen = {
+            "tombstone_object_oid": tombstone_object,
+            "tombstone_commit_oid": completion_commit,
+        }
+
+        def _observed_refs():
+            return {
+                "tombstone_object_oid": refs.get(tombstone_ref),
+                "tombstone_commit_oid": refs.get(f"{tombstone_ref}^{{}}"),
+            }
+
         refs = _tc._remote_ref_snapshot(*wanted)
-        if (
-            refs.get(tombstone_ref) != tombstone_object
-            or refs.get(f"{tombstone_ref}^{{}}") != completion_commit
-        ):
+        # The observed remote tombstone refs grade against the locally proven
+        # tombstone identity through the reproof engine; a mismatch triggers
+        # the idempotent push and re-observation before the hard failure.
+        if run_reproof(
+            "archivist.reap_remote_refs",
+            frozen=tombstone_refs_frozen,
+            live=_observed_refs(),
+        ).issues:
             if not _tc.git_push_refs(tombstone_name):
                 raise RuntimeError("reap_tombstone_remote_push_failed")
             refs = _tc._remote_ref_snapshot(*wanted)
-        if (
-            refs.get(tombstone_ref) != tombstone_object
-            or refs.get(f"{tombstone_ref}^{{}}") != completion_commit
-        ):
-            raise RuntimeError("reap_remote_proof_mismatch")
+            still_drifted = run_reproof(
+                "archivist.reap_remote_refs",
+                frozen=tombstone_refs_frozen,
+                live=_observed_refs(),
+            ).issues
+            if still_drifted:
+                raise RuntimeError(";".join(still_drifted))
         remote_main = str(refs.get(f"refs/heads/{_tc.EVOLUTION_BRANCH}") or "")
         if len(remote_main) != 40 or any(
             char not in "0123456789abcdef" for char in remote_main
@@ -222,18 +243,27 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
             "rev-parse", f"refs/remotes/origin/{_tc.EVOLUTION_BRANCH}", check=False
         ).strip()
         if tracking != remote_main:
+            # Adapter-owned tracking-ref fetch BEFORE any ancestry grading
+            # (the precondition the engine catalog's archivist.reap_remote_
+            # proof site declares): an un-fetched advanced tip would collapse
+            # the merge-base probe to False and re-create the #19/#22 wedge.
             _tc._git(
                 "fetch",
                 "--no-tags",
                 "origin",
                 f"refs/heads/{_tc.EVOLUTION_BRANCH}:refs/remotes/origin/{_tc.EVOLUTION_BRANCH}",
             )
-        if not _git_command_succeeds(
-            "merge-base",
-            "--is-ancestor",
-            record["identity"]["commit_oid"],
-            remote_main,
-        ):
+        remote_ancestry_probe = _ArchivistGitProbe(
+            lambda frozen_oid, live_oid: _git_command_succeeds(
+                "merge-base", "--is-ancestor", frozen_oid, live_oid
+            )
+        )
+        if run_reproof(
+            "archivist.reap_publication_on_remote_main",
+            frozen={"remote_main_oid": record["identity"]["commit_oid"]},
+            live={"remote_main_oid": remote_main},
+            probe=remote_ancestry_probe,
+        ).issues:
             raise RuntimeError("reap_publication_not_on_remote_main")
         remote_proof.update({
             "publication_remote_main_oid": remote.get("remote_main_oid"),
@@ -271,12 +301,18 @@ def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
     head_oid = _tc._git("rev-parse", "HEAD").strip()
     # HEAD-advance rule (2026-10-17): a post-publication deploy legitimately
     # moves HEAD past the publication commit; the pin is "publication commit
-    # is an ancestor of HEAD", not exact equality (v566 wedge class).
-    if head_oid != record["identity"]["commit_oid"] and not (
-        _tc._publication_head_advance_allowed(
-            record["identity"]["commit_oid"], head_oid
-        )
-    ):
+    # is an ancestor of HEAD", not exact equality (v566 wedge class).  The
+    # equal-or-ancestor judgment grades through the reproof engine; the probe
+    # routes through the archivist's ancestor helper (live ``tool_commit``
+    # attribute, so the operator/test monkeypatch surface keeps governing).
+    from tool_commit_archivist import _WORKTREE_PROBE
+
+    if run_reproof(
+        "archivist.reap_head",
+        frozen={"head_oid": record["identity"]["commit_oid"]},
+        live={"head_oid": head_oid},
+        probe=_WORKTREE_PROBE,
+    ).issues:
         raise RuntimeError("reap_changed_head")
     return {
         "bot": name,

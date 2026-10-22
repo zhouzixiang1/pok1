@@ -32,6 +32,12 @@ from evolution_infra import (
     _fsync_directory,
     locked_file,
 )
+from publication_reproof import (
+    FieldSpec,
+    ReproofContract,
+    register_contract,
+    run_reproof,
+)
 
 
 SCHEMA_VERSION = 1
@@ -95,6 +101,98 @@ def _canonical_digest(payload: dict[str, Any]) -> str:
 def _is_hex(value: Any, length: int) -> bool:
     text = str(value or "")
     return len(text) == length and all(char in "0123456789abcdef" for char in text)
+
+
+# ---------------------------------------------------------------------------
+# Frozen-vs-live reproof engine seam (2026-10-22 migration)
+# ---------------------------------------------------------------------------
+# Every frozen-vs-live drift judgment in this module (the #19/#22/#26
+# exact-pin convergence family) grades through the pure engine in
+# ``publication_reproof.py``.  This module keeps exactly the pieces the
+# engine must not own: the git/ls-remote observation seams, the
+# generation-evidence recompute, the ``validate_completion_tag`` call, and
+# the availability gates that have no frozen side to compare
+# (``remote_main_missing`` / ``*_unavailable`` tokens).  The probe routes
+# through THIS module's seams (not the engine's DefaultGitProbe) so the
+# operator/test monkeypatch surface ``stability_observation
+# ._git_command_succeeds`` keeps governing every ancestry judgment.
+
+
+class _ModuleGitProbe:
+    """GitProbe adapter over this module's existing git seams."""
+
+    def is_ancestor(self, frozen_oid: str, live_oid: str) -> bool:
+        return bool(
+            _git_command_succeeds(
+                "merge-base", "--is-ancestor", str(frozen_oid), str(live_oid)
+            )
+        )
+
+    def object_locally_known(self, oid: str) -> bool:
+        return bool(_remote_tip_locally_known(str(oid)))
+
+
+_GIT_PROBE = _ModuleGitProbe()
+
+# Engine catalog sites consumed below are registered by the engine module
+# itself (stability.row_remote_main #19, stability.repository_head,
+# stability.identity_repository_head #26, stability.remote_publication +
+# stability.remote_publication_row #22, stability.daemon_identity).  The
+# five site families that live only in this module's producers are declared
+# here, import-time, with byte-preserved issue tokens.
+
+register_contract(ReproofContract(
+    site_id="stability.live_publication_commit",
+    fields=(
+        FieldSpec(
+            "commit_oid", "exact", "container",
+            "v{index}:publication_commit_oid_mismatch", {},
+        ),
+    ),
+))
+register_contract(ReproofContract(
+    site_id="stability.live_publication_evidence",
+    fields=(
+        FieldSpec(
+            "generation_evidence", "exact", "container",
+            "v{index}:generation_evidence_identity_mismatch", {},
+        ),
+    ),
+))
+register_contract(ReproofContract(
+    site_id="stability.publication_head_preflight",
+    fields=(
+        FieldSpec(
+            "repository_head", "git_ancestry", "frozen_observation",
+            "publication_repository_head_mismatch",
+            {"tip_kind": "head", "hex": 40, "equal_passes": True},
+        ),
+        FieldSpec(
+            "remote_main", "git_ancestry", "frozen_observation",
+            "publication_remote_main_head_mismatch",
+            {"tip_kind": "literal_oid", "hex": 40, "equal_passes": True},
+        ),
+    ),
+))
+register_contract(ReproofContract(
+    site_id="stability.publication_head_transition",
+    fields=(
+        FieldSpec(
+            "previous_head", "git_ancestry", "frozen_observation",
+            "publication_repository_head_not_descendant",
+            {"tip_kind": "head", "hex": 40, "equal_passes": True},
+        ),
+    ),
+))
+register_contract(ReproofContract(
+    site_id="stability.publication_head_advance",
+    fields=(
+        FieldSpec(
+            "advance_count", "exact", "publication_window",
+            "publication_repository_advance_not_single_commit", {},
+        ),
+    ),
+))
 
 
 def _validate_runtime_configuration(config: dict[str, Any]) -> dict[str, Any]:
@@ -462,14 +560,7 @@ def _state_errors(state: Any) -> list[str]:
         else:
             if not _is_hex(remote.get("remote_main_oid"), 40):
                 errors.append(f"{prefix}_remote_main_oid_invalid")
-            elif str(remote.get("remote_main_oid")) != str(
-                row.get("commit_oid") or ""
-            ) and not _git_command_succeeds(
-                "merge-base",
-                "--is-ancestor",
-                str(row.get("commit_oid") or ""),
-                str(remote.get("remote_main_oid")),
-            ):
+            else:
                 # Nineteenth exact-pin convergence defect (v579, 2026-10-20):
                 # the frozen row records origin's tip AT RECORD TIME.  When an
                 # operator merge/push legitimately advanced origin past the
@@ -484,7 +575,24 @@ def _state_errors(state: Any) -> list[str]:
                 # mirroring the deploy-advance ancestor rule used by the
                 # worktree/HEAD re-proofs.  A remote_main_oid whose object is
                 # absent locally fails the git call and stays fail-closed.
-                errors.append(f"{prefix}_remote_main_not_publication_commit")
+                # The judgment grades through the reproof engine
+                # (git_ancestry: equal-or-ancestor, probe failure folds
+                # closed into the same row token).
+                errors.extend(
+                    run_reproof(
+                        "stability.row_remote_main",
+                        frozen={
+                            "remote_main_oid": str(row.get("commit_oid") or "")
+                        },
+                        live={
+                            "remote_main_oid": str(
+                                remote.get("remote_main_oid")
+                            )
+                        },
+                        probe=_GIT_PROBE,
+                        context={"index": index},
+                    ).issues
+                )
             for name in (bot_tag(version), high_water_tag(version)):
                 ref = (remote.get("refs") or {}).get(name)
                 if not isinstance(ref, dict):
@@ -543,16 +651,19 @@ def _state_errors(state: Any) -> list[str]:
         # The durable rule is the ancestor rule used everywhere else in the
         # convergence family: the publication commit must be an ancestor of
         # the recorded head — exact equality remains the common no-deploy
-        # case, and any non-ancestral divergence still fails closed.
-        if recorded_head != publication_commit and not (
-            _git_command_succeeds(
-                "merge-base",
-                "--is-ancestor",
-                publication_commit,
-                recorded_head,
+        # case, and any non-ancestral divergence still fails closed.  The
+        # equality fast-path stays in this adapter so an (already invalid)
+        # equal-non-hex shape keeps its historical verdict; every actual
+        # drift judgment grades through the reproof engine.
+        if recorded_head != publication_commit:
+            errors.extend(
+                run_reproof(
+                    "stability.repository_head",
+                    frozen={"repository_head": publication_commit},
+                    live={"repository_head": recorded_head},
+                    probe=_GIT_PROBE,
+                ).issues
             )
-        ):
-            errors.append("repository_head_not_latest_publication_commit")
 
     reset_history = state.get("reset_history")
     if not isinstance(reset_history, list):
@@ -679,15 +790,21 @@ def _identity_mismatches(
         # v598's publication and its archivist retries).  Same family rule as
         # the worktree/remote legs: the recorded head may stay an ANCESTOR of
         # the current HEAD; only a divergent/unrelated HEAD is a mismatch.
-        recorded = str(state.get("repository_head") or "")
-        current = str(identity.get("repository_head") or "")
-        if (
-            _is_hex(recorded, 40)
-            and _is_hex(current, 40)
-            and _git_command_succeeds(
-                "merge-base", "--is-ancestor", recorded, current
-            )
-        ):
+        # The ancestor judgment grades through the reproof engine; its issue
+        # token IS the identity key name, so the projection keeps reporting
+        # ``repository_head`` exactly as before.
+        if run_reproof(
+            "stability.identity_repository_head",
+            frozen={
+                "repository_head": str(state.get("repository_head") or "")
+            },
+            live={
+                "repository_head": str(
+                    identity.get("repository_head") or ""
+                )
+            },
+            probe=_GIT_PROBE,
+        ).ok:
             mismatches.remove("repository_head")
     return mismatches
 
@@ -752,8 +869,19 @@ def _live_publication_errors(state: dict[str, Any]) -> list[str]:
                 for issue in (validation.get("issues") or ["invalid"])
             )
         identity = validation.get("identity") or {}
-        if str(identity.get("commit_oid") or "") != str(row["commit_oid"]):
-            errors.append(f"v{version}:publication_commit_oid_mismatch")
+        # Frozen-vs-live comparisons grade through the reproof engine; the
+        # validator call and the evidence recompute stay in this adapter
+        # (they are live observations/effects, not judgments).
+        errors.extend(
+            run_reproof(
+                "stability.live_publication_commit",
+                frozen={"commit_oid": str(row["commit_oid"])},
+                live={
+                    "commit_oid": str(identity.get("commit_oid") or "")
+                },
+                context={"index": version},
+            ).issues
+        )
         try:
             current_evidence = _generation_evidence_binding(
                 version,
@@ -764,8 +892,16 @@ def _live_publication_errors(state: dict[str, Any]) -> list[str]:
                 f"v{version}:generation_evidence_unavailable:{type(exc).__name__}"
             )
         else:
-            if current_evidence != row.get("generation_evidence"):
-                errors.append(f"v{version}:generation_evidence_identity_mismatch")
+            errors.extend(
+                run_reproof(
+                    "stability.live_publication_evidence",
+                    frozen={
+                        "generation_evidence": row.get("generation_evidence")
+                    },
+                    live={"generation_evidence": current_evidence},
+                    context={"index": version},
+                ).issues
+            )
     return list(dict.fromkeys(errors))
 
 
@@ -793,7 +929,24 @@ def _remote_tip_locally_known(oid: str) -> bool:
 
 
 def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
-    """Re-open origin refs without fetching or mutating the operator checkout."""
+    """Re-open origin refs without fetching or mutating the operator checkout.
+
+    Frozen-vs-live drift judgments grade through the publication_reproof
+    engine: the main-tip rule through ``stability.remote_publication`` (the
+    ``remote_main_vs_recorded_head`` ancestry field; the empty ``rows``
+    projection exists only so that field has a well-formed container — the
+    per-row legs are enumerated through direct
+    ``stability.remote_publication_row`` invocations below, because the
+    engine's per-item aggregation surfaces only the FIRST mismatching
+    sub-token per row while this producer must emit every leg's token
+    independently, e.g. a rewritten tag reports object AND peeled together),
+    and each (row, tag-name) pair through ``stability.remote_publication_row``
+    (publication-commit-on-remote-main ancestry + the two unconditional tag
+    string proofs).  This adapter owns the ls-remote observation and the
+    availability gates: a MISSING remote main is not drift (it has no frozen
+    side to compare) and reports only ``remote_main_missing`` — the engine's
+    ancestry tokens for an absent tip are suppressed, never fabricated.
+    """
 
     rows = list(state.get("observations") or [])
     if not rows:
@@ -829,7 +982,7 @@ def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
     # rule (mirroring ``_preflight_head_issues`` and the handoff's
     # ``remote_main_oid`` ancestor drift rule): the live tip may equal or
     # descend from the recorded head; a tip whose object is absent locally
-    # skips BOTH main-ancestry sub-checks (its durable record-time proof is
+    # skips BOTH main-ancestry subchecks (its durable record-time proof is
     # the fetch-backed ``verify_remote_bot_publication`` ancestor check the
     # publication path ran before freezing the row, and the frozen row's own
     # tip is independently re-proven fail-closed by ``_state_errors``); a
@@ -842,40 +995,70 @@ def _remote_publication_errors(state: dict[str, Any]) -> list[str]:
     # keeps the tags, on a runtime that never fetches, defers detection to
     # the next publication/handoff, where the fetch-backed re-verification
     # fails hard.
-    remote_tip_known = _is_hex(remote_main, 40) and _remote_tip_locally_known(
-        remote_main
-    )
+    remote_tip_present = _is_hex(remote_main, 40)
     errors: list[str] = []
-    if not _is_hex(remote_main, 40):
+    main_leg = run_reproof(
+        "stability.remote_publication",
+        frozen={
+            "remote_main_vs_recorded_head": recorded_head,
+            "rows": [],
+        },
+        live={
+            "remote_main_vs_recorded_head": remote_main,
+            "rows": [],
+        },
+        probe=_GIT_PROBE,
+    )
+    for field_result in main_leg.results:
+        if (
+            field_result.field == "remote_main_vs_recorded_head"
+            and field_result.outcome == "mismatch"
+            and field_result.issue_token
+            and remote_tip_present
+        ):
+            errors.append(field_result.issue_token)
+    if not remote_tip_present:
         errors.append("remote_main_missing")
-    elif (
-        remote_main != recorded_head
-        and remote_tip_known
-        and not _git_command_succeeds(
-            "merge-base",
-            "--is-ancestor",
-            recorded_head,
-            remote_main,
-        )
-    ):
-        errors.append("remote_main_head_mismatch")
     for row in rows:
         version = int(row["version"])
         stored = (row.get("remote_publication") or {}).get("refs") or {}
         commit_oid = str(row.get("commit_oid") or "")
+        row_tokens: list[str] = []
+        ancestry_tokens: list[str] = []
         for name in (bot_tag(version), high_water_tag(version)):
             expected = stored.get(name) or {}
-            if refs.get(f"refs/tags/{name}") != expected.get("object_oid"):
-                errors.append(f"v{version}:remote_tag_object_mismatch:{name}")
-            if refs.get(f"refs/tags/{name}^{{}}") != commit_oid:
-                errors.append(f"v{version}:remote_tag_peeled_mismatch:{name}")
-        if remote_main and remote_tip_known and not _git_command_succeeds(
-            "merge-base",
-            "--is-ancestor",
-            commit_oid,
-            remote_main,
-        ):
-            errors.append(f"v{version}:publication_commit_not_on_remote_main")
+            result = run_reproof(
+                "stability.remote_publication_row",
+                frozen={
+                    "publication_commit_on_remote_main": commit_oid,
+                    "remote_tag_object": str(
+                        expected.get("object_oid") or ""
+                    ),
+                    "remote_tag_peeled": commit_oid,
+                },
+                live={
+                    "publication_commit_on_remote_main": remote_main,
+                    "remote_tag_object": str(
+                        refs.get(f"refs/tags/{name}") or ""
+                    ),
+                    "remote_tag_peeled": str(
+                        refs.get(f"refs/tags/{name}^{{}}") or ""
+                    ),
+                },
+                probe=_GIT_PROBE,
+                context={"index": version, "name": name},
+            )
+            for issue in result.issues:
+                if issue == f"v{version}:publication_commit_not_on_remote_main":
+                    # Availability gate: a missing live tip is not an
+                    # ancestry verdict (the #22 degrade binds to a tip that
+                    # exists but is locally unknown).
+                    if remote_tip_present:
+                        ancestry_tokens.append(issue)
+                else:
+                    row_tokens.append(issue)
+        row_tokens.extend(ancestry_tokens)
+        errors.extend(row_tokens)
     return list(dict.fromkeys(errors))
 
 
@@ -887,7 +1070,18 @@ def _live_daemon_errors(state: dict[str, Any]) -> list[str]:
         current = _daemon_process_identity()
     except Exception as exc:
         return [f"rating_daemon_unavailable:{type(exc).__name__}"]
-    if current != rows[-1].get("daemon_process_identity"):
+    # HARD EXACT (no witness): a diverged live daemon identity is a real
+    # mismatch; the reset-history witness semantics belong to the handoff
+    # step-contract site, not to this live re-proof.
+    if not run_reproof(
+        "stability.daemon_identity",
+        frozen={
+            "daemon_process_identity": rows[-1].get(
+                "daemon_process_identity"
+            )
+        },
+        live={"daemon_process_identity": current},
+    ).ok:
         return ["rating_daemon_process_identity_mismatch"]
     return _daemon_heartbeat_errors()
 
@@ -1487,31 +1681,30 @@ def _preflight_head_issues(
     advanced past the publication commit via a legitimate post-publication
     deploy converges (v566), while a different branch line or a non-ancestor
     tip still fails closed.  Every other transition issue still raises.
+
+    Both legs grade through the reproof engine
+    (``stability.publication_head_preflight``): git_ancestry is exactly the
+    tolerated shape — equal, or a well-formed ancestor advance — so the old
+    issue-then-tolerate dance collapses into one drift-allowed verdict per
+    leg.  (The one unreachable shape that differs: a NON-hex current_head
+    string with a real checkout HEAD that happens to descend — the identity
+    producer refuses to emit a non-hex head, so no caller can supply it.)
     """
 
-    issues = _publication_head_transition_issues(
-        previous_head=None,
-        current_head=current_head,
-        publication_commit=publication_commit,
-        remote_main=remote_main,
+    return list(
+        run_reproof(
+            "stability.publication_head_preflight",
+            frozen={
+                "repository_head": publication_commit,
+                "remote_main": publication_commit,
+            },
+            live={
+                "repository_head": current_head,
+                "remote_main": remote_main,
+            },
+            probe=_GIT_PROBE,
+        ).issues
     )
-    if not _is_hex(publication_commit, 40):
-        return issues
-    tolerated: set[str] = set()
-    if "publication_repository_head_mismatch" in issues and (
-        _git_command_succeeds(
-            "merge-base", "--is-ancestor", publication_commit, "HEAD"
-        )
-    ):
-        tolerated.add("publication_repository_head_mismatch")
-    if "publication_remote_main_head_mismatch" in issues and (
-        _is_hex(remote_main, 40)
-        and _git_command_succeeds(
-            "merge-base", "--is-ancestor", publication_commit, remote_main
-        )
-    ):
-        tolerated.add("publication_remote_main_head_mismatch")
-    return [issue for issue in issues if issue not in tolerated]
 
 
 def _publication_head_transition_issues(
@@ -1528,23 +1721,41 @@ def _publication_head_transition_issues(
     the row.  More than one intervening commit is treated as infrastructure
     drift: the publication may become the first row of a new streak, but it
     cannot retain the earlier N/10 count.
+
+    The window legs (HEAD/remote main vs the publication commit) grade
+    through the same engine preflight site; the caller's ``drift_issues``
+    filter still decides which of those tolerated-window tokens reset the
+    streak.  The descendant leg grades through
+    ``stability.publication_head_transition`` and the single-commit advance
+    count through ``stability.publication_head_advance``.
     """
 
     issues: list[str] = []
-    if not _is_hex(current_head, 40) or current_head != publication_commit:
-        issues.append("publication_repository_head_mismatch")
-    if not _is_hex(remote_main, 40) or remote_main != publication_commit:
-        issues.append("publication_remote_main_head_mismatch")
+    issues.extend(
+        run_reproof(
+            "stability.publication_head_preflight",
+            frozen={
+                "repository_head": publication_commit,
+                "remote_main": publication_commit,
+            },
+            live={
+                "repository_head": current_head,
+                "remote_main": remote_main,
+            },
+            probe=_GIT_PROBE,
+        ).issues
+    )
     if previous_head is None or previous_head == current_head:
-        return issues
-    if not _is_hex(previous_head, 40) or not _git_command_succeeds(
-        "merge-base",
-        "--is-ancestor",
-        previous_head,
-        current_head,
-    ):
-        issues.append("publication_repository_head_not_descendant")
-        return issues
+        return list(dict.fromkeys(issues))
+    descendant = run_reproof(
+        "stability.publication_head_transition",
+        frozen={"previous_head": previous_head},
+        live={"previous_head": current_head},
+        probe=_GIT_PROBE,
+    )
+    if not descendant.ok:
+        issues.extend(descendant.issues)
+        return list(dict.fromkeys(issues))
     try:
         advance_count = int(
             _git("rev-list", "--count", f"{previous_head}..{current_head}")
@@ -1554,8 +1765,13 @@ def _publication_head_transition_issues(
             f"publication_repository_advance_unavailable:{type(exc).__name__}"
         )
     else:
-        if advance_count != 1:
-            issues.append("publication_repository_advance_not_single_commit")
+        issues.extend(
+            run_reproof(
+                "stability.publication_head_advance",
+                frozen={"advance_count": 1},
+                live={"advance_count": advance_count},
+            ).issues
+        )
     return list(dict.fromkeys(issues))
 
 
@@ -1836,9 +2052,20 @@ def record_published_generation(
                 previous=state,
             )
             rows = []
-        if rows and rows[-1].get("daemon_process_identity") != row[
-            "daemon_process_identity"
-        ]:
+        # Record-time daemon restart reset: graded through the same
+        # hard-exact engine site as the live re-proof (an identity change
+        # mid-streak restarts the count).
+        if rows and not run_reproof(
+            "stability.daemon_identity",
+            frozen={
+                "daemon_process_identity": rows[-1].get(
+                    "daemon_process_identity"
+                )
+            },
+            live={
+                "daemon_process_identity": row["daemon_process_identity"]
+            },
+        ).ok:
             state = _new_state(
                 identity,
                 reason="rating_daemon_restart_detected",

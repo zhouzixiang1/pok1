@@ -1894,3 +1894,305 @@ def test_live_publication_proof_accepts_staging_candidate_hash_spelling(
     }
     errors = observation._test_original_live_publication_errors(state)
     assert errors == []
+
+
+# --- Frozen-vs-live comparisons grade through the publication_reproof engine ---
+#
+# The 2026-10-22 migration moves every frozen-vs-live drift judgment in this
+# module (the #19/#22/#26 exact-pin convergence family) to the pure engine in
+# ``publication_reproof.py``.  The module keeps only what the engine must not
+# own: the git/ls-remote observation seams, the generation-evidence recompute,
+# the ``validate_completion_tag`` call, and the availability gates that have no
+# frozen side to compare (``remote_main_missing`` / ``*_unavailable`` tokens).
+# These regressions pin the ROUTING (the registered engine sites are actually
+# used, with the module's own git probe); the behavior regressions above pin
+# the byte-exact tokens.
+
+
+def _engine_spy(monkeypatch):
+    import stability_observation as observation
+
+    calls: list = []
+    real = observation.run_reproof
+
+    def spy(site_id, **kwargs):
+        calls.append((site_id, kwargs.get("context") or {}))
+        return real(site_id, **kwargs)
+
+    monkeypatch.setattr(observation, "run_reproof", spy)
+    return calls
+
+
+def test_state_and_identity_head_rules_grade_through_reproof_engine(monkeypatch):
+    import stability_observation as observation
+
+    calls = _engine_spy(monkeypatch)
+    current = _install_identity(monkeypatch, observation)
+    observation.initialize_stability_observation()
+    _record(observation, V0)
+    state = json.loads(observation.STATE_FILE.read_text(encoding="utf-8"))
+    publication_commit = state["observations"][0]["commit_oid"]
+
+    # Twenty-sixth defect rule: an ancestor-advanced live HEAD is
+    # drift_allowed through stability.identity_repository_head.
+    advanced = "f" * 40
+    current["repository_head"] = advanced
+
+    def ancestor_only(*args):
+        return (
+            len(args) >= 4
+            and args[0] == "merge-base"
+            and args[1] == "--is-ancestor"
+            and args[2] == publication_commit
+            and args[3] in {advanced, "e" * 40}
+        )
+
+    monkeypatch.setattr(observation, "_git_command_succeeds", ancestor_only)
+    assert observation._identity_mismatches(state, current) == []
+    assert ("stability.identity_repository_head", {}) in calls
+
+    monkeypatch.setattr(
+        observation, "_git_command_succeeds", lambda *_a: False
+    )
+    assert observation._identity_mismatches(state, current) == ["repository_head"]
+
+    # Nineteenth-defect row rule and the recorded-head rule grade through
+    # their engine sites (the mutated digest failing alongside is expected).
+    state["repository_head"] = advanced
+    state["observations"][0]["remote_publication"]["remote_main_oid"] = "e" * 40
+    monkeypatch.setattr(observation, "_git_command_succeeds", ancestor_only)
+    errors = observation._state_errors(state)
+    assert "state_digest_mismatch" in errors
+    assert "repository_head_not_latest_publication_commit" not in errors
+    assert "observation_0_remote_main_not_publication_commit" not in errors
+    assert ("stability.repository_head", {}) in calls
+    assert ("stability.row_remote_main", {"index": 0}) in calls
+
+    monkeypatch.setattr(
+        observation, "_git_command_succeeds", lambda *_a: False
+    )
+    failed = observation._state_errors(state)
+    assert "repository_head_not_latest_publication_commit" in failed
+    assert "observation_0_remote_main_not_publication_commit" in failed
+
+
+def test_remote_publication_reproof_routes_through_engine(monkeypatch):
+    import stability_observation as observation
+
+    calls = _engine_spy(monkeypatch)
+    _install_identity(monkeypatch, observation)
+    observation.initialize_stability_observation()
+    _record(observation, V0)
+    state = json.loads(observation.STATE_FILE.read_text(encoding="utf-8"))
+    row = state["observations"][0]
+    lines = [f"{state['repository_head']}\trefs/heads/{EVOLUTION_BRANCH}"]
+    for name, identity in row["remote_publication"]["refs"].items():
+        lines.extend((
+            f"{identity['object_oid']}\trefs/tags/{name}",
+            f"{identity['peeled_commit_oid']}\trefs/tags/{name}^{{}}",
+        ))
+    monkeypatch.setattr(observation, "_git", lambda *args: "\n".join(lines))
+    monkeypatch.setattr(
+        observation, "_git_command_succeeds", lambda *args: True
+    )
+
+    before = len(calls)
+    assert observation._remote_publication_errors(state) == []
+    assert ("stability.remote_publication", {}) in calls[before:]
+    assert (
+        "stability.remote_publication_row",
+        {"index": V0, "name": bot_tag(V0)},
+    ) in calls[before:]
+    assert (
+        "stability.remote_publication_row",
+        {"index": V0, "name": high_water_tag(V0)},
+    ) in calls[before:]
+
+    # A locally KNOWN non-descendant tip still fails closed through the
+    # engine on both main-ancestry legs.
+    def known_tip_but_non_ancestor(*args):
+        return tuple(args[:2]) == ("cat-file", "-e")
+
+    monkeypatch.setattr(
+        observation, "_git_command_succeeds", known_tip_but_non_ancestor
+    )
+    lines[0] = f"{'f' * 40}\trefs/heads/{EVOLUTION_BRANCH}"
+    errors = observation._remote_publication_errors(state)
+    assert "remote_main_head_mismatch" in errors
+    assert f"v{V0}:publication_commit_not_on_remote_main" in errors
+
+    # Availability gate: a MISSING remote main reports only its own adapter
+    # token -- the engine's ancestry legs are suppressed, never fabricated.
+    monkeypatch.setattr(
+        observation, "_git", lambda *args: "\n".join(lines[1:])
+    )
+    assert observation._remote_publication_errors(state) == ["remote_main_missing"]
+
+
+def test_preflight_and_transition_head_rules_grade_through_engine(monkeypatch):
+    import stability_observation as observation
+
+    calls = _engine_spy(monkeypatch)
+    publication_commit = "a" * 40
+    advanced = "f" * 40
+
+    def ancestor_of_publication(*args):
+        return (
+            len(args) >= 4
+            and args[0] == "merge-base"
+            and args[1] == "--is-ancestor"
+            and args[2] == publication_commit
+            and args[3] == advanced
+        )
+
+    monkeypatch.setattr(
+        observation, "_git_command_succeeds", ancestor_of_publication
+    )
+    assert (
+        observation._preflight_head_issues(
+            publication_commit,
+            current_head=advanced,
+            remote_main=advanced,
+        )
+        == []
+    )
+    assert ("stability.publication_head_preflight", {}) in calls
+
+    fork = "b" * 40
+    assert observation._preflight_head_issues(
+        publication_commit, current_head=fork, remote_main=fork
+    ) == [
+        "publication_repository_head_mismatch",
+        "publication_remote_main_head_mismatch",
+    ]
+
+    # Window legs clean; the single-commit advance rule grades through its
+    # own site, and a multi-commit advance keeps the drift token.
+    assert (
+        observation._publication_head_transition_issues(
+            previous_head=publication_commit,
+            current_head=advanced,
+            publication_commit=advanced,
+            remote_main=advanced,
+        )
+        == []
+    )
+    assert ("stability.publication_head_transition", {}) in calls
+    assert ("stability.publication_head_advance", {}) in calls
+
+    original_git = observation._git
+
+    def two_commit_advance(*args, **kwargs):
+        if args[:2] == ("rev-list", "--count"):
+            return "2"
+        return original_git(*args, **kwargs)
+
+    monkeypatch.setattr(observation, "_git", two_commit_advance)
+    assert observation._publication_head_transition_issues(
+        previous_head=publication_commit,
+        current_head=advanced,
+        publication_commit=advanced,
+        remote_main=advanced,
+    ) == ["publication_repository_advance_not_single_commit"]
+
+    monkeypatch.setattr(
+        observation, "_git_command_succeeds", lambda *_a: False
+    )
+    assert observation._publication_head_transition_issues(
+        previous_head=publication_commit,
+        current_head=fork,
+        publication_commit=fork,
+        remote_main=fork,
+    ) == ["publication_repository_head_not_descendant"]
+
+
+def test_live_publication_and_daemon_compares_grade_through_engine(monkeypatch):
+    import bot_artifact
+    import stability_observation as observation
+
+    calls = _engine_spy(monkeypatch)
+    frozen_evidence = {"schema_version": 1, "mode": "frozen_native_evaluation"}
+    monkeypatch.setattr(
+        bot_artifact,
+        "validate_completion_tag",
+        lambda *_a, **_k: {
+            "valid": True,
+            "issues": [],
+            "identity": {"commit_oid": "b" * 40},
+        },
+    )
+    monkeypatch.setattr(
+        observation,
+        "_generation_evidence_binding",
+        lambda version, source_v: frozen_evidence,
+    )
+    state = {
+        "observations": [
+            {
+                "version": V0,
+                "candidate_artifact_hash": f"{V0 + 2:064x}",
+                "commit_oid": "b" * 40,
+                "source_v": V0 - 1,
+                "generation_evidence": frozen_evidence,
+            }
+        ]
+    }
+    assert observation._test_original_live_publication_errors(state) == []
+    assert ("stability.live_publication_commit", {"index": V0}) in calls
+    assert ("stability.live_publication_evidence", {"index": V0}) in calls
+
+    state["observations"][0]["commit_oid"] = "c" * 40
+    assert observation._test_original_live_publication_errors(state) == [
+        f"v{V0}:publication_commit_oid_mismatch"
+    ]
+
+    # Daemon identity (live re-proof AND the record-time restart reset)
+    # grade through the hard-exact engine site.
+    monkeypatch.setattr(observation, "_daemon_heartbeat_errors", lambda: [])
+    assert (
+        observation._live_daemon_errors(
+            {"observations": [{"daemon_process_identity": "d" * 64}]}
+        )
+        == []
+    )
+    assert ("stability.daemon_identity", {}) in calls
+    assert observation._live_daemon_errors(
+        {"observations": [{"daemon_process_identity": "e" * 64}]}
+    ) == ["rating_daemon_process_identity_mismatch"]
+
+    def full_evidence(version, source_v, publishing_checkpoint=None):
+        if int(version) == V0:
+            return {
+                "schema_version": 1,
+                "mode": "fresh_strict_v143_bootstrap",
+                "reason": "empty_strict_policy_pool",
+                "source_v": int(source_v),
+                "strength_evidence_admitted": False,
+                "strength_evidence_weight": 0,
+            }
+        return {
+            "schema_version": 1,
+            "mode": "singleton_strict_successor_bootstrap",
+            "reason": "single_strict_parent_no_peer_pool",
+            "source_v": int(source_v),
+            "strength_evidence_admitted": False,
+            "strength_evidence_weight": 0,
+        }
+
+    monkeypatch.setattr(
+        observation, "_generation_evidence_binding", full_evidence
+    )
+    _install_identity(monkeypatch, observation)
+    daemon = ["d" * 64]
+    monkeypatch.setattr(
+        observation, "_daemon_process_identity", lambda: daemon[0]
+    )
+    observation.initialize_stability_observation()
+    _record(observation, V0)
+    daemon[0] = "e" * 64
+    before = len(calls)
+    restarted = _record(observation, V0 + 1)
+    assert restarted["last_reset_reason"] == "rating_daemon_restart_detected"
+    assert any(
+        site == "stability.daemon_identity" for site, _ctx in calls[before:]
+    )

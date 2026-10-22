@@ -31,6 +31,12 @@ from bot_namespace import (
     high_water_tag,
 )
 from generation_evidence import build_generation_evidence_identity
+from publication_reproof import (
+    FieldSpec,
+    ReproofContract,
+    register_contract,
+    run_reproof,
+)
 from publication_transaction import PUBLICATION_INTENT_KIND_STAGING
 
 
@@ -112,6 +118,179 @@ def _is_hex(value: Any, length: int) -> bool:
         and len(value) == length
         and all(char in "0123456789abcdef" for char in value)
     )
+
+
+# ---------------------------------------------------------------------------
+# Frozen-vs-live reproof engine seam (2026-10-22 migration)
+# ---------------------------------------------------------------------------
+# Every frozen-vs-live DRIFT judgment in this module (the exact-pin
+# convergence family) grades through the pure engine in
+# ``publication_reproof.py``: the retry-stable publication-identity spine
+# routes its scalar ring through ``handoff.publication_identity_spine`` and
+# its two container legs through ``handoff.local_publication_proof`` and the
+# remote keyset/ancestry pair below; the proof-build, live re-proof, and
+# archive-base judgments each route through their own site.  This module
+# keeps exactly the pieces the engine must not own: the git observation
+# seams, the tag/annotation git effects, the spine ROUTER (which leg grades
+# through which site), and the availability gates that have no live side to
+# compare (``handoff_live_remote_main_missing``-class tokens).
+#
+# PARKED engine-catalog registrations this module deliberately does NOT
+# consume (both are dead code as registered; retiring or re-registering them
+# is engine-track work, this module cannot edit the frozen catalog):
+#   * ``handoff.publication_identity`` — the engine's second revision
+#     added the cert-less None/'' normalization, but the contract still
+#     requires ``archive_base_snapshot_digest`` on both sides (the
+#     recomputed identity never carries it — only ``_base_record`` adds it)
+#     and nests the remote leg through the equally-parked catalog
+#     ``handoff.remote_publication``; wiring it remains a future stage
+#     (Stage-B③).  The spine's wired field set lives in
+#     ``handoff.publication_identity_spine`` below.
+#   * ``handoff.remote_publication`` — its closed key policy cannot express
+#     the local-only binding era (``explicit_test_mode`` key undeclared,
+#     None/None tip pair impossible for the git_ancestry kind);
+#     ``handoff.remote_publication_keyset`` below grades both binding eras.
+#
+# The probes route through THIS module's ancestry predicates — not the
+# engine's DefaultGitProbe — so the operator/test monkeypatch surface
+# ``_publication_commit_is_ancestor_of(_head)`` keeps governing every ancestry
+# judgment.
+
+
+class _SeamGitProbe:
+    """GitProbe adapter over an existing module-level ancestry seam."""
+
+    def __init__(self, seam):
+        self._seam = seam
+
+    def is_ancestor(self, frozen_oid: str, live_oid: str) -> bool:
+        return bool(self._seam(str(frozen_oid), str(live_oid)))
+
+    def object_locally_known(self, oid: str) -> bool:
+        # No site graded from this module uses the degrade posture; delegate
+        # to the engine's default cat-file seam for protocol completeness.
+        from publication_reproof import DefaultGitProbe
+
+        return bool(DefaultGitProbe().object_locally_known(str(oid)))
+
+
+# HEAD-observed legs (the local proof's main_commit_oid rule): the seam checks
+# the publication commit against the live HEAD, exactly like the inline
+# producers did; the recorded live value is the proof-build-time HEAD.
+_HEAD_TIP_PROBE = _SeamGitProbe(
+    lambda frozen_oid, _live_oid: _publication_commit_is_ancestor_of_head(
+        frozen_oid
+    )
+)
+# Literal-tip legs (remote main observations).
+_REMOTE_TIP_PROBE = _SeamGitProbe(
+    lambda frozen_oid, live_oid: _publication_commit_is_ancestor_of(
+        frozen_oid, live_oid
+    )
+)
+
+# Module-local site declarations (byte-preserved issue tokens).  The engine
+# catalog (publication_reproof.py) already registers the shared sites this
+# module consumes: ``handoff.local_publication_proof`` (the stable proof ring),
+# ``handoff.local_certificate_and_refs`` (the live certificate/tag re-proof),
+# ``handoff.remote_identity`` (fetch-then-ancestry remote leg), and
+# ``handoff.shape_only.main_commit_oid`` (the recorded main shape).  The site
+# families that live only in this module's producers are declared here.
+
+register_contract(ReproofContract(
+    # _same_publication_identity: the eleven scalar spine fields, exact.
+    # The adapter projects each side onto exactly these keys — the retry-
+    # stable cut (checkpoint_revision / publishing_checkpoint_digest are CAS
+    # artifacts; archive_base_snapshot_digest exists only on the frozen
+    # record side) — and routes the two container legs through their own
+    # sites.  Raw equality on certificate_digest is the spine's historical
+    # semantics (both sides carry the builder's str()-normalized "" spelling,
+    # never None).
+    site_id="handoff.publication_identity_spine",
+    fields=tuple(
+        FieldSpec(
+            name, "exact", "container",
+            "another_post_publication_handoff_is_active", {},
+        )
+        for name in (
+            "schema_version", "evaluation_epoch", "version", "source_v",
+            "workflow_run_id", "publication_id", "commit_oid",
+            "candidate_artifact_hash", "source_binding_digest",
+            "local_paired_refs", "certificate_digest",
+        )
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _archive_base: the frozen-moment selection_view_source_history binding.
+    site_id="handoff.archive_base_source_history",
+    fields=(
+        FieldSpec(
+            "selection_view_source_history", "exact", "publication_window",
+            "selection_view_source_history_publication_mismatch", {},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _publication_identity: the proof-build main-commit equal-or-ancestor
+    # rule (the v566 HEAD-advance acceptance at freeze/adopt time).
+    site_id="handoff.build_local_proof_main",
+    fields=(
+        FieldSpec(
+            "main_commit_oid", "git_ancestry", "frozen_observation",
+            "candidate_artifact_hash_mismatch",
+            {"tip_kind": "head", "hex": 40, "equal_passes": True},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _same_remote_publication: the publication-bound key ring.  The engine's
+    # keyset_exclude kind is exactly the historical live-field-union rule
+    # (remote_main_oid/valid/issues excluded; every other key present on both
+    # sides, non-None, and byte-equal) and, unlike the catalog's closed
+    # handoff.remote_publication container, it also grades the local-only
+    # binding era (explicit_test_mode key, None tip) verdict-same.
+    site_id="handoff.remote_publication_keyset",
+    fields=(
+        FieldSpec(
+            "remote_publication", "keyset_exclude", "container",
+            "another_post_publication_handoff_is_active",
+            {"exclude_keys": ("remote_main_oid", "valid", "issues")},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _same_remote_publication / _remote_handoff_identity_errors: the remote
+    # tip ancestry rule (publication commit an ancestor of the observed tip).
+    site_id="handoff.remote_main_ancestry",
+    fields=(
+        FieldSpec(
+            "remote_main_oid", "git_ancestry", "frozen_observation",
+            "handoff_commit_not_on_remote_main",
+            {"tip_kind": "literal_oid", "hex": 40, "equal_passes": True},
+        ),
+    ),
+    status="wired",
+))
+register_contract(ReproofContract(
+    # _remote_handoff_identity_errors, missing-remote-main branch: the per-tag
+    # remote refs still re-proof when the branch tip itself is unavailable.
+    site_id="handoff.remote_tag_refs",
+    fields=(
+        FieldSpec(
+            "remote_tag_object", "exact", "container",
+            "handoff_live_remote_tag_object_mismatch:{name}", {"hex": 40},
+        ),
+        FieldSpec(
+            "remote_tag_commit", "exact", "container",
+            "handoff_live_remote_tag_commit_mismatch:{name}", {"hex": 40},
+        ),
+    ),
+    status="wired",
+))
 
 
 def _record_digest(record: dict[str, Any]) -> str:
@@ -312,14 +491,24 @@ def _archive_base(
         from generation_scheduler import _read_source_v_history
 
         selected_history = selection.get("selection_view_source_history")
-        live_history = _read_source_v_history()
-        if (
-            not isinstance(selected_history, list)
-            or live_history != [*selected_history, int(source_v)]
-        ):
+        if not isinstance(selected_history, list):
+            # Frozen-side shape gate: a non-list selection view carries no
+            # frozen history to grade against the live one.
             raise PostPublicationHandoffError(
                 "selection_view_source_history_publication_mismatch"
             )
+        live_history = _read_source_v_history()
+        issues = run_reproof(
+            "handoff.archive_base_source_history",
+            frozen={
+                "selection_view_source_history": [
+                    *selected_history, int(source_v)
+                ]
+            },
+            live={"selection_view_source_history": live_history},
+        ).issues
+        if issues:
+            raise PostPublicationHandoffError(issues[0])
     evidence = build_generation_evidence_identity(
         projection,
         version=version,
@@ -483,13 +672,17 @@ def _publication_identity(
         or local_proof.get("tag_object")
         != paired[completion_name]["object_oid"]
         or local_proof.get("commit_oid") != commit_oid
-        or not (
-            _is_hex(local_proof.get("main_commit_oid"), 40)
-            and (
-                local_proof.get("main_commit_oid") == commit_oid
-                or _publication_commit_is_ancestor_of_head(commit_oid)
-            )
-        )
+        # HEAD-advance rule (2026-10-17), graded by the reproof engine: a
+        # rebuilt proof may carry the new branch tip as ``main_commit_oid``
+        # while the publication commit is an ancestor of the current HEAD
+        # (the engine's ancestry probe routes through this module's HEAD
+        # seam; probe failure folds closed into the same shape token).
+        or not run_reproof(
+            "handoff.build_local_proof_main",
+            frozen={"main_commit_oid": commit_oid},
+            live={"main_commit_oid": local_proof.get("main_commit_oid")},
+            probe=_HEAD_TIP_PROBE,
+        ).ok
         or not _is_hex(local_proof.get("completion_tree_oid"), 40)
     ):
         raise PostPublicationHandoffError("candidate_artifact_hash_mismatch")
@@ -551,29 +744,6 @@ _SAME_PUBLICATION_IDENTITY_FIELDS = (
 )
 
 
-# The publication-bound (retry-stable) fields of a local publication proof.
-# ``main_commit_oid`` — the evolution-branch tip observed at proof-build time —
-# and its derived ``proof_digest`` are deliberately excluded: fixing a bug and
-# deploying it after a publication legitimately advances HEAD past the
-# publication commit (v566: published at 1d4391dc, HEAD advanced to 2b4dafbd /
-# d5d06871 while the handoff was still converging), so a retry re-derives both
-# to new values no matter how exact the frozen publication is.  This is the
-# same stable-field cut as ``checkpoint_schema.stable_publication_identity``,
-# which drops live checkout observations (``main_commit_oid``, current HEAD
-# tree) from a durable parent receipt for exactly that reason.
-_PROOF_STABLE_FIELDS = (
-    "schema_version",
-    "kind",
-    "bot",
-    "version",
-    "artifact_hash",
-    "tag",
-    "tag_object",
-    "commit_oid",
-    "completion_tree_oid",
-)
-
-
 def _publication_commit_is_ancestor_of_head(commit_oid: str) -> bool:
     """HEAD-advance rule: the publication commit is an ancestor of live HEAD.
 
@@ -610,81 +780,62 @@ def _same_publication_proof(
 ) -> bool:
     """True only when both proofs bind the exact same local publication.
 
-    The stable fields must be byte-equal.  A ``main_commit_oid`` (and therefore
-    ``proof_digest``) drift is accepted only while the publication commit is an
-    ancestor of the current HEAD — i.e. the drift is exactly "HEAD advanced
-    past the publication", never a different branch line or a forged tip.
+    Graded by the reproof engine (``handoff.local_publication_proof``): the
+    nine publication-bound fields are exact (a field dropped to None on both
+    sides is a shape break, never a match — the red-team 2026-10-17 rule),
+    ``main_commit_oid`` is an equal-or-ancestor observation (the probe routes
+    through this module's HEAD seam), and ``proof_digest`` is the declared
+    LIVE_OBSERVATION exclusion because it re-derives after any HEAD advance.
+    """
+
+    return run_reproof(
+        "handoff.local_publication_proof",
+        frozen=frozen if isinstance(frozen, dict) else {},
+        live=recomputed if isinstance(recomputed, dict) else {},
+        probe=_HEAD_TIP_PROBE,
+    ).ok
+
+
+def _same_publication_identity(frozen: Any, recomputed: Any) -> bool:
+    """True only when both identities bind the exact same publication.
+
+    The spine's scalar ring (the eleven retry-stable fields; the projection
+    drops the CAS revision/digest artifacts and the frozen-record-only
+    archive base digest) grades through the reproof engine's exact site;
+    the two container legs route through their own sites — the local proof
+    under the HEAD-advance rule, the remote binding under the keyset ring
+    plus the remote-tip ancestor rule.
     """
 
     if not isinstance(frozen, dict) or not isinstance(recomputed, dict):
         return False
-    for field in _PROOF_STABLE_FIELDS:
-        # A missing stable field on either side is a shape break, not a match:
-        # legitimate proofs always carry every publication-bound key (the
-        # builder emits the full key set and frozen records pass the
-        # ``_LOCAL_PROOF_KEYS`` shape gate), so ``None == None`` must not
-        # silently pass for a pair that dropped the same field (red-team
-        # 2026-10-17).
-        frozen_value = frozen.get(field)
-        recomputed_value = recomputed.get(field)
-        if frozen_value is None or recomputed_value is None:
-            return False
-        if frozen_value != recomputed_value:
-            return False
-    if frozen.get("main_commit_oid") == recomputed.get("main_commit_oid"):
-        return True
-    return _publication_commit_is_ancestor_of_head(commit_oid)
-
-
-def _same_publication_identity(frozen: Any, recomputed: Any) -> bool:
-    """True only when both identities bind the exact same publication."""
-
-    if not isinstance(frozen, dict) or not isinstance(recomputed, dict):
+    spine = {
+        field: frozen.get(field)
+        for field in _SAME_PUBLICATION_IDENTITY_FIELDS
+        if field not in ("local_publication_proof", "remote_publication")
+    }
+    spine_live = {
+        field: recomputed.get(field)
+        for field in _SAME_PUBLICATION_IDENTITY_FIELDS
+        if field not in ("local_publication_proof", "remote_publication")
+    }
+    if not run_reproof(
+        "handoff.publication_identity_spine",
+        frozen=spine,
+        live=spine_live,
+    ).ok:
         return False
-    for field in _SAME_PUBLICATION_IDENTITY_FIELDS:
-        if field not in frozen or field not in recomputed:
-            return False
-        if field == "local_publication_proof":
-            # The proof is graded on its stable publication fields; a live
-            # ``main_commit_oid``/``proof_digest`` drift is accepted only
-            # under the HEAD-advance (ancestor) rule, never byte-compared.
-            if not _same_publication_proof(
-                frozen[field],
-                recomputed[field],
-                commit_oid=str(frozen.get("commit_oid") or ""),
-            ):
-                return False
-            continue
-        if field == "remote_publication":
-            # Same rule for the remote leg: the remote tip observed at
-            # freeze time legitimately advances past the publication commit
-            # when a post-publication deploy is pushed; only the
-            # publication-bound fields are byte-compared and the
-            # ``remote_main_oid`` drift is accepted under the SAME
-            # merge-base ancestry rule ``_remote_handoff_identity_errors``
-            # already applies (2026-10-18, v566 convergence root cause A).
-            if not _same_remote_publication(
-                frozen[field],
-                recomputed[field],
-                commit_oid=str(frozen.get("commit_oid") or ""),
-            ):
-                return False
-            continue
-        if frozen[field] != recomputed[field]:
-            return False
-    return True
-
-
-# Live-derived fields of a remote publication proof — observations or
-# verdicts that legitimately move between the freeze and a retry:
-# ``remote_main_oid`` is the remote main tip seen at verification time (the
-# remote twin of the local proof's ``main_commit_oid``), and ``valid`` /
-# ``issues`` are that verification's derived verdict. Everything else is
-# publication-bound and byte-compared; because the proof's field set has
-# evolved across eras (the intent-shaped ``required``/``paired_refs`` form
-# and the verifier-shaped ``remote_refs`` form), stability is graded over
-# the key-set difference instead of a hard-coded field list.
-_REMOTE_PUBLICATION_LIVE_FIELDS = ("remote_main_oid", "valid", "issues")
+    if not _same_publication_proof(
+        frozen.get("local_publication_proof"),
+        recomputed.get("local_publication_proof"),
+        commit_oid=str(frozen.get("commit_oid") or ""),
+    ):
+        return False
+    return _same_remote_publication(
+        frozen.get("remote_publication"),
+        recomputed.get("remote_publication"),
+        commit_oid=str(frozen.get("commit_oid") or ""),
+    )
 
 
 def _same_remote_publication(
@@ -695,31 +846,33 @@ def _same_remote_publication(
 ) -> bool:
     """True only when both remote proofs bind the exact same publication.
 
-    Every non-live field must be present on both sides and byte-equal; a
-    ``remote_main_oid`` drift is accepted only while the publication commit
-    is an ancestor of the recomputed remote tip — the identical rule the
-    remote identity-errors path uses for
-    ``publication_commit_not_on_remote_main``.
+    The publication-bound key ring grades through the reproof engine's
+    keyset-exclude contract (``handoff.remote_publication_keyset``: every key
+    outside the live-field union remote_main_oid/valid/issues must be present
+    on both sides, non-None, and byte-equal, on every binding era's shape).
+    The equal-tip fast path stays in this adapter — an equal tip, including
+    the local-only ``None`` binding, needs no ancestry judgment, and the
+    engine's git_ancestry kind has no None/None pair — and a genuine tip
+    drift is accepted only while the publication commit is an ancestor of the
+    recomputed tip (``handoff.remote_main_ancestry``).
     """
 
     if not isinstance(frozen, dict) or not isinstance(recomputed, dict):
         return False
-    live = set(_REMOTE_PUBLICATION_LIVE_FIELDS)
-    frozen_keys = set(frozen) - live
-    recomputed_keys = set(recomputed) - live
-    if frozen_keys != recomputed_keys:
+    if not run_reproof(
+        "handoff.remote_publication_keyset",
+        frozen={"remote_publication": frozen},
+        live={"remote_publication": recomputed},
+    ).ok:
         return False
-    for key in frozen_keys:
-        frozen_value = frozen.get(key)
-        recomputed_value = recomputed.get(key)
-        if frozen_value is None or recomputed_value is None:
-            return False
-        if frozen_value != recomputed_value:
-            return False
     if frozen.get("remote_main_oid") == recomputed.get("remote_main_oid"):
         return True
-    recomputed_main = str(recomputed.get("remote_main_oid") or "")
-    return _publication_commit_is_ancestor_of(commit_oid, recomputed_main)
+    return run_reproof(
+        "handoff.remote_main_ancestry",
+        frozen={"remote_main_oid": commit_oid},
+        live={"remote_main_oid": str(recomputed.get("remote_main_oid") or "")},
+        probe=_REMOTE_TIP_PROBE,
+    ).ok
 
 
 def _base_record(identity: dict[str, Any], archive_digest: str) -> dict[str, Any]:
@@ -1213,8 +1366,13 @@ def validate_handoff_record(
         # the publication commit (``_publication_identity`` accepts exactly
         # equality-or-ancestor at freeze/adopt time and the local re-proof
         # re-derives it under the same rule).  Structurally it must only be
-        # a well-formed commit oid; the stable fields above stay byte-equal.
-        or not _is_hex(local_proof.get("main_commit_oid"), 40)
+        # a well-formed commit oid (graded by the reproof engine's
+        # shape-only site); the stable fields above stay byte-equal.
+        or not run_reproof(
+            "handoff.shape_only.main_commit_oid",
+            frozen={"main_commit_oid": local_proof.get("main_commit_oid")},
+            live={"main_commit_oid": local_proof.get("main_commit_oid")},
+        ).ok
         or not _is_hex(local_proof.get("completion_tree_oid"), 40)
     ):
         errors.append("handoff_local_publication_proof_identity_mismatch")
@@ -1466,18 +1624,32 @@ def local_handoff_identity_errors(record: Any) -> list[str]:
         # sides exactly like evolution_infra_checkpoint_cas does for the
         # post-publish repo-baseline bind: absent/empty/None all mean "no
         # certificate"; a real digest must still match byte-for-byte.
-        if (spec.certificate_digest or None) != (
-            identity.get("certificate_digest") or None
-        ):
-            errors.append("handoff_live_certificate_digest_mismatch")
+        # The certificate alias and the annotated-tag object/peeled
+        # exactness grade through the reproof engine site
+        # ``handoff.local_certificate_and_refs`` (once per paired tag name;
+        # duplicate tokens dedup below).
         for name, expected in identity["local_paired_refs"].items():
             ref = f"refs/tags/{name}"
             if _git("cat-file", "-t", ref, check=False).strip() != "tag":
                 errors.append(f"handoff_live_tag_not_annotated:{name}")
-            if _git("rev-parse", ref, check=False).strip() != expected["object_oid"]:
-                errors.append(f"handoff_live_tag_object_mismatch:{name}")
-            if _git("rev-parse", f"{ref}^{{commit}}", check=False).strip() != commit_oid:
-                errors.append(f"handoff_live_tag_commit_mismatch:{name}")
+            object_oid = _git("rev-parse", ref, check=False).strip()
+            peeled = _git("rev-parse", f"{ref}^{{commit}}", check=False).strip()
+            errors.extend(run_reproof(
+                "handoff.local_certificate_and_refs",
+                frozen={
+                    "certificate_digest": (
+                        identity.get("certificate_digest") or None
+                    ),
+                    "tag_object": expected["object_oid"],
+                    "tag_commit": commit_oid,
+                },
+                live={
+                    "certificate_digest": spec.certificate_digest or None,
+                    "tag_object": object_oid,
+                    "tag_commit": peeled,
+                },
+                context={"name": name},
+            ).issues)
         remote = identity["remote_publication"]
         if remote.get("required") is not True and os.environ.get(
             "POK_ALLOW_LOCAL_ONLY_POST_PUBLICATION_HANDOFF_FOR_TESTS"
@@ -1496,7 +1668,7 @@ def _remote_handoff_identity_errors(record: dict[str, Any]) -> list[str]:
         return []
     errors: list[str] = []
     try:
-        from evolution_infra import _git, _git_command_succeeds
+        from evolution_infra import _git
 
         wanted = [f"refs/heads/{EVOLUTION_BRANCH}"]
         for name in identity["local_paired_refs"]:
@@ -1509,25 +1681,54 @@ def _remote_handoff_identity_errors(record: dict[str, Any]) -> list[str]:
                 refs[ref] = oid
         remote_main = refs.get(f"refs/heads/{EVOLUTION_BRANCH}", "")
         if not _is_hex(remote_main, 40):
+            # Availability gate: a missing live tip has no ancestry verdict.
+            # The per-tag remote refs still re-proof through the engine's
+            # narrow per-name site.
             errors.append("handoff_live_remote_main_missing")
+            for name, expected in remote.get("paired_refs", {}).items():
+                errors.extend(run_reproof(
+                    "handoff.remote_tag_refs",
+                    frozen={
+                        "remote_tag_object": expected.get("object_oid"),
+                        "remote_tag_commit": commit_oid,
+                    },
+                    live={
+                        "remote_tag_object": refs.get(f"refs/tags/{name}"),
+                        "remote_tag_commit": refs.get(f"refs/tags/{name}^{{}}"),
+                    },
+                    context={"name": name},
+                ).issues)
         else:
             tracking = _git(
                 "rev-parse", f"refs/remotes/origin/{EVOLUTION_BRANCH}", check=False
             ).strip()
             if tracking != remote_main:
+                # B3 fetch precondition: the engine site declares
+                # requires_tracking_ref_fetch_before_ancestry, so this
+                # adapter owns the conditional tracking-ref fetch BEFORE any
+                # ancestry grading (an un-fetched advanced tip would collapse
+                # the probe's merge-base to False and re-create the #19/#22
+                # wedge class).
                 _git(
                     "fetch", "--no-tags", "origin",
                     f"refs/heads/{EVOLUTION_BRANCH}:refs/remotes/origin/{EVOLUTION_BRANCH}",
                 )
-            if not _git_command_succeeds(
-                "merge-base", "--is-ancestor", commit_oid, remote_main
-            ):
-                errors.append("handoff_commit_not_on_remote_main")
-        for name, expected in remote.get("paired_refs", {}).items():
-            if refs.get(f"refs/tags/{name}") != expected.get("object_oid"):
-                errors.append(f"handoff_live_remote_tag_object_mismatch:{name}")
-            if refs.get(f"refs/tags/{name}^{{}}") != commit_oid:
-                errors.append(f"handoff_live_remote_tag_commit_mismatch:{name}")
+            for name, expected in remote.get("paired_refs", {}).items():
+                errors.extend(run_reproof(
+                    "handoff.remote_identity",
+                    frozen={
+                        "commit_on_remote_main": commit_oid,
+                        "remote_tag_object": expected.get("object_oid"),
+                        "remote_tag_commit": commit_oid,
+                    },
+                    live={
+                        "commit_on_remote_main": remote_main,
+                        "remote_tag_object": refs.get(f"refs/tags/{name}"),
+                        "remote_tag_commit": refs.get(f"refs/tags/{name}^{{}}"),
+                    },
+                    context={"name": name},
+                    probe=_REMOTE_TIP_PROBE,
+                ).issues)
     except Exception as exc:
         errors.append(f"handoff_live_remote_identity_error:{type(exc).__name__}")
     return list(dict.fromkeys(errors))

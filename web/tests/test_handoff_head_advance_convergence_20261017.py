@@ -16,6 +16,7 @@ of the current HEAD.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import types
 from pathlib import Path
@@ -1497,3 +1498,916 @@ def test_strict_log_cleanup_reproof_tolerates_reaped_source(tmp_path, monkeypatc
         tca._validate_strict_log_cleanup_plan(
             frozen_plan, expected_handoff_version=handoff_version
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-10-22 migration: the frozen-vs-live comparisons grade through the
+# publication_reproof engine
+# ─────────────────────────────────────────────────────────────────────────
+# These regressions pin the ROUTING (the registered engine sites are actually
+# used, with this module family's own git probe seams); the behavior
+# regressions above pin the byte-exact tokens.  Site ids marked (engine) live
+# in the engine catalog (publication_reproof.py); the others are the
+# module-local declarations registered import-time by the owning module.
+
+
+def _spy_module_engine(monkeypatch, module):
+    import publication_reproof
+
+    calls: list = []
+
+    def spy(site_id, **kwargs):
+        calls.append((site_id, kwargs.get("context") or {}))
+        return publication_reproof.run_reproof(site_id, **kwargs)
+
+    monkeypatch.setattr(module, "run_reproof", spy, raising=False)
+    return calls
+
+
+def test_handoff_module_comparisons_route_through_reproof_engine(
+    handoff_env, monkeypatch
+):
+    import evolution_infra
+
+    module, _results, tmp_path, _mp = handoff_env
+    calls = _spy_module_engine(monkeypatch, module)
+    _path, record, archive = _write_pair(module)
+    commit_oid = f"{V:040x}"
+    names = lambda: {call[0] for call in calls}
+
+    # ── (687-722) _same_remote_publication: keyset ring + tip ancestry ──
+    monkeypatch.setattr(
+        module, "_publication_commit_is_ancestor_of", lambda _f, _tip: True
+    )
+    frozen_remote = {
+        "required": True,
+        "remote_main_oid": commit_oid,
+        "paired_refs": {},
+    }
+    advanced_remote = dict(frozen_remote, remote_main_oid=ADVANCED_HEAD)
+    assert module._same_remote_publication(
+        frozen_remote, frozen_remote, commit_oid=commit_oid
+    )
+    assert "handoff.remote_publication_keyset" in names()
+    assert module._same_remote_publication(
+        frozen_remote, advanced_remote, commit_oid=commit_oid
+    )
+    assert "handoff.remote_main_ancestry" in names()
+    assert not module._same_remote_publication(
+        frozen_remote,
+        dict(frozen_remote, paired_refs={"x": 1}),
+        commit_oid=commit_oid,
+    )
+    local_only = {
+        "required": False,
+        "explicit_test_mode": True,
+        "remote_main_oid": None,
+        "paired_refs": {},
+    }
+    assert module._same_remote_publication(
+        local_only, dict(local_only), commit_oid=commit_oid
+    )
+
+    # ── (564-636) _same_publication_proof over the full proof mapping ──
+    drifted = _head_advanced_retry_identity(module, record, archive)
+    assert module._same_publication_identity(record["identity"], drifted)
+    assert "handoff.publication_identity_spine" in names()
+    assert "handoff.local_publication_proof" in names()
+    monkeypatch.setattr(
+        module, "_publication_commit_is_ancestor_of", lambda _f, _tip: False
+    )
+    assert not module._same_publication_identity(record["identity"], drifted)
+
+    # ── (486-492) proof-build main-commit equal-or-ancestor rule ──
+    monkeypatch.setattr(
+        module, "_publication_commit_is_ancestor_of", lambda _f, _tip: True
+    )
+    identity = module._publication_identity(
+        version=V,
+        source_v=S,
+        checkpoint=_retry_checkpoint(module),
+        publication_result=_retry_publication_result(
+            module, version=V, main_commit_oid=ADVANCED_HEAD
+        ),
+        allow_local_only=True,
+    )
+    assert identity["local_publication_proof"]["main_commit_oid"] == ADVANCED_HEAD
+    assert "handoff.build_local_proof_main" in names()
+
+    # ── (1210-1218) recorded main_commit_oid shape re-proof ──
+    malformed = copy.deepcopy(record)
+    payload = _proof_payload(module, version=V, main_commit_oid="not-a-commit")
+    malformed["identity"]["local_publication_proof"] = _signed_proof(
+        module, payload
+    )
+    malformed["identity_digest"] = module.canonical_digest(
+        malformed["identity"]
+    )
+    malformed["record_digest"] = module._record_digest(malformed)
+    errors = module.validate_handoff_record(malformed, reopen_archive=False)
+    assert "handoff_local_publication_proof_identity_mismatch" in errors
+    assert "handoff.shape_only.main_commit_oid" in names()
+
+    # ── (1469-1480) certificate alias + annotated-tag live re-proof ──
+    monkeypatch.setattr(evolution_infra, "_git", _tag_git(record))
+    _install_live_reproof(
+        monkeypatch,
+        tmp_path,
+        fresh_proof=dict(record["identity"]["local_publication_proof"]),
+        spec_certificate=record["identity"]["certificate_digest"],
+    )
+    assert module.local_handoff_identity_errors(record) == []
+    assert "handoff.local_certificate_and_refs" in names()
+
+    # ── (1491-1533) remote identity leg: ancestry + remote tag refs ──
+    remote_record = copy.deepcopy(record)
+    remote_record["identity"]["remote_publication"] = {
+        "required": True,
+        "remote_main_oid": commit_oid,
+        "paired_refs": copy.deepcopy(record["identity"]["local_paired_refs"]),
+    }
+    ref_lines = [f"{commit_oid}\trefs/heads/{module.EVOLUTION_BRANCH}"]
+    for name, row in remote_record["identity"]["local_paired_refs"].items():
+        ref_lines.append(f"{row['object_oid']}\trefs/tags/{name}")
+        ref_lines.append(f"{commit_oid}\trefs/tags/{name}^{{}}")
+
+    def remote_git(*args, **_kwargs):
+        if args[0] == "ls-remote":
+            return "\n".join(ref_lines)
+        if args[0] == "rev-parse":
+            return commit_oid
+        return ""
+
+    monkeypatch.setattr(evolution_infra, "_git", remote_git)
+    monkeypatch.setattr(
+        evolution_infra, "_git_command_succeeds", lambda *_a: True
+    )
+    assert module._remote_handoff_identity_errors(remote_record) == []
+    assert "handoff.remote_identity" in names()
+    # A missing remote main keeps its adapter-side availability gate; the tag
+    # legs grade through the module-local per-name site.
+    monkeypatch.setattr(evolution_infra, "_git", lambda *_a, **_k: "")
+    remote_errors = module._remote_handoff_identity_errors(remote_record)
+    assert "handoff_live_remote_main_missing" in remote_errors
+    assert "handoff.remote_tag_refs" in names()
+
+    # ── (310-322) frozen-moment selection_view_source_history binding ──
+    import checkpoint_schema
+    import generation_scheduler
+
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "live_policy_epoch_reset_receipt_errors",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "live_checkpoint_parent_authority_errors",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(module, "build_generation_evidence_identity", lambda *_a, **_k: {})
+    base_checkpoint = _retry_checkpoint(module)
+    base_checkpoint["audit_context"] = {
+        "selection": {"selection_view_source_history": [S]}
+    }
+    monkeypatch.setattr(
+        generation_scheduler, "_read_source_v_history", lambda: [S, S]
+    )
+    module._archive_base(
+        version=V,
+        source_v=S,
+        checkpoint=base_checkpoint,
+        publication_identity=record["identity"],
+    )
+    assert "handoff.archive_base_source_history" in names()
+    monkeypatch.setattr(generation_scheduler, "_read_source_v_history", lambda: [])
+    with pytest.raises(
+        module.PostPublicationHandoffError,
+        match="selection_view_source_history_publication_mismatch",
+    ):
+        module._archive_base(
+            version=V,
+            source_v=S,
+            checkpoint=base_checkpoint,
+            publication_identity=record["identity"],
+        )
+
+
+def _housekeeping_contract_fixture(module):
+    identity = {"publication_id": "a" * 64, "commit_oid": "e" * 40, "version": V}
+    plan = {
+        "schema_version": 1,
+        "kind": "post-publication-worktree-verification-plan",
+        "expected_head_oid": "e" * 40,
+        "expected_dirty_paths": [],
+        "tracked_housekeeping_commit_allowed": False,
+        "dependency_receipts": {
+            name: "a" * 64
+            for name in (
+                "archive_rotation",
+                "log_cleanup",
+                "pool_reap",
+                "cycle_annotation",
+            )
+        },
+    }
+
+    def output_for(head_oid):
+        return {
+            "plan_digest": "b" * 64,
+            "head_oid": head_oid,
+            "worktree_status_digest": "c" * 64,
+            "tracked_housekeeping_commit": False,
+            "archive_rotation_revalidated": True,
+            "strict_log_archives_revalidated": True,
+            "reap_proofs": [],
+            "reap_proof_set_digest": module.canonical_digest([]),
+        }
+
+    return identity, plan, output_for
+
+
+def test_step_contracts_comparisons_route_through_reproof_engine(
+    handoff_env, monkeypatch
+):
+    import post_publication_handoff as handoff
+    import post_publication_handoff_step_contracts as contracts
+    import stability_observation
+
+    module, _results, _tmp, _mp = handoff_env
+    calls = _spy_module_engine(monkeypatch, contracts)
+    names = lambda: {call[0] for call in calls}
+
+    # ── (448-479) housekeeping output-contract head leg ──
+    identity, plan, output_for = _housekeeping_contract_fixture(module)
+    assert contracts._step_output_contract_errors(
+        "housekeeping", output_for("e" * 40), plan, "b" * 64, identity
+    ) == []
+    assert "handoff.housekeeping_output_head" in names()
+    monkeypatch.setattr(
+        handoff, "_publication_commit_is_ancestor_of", lambda _f, _l: True
+    )
+    assert contracts._step_output_contract_errors(
+        "housekeeping", output_for(ADVANCED_HEAD), plan, "b" * 64, identity
+    ) == []
+    monkeypatch.setattr(
+        handoff, "_publication_commit_is_ancestor_of", lambda _f, _l: False
+    )
+    assert contracts._step_output_contract_errors(
+        "housekeeping", output_for(ADVANCED_HEAD), plan, "b" * 64, identity
+    ) == ["handoff_step_output_contract_invalid:housekeeping:identity"]
+
+    # ── (547-582) stability observation row + reset witness ──
+    record, completed_at = _reset_reprove_record()
+    monkeypatch.setattr(
+        stability_observation,
+        "stability_observation_projection",
+        lambda: _reset_projection(at=completed_at + 3600.0),
+    )
+    assert contracts._reprove_operational_steps(record) == {
+        "stability_observation": True,
+        "reap_signal": False,
+        "priority_eval": False,
+    }
+    assert "handoff.stability_observation_step" in names()
+    monkeypatch.setattr(
+        stability_observation,
+        "stability_observation_projection",
+        lambda: _reset_projection(at=completed_at - 60.0),
+    )
+    with pytest.raises(
+        Exception, match="handoff_stability_observation_reproof_mismatch"
+    ):
+        contracts._reprove_operational_steps(record)
+
+    # ── (591-629) reap_signal / priority_eval reissue digests ──
+    signal_text = f"refresh {module.bot_name(V)}"
+    signal_sha = hashlib.sha256(signal_text.encode("utf-8")).hexdigest()
+    payload = {
+        "bot": module.bot_name(V),
+        "min_games": 500,
+        "since": 1.0,
+        "publication_id": "pub-1",
+    }
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":"), allow_nan=False)
+        + "\n"
+    )
+    payload_sha = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    record = {
+        "identity": {"publication_id": "pub-1", "version": V},
+        "steps": {
+            "stability_observation": {"status": "pending"},
+            "reap_signal": {
+                "status": "completed",
+                "plan": {"signal_text": signal_text, "signal_sha256": signal_sha},
+                "receipt": {"output": {"signal_sha256": signal_sha}},
+            },
+            "priority_eval": {
+                "status": "completed",
+                "plan": {"payload": payload},
+                "receipt": {"output": {"payload_sha256": payload_sha}},
+            },
+        },
+    }
+
+    assert contracts._reprove_operational_steps(record) == {
+        "stability_observation": False,
+        "reap_signal": True,
+        "priority_eval": True,
+    }
+    assert "handoff.reap_signal" in names()
+    assert "handoff.priority_eval" in names()
+    forged = copy.deepcopy(record)
+    forged["steps"]["reap_signal"]["receipt"]["output"] = {
+        "signal_sha256": "9" * 64
+    }
+    with pytest.raises(Exception, match="handoff_reap_signal_reproof_mismatch"):
+        contracts._reprove_operational_steps(forged)
+
+
+def _external_reproof_record(module, *, reap_proof, housekeeping_output):
+    commit_oid = "e" * 40
+    annotation = {
+        "schema_version": 1,
+        "kind": "national-policy-cycle-annotation",
+        "annotation_digest": "9" * 64,
+    }
+    archive = {
+        "schema_version": 2,
+        "kind": "national-policy-generation-archive",
+        "version": V,
+        "archivist_notes": annotation,
+        "post_publication_handoff": {"identity_digest": "d" * 64},
+        "finalization": {"state": "completed"},
+    }
+    pool_plan = {"targets": [{"candidate": reap_proof["bot"]}], "required_reaps": 1}
+    pool_output = {
+        "required_reaps": 1,
+        "removed_bots": [reap_proof["bot"]],
+        "reap_proofs": [copy.deepcopy(reap_proof)],
+    }
+    steps = {
+        "archive_rotation": {
+            "status": "completed",
+            "plan": {},
+            "receipt": {"output": {"rotations": []}, "receipt_digest": "1" * 64},
+        },
+        "log_cleanup": {
+            "status": "completed",
+            "plan": {},
+            "receipt": {"output": {"archives": []}, "receipt_digest": "2" * 64},
+        },
+        "pool_reap": {
+            "status": "completed",
+            "plan": pool_plan,
+            "receipt": {"output": pool_output, "receipt_digest": "3" * 64},
+        },
+        "cycle_annotation": {
+            "status": "completed",
+            "plan": {},
+            "receipt": {
+                "output": {
+                    "annotation_digest": annotation["annotation_digest"],
+                    "archive_semantic_digest": module.archive_semantic_digest(
+                        archive
+                    ),
+                },
+                "receipt_digest": "4" * 64,
+            },
+        },
+        "housekeeping": {
+            "status": "completed",
+            "plan": {
+                "schema_version": 1,
+                "kind": "post-publication-worktree-verification-plan",
+                "expected_head_oid": commit_oid,
+                "expected_dirty_paths": [],
+                "tracked_housekeeping_commit_allowed": False,
+                "dependency_receipts": {
+                    "archive_rotation": "1" * 64,
+                    "log_cleanup": "2" * 64,
+                    "pool_reap": "3" * 64,
+                    "cycle_annotation": "4" * 64,
+                },
+            },
+            "receipt": {
+                "output": housekeeping_output,
+                "receipt_digest": "5" * 64,
+            },
+        },
+    }
+    record = {
+        "identity": {
+            "version": V,
+            "source_v": S,
+            "publication_id": "a" * 64,
+            "commit_oid": commit_oid,
+            "remote_publication": {
+                "required": True,
+                "remote_main_oid": commit_oid,
+                "paired_refs": {},
+            },
+        },
+        "steps": steps,
+    }
+    return record, archive
+
+
+def test_external_reproof_drivers_route_through_reproof_engine(
+    handoff_env, monkeypatch
+):
+    import cycle_archivist
+    import evolution_infra
+    import post_publication_handoff_step_contracts as contracts
+    import tool_commit
+    import tool_commit_archivist
+
+    module, results, _tmp, _mp = handoff_env
+    calls = _spy_module_engine(monkeypatch, contracts)
+    names = lambda: {call[0] for call in calls}
+    monkeypatch.setattr(
+        evolution_infra, "validate_archive_rotation_receipts",
+        lambda version, rotations, rotation_plan=None: list(rotations),
+    )
+    monkeypatch.setattr(
+        tool_commit, "_revalidate_strict_log_archives", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(tool_commit, "_git_ensure_main_branch", lambda: None)
+
+    from bot_artifact import canonical_digest
+
+    reap_proof = {
+        "bot": module.bot_name(S),
+        "version": S,
+        "completion_commit_oid": "1" * 40,
+        "tombstone_tag": f"national-cloud-reaped-v{S}",
+        "tombstone_object_oid": "2" * 40,
+        "tombstone_commit_oid": "1" * 40,
+        "completed_sentinel_absent": True,
+        "registry_projection_present": True,
+        "remote_proof": {
+            "required": True,
+            "tombstone_object_oid": "2" * 40,
+            "tombstone_commit_oid": "1" * 40,
+            "publication_commit_is_ancestor": True,
+            "publication_remote_main_oid": "e" * 40,
+            "verified_remote_main_oid": "e" * 40,
+        },
+    }
+    housekeeping_output = {
+        "plan_digest": "b" * 64,
+        "head_oid": "e" * 40,
+        "worktree_status_digest": hashlib.sha256(b"").hexdigest(),
+        "tracked_housekeeping_commit": False,
+        "archive_rotation_revalidated": True,
+        "strict_log_archives_revalidated": True,
+        "reap_proofs": [copy.deepcopy(reap_proof)],
+        "reap_proof_set_digest": canonical_digest([reap_proof]),
+    }
+    record, archive = _external_reproof_record(
+        module, reap_proof=reap_proof, housekeeping_output=housekeeping_output
+    )
+    module._atomic_write(module._archive_path(V), archive)
+    monkeypatch.setattr(
+        tool_commit, "_validate_pool_reap_plan",
+        lambda _plan, _record: (
+            [module.bot_name(S)],
+            [module.bot_name(S)],
+            {},
+        ),
+    )
+    proofs_by_name = {module.bot_name(S): copy.deepcopy(reap_proof)}
+    monkeypatch.setattr(
+        tool_commit,
+        "_converge_and_verify_reaped_target",
+        lambda name, _record: proofs_by_name[name],
+    )
+    monkeypatch.setattr(
+        cycle_archivist, "annotation_identity_errors", lambda *_a, **_k: []
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "_verify_post_publication_worktree",
+        lambda **_kwargs: {
+            "head_oid": "e" * 40,
+            "worktree_status_digest": hashlib.sha256(b"").hexdigest(),
+            "tracked_housekeeping_commit": False,
+        },
+    )
+
+    contracts._reprove_external_steps(record)
+    # (688-705) pool_reap five-field ring, (753-770) worktree ring,
+    # (771-778) per-bot reap proofs (U1 ancestor-tolerant grade).
+    assert "archivist.pool_reap_ring" in names()
+    assert "handoff.housekeeping" in names()
+    assert "handoff.housekeeping.reap_proofs" in names()
+
+    # The U1 cell: a verified remote-tip advance between housekeeping and
+    # finalization is drift_allowed under the ancestor rule (the old
+    # whole-dict compare wedged exactly here).
+    advanced = copy.deepcopy(reap_proof)
+    advanced["remote_proof"]["verified_remote_main_oid"] = ADVANCED_HEAD
+    proofs_by_name[module.bot_name(S)] = advanced
+    monkeypatch.setattr(
+        tool_commit_archivist, "_publication_head_advance_allowed",
+        lambda _f, _l: True,
+    )
+    contracts._reprove_external_steps(record)
+
+    # A non-ring reap-proof field rewrite still fails closed through the
+    # per-bot site (a tombstone rewrite would fire the pool ring first).
+    forged = copy.deepcopy(reap_proof)
+    forged["completed_sentinel_absent"] = False
+    proofs_by_name[module.bot_name(S)] = forged
+    with pytest.raises(
+        Exception, match="handoff_housekeeping_reap_reproof_mismatch"
+    ):
+        contracts._reprove_external_steps(record)
+
+
+@pytest.mark.asyncio
+async def test_archivist_comparisons_route_through_reproof_engine(
+    tmp_path, monkeypatch
+):
+    import evolution_infra
+    import tool_commit
+    import tool_commit_archivist as tca
+    import tool_commit_archivist_orchestrator as orch
+
+    from bot_namespace import bot_name
+
+    archivist_calls = _spy_module_engine(monkeypatch, tca)
+    orchestrator_calls = _spy_module_engine(monkeypatch, orch)
+    archivist_names = lambda: {call[0] for call in archivist_calls}
+    orchestrator_names = lambda: {call[0] for call in orchestrator_calls}
+
+    results = tmp_path / "results"
+    archive_dir = results / "archive"
+    archive_dir.mkdir(parents=True)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
+    monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", archive_dir)
+    monkeypatch.setattr(tool_commit, "RESULTS_DIR", results)
+    monkeypatch.setattr(tool_commit, "ARCHIVE_DIR", archive_dir)
+
+    # ── (185-215) worktree verification: head ancestry + dirty digest ──
+    def worktree_git(*args, **_kwargs):
+        if args[:2] == ("rev-parse", "HEAD"):
+            return ADVANCED_HEAD
+        if args[:2] == ("status", "--porcelain"):
+            return ""
+        return ""
+
+    monkeypatch.setattr(tool_commit, "_git", worktree_git)
+    monkeypatch.setattr(tool_commit, "_git_ensure_main_branch", lambda: None)
+    monkeypatch.setattr(
+        tool_commit, "_publication_head_advance_allowed", lambda _f, _l: True
+    )
+    verified = tool_commit._verify_post_publication_worktree(
+        expected_head="e" * 40, expected_dirty=set()
+    )
+    assert verified["head_oid"] == ADVANCED_HEAD
+    assert "archivist.worktree" in archivist_names()
+    monkeypatch.setattr(
+        tool_commit, "_publication_head_advance_allowed", lambda _f, _l: False
+    )
+    with pytest.raises(RuntimeError, match="post_publication_head_changed"):
+        tool_commit._verify_post_publication_worktree(
+            expected_head="e" * 40, expected_dirty=set()
+        )
+
+    # ── (859-949) strict-log revalidation: live source tree rule ──
+    for version in (1, 2):
+        logs = results / f"v{version}" / "logs"
+        logs.mkdir(parents=True)
+        (logs / f"run-{version}.txt").write_text(f"log bytes {version}\n")
+    handoff_version = 20
+    frozen_plan = tca._build_strict_log_cleanup_plan(handoff_version)
+    import shutil
+
+    shutil.rmtree(results / "v2")
+
+    from bot_artifact import canonical_digest
+
+    fake_sha = "3" * 64
+    manifest_by_name = {}
+    for item in frozen_plan["archives"]:
+        payload = {
+            "schema_version": 1,
+            "kind": "strict-generation-log-archive",
+            "version": item["version"],
+            "source_relative_path": item["source_relative_path"],
+            "tree_digest": item["tree_digest"],
+            "entries": item["entries"],
+            "archive_relative_path": item["archive_relative_path"],
+            "archive_sha256": fake_sha,
+        }
+        manifest_by_name[item["manifest_relative_path"]] = {
+            **payload, "manifest_digest": canonical_digest(payload),
+        }
+
+    monkeypatch.setattr(tca, "_recover_linked_log_tar", lambda *_a: None)
+    monkeypatch.setattr(tca, "_validate_log_tar", lambda *_a: fake_sha)
+    monkeypatch.setattr(
+        tca,
+        "_read_safe_json",
+        lambda path: manifest_by_name.get(Path(path).name),
+    )
+    receipts = [
+        {
+            "version": item["version"],
+            "tree_digest": item["tree_digest"],
+            "archive_relative_path": item["archive_relative_path"],
+            "archive_sha256": fake_sha,
+            "manifest_relative_path": item["manifest_relative_path"],
+            "manifest_digest": manifest_by_name[
+                item["manifest_relative_path"]
+            ]["manifest_digest"],
+            "effect_mode": "nondestructive-immutable-archive",
+            "live_source_relative_path": item["source_relative_path"],
+            "live_log_tree_preserved": True,
+            "quarantine_log_tree_touched": False,
+            "generation_siblings_preserved": True,
+        }
+        for item in frozen_plan["archives"]
+    ]
+    tca._revalidate_strict_log_archives(
+        frozen_plan,
+        receipts,
+        expected_handoff_version=handoff_version,
+    )
+    assert "archivist.strict_log_source_tree" in archivist_names()
+    # A mutated covered tree still fails closed — the frozen-plan preimage
+    # gate (outside this site's census scope) raises before the final
+    # source-tree grade; the diverged-tree verdict itself is pinned by the
+    # engine family regression P14.
+    (results / "v1" / "logs" / "run-1.txt").write_text("mutated\n")
+    with pytest.raises(RuntimeError, match="strict_log_cleanup_preimage_changed"):
+        tca._revalidate_strict_log_archives(
+            frozen_plan,
+            receipts,
+            expected_handoff_version=handoff_version,
+        )
+
+    # ── (1093-1112) frozen plan vs live mode values ──
+    import pool_ratchet
+    import tool_bot_management
+
+    monkeypatch.setattr(pool_ratchet, "publish_mode", lambda: "legacy")
+    monkeypatch.setattr(
+        pool_ratchet,
+        "reap_selection_policy_for_mode",
+        lambda _mode: "conservative_glicko_v1",
+    )
+    monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 8)
+    monkeypatch.setattr(
+        tool_bot_management,
+        "_validate_reap_selection_snapshot",
+        lambda _snapshot: None,
+    )
+    pool = [bot_name(V)]
+    plan_ok = {
+        "schema_version": 2,
+        "kind": "strict-active-pool-reap-plan",
+        "publication_id": "a" * 64,
+        "selection_policy": "conservative_glicko_v1",
+        "selection_snapshot": {
+            "snapshot_digest": "0" * 64,
+            "selection_policy": "conservative_glicko_v1",
+            "max_active_bots": 8,
+            "active_bots": pool,
+            "active_pool_digest": canonical_digest(pool),
+            "priority_bot": bot_name(V),
+        },
+        "selection_snapshot_digest": "0" * 64,
+        "active_bots": pool,
+        "active_pool_digest": canonical_digest(pool),
+        "max_active_bots": 8,
+        "required_reaps": 0,
+        "targets": [],
+        "target_sequence_digest": canonical_digest([]),
+        "expected_head_oid": "e" * 40,
+        "expected_remote_main_oid": None,
+    }
+    record = {
+        "identity": {
+            "publication_id": "a" * 64,
+            "commit_oid": "e" * 40,
+            "version": V,
+            "remote_publication": {"remote_main_oid": None},
+        }
+    }
+    tca._validate_pool_reap_plan(plan_ok, record)
+    assert "archivist.pool_reap_mode" in archivist_names()
+    monkeypatch.setattr(pool_ratchet, "pool_target_size", lambda: 9)
+    with pytest.raises(RuntimeError, match="pool_reap_plan_contract_invalid"):
+        tca._validate_pool_reap_plan(plan_ok, record)
+
+    # ── (1229-1234) live pool vs frozen initial subset ──
+    monkeypatch.setattr(
+        tca,
+        "_validate_pool_reap_plan",
+        lambda _plan, _record: ([bot_name(V)], [], {}),
+    )
+    monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [bot_name(V)])
+    executed = await tca._execute_pool_reap_plan(
+        {"targets": []}, {"identity": {"version": V}}
+    )
+    assert executed["removed_bots"] == []
+    assert "archivist.pool_reap_targets" in archivist_names()
+    monkeypatch.setattr(tool_commit, "get_active_bots", lambda: ["rogue_bot"])
+    with pytest.raises(RuntimeError, match="pool_changed_after_reap_plan"):
+        await tca._execute_pool_reap_plan(
+            {"targets": []}, {"identity": {"version": V}}
+        )
+
+    # ── (orchestrator 203-237, 271-280) reaped-target convergence ──
+    from national_epoch_registry import REAPED_TAG_PREFIX
+
+    reaped_version = V
+    completion_object = f"{reaped_version + 1:040x}"
+    commit_oid = f"{reaped_version:040x}"
+    completion_ref = f"refs/tags/{tool_commit.bot_tag(reaped_version)}"
+    tombstone_name = f"{REAPED_TAG_PREFIX}{reaped_version}"
+    tombstone_ref = f"refs/tags/{tombstone_name}"
+
+    def converge_git(*args, **_kwargs):
+        if args[:2] == ("cat-file", "-t"):
+            return "tag"
+        if args[0] == "rev-parse":
+            target = args[1]
+            if target == completion_ref:
+                return completion_object
+            if target == tombstone_ref:
+                return "2" * 40
+            if target.endswith("^{commit}"):
+                return commit_oid
+            if target == "HEAD":
+                return ADVANCED_HEAD
+            return ""
+        if args[0] == "ls-remote":
+            # the live remote tip advanced past the publication commit
+            return "\n".join((
+                f"{'3' * 40}\trefs/heads/{tool_commit.EVOLUTION_BRANCH}",
+                f"{'2' * 40}\t{tombstone_ref}",
+                f"{commit_oid}\t{tombstone_ref}^{{}}",
+            ))
+        return ""
+
+    monkeypatch.setattr(tool_commit, "_git", converge_git)
+    monkeypatch.setattr(
+        tool_commit, "_publication_head_advance_allowed", lambda _f, _l: True
+    )
+    monkeypatch.setattr(
+        evolution_infra, "_git_command_succeeds", lambda *_a: True
+    )
+    monkeypatch.setattr(
+        evolution_infra, "load_reaped_bot_versions", lambda: [reaped_version]
+    )
+    bot_dir = tmp_path / "bots" / bot_name(reaped_version)
+    bot_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        tool_commit, "get_bot_dir", lambda _version: bot_dir
+    )
+    monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [])
+    reap_record = {
+        "identity": {
+            "commit_oid": commit_oid,
+            "remote_publication": {
+                "required": True,
+                "remote_main_oid": commit_oid,
+            },
+        }
+    }
+    proof = orch._converge_and_verify_reaped_target(
+        bot_name(reaped_version), reap_record
+    )
+    assert proof["remote_proof"]["verified_remote_main_oid"] == "3" * 40
+    assert "archivist.reap_remote_refs" in orchestrator_names()
+    assert "archivist.reap_publication_on_remote_main" in orchestrator_names()
+    assert "archivist.reap_head" in orchestrator_names()
+    monkeypatch.setattr(
+        evolution_infra, "_git_command_succeeds", lambda *_a: False
+    )
+    with pytest.raises(RuntimeError, match="reap_publication_not_on_remote_main"):
+        orch._converge_and_verify_reaped_target(
+            bot_name(reaped_version), reap_record
+        )
+    monkeypatch.setattr(
+        evolution_infra, "_git_command_succeeds", lambda *_a: True
+    )
+    monkeypatch.setattr(
+        tool_commit, "_publication_head_advance_allowed", lambda _f, _l: False
+    )
+    with pytest.raises(RuntimeError, match="reap_changed_head"):
+        orch._converge_and_verify_reaped_target(
+            bot_name(reaped_version), reap_record
+        )
+
+
+def test_strict_log_source_tree_keeps_full_equality_when_present(
+    tmp_path, monkeypatch
+):
+    # 2026-10-23 review pin: the historical rule was FULL equality whenever
+    # the live manifest still exists (git HEAD tool_commit_archivist.py:934
+    # ``live_tree is not None and live_tree != expected_tree``).  The engine
+    # catalog's directional site additionally tolerates a live manifest
+    # losing a member or carrying a None-valued member (fail-open), so this
+    # adapter grades through the module-local full-equality site and these
+    # two cells are pinned as deliberately NOT relaxed.
+    import tool_commit as _tc
+    import tool_commit_archivist as tca
+    from bot_artifact import canonical_digest
+
+    results = tmp_path / "results"
+    archive_dir = results / "archive"
+    archive_dir.mkdir(parents=True)
+    monkeypatch.setattr(_tc, "RESULTS_DIR", results)
+    monkeypatch.setattr(_tc, "ARCHIVE_DIR", archive_dir)
+
+    item = {
+        "schema_version": 1,
+        "kind": "strict-generation-log-tree",
+        "version": 1,
+        "source_relative_path": "v1/logs",
+        "entries": [{"path": "run-1.txt", "kind": "file"}],
+        "tree_digest": "2" * 64,
+        "archive_relative_path": "v1_logs_x.tar.gz",
+        "manifest_relative_path": "v1_logs_x.manifest.json",
+    }
+    monkeypatch.setattr(
+        tca, "_validate_strict_log_cleanup_plan", lambda *_a, **_k: [dict(item)]
+    )
+    fake_sha = "3" * 64
+    payload = {
+        "schema_version": 1,
+        "kind": "strict-generation-log-archive",
+        "version": 1,
+        "source_relative_path": item["source_relative_path"],
+        "tree_digest": item["tree_digest"],
+        "entries": item["entries"],
+        "archive_relative_path": item["archive_relative_path"],
+        "archive_sha256": fake_sha,
+    }
+    manifest = {**payload, "manifest_digest": canonical_digest(payload)}
+    monkeypatch.setattr(tca, "_recover_linked_log_tar", lambda *_a: None)
+    monkeypatch.setattr(tca, "_validate_log_tar", lambda *_a: fake_sha)
+    monkeypatch.setattr(tca, "_read_safe_json", lambda _path: dict(manifest))
+    receipt = {
+        "version": 1,
+        "tree_digest": item["tree_digest"],
+        "archive_relative_path": item["archive_relative_path"],
+        "archive_sha256": fake_sha,
+        "manifest_relative_path": item["manifest_relative_path"],
+        "manifest_digest": manifest["manifest_digest"],
+        "effect_mode": "nondestructive-immutable-archive",
+        "live_source_relative_path": item["source_relative_path"],
+        "live_log_tree_preserved": True,
+        "quarantine_log_tree_touched": False,
+        "generation_siblings_preserved": True,
+    }
+
+    def expected_tree():
+        return {
+            key: item[key]
+            for key in (
+                "schema_version", "kind", "version",
+                "source_relative_path", "entries", "tree_digest",
+            )
+        }
+
+    def revalidate_with(live_tree):
+        monkeypatch.setattr(
+            _tc, "_safe_log_tree_manifest", lambda *_a, **_k: live_tree
+        )
+        tca._revalidate_strict_log_archives(
+            {"archives": [dict(item)]},
+            [dict(receipt)],
+            expected_handoff_version=20,
+        )
+
+    # Identical live manifest: no raise.
+    revalidate_with(expected_tree())
+    # Live manifest LOST a member: the old rule raised; the directional
+    # engine kind would drift-allow it — pinned here as still failing.
+    member_deleted = expected_tree()
+    del member_deleted["tree_digest"]
+    with pytest.raises(RuntimeError, match="strict_log_final_source_mismatch"):
+        revalidate_with(member_deleted)
+    # Live member dropped to None: same — the K8 member loop skips None
+    # values; the full-equality site still fails it.
+    member_none = expected_tree()
+    member_none["entries"] = None
+    with pytest.raises(RuntimeError, match="strict_log_final_source_mismatch"):
+        revalidate_with(member_none)
+    # Reaped (FileNotFoundError → no live side): still the documented skip.
+    def raise_missing(*_a, **_k):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(_tc, "_safe_log_tree_manifest", raise_missing)
+    tca._revalidate_strict_log_archives(
+        {"archives": [dict(item)]},
+        [dict(receipt)],
+        expected_handoff_version=20,
+    )

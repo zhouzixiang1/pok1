@@ -281,6 +281,11 @@ def _completion_tag_git(expected, *, duplicate_certificate=False):
                 returncode=0,
                 stdout=f"official_certificates/{strict_bot_name()}.json\n",
             )
+        if args[:2] == ("rev-parse", "--verify"):
+            # The publication-branch tip the tag-commit-on-main ancestry leg
+            # resolves before grading (commit "d"*40 is its ancestor via the
+            # merge-base answer below).
+            return SimpleNamespace(returncode=0, stdout="e" * 40 + "\n")
         return SimpleNamespace(returncode=0, stdout="")
 
     return fake_git
@@ -350,3 +355,292 @@ def test_completion_tag_validation_accepts_exact_annotated_tag(monkeypatch, tmp_
     )
 
     assert result["valid"] is True
+
+
+# --- Frozen-vs-live comparisons grade through the publication_reproof engine
+# (2026-10-22 migration): the completion-tag metadata alias ring through the
+# engine catalog site ``bot_artifact.completion_tag_metadata``; the module's
+# other producer-local judgments (scalar candidate-hash fallback, non-alias
+# metadata rows, tag-commit-on-main ancestry, completion-tree equality)
+# through the module-local declarations registered import-time.
+
+
+def _spy_bot_artifact_engine(monkeypatch):
+    import publication_reproof
+
+    calls: list = []
+
+    def spy(site_id, **kwargs):
+        calls.append((site_id, kwargs.get("context") or {}))
+        return publication_reproof.run_reproof(site_id, **kwargs)
+
+    monkeypatch.setattr(bot_artifact, "run_reproof", spy, raising=False)
+    return calls
+
+
+def test_completion_tag_comparisons_route_through_reproof_engine(
+    monkeypatch, tmp_path
+):
+    calls = _spy_bot_artifact_engine(monkeypatch)
+    bot = tmp_path / strict_bot_name()
+    bot.mkdir()
+    expected = {
+        "official-certificate": "a" * 64,
+        "official-candidate-hash": "b" * 64,
+        "official-policy": "official-full-v5",
+    }
+    monkeypatch.setattr(
+        bot_artifact,
+        "published_bot_identity",
+        lambda _path: _published_completion_identity(expected),
+    )
+    monkeypatch.setattr(bot_artifact, "_git", _completion_tag_git(expected))
+    result = validate_completion_tag(
+        bot,
+        expected_metadata=expected,
+        certificate_path=f"official_certificates/{strict_bot_name()}.json",
+    )
+    assert result["valid"] is True
+    names = {call[0] for call in calls}
+    # (781-787) scalar official/staging candidate-hash fallback
+    assert "bot_artifact.completion_candidate_hash" in names
+    # (822-836) the alias ring for the candidate-hash spellings ...
+    assert "bot_artifact.completion_tag_metadata" in names
+    # ... and the exact single-row grade for non-alias metadata keys
+    assert "bot_artifact.completion_tag_metadata_exact" in names
+    # ... and the tag-commit-on-main ancestry leg (the branch tip resolved
+    # through the _git seam, then graded oid-vs-oid by the same site the
+    # published-identity path uses).
+    assert "bot_artifact.tag_commit_on_main" in names
+    # A non-ancestor branch tip still fails closed with the historical token.
+    calls.clear()
+
+    def non_ancestor_git(*args):
+        result_git = _completion_tag_git(expected)(*args)
+        if args[:2] == ("rev-parse", "--verify"):
+            return SimpleNamespace(returncode=0, stdout="f" * 40 + "\n")
+        if args[0] == "merge-base":
+            return SimpleNamespace(returncode=1, stdout="")
+        return result_git
+
+    monkeypatch.setattr(bot_artifact, "_git", non_ancestor_git)
+    result = validate_completion_tag(
+        bot,
+        expected_metadata=expected,
+        certificate_path=f"official_certificates/{strict_bot_name()}.json",
+    )
+    assert "completion_tag_commit_not_on_main" in result["issues"]
+    assert "bot_artifact.tag_commit_on_main" in {call[0] for call in calls}
+
+    # The duplicate-row rejection still routes through the engine.
+    calls.clear()
+    monkeypatch.setattr(
+        bot_artifact,
+        "_git",
+        _completion_tag_git(expected, duplicate_certificate=True),
+    )
+    result = validate_completion_tag(
+        bot,
+        expected_metadata=expected,
+        certificate_path=f"official_certificates/{strict_bot_name()}.json",
+    )
+    assert result["valid"] is False
+    assert (
+        "completion_tag_metadata_mismatch:official-certificate"
+        in result["issues"]
+    )
+    assert {
+        call[0] for call in calls
+    } & {"bot_artifact.completion_tag_metadata_exact"} == {
+        "bot_artifact.completion_tag_metadata_exact"
+    }
+
+
+def test_published_identity_comparisons_route_through_reproof_engine(
+    monkeypatch, tmp_path
+):
+    calls = _spy_bot_artifact_engine(monkeypatch)
+    bots = tmp_path / "bots"
+    bots.mkdir()
+    bot = bots / strict_bot_name()
+    _write_bot(bot)
+    monkeypatch.setattr(bot_artifact, "ROOT", tmp_path)
+    tag = strict_bot_tag()
+    name = strict_bot_name()
+    commit_oid = "d" * 40
+    main_oid = "e" * 40
+    tree_oid = "a" * 40
+    tag_object = "c" * 40
+
+    def identity_git(*args):
+        arg0 = args[0]
+        if arg0 == "cat-file":
+            return SimpleNamespace(returncode=0, stdout="tag")
+        if arg0 == "rev-parse":
+            target = args[1]
+            if target == f"refs/tags/{tag}":
+                return SimpleNamespace(returncode=0, stdout=tag_object)
+            if target == "--verify":
+                return SimpleNamespace(returncode=0, stdout=main_oid)
+            return SimpleNamespace(returncode=0, stdout=tree_oid)
+        if arg0 == "rev-list":
+            return SimpleNamespace(returncode=0, stdout=commit_oid)
+        if arg0 == "merge-base":
+            return SimpleNamespace(returncode=0, stdout="")
+        if arg0 == "diff":
+            return SimpleNamespace(returncode=0, stdout="")
+        if arg0 == "ls-files":
+            return SimpleNamespace(returncode=0, stdout="")
+        if arg0 == "for-each-ref":
+            return SimpleNamespace(returncode=0, stdout="")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(bot_artifact, "_git", identity_git)
+    monkeypatch.setattr(
+        bot_artifact,
+        "git_tree_artifact_manifest",
+        lambda *_a, **_k: {"manifest": 1},
+    )
+    identity = bot_artifact.published_bot_identity(bot)
+    assert identity["tag_commit_on_main"] is True
+    assert identity["completion_tree_matches_main"] is True
+    names = {call[0] for call in calls}
+    # (641-652) publication commit ancestry on the configured main ref
+    assert "bot_artifact.tag_commit_on_main" in names
+    # (664-670) completion-tree equality against the main tree
+    assert "bot_artifact.completion_tree_matches_main" in names
+    assert name  # silence linters on the unused local
+
+
+def test_completion_tag_alias_ring_stays_unidirectional(monkeypatch, tmp_path):
+    # 2026-10-23 review pin: the #24 spelling alias widened ONLY the
+    # official-expected → staging-observed direction.  The engine alias
+    # site's live resolution (official→staging→legacy) would also accept
+    # staging-expected + official-observed and bare-expected + official/
+    # staging-observed — a reverse widening.  Those directions stay exact
+    # single-key grades and still fail closed with the historical token.
+    calls = _spy_bot_artifact_engine(monkeypatch)
+    bot = tmp_path / strict_bot_name()
+    bot.mkdir()
+    tag_hash = "b" * 64
+
+    def identity():
+        return {
+            "tag": strict_bot_tag(),
+            "tag_type": "tag",
+            "tag_object": "c" * 40,
+            "commit_oid": "d" * 40,
+            "tag_artifact_hash": tag_hash,
+            "migrated_since_completion": False,
+            "issues": [],
+        }
+
+    def observed_git(observed_key):
+        def fake_git(*args):
+            if args[0] == "for-each-ref":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"{observed_key}: {tag_hash}\n",
+                )
+            if args[:2] == ("rev-parse", "--verify"):
+                return SimpleNamespace(returncode=0, stdout="e" * 40 + "\n")
+            if args[0] == "ls-tree":
+                return SimpleNamespace(returncode=0, stdout="")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        return fake_git
+
+    monkeypatch.setattr(
+        bot_artifact, "published_bot_identity", lambda _path: identity()
+    )
+
+    # staging-expected + official-observed (SAME value): still a mismatch —
+    # the alias only ever widened official-expected.
+    monkeypatch.setattr(
+        bot_artifact, "_git", observed_git("official-candidate-hash")
+    )
+    result = validate_completion_tag(
+        bot,
+        expected_metadata={"staging-candidate-hash": tag_hash},
+        certificate_path="",
+    )
+    assert (
+        "completion_tag_metadata_mismatch:staging-candidate-hash"
+        in result["issues"]
+    )
+    # The engine alias site IS consulted (one call for the whole candidate-
+    # hash expectation set) and its ONE-WAY rule produces the mismatch
+    # itself — no adapter-side direction gate remains.
+    assert "bot_artifact.completion_tag_metadata" in {
+        call[0] for call in calls
+    }
+
+    # bare-expected + official-observed: same exact-key verdict.
+    calls.clear()
+    result = validate_completion_tag(
+        bot,
+        expected_metadata={"candidate-hash": tag_hash},
+        certificate_path="",
+    )
+    assert "completion_tag_metadata_mismatch:candidate-hash" in result["issues"]
+
+    # The widened direction itself stays accepted: official-expected +
+    # staging-observed routes through the engine alias site.
+    calls.clear()
+    monkeypatch.setattr(
+        bot_artifact, "_git", observed_git("staging-candidate-hash")
+    )
+    result = validate_completion_tag(
+        bot,
+        expected_metadata={"official-candidate-hash": tag_hash},
+        certificate_path="",
+    )
+    assert "completion_tag_metadata_mismatch:official-candidate-hash" not in (
+        result["issues"]
+    )
+    assert "bot_artifact.completion_tag_metadata" in {
+        call[0] for call in calls
+    }
+
+
+def test_completion_tag_empty_candidate_hash_expectation_fails(
+    monkeypatch, tmp_path
+):
+    # 2026-10-23 review pin: a present-but-EMPTY candidate-hash expectation
+    # plus a missing observation was a hard ``not expected_hash`` failure
+    # before the migration; the engine alias site would normalize the pair
+    # to None/None and pass.  The frozen-side or-chain resolution stays in
+    # the adapter as the availability gate, so the failure verdict is kept.
+    calls = _spy_bot_artifact_engine(monkeypatch)
+    bot = tmp_path / strict_bot_name()
+    bot.mkdir()
+    monkeypatch.setattr(
+        bot_artifact,
+        "published_bot_identity",
+        lambda _path: {
+            "tag": strict_bot_tag(),
+            "tag_type": "tag",
+            "tag_object": "c" * 40,
+            "commit_oid": "d" * 40,
+            "tag_artifact_hash": "",
+            "migrated_since_completion": False,
+            "issues": [],
+        },
+    )
+
+    def empty_git(*args):
+        if args[:2] == ("rev-parse", "--verify"):
+            return SimpleNamespace(returncode=0, stdout="e" * 40 + "\n")
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(bot_artifact, "_git", empty_git)
+    result = validate_completion_tag(
+        bot,
+        expected_metadata={"official-candidate-hash": ""},
+        certificate_path="",
+    )
+    assert "completion_tag_candidate_hash_mismatch" in result["issues"]
+    # The engine graded no scalar pair for the unresolvable expectation.
+    assert "bot_artifact.completion_candidate_hash" not in {
+        call[0] for call in calls
+    }

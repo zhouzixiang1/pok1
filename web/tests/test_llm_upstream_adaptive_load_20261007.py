@@ -37,8 +37,16 @@ def _fresh_aimd_state(monkeypatch, tmp_path):
     """Isolate every test from module singletons and from the real state file."""
     monkeypatch.setattr(llm_concurrency, "_SHARED_LLM_SEMAPHORE", None)
     monkeypatch.setattr(llm_concurrency, "_GLOBAL_LLM_SEMAPHORE", None)
-    # Production static ceiling (deploy/tencent-cloud/env.runtime sets 12).
+    # This file pins 12 as its synthetic static ceiling (production
+    # env.runtime raises it to 16; the exact value is immaterial to the
+    # controller contract as long as it sits above the floor and the
+    # synthetic states used below).
     monkeypatch.setattr(llm_concurrency, "GLOBAL_LLM_CONCURRENCY", 12)
+    # 2026-10-21 解限流: pin the production AIMD floor posture — the code
+    # default is 8 under env.runtime's GLOBAL=16, but a bare-process import
+    # clamps it to GLOBAL's own code default (4), so pin it explicitly to
+    # keep these synthetic-time tests deterministic and production-shaped.
+    monkeypatch.setattr(llm_concurrency, "AIMD_MIN_LIMIT", 8)
     monkeypatch.setattr(
         llm_concurrency, "_AIMD_STATE_FILE", tmp_path / "llm_aimd_state.json"
     )
@@ -161,6 +169,9 @@ def test_three_failures_in_window_soften_limit_and_clear_window():
     live wall (8-9) halving crashed the limit to 4 on every storm and the
     sawtooth cost -10.7% overnight throughput. High tiers still unload
     substantially (12 -> 9); low tiers step shallowly (-2).
+    2026-10-21 解限流: the shallow step lands on the raised floor — the third
+    storm's 9 - 2 = 7 clamps to AIMD_MIN_LIMIT (8), so a persistent storm
+    settles at the post-storm baseline instead of digging to 2.
     """
     for ts in (100.0, 105.0, 110.0):
         llm_concurrency.note_llm_rate_limit_failure(now=ts)
@@ -170,9 +181,9 @@ def test_three_failures_in_window_soften_limit_and_clear_window():
     llm_concurrency.note_llm_rate_limit_failure(now=135.0)
     assert llm_concurrency.get_capacity() == 9
     # ...a THIRD clustered failure softens again (9 // 4 = 2 -> -2, the
-    # shallow low-tier step).
+    # shallow low-tier step), clamped up at the raised floor 8.
     llm_concurrency.note_llm_rate_limit_failure(now=140.0)
-    assert llm_concurrency.get_capacity() == 7
+    assert llm_concurrency.get_capacity() == 8
 
 
 def test_failures_expire_from_the_sliding_window():
@@ -183,13 +194,15 @@ def test_failures_expire_from_the_sliding_window():
     assert llm_concurrency.get_capacity() == 12
 
 
-def test_downshift_floors_at_two():
-    # F1 softened step: 12 -> 9 (-3) -> 7 -> 5 -> 3 -> 2, floored at
-    # AIMD_MIN_LIMIT; the floor itself is contract-unchanged.
+def test_downshift_floors_at_raised_aimd_min_limit():
+    # F1 softened step + 2026-10-21 解限流 raised floor: repeated storms walk
+    # 12 -> 9 (-3) -> 7 and then settle at AIMD_MIN_LIMIT (8, was 2) — a
+    # storm unloads AT MOST down to the post-storm baseline, never to 2.
     for round_start in (100.0, 150.0, 200.0, 250.0, 300.0):
         for ts in (round_start, round_start + 5, round_start + 10):
             llm_concurrency.note_llm_rate_limit_failure(now=ts)
-    assert llm_concurrency.get_capacity() == 2
+    assert llm_concurrency.get_capacity() == llm_concurrency.AIMD_MIN_LIMIT
+    assert llm_concurrency.get_capacity() == 8
 
 
 def test_success_raises_additively_after_clean_window():
@@ -259,10 +272,15 @@ def test_restart_recovers_persisted_level():
 
 
 def test_recovery_clamps_out_of_range_levels(tmp_path):
+    # 解限流: a below-floor persisted level is raised to the floor (8), an
+    # above-ceiling level still clamps at 32.
+    assert llm_concurrency.AIMD_MIN_LIMIT == 8
     for limit in (1, 99):
         llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": limit}))
         llm_concurrency._AIMD_LIMIT = None
-        assert llm_concurrency.get_capacity() == (2 if limit == 1 else 32)
+        assert llm_concurrency.get_capacity() == (
+            llm_concurrency.AIMD_MIN_LIMIT if limit == 1 else 32
+        )
 
 
 def test_corrupt_state_file_fails_open_to_static():
@@ -664,8 +682,10 @@ def test_saturator_soft_cap_follows_dynamic_capacity(monkeypatch):
 
 
 def test_may_launch_children_gate_tracks_dynamic_capacity(monkeypatch):
-    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 6}))
-    assert llm_concurrency.get_capacity() == 6
+    # 解限流: dynamic level above the floor 8 (a persisted 6 would be
+    # re-floored to 8 at load, hiding the gate's dynamic tracking).
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 10}))
+    assert llm_concurrency.get_capacity() == 10
 
     monkeypatch.setattr(llm_saturator, "_saturator_provider_paused", lambda: False)
     monkeypatch.setattr(llm_saturator, "_mem_available_mb", lambda: 2048)
@@ -673,13 +693,13 @@ def test_may_launch_children_gate_tracks_dynamic_capacity(monkeypatch):
     monkeypatch.setattr(
         llm_saturator, "_cgroup_memory_headroom_mb", lambda **_kw: None
     )
-    monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 7)
-    ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=6)
+    monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 11)
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=10)
     assert (ok, reason) == (False, "claude_children")
 
-    # Below the DYNAMIC cap (7 children >= static 12 would have passed!).
-    monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 5)
-    ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=6)
+    # Below the DYNAMIC cap (11 children >= static 12 would have passed!).
+    monkeypatch.setattr(llm_saturator, "_claude_child_count", lambda: 9)
+    ok, reason = llm_saturator.saturator_may_launch(in_flight=0, soft_cap=10)
     assert (ok, reason) == (True, "ok")
 
 
@@ -796,29 +816,40 @@ def test_saturator_loop_wires_dynamic_soft_cap():
 def test_fast_recovery_pace_below_static_baseline():
     """Operator direction 2026-10-07: climb back faster after a storm.
 
-    Below the static baseline the raise probe fires after the fast 90s pace,
-    not the cautious 300s exploration pace — a storm's downshift lands far
-    under the sustained level and the slow pace made the dip ~50 minutes.
+    Below the static baseline the raise probe fires after the fast pace
+    (AIMD_FAST_RAISE_INTERVAL_SEC — 90s pre-解限流, 30s since), not the
+    cautious exploration pace — a storm's downshift lands far under the
+    sustained level and a slow pace made the dip last ~50 minutes. Timings
+    are derived from the constants so future tuning keeps this contract.
     """
-    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 3}))
+    fast = llm_concurrency.AIMD_FAST_RAISE_INTERVAL_SEC
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 10}))
     llm_concurrency._AIMD_LIMIT = None
     llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS = 1000.0
     llm_concurrency._AIMD_SUCCESSES = 0
+    assert llm_concurrency.get_capacity() == 10
     for _ in range(4):
-        llm_concurrency.note_llm_stream_success(now=1091.0)  # 91s since change
-    assert llm_concurrency.get_capacity() == 4
+        llm_concurrency.note_llm_stream_success(now=1000.0 + fast - 1.0)
+    assert llm_concurrency.get_capacity() == 10  # one second short: gated
+    llm_concurrency.note_llm_stream_success(now=1000.0 + fast + 1.0)
+    assert llm_concurrency.get_capacity() == 11
 
 
 def test_cautious_pace_returns_at_static_baseline():
     """Fast recovery is for getting BACK to the static baseline, not for
-    exploring above it: at limit >= static the 300s probe pace applies."""
+    exploring above it: at limit >= static the cautious probe pace
+    (AIMD_RAISE_INTERVAL_SEC — 300s pre-解限流, 60s since) applies."""
+    slow = llm_concurrency.AIMD_RAISE_INTERVAL_SEC
     llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 12}))
     llm_concurrency._AIMD_LIMIT = None
     llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS = 1000.0
     llm_concurrency._AIMD_SUCCESSES = 0
-    for _ in range(4):
-        llm_concurrency.note_llm_stream_success(now=1080.0)  # only 80s later
     assert llm_concurrency.get_capacity() == 12
+    for _ in range(4):
+        llm_concurrency.note_llm_stream_success(now=1000.0 + slow - 1.0)
+    assert llm_concurrency.get_capacity() == 12  # one second short: gated
+    llm_concurrency.note_llm_stream_success(now=1000.0 + slow + 1.0)
+    assert llm_concurrency.get_capacity() == 13
 
 
 # ---------------------------------------------------------------------------
@@ -836,13 +867,26 @@ def test_softened_downshift_unloads_hard_at_high_tier():
 
 
 def test_softened_downshift_low_tier_step_is_minus_two():
-    """F1: at the live wall (8-9) the old halving crashed to 4 on every storm;
-    the softened step is -2 there (8 -> 6), keeping the average tier high."""
-    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 8}))
+    """F1: at the live wall the old halving crashed to 4 on every storm; the
+    softened step is -2 there (11 -> 9), keeping the average tier high.
+
+    2026-10-21 解限流: the step is measured at 11 (8-9 tier sits AT/under the
+    raised floor 8, where a storm now settles instead of digging); from the
+    floor itself the same storm stays floored — that is the storm-baseline
+    contract, not a step regression."""
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 11}))
     llm_concurrency._AIMD_LIMIT = None
     for ts in (100.0, 105.0, 110.0):
         llm_concurrency.note_llm_rate_limit_failure(now=ts)
-    assert llm_concurrency.get_capacity() == 6  # 8 - max(2, 8 // 4) = 8 - 2
+    assert llm_concurrency.get_capacity() == 9  # 11 - max(2, 11 // 4) = 11 - 2
+
+    # At the floor (8) the same clustered storm cannot dig below the floor.
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 8}))
+    llm_concurrency._AIMD_LIMIT = None
+    llm_concurrency._AIMD_FAILURE_TS = []
+    for ts in (200.0, 205.0, 210.0):
+        llm_concurrency.note_llm_rate_limit_failure(now=ts)
+    assert llm_concurrency.get_capacity() == llm_concurrency.AIMD_MIN_LIMIT
 
 
 def test_apply_persistence_runs_outside_the_aimd_lock(monkeypatch):
@@ -882,61 +926,67 @@ def test_apply_persistence_runs_outside_the_aimd_lock(monkeypatch):
 
 def test_stale_apply_persistence_never_overwrites_newer_limit():
     """F2 anti-reordering: a delayed out-of-lock save from an OLDER apply must
-    not overwrite the newer limit/clock (monotonic apply seq gate)."""
-    first = llm_concurrency._aimd_apply_locked(9, last_change_ts=100.0)
-    second = llm_concurrency._aimd_apply_locked(7, last_change_ts=150.0)
+    not overwrite the newer limit/clock (monotonic apply seq gate). Values
+    stay above the 解限流 floor so the apply clamp does not mask the seq
+    ordering under test."""
+    first = llm_concurrency._aimd_apply_locked(13, last_change_ts=100.0)
+    second = llm_concurrency._aimd_apply_locked(11, last_change_ts=150.0)
     # The NEWER apply's persistence completes first...
     llm_concurrency._aimd_finish_apply(*second)
     data = json.loads(llm_concurrency._aimd_state_path().read_text())
-    assert data == {"limit": 7, "last_change_ts": 150.0}
+    assert data == {"limit": 11, "last_change_ts": 150.0}
     # ...then the stale first apply arrives late: skipped, file unchanged.
     llm_concurrency._aimd_finish_apply(*first)
     data = json.loads(llm_concurrency._aimd_state_path().read_text())
-    assert data == {"limit": 7, "last_change_ts": 150.0}
+    assert data == {"limit": 11, "last_change_ts": 150.0}
 
 
 def test_restart_recovers_last_change_ts_clock():
     """F3: the cautious/fast raise-interval clock persists with the limit, so
     a restart cannot bypass the cooldown once via since_change=inf."""
     llm_concurrency._AIMD_STATE_FILE.write_text(
-        json.dumps({"limit": 3, "last_change_ts": 1000.0})
+        json.dumps({"limit": 10, "last_change_ts": 1000.0})
     )
     llm_concurrency._AIMD_LIMIT = None
-    assert llm_concurrency.get_capacity() == 3
+    assert llm_concurrency.get_capacity() == 10
     assert llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS == 1000.0
 
 
 def test_recovered_clock_gates_the_first_probe_after_restart():
     """F3: without clock recovery, since_change=inf let the first post-restart
-    successes probe immediately — the recovered clock must actually gate."""
+    successes probe immediately — the recovered clock must actually gate.
+    Timings derive from AIMD_FAST_RAISE_INTERVAL_SEC (30s since 解限流,
+    90s before) so the contract survives future pace tuning."""
+    fast = llm_concurrency.AIMD_FAST_RAISE_INTERVAL_SEC
     llm_concurrency._AIMD_STATE_FILE.write_text(
-        json.dumps({"limit": 3, "last_change_ts": 1000.0})
+        json.dumps({"limit": 10, "last_change_ts": 1000.0})
     )
     llm_concurrency._AIMD_LIMIT = None
-    assert llm_concurrency.get_capacity() == 3
-    # 4 clean successes only 80s after the RECOVERED clock: fast tier is 90s,
-    # so no probe yet (pre-fix: inf bypassed this gate -> limit 4).
+    assert llm_concurrency.get_capacity() == 10
+    # 4 clean successes one second short of the RECOVERED clock's fast tier:
+    # no probe yet (pre-fix: inf bypassed this gate entirely).
     for _ in range(4):
-        llm_concurrency.note_llm_stream_success(now=1080.0)
-    assert llm_concurrency.get_capacity() == 3
+        llm_concurrency.note_llm_stream_success(now=1000.0 + fast - 1.0)
+    assert llm_concurrency.get_capacity() == 10
     # Past the fast interval the same traffic probes.
-    llm_concurrency.note_llm_stream_success(now=1091.0)
-    assert llm_concurrency.get_capacity() == 4
+    llm_concurrency.note_llm_stream_success(now=1000.0 + fast + 1.0)
+    assert llm_concurrency.get_capacity() == 11
 
 
 def test_missing_clock_conservatively_initializes_to_now():
     """F3: a legacy state file without last_change_ts initializes the clock to
     the load moment — a missing clock must not grant an immediate probe."""
-    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 3}))
+    fast = llm_concurrency.AIMD_FAST_RAISE_INTERVAL_SEC
+    llm_concurrency._AIMD_STATE_FILE.write_text(json.dumps({"limit": 10}))
     llm_concurrency._AIMD_LIMIT = None
-    assert llm_concurrency.get_capacity() == 3
+    assert llm_concurrency.get_capacity() == 10
     clock = llm_concurrency._AIMD_LAST_LIMIT_CHANGE_TS
     assert clock is not None and abs(clock - time.time()) < 5.0
     for _ in range(4):
-        llm_concurrency.note_llm_stream_success(now=clock + 60.0)  # < 90s
-    assert llm_concurrency.get_capacity() == 3
-    llm_concurrency.note_llm_stream_success(now=clock + 91.0)  # 5th success
-    assert llm_concurrency.get_capacity() == 4
+        llm_concurrency.note_llm_stream_success(now=clock + fast - 1.0)
+    assert llm_concurrency.get_capacity() == 10
+    llm_concurrency.note_llm_stream_success(now=clock + fast + 1.0)  # 5th
+    assert llm_concurrency.get_capacity() == 11
 
 
 def test_active_stream_count_reads_real_holders_during_drain():
