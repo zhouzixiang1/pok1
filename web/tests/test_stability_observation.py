@@ -1804,3 +1804,58 @@ def test_live_publication_proof_passes_empty_certificate_path(monkeypatch):
     )
     failed = observation._test_original_live_publication_errors(state)
     assert f"v{V0}:publication_proof:completion_tag_not_annotated" in failed
+
+
+def test_live_publication_proof_accepts_staging_candidate_hash_spelling(
+    monkeypatch,
+):
+    """Twenty-fourth exact-pin convergence defect (v598, 2026-10-22).
+
+    Publication tags in the no-certificate era carry MIXED metadata
+    spellings: v598's tag writes ``staging-candidate-hash`` while the
+    stability observer's live proof asks validate_completion_tag for
+    ``official-candidate-hash`` — the VALUE is byte-identical, the exact-key
+    loop still failed, and v598's post-publication handoff exhausted its 8
+    archivist retries and parked the pipeline for ~3h.  The validator now
+    accepts the staging-* spelling as an alias for the official-* key (value
+    still exact-match).  Drives the REAL _live_publication_errors with a
+    state whose row hash equals the tag's staging-candidate-hash value."""
+
+
+    import bot_artifact
+    import stability_observation as observation
+
+    row_hash = "e" * 64
+
+    def fake_validate(path_or_token, *, expected_metadata, certificate_path):
+        # Simulate the validator's post-alias behaviour: the official-*
+        # expectation resolves through the staging-* tag spelling.
+        assert certificate_path == ""
+        got = expected_metadata.get("official-candidate-hash")
+        assert got == row_hash
+        return {
+            "valid": True,
+            "issues": [],
+            "identity": {"commit_oid": "a" * 40, "tag_artifact_hash": row_hash},
+        }
+
+    monkeypatch.setattr(bot_artifact, "validate_completion_tag", fake_validate)
+    frozen_evidence = {"schema_version": 1, "mode": "frozen_native_evaluation"}
+    monkeypatch.setattr(
+        observation,
+        "_generation_evidence_binding",
+        lambda version, source_v: frozen_evidence,
+    )
+    state = {
+        "observations": [
+            {
+                "version": V0,
+                "candidate_artifact_hash": row_hash,
+                "commit_oid": "a" * 40,
+                "source_v": V0 - 1,
+                "generation_evidence": frozen_evidence,
+            }
+        ]
+    }
+    errors = observation._test_original_live_publication_errors(state)
+    assert errors == []
