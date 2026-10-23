@@ -1846,6 +1846,40 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
         selection_view=selection_view,
     )
 
+    # Publication-drought breaker (2026-10-23): a frozen-fact escape from the
+    # plateau deadlock described in _publication_drought_length.  Fires BEFORE
+    # the mechanical-degeneration check: unlike that numeric decline rule this
+    # one triggers on output starvation itself, which is the operator's goal
+    # signal.  Structural recombination (crossover) is the one proven plateau
+    # escape in this lineage's history, and the crossover effect-reentry fix
+    # (2026-10-22) removed the conflict deaths that previously burned the few
+    # crossovers that were selected.
+    _drought_threshold = _drought_breaker_crossover_threshold()
+    if _drought_threshold and strategy != "crossover":
+        _drought = _publication_drought_length(active_v)
+        if _drought >= _drought_threshold:
+            _drought_parents = _pick_crossover_parents(
+                ratings, active_v, selection_view=selection_view
+            )
+            if _drought_parents:
+                strategy = "crossover"
+                parents = _drought_parents
+                source_v = _drought_parents[0]
+                log_system_event(
+                    "pipeline.publication_drought_crossover",
+                    "warn",
+                    f"Publication drought: {_drought} consecutive abandons above "
+                    f"v{active_v} (threshold {_drought_threshold}) -- forcing "
+                    "structural crossover to break the plateau deadlock",
+                    {
+                        "drought": _drought,
+                        "threshold": _drought_threshold,
+                        "parent_a": parents[0],
+                        "parent_b": parents[1] if len(parents) > 1 else None,
+                        "suppressed_strategy": "master",
+                    },
+                )
+
     # --- P1-1: Continuous Degeneration Diagnosis ---
     mechanical_urgent = _mechanical_urgent_intervention_eligible(
         bot_name(active_v),
@@ -2376,6 +2410,45 @@ def _llm_source_eligibility(requested_v, selection_view):
 def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
     """Delegate to generation_scheduler_source_selection."""
     return _gs._decide_strategy(combined, current_v, ratings, selection_view=selection_view)
+
+
+def _publication_drought_length(published_high_water: int) -> int:
+    """Count terminal abandons above the published high-water (frozen fact).
+
+    Publication-drought breaker (2026-10-23): the mode selector can deadlock
+    on a parity plateau -- no rating stratification caps strength_confidence
+    to "low" (which disables the stagnation crossover), and the oscillation
+    E2 guard treats "leader inside the recurring set" as elite convergence,
+    so the lineage keeps re-selecting master micro-tweaks from the same
+    least-noisy-of-equals bot (12 consecutive abandons v586-v597; pool data
+    shows the "leader" is behind v27/v11 head-to-head).  The drought length
+    is a frozen ledger fact, immune to LLM confidence, and is the direct
+    operator-facing output signal: consecutive generations without a
+    publication.
+    """
+    try:
+        from abandoned_version_ledger import load_abandoned_version_receipts
+        receipts = load_abandoned_version_receipts()
+        return sum(
+            1
+            for r in receipts
+            if isinstance(r, dict)
+            and isinstance(r.get("version"), int)
+            and r["version"] > published_high_water
+        )
+    except Exception:
+        return 0
+
+
+def _drought_breaker_crossover_threshold() -> int:
+    """POK_CROSSOVER_DROUGHT_BREAKER: abandons above high-water that force a
+    structural crossover (0 disables).  Default 4: the observed 12-abandon
+    drought would have broken at the 5th; a threshold that low only fires on
+    genuinely output-free streaks because any publication resets it."""
+    try:
+        return max(0, int(os.environ.get("POK_CROSSOVER_DROUGHT_BREAKER", "4")))
+    except (TypeError, ValueError):
+        return 4
 
 
 def _parse_branch_from(branch_str: str) -> int | None:

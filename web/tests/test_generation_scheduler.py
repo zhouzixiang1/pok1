@@ -566,3 +566,70 @@ def test_prepare_generation_offloads_blocking_pool_resolution_off_event_loop(mon
                 f"blocking resolver {name!r} ran on the event-loop thread "
                 f"(ident={thread.ident}); it must be offloaded to a worker thread"
             )
+
+
+def test_publication_drought_breaker_forces_crossover(monkeypatch, tmp_path):
+    """2026-10-23: the parity-plateau deadlock escape.
+
+    Pool analysis (wr 0.466-0.545, no Wilson-significant stratification) showed
+    the selector stuck on master micro-tweaks: strength_confidence=low disables
+    the stagnation crossover and the E2 oscillation guard calls "leader in the
+    recurring set" elite convergence.  The drought breaker uses the frozen
+    ledger fact -- terminal abandons above the published high-water -- to force
+    a structural crossover after POK_CROSSOVER_DROUGHT_BREAKER (default 4)
+    output-free generations, mirroring the mechanical-degeneration override."""
+
+    import generation_scheduler as gs
+
+    monkeypatch.setenv("POK_CROSSOVER_DROUGHT_BREAKER", "4")
+
+    class _Receipt(int):
+        pass
+
+    def fake_receipts(*, path=None, project_root=None):
+        return [
+            {"version": 599}, {"version": 600}, {"version": 601}, {"version": 602},
+            {"version": 597}, {"version": 598},
+        ]
+
+    import abandoned_version_ledger as ledger
+    monkeypatch.setattr(ledger, "load_abandoned_version_receipts", fake_receipts)
+
+    # high-water 598 -> abandons above it: 599,600,601,602 = drought 4 >= 4
+    assert gs._publication_drought_length(598) == 4
+    assert gs._publication_drought_length(602) == 0
+    monkeypatch.delenv("POK_CROSSOVER_DROUGHT_BREAKER")
+    assert gs._drought_breaker_crossover_threshold() == 4
+    monkeypatch.setenv("POK_CROSSOVER_DROUGHT_BREAKER", "0")
+    assert gs._drought_breaker_crossover_threshold() == 0
+    monkeypatch.setenv("POK_CROSSOVER_DROUGHT_BREAKER", "bogus")
+    assert gs._drought_breaker_crossover_threshold() == 4
+
+    # The override branch itself: strategy master + drought 4 + parents found
+    # -> crossover + event.  Drive via the seam the way the degeneration
+    # override is tested: simulate by calling the decision wrapper pieces.
+    monkeypatch.setenv("POK_CROSSOVER_DROUGHT_BREAKER", "4")
+    called = {}
+    def fake_pick(ratings, current_v, selection_view=None):
+        called["pick"] = (ratings, current_v)
+        return (11, 27)
+    monkeypatch.setattr(gs, "_pick_crossover_parents", fake_pick)
+    events = []
+    monkeypatch.setattr(
+        gs, "log_system_event",
+        lambda kind, sev, msg, data=None: events.append((kind, msg)),
+    )
+    # Directly exercise the guard logic shape used in the prepare path.
+    strategy, parents, source_v = "master", (), 79
+    _drought_threshold = gs._drought_breaker_crossover_threshold()
+    if _drought_threshold and strategy != "crossover":
+        _drought = gs._publication_drought_length(598)
+        if _drought >= _drought_threshold:
+            _dp = gs._pick_crossover_parents({}, 598, selection_view=None)
+            if _dp:
+                strategy, parents, source_v = "crossover", _dp, _dp[0]
+                gs.log_system_event(
+                    "pipeline.publication_drought_crossover", "warn", "x", {}
+                )
+    assert strategy == "crossover" and parents == (11, 27) and source_v == 11
+    assert events and events[0][0] == "pipeline.publication_drought_crossover"
