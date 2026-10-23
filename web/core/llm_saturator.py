@@ -1835,8 +1835,13 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
             if _saturator_provider_paused():
                 await asyncio.sleep(min(max(_saturator_pause_remaining_sec(), 0.5), 60.0))
             elif time.time() < _pipeline_rate_yield_until:
+                # Cap at 20s (not 60): the loop must wake by the
+                # rate-preempt persistence threshold (15s) to cancel
+                # in-flight fill near the mark instead of sleeping
+                # through it — observed 19:21:20→19:22:20, the first
+                # episode preempted a full 60s late.
                 await asyncio.sleep(
-                    min(max(_pipeline_rate_yield_until - time.time(), 0.5), 60.0)
+                    min(max(_pipeline_rate_yield_until - time.time(), 0.5), 20.0)
                 )
             elif not in_flight:
                 await asyncio.sleep(5.0)

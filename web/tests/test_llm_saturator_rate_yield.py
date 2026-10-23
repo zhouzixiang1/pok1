@@ -183,5 +183,7 @@ def test_launch_gate_source_honours_yield_window(monkeypatch):
     assert "_pipeline_rate_yield_until" in src
     # The gate breaks on the armed window ...
     assert "time.time() < _pipeline_rate_yield_until" in src
-    # ... and the sleep branch parks on it instead of spinning.
+    # ... and the sleep branch parks on it instead of spinning, capped at
+    # 20s so the loop wakes by the rate-preempt persistence threshold.
     assert "_pipeline_rate_yield_until - time.time()" in src
+    assert "0.5), 20.0" in src
