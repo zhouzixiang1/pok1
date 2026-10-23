@@ -1300,6 +1300,32 @@ def _restart_fill_inflight_cap() -> int:
         return 1
 
 
+def _pipeline_active_fill_cap() -> int:
+    """Max in-flight fill packets while PIPELINE LLM streams are streaming.
+
+    2026-10-23: the rate-yield (70e14eff) covers a durable pause window plus
+    a fixed grace, but a master ensemble / workers phase streams for 5-10+
+    minutes; the moment the yield expired the fill lane refilled to the
+    soft cap and its request wave re-tripped GLM 1302 onto the still-running
+    pipeline streams (observed 19:29/19:44/20:00). While
+    ``pipeline_active_count()`` reports held pipeline permits, fill stays at
+    or below this concurrency so the account's request-rate budget keeps
+    headroom for the producer. ``0`` parks fill entirely while the pipeline
+    streams. Every other gate still applies.
+    """
+    try:
+        return max(
+            0,
+            int(
+                os.environ.get(
+                    "POK_LLM_SATURATOR_PIPELINE_ACTIVE_INFLIGHT", "2"
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return 2
+
+
 def _orchestrator_restart_pending_seconds(now: "float | None" = None) -> "float | None":
     """Seconds until the supervisor's next scheduled revival; None = none.
 
@@ -1411,6 +1437,7 @@ def saturator_may_launch(
     soft_cap: int,
     last_preempt_at: float | None = None,
     now: float | None = None,
+    pipeline_active: int = 0,
 ) -> tuple[bool, str]:
     """Admit a new packet when a permit and RAM exist.
 
@@ -1419,12 +1446,18 @@ def saturator_may_launch(
     return ``pipeline_pending``. Fill every free permit; preemption yields
     only when the pool is actually full. Immediately after a yield wave,
     hold off refill so the just-freed permits go to the FIFO pipeline
-    waiters instead of a new saturator acquire.
+    waiters instead of a new saturator acquire. The one exception to
+    "fill every free permit" is ``pipeline_active``: STREAMING pipeline
+    roles share the account's request-rate budget with fill (a 1302 kills
+    the mid-ensemble producer dispatch, 2026-10-23), so while they stream
+    fill parks at ``_pipeline_active_fill_cap`` instead of the soft cap.
     """
     if last_preempt_at is not None:
         ts = time.time() if now is None else now
         if (ts - last_preempt_at) < _preempt_holdoff_sec():
             return False, "preempt_holdoff"
+    if pipeline_active > 0 and in_flight >= _pipeline_active_fill_cap():
+        return False, "pipeline_rate_budget"
     if in_flight >= max(1, int(soft_cap)):
         return False, "soft_cap"
     if _saturator_provider_paused():
@@ -1581,6 +1614,33 @@ def saturator_rate_preempt_n(
     return int(in_flight)
 
 
+def saturator_pipeline_yield_preempt_n(
+    *,
+    pipeline_active: int,
+    in_flight: int,
+    cap: int,
+    already_done: bool,
+    active_age_sec: float,
+    min_age_sec: float = 15.0,
+) -> int:
+    """How many in-flight fill packets to cancel while pipeline streams run.
+
+    Companion to the ``pipeline_rate_budget`` launch gate: once pipeline
+    streams have been streaming for at least ``min_age_sec`` (sustained
+    producer phase, not a transient dispatch blip) and the fill lane is
+    above the pipeline-active cap, cut fill DOWN TO the cap — youngest
+    first via :func:`_pick_preemptable_many` — once per pipeline-active
+    episode. Unlike the rate-block preempt this preserves up to ``cap``
+    packets (the account keeps some fill throughput) instead of clearing
+    everything: the producer needs headroom, not the whole account.
+    """
+    if pipeline_active <= 0 or already_done or in_flight <= cap:
+        return 0
+    if active_age_sec < min_age_sec:
+        return 0
+    return int(in_flight - cap)
+
+
 def _task_is_live(task) -> bool:
     if task.done() or task.cancelled():
         return False
@@ -1645,6 +1705,8 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
     rate_block_since: "float | None" = None
     rate_preempt_done = False
     rate_yield_announced = False
+    pipeline_active_since: "float | None" = None
+    pipeline_yield_preempt_done = False
     global _pipeline_rate_yield_until
 
     async def _launch(sid: int):
@@ -1667,6 +1729,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
             try:
                 from llm_concurrency import (
                     llm_semaphore_has_capacity,
+                    pipeline_active_count,
                     pipeline_pending_age_sec,
                     pipeline_pending_count,
                 )
@@ -1674,10 +1737,18 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 _pending_age = pipeline_pending_age_sec()
                 _pipeline_waiting = pipeline_pending_count()
                 _has_capacity = bool(llm_semaphore_has_capacity(1))
+                _pipeline_active_now = int(pipeline_active_count())
             except Exception:
                 _pending_age = 0.0
                 _pipeline_waiting = 0
                 _has_capacity = True
+                _pipeline_active_now = 0
+            if _pipeline_active_now > 0:
+                if pipeline_active_since is None:
+                    pipeline_active_since = time.time()
+            else:
+                pipeline_active_since = None
+                pipeline_yield_preempt_done = False
             rate_blocked, rate_resume_ts = _poll_pipeline_rate_block()
             if rate_blocked:
                 if rate_block_since is None:
@@ -1765,7 +1836,46 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 last_preempt_at = time.time()
                 if rate_victims:
                     await asyncio.wait(set(rate_victims), timeout=2.0)
-            skip_refill = bool(n_preempt) or bool(n_rate_preempt)
+            n_pipeline_yield = saturator_pipeline_yield_preempt_n(
+                pipeline_active=_pipeline_active_now,
+                in_flight=len(live_tasks),
+                cap=_pipeline_active_fill_cap(),
+                already_done=pipeline_yield_preempt_done,
+                active_age_sec=(
+                    (time.time() - pipeline_active_since)
+                    if pipeline_active_since is not None
+                    else 0.0
+                ),
+                min_age_sec=_preempt_after_sec(),
+            )
+            if n_pipeline_yield:
+                pipeline_victims = _pick_preemptable_many(
+                    {t: started_at[t] for t in live_tasks if t in started_at},
+                    _pending_age,
+                    n_pipeline_yield,
+                    min_pending_age_sec=0.0,
+                )
+                for victim in pipeline_victims:
+                    log.warning(
+                        "saturator pipeline-yield preempting session %s: "
+                        "pipeline streams active %.0fs; cutting fill to cap "
+                        "%d (in-flight=%d n=%d)",
+                        getattr(victim, "get_name", lambda: "?")(),
+                        (time.time() - pipeline_active_since)
+                        if pipeline_active_since is not None
+                        else 0.0,
+                        _pipeline_active_fill_cap(),
+                        len(live_tasks),
+                        len(pipeline_victims),
+                    )
+                    victim.cancel()
+                pipeline_yield_preempt_done = True
+                last_preempt_at = time.time()
+                if pipeline_victims:
+                    await asyncio.wait(set(pipeline_victims), timeout=2.0)
+            skip_refill = (
+                bool(n_preempt) or bool(n_rate_preempt) or bool(n_pipeline_yield)
+            )
             in_flight = {t for t in in_flight if not t.done()}
             started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
             live_n = sum(1 for t in in_flight if _task_is_live(t))
@@ -1811,6 +1921,7 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                     in_flight=live_n,
                     soft_cap=soft_cap,
                     last_preempt_at=last_preempt_at,
+                    pipeline_active=_pipeline_active_now,
                 )
                 if not ok:
                     # F6a (2026-10-08): bounded reason-change logging — a
@@ -1868,6 +1979,7 @@ __all__ = [
     "saturator_may_launch",
     "saturator_preempt_n",
     "saturator_rate_preempt_n",
+    "saturator_pipeline_yield_preempt_n",
     "extract_saturator_contracts",
     "render_findings_record",
 ]

@@ -154,7 +154,7 @@ def test_precommit_repair_task_carries_symbol_domain_lock():
     assert "Symbol-domain lock" in prompt
     assert "policy.py:_refinement_prior_equity" in prompt
     assert "iter_decisions" in prompt
-    assert "Any edit to other symbols/functions will be rejected by review" in prompt
+    assert "minimal mechanical adaptation" in prompt
     assert "successive partial edits" in prompt
 
 
@@ -183,7 +183,7 @@ def test_quality_contract_repair_task_carries_symbol_domain_lock():
     prompt = task["worker_prompt"]
     assert "Symbol-domain lock" in prompt
     assert "policy.py:_refinement_prior_equity" in prompt
-    assert "Any edit to other symbols/functions will be rejected by review" in prompt
+    assert "minimal mechanical adaptation" in prompt
 
 
 def test_review_rework_fallback_prompt_carries_symbol_domain_lock():
@@ -229,7 +229,7 @@ def test_tool_eval_precommit_directive_interpolates_planned_symbols(monkeypatch)
     )
     assert "Symbol-domain lock" in clause
     assert "policy.py:_refinement_prior_equity" in clause
-    assert "Any edit to other symbols/functions will be rejected by review" in clause
+    assert "minimal mechanical adaptation" in clause
 
     # A missing matching checkpoint still renders the lock (fallback
     # wording), never an empty directive clause.

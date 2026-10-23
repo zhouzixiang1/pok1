@@ -656,13 +656,110 @@ def pipeline_pending_age_sec() -> float:
     return time.time() - _pipeline_first_pending_ts
 
 
-class _PipelinePrioritySemaphore:
-    """async-with semaphore wrapper that counts queue-pending pipeline demand.
+#: Pipeline LLM roles currently HOLDING a permit (streamming), not merely
+#: queued. Added 2026-10-23: the permit preemption protects the pipeline's
+#: local slot, but a GLM 1302 is an ACCOUNT-level rate budget shared with
+#: every concurrent fill stream — while pipeline streams are active, the
+#: saturator must keep its own concurrency low so the account's request
+#: rate has headroom (observed 19:29/19:44/20:00: yield window expired,
+#: fill refilled to 5+ concurrent streams, the refill wave re-tripped 1302
+#: and killed in-flight pipeline dispatches mid-ensemble).
+_pipeline_active: int = 0
+_pipeline_active_first_ts: "float | None" = None
+_pipeline_active_lock = threading.Lock()
 
-    Delegates to the shared FIFO semaphore; the ONLY behavioral addition is
-    the pending counter around the acquire, scoped exactly to the wait (the
-    retry loop acquires per attempt, so backoff sleeps between attempts do
-    not count as demand)."""
+#: A counter that never returns to 0 for longer than any possible role
+#: stream is a leaked counter; reconcile by hard reset (2026-10-23). Larger
+#: than every role TOTAL_TIMEOUT so a genuinely long stream never trips it.
+_PIPELINE_ACTIVE_STALE_SEC_DEFAULT = 3600.0
+
+
+def _pipeline_active_stale_sec() -> float:
+    try:
+        return max(
+            60.0,
+            float(
+                os.environ.get(
+                    "POK_LLM_PIPELINE_ACTIVE_STALE_SEC",
+                    str(_PIPELINE_ACTIVE_STALE_SEC_DEFAULT),
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return _PIPELINE_ACTIVE_STALE_SEC_DEFAULT
+
+
+def _note_pipeline_active(delta: int) -> None:
+    """Mirror of :func:`_note_pipeline_pending` for HELD permits.
+
+    Called from the wrapper's acquire/release paths under a threading lock:
+    the shared semaphore is a CrossLoopSemaphore used from private loops
+    and the ASGI loop, so the counter must be loop-agnostic (never an
+    asyncio primitive)."""
+    global _pipeline_active, _pipeline_active_first_ts
+    with _pipeline_active_lock:
+        _pipeline_active = max(0, _pipeline_active + delta)
+        if _pipeline_active > 0 and _pipeline_active_first_ts is None:
+            _pipeline_active_first_ts = time.time()
+        elif _pipeline_active == 0:
+            _pipeline_active_first_ts = None
+
+
+def pipeline_active_count() -> int:
+    """Pipeline LLM roles currently streaming (holding a permit).
+
+    Fail-safe against counter leaks in three layers: (1) every active
+    pipeline stream holds one permit, so the counter can never legitimately
+    exceed the semaphore's total holders — clamp to ``holders``; (2) zero
+    holders with a nonzero counter is a proven leak — hard reset; (3) a
+    counter stuck positive longer than ``POK_LLM_PIPELINE_ACTIVE_STALE_SEC``
+    (default 3600s, above every role timeout) is a leak — hard reset with a
+    system event. All resets fail toward 0 (fill lane reopens), the opposite
+    direction of the producer-priority guarantee this counter feeds."""
+    global _pipeline_active, _pipeline_active_first_ts
+    sem = _get_shared_semaphore()
+    with _pipeline_active_lock:
+        if sem is None:
+            if _pipeline_active:
+                _pipeline_active = 0
+                _pipeline_active_first_ts = None
+            return 0
+        holders = int(getattr(sem, "holders", 0) or 0)
+        if holders <= 0 and _pipeline_active > 0:
+            _pipeline_active = 0
+            _pipeline_active_first_ts = None
+            return 0
+        if _pipeline_active > holders:
+            _pipeline_active = holders
+        if (
+            _pipeline_active > 0
+            and _pipeline_active_first_ts is not None
+            and (time.time() - _pipeline_active_first_ts)
+            > _pipeline_active_stale_sec()
+        ):
+            _log.warning(
+                "pipeline_active counter stale for %.0fs; resetting to 0 "
+                "(leaked acquire without release)",
+                time.time() - _pipeline_active_first_ts,
+            )
+            _pipeline_active = 0
+            _pipeline_active_first_ts = None
+        return _pipeline_active
+
+
+class _PipelinePrioritySemaphore:
+    """async-with semaphore wrapper that counts pipeline demand two ways.
+
+    Delegates to the shared FIFO semaphore. Behavioral additions, both
+    scoped exactly to the permit: the PENDING counter around the acquire
+    wait (the retry loop acquires per attempt, so backoff sleeps between
+    attempts do not count as demand) and the ACTIVE counter across the held
+    span (acquire success -> release), so background fill can see when
+    pipeline streams are streaming and keep the account's request-rate
+    budget shared with them (2026-10-23). Pairing is exact under async-with
+    semantics: if ``acquire()`` raises, ``__aexit__`` never runs and the
+    active count was never taken; every exit path funnels through
+    ``release()``."""
 
     def __init__(self, sem: "CrossLoopSemaphore | asyncio.Semaphore") -> None:
         self._sem = sem
@@ -673,16 +770,19 @@ class _PipelinePrioritySemaphore:
             await self._sem.acquire()
         finally:
             _note_pipeline_pending(-1)
+        # Past the acquire: the permit is held from here until release().
+        _note_pipeline_active(1)
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
-        self._sem.release()
+        self.release()
         return False
 
     async def acquire(self) -> "_PipelinePrioritySemaphore":
         return await self.__aenter__()
 
     def release(self) -> None:
+        _note_pipeline_active(-1)
         self._sem.release()
 
     @property
