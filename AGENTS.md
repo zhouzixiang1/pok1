@@ -126,6 +126,19 @@ Restart decisions are governed by the exact active-stage contract in
 `web/core/evaluation_contract.py`, not broad directory names. See
 `docs/evolution-dual-checkout-sync-policy.md`.
 
+## Operator pause-deploy norm (2026-10-24, mandatory)
+
+任何会改变 `web/`、`sever/`、`scripts/`、`bots/`、`deploy/` 字节的操作（代码修复、提示词、契约路径、env 上限）都必须走完整的停机窗口，禁止在有活动 checkpoint 时中途部署：
+
+1. **先停机**：`sudo systemctl stop pok-evolution`；确认 `inactive`、无 claude/codex 子进程、并记录当前 checkpoint 阶段。
+2. **停机窗口内完成全部工作**，一次性提交推送并在运行时 `git pull --ff-only`。
+3. **启动前跑阶段契约预检**（必须 exit 0）：
+   `/home/ubuntu/pok1/.venv/bin/python scripts/check_stage_contract_predeploy.py`。
+   评分身份预检只覆盖 18 个 SEMANTIC_PATHS 文件；本脚本补另一半——用生产同款恢复判定检查活动 checkpoint 的按阶段契约路径（`_STAGE_EXACT`）。
+4. **启动并验证**：journal 出现 `Resuming vN at <stage>` 与首个路由行。
+
+约束依据（2026-10-24 00:38 事故实证，6h35m 屏障锁死 + ~206M token 空烧）：`HEAD_DRIFT_RESUME_POLICY` 中 `requires_contract_unchanged=True` 的阶段共 **12 个**（critic_checked、infra_timed_out、official_certifying、official_failed、precommit_failed、publishing、quality_failed、quality_passed、repair_planned、reviewed、rework_running、verified），远多于文档旧称的 publication 三阶段；同一部署对不同阶段后果不同（只改 `reviewer_prompt.md` 对 quality_passed 是契约变更→锁死，对 reviewed 不在集合→可续）。运行中的 orchestrator 可经 rework 转移刷新基线自愈，但部署伴随的重启会先以 `repo_baseline_head_mismatch` 拒绝 resume。若确需在敏感阶段变更：回退→续跑到 rework 转移（基线刷新）→再部署，或走规范性弃置；**绝不手改 checkpoint**。
+
 ## National TCP protocol
 
 - Platform is TCP server; each AI is a client. Default port is `10001`.
