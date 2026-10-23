@@ -708,6 +708,68 @@ def _checkpoint_master_plan(ckpt):
     return plan if isinstance(plan, dict) else {}
 
 
+def _planned_change_symbol_domain(ckpt):
+    """Selected change_symbol and its bound call sites from the plan (P0-A).
+
+    Production evidence (2026-10-20): precommit/quality repair workers kept
+    drifting outside the generation's planned change_symbol domain — v599's
+    repair worker modified three ``_bluff_allowed`` parameters unrelated to
+    its plan symbol (4 review rejections) and v600's deleted that function's
+    river-air branch (7 rejections + a quality-rework circuit breaker).  The
+    reviewers correctly reject with line precision; the worker directives
+    never named the allowed symbol domain.  Repair directives and worker
+    prompts interpolate this domain as a hard lock.
+
+    Returns ``(change_symbol, chain_text)`` where ``chain_text`` joins the
+    frozen proposal binding's reachable-chain call sites; both are empty
+    strings when the checkpoint carries no plan binding.
+    """
+    plan = _checkpoint_master_plan(ckpt)
+    binding = plan.get("proposal_binding")
+    if not isinstance(binding, dict):
+        return "", ""
+    change_symbol = str(binding.get("change_symbol") or "").strip()
+    raw_chain = binding.get("reachable_chain")
+    chain_items = []
+    if isinstance(raw_chain, list):
+        chain_items = [
+            str(item).strip() for item in raw_chain if str(item or "").strip()
+        ]
+    return change_symbol, ", ".join(chain_items)
+
+
+def _repair_symbol_domain_clause(ckpt):
+    """Hard symbol-domain lock clause for repair directives/prompts (P0-A).
+
+    Rendered from the generation's own frozen ``proposal_binding`` so the
+    repair worker (and the orchestrator-facing directive) see the exact
+    planned symbol.  When the binding is unavailable the lock still names the
+    rule without a symbol list — never silently omitted.
+    """
+    change_symbol, chain_text = _planned_change_symbol_domain(ckpt)
+    target = (
+        change_symbol
+        or (
+            "the generation's planned change_symbol (plan binding unavailable; "
+            "treat every other symbol as frozen)"
+        )
+    )
+    chain_note = (
+        f" Its verified direct call sites are: {chain_text}."
+        if chain_text
+        else ""
+    )
+    return (
+        "Symbol-domain lock (hard): only the planned change_symbol "
+        f"`{target}` and its direct call sites may be modified.{chain_note} "
+        "Any edit to other symbols/functions will be rejected by review. "
+        "If baseline semantics must be restored, restore the whole affected "
+        "function to its pre-change form first, then re-apply only the "
+        "change_symbol-related change; do NOT reconstruct a whole-function "
+        "restore through successive partial edits."
+    )
+
+
 def _canonical_tasks_digest(tasks):
     return hashlib.sha256(
         json.dumps(
@@ -1530,6 +1592,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
         f"Repair contract: quality_gate\n"
         f"- Target file: `{filename}`\n"
         f"- Evidence:\n{evidence}\n\n"
+        f"{_repair_symbol_domain_clause(ckpt)}\n\n"
         f"{reachability_guidance}"
         f"{role_guidance}"
         "Required method:\n"

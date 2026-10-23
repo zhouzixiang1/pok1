@@ -482,6 +482,25 @@ def _proposal_schema_repair_guidance(
                 "claimed by another direction in this ensemble."
             )
             break
+    # P0-B (2026-10-20): the hard ledger veto's renderer branch.  A rejection
+    # reason that never reaches the prompt text makes the single permitted
+    # repair blind, and this code must also outrank the generic pin-keep
+    # instruction when both appear (a pinned target that is ledger-recent is
+    # released — see the ensemble's _TARGET_INFEASIBLE_HINT_PREFIXES).
+    for item in hints:
+        if item.startswith("proposal_symbol_ledger_recent."):
+            add(
+                "The change_symbol "
+                + item.split(".", 1)[1]
+                + " was already targeted in >= 2 of the last 6 generation "
+                "attempts (recent directions ledger) and is hard-rejected "
+                "as a repetitive direction — no amount of re-evidence "
+                "unlocks it. Choose a DIFFERENT existing file.py:symbol from "
+                "the verified index that fits this direction's lens, and "
+                "avoid every symbol already claimed by another direction in "
+                "this ensemble."
+            )
+            break
     for item in hints:
         if item.startswith("proposal_cited_sample_too_small"):
             # Contract change 2026-09-13: the rejection token now carries the
@@ -1577,6 +1596,40 @@ def _parse_master_proposal_output_with_mode(
     return parsed, _PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE
 
 
+def _ledger_recent_change_symbol_error(
+    change_symbol: object,
+    recent_counts: "dict[str, int] | None",
+) -> "str | None":
+    """Hard proposal-stage mirror of the master-plan-audit ledger veto (P0-B).
+
+    Exact parity with ``audit_agents._run_master_plan_audit``'s
+    deterministic repetitive-direction override:
+
+    - audit: ``_counts = recent_symbol_counts(6, exclude_version=int(next_v))``;
+      ``_seen = _counts.get(_selected_symbol, 0)``; fires when
+      ``_selected_symbol and _seen >= 2``.
+    - here: same counting helper (``recent_directions.recent_symbol_counts``,
+      window 6, ``exclude_version=next_v`` supplied by the caller that owns
+      the version identity), same ``>= 2`` threshold, same no-fire on an
+      empty symbol.  The audit rule has NO pin/unpin exception of its own
+      (its whole check is a fail-open ``try/except``); ``recent_counts=None``
+      reproduces that fail-open posture for callers without a ledger view,
+      and the counting helper itself never raises (unreadable logs count 0).
+
+    Front-loading this veto to the proposal-validation stage lets the
+    bounded schema-retry machinery pivot the scout to a different symbol
+    WITHIN the same generation instead of burning a full Master+audit cycle
+    (7/28 generation deaths) at ``master_plan_audit``.
+    """
+    symbol = str(change_symbol or "").strip()
+    if not symbol or recent_counts is None:
+        return None
+    seen = int(recent_counts.get(symbol, 0) or 0)
+    if seen >= 2:
+        return f"proposal_symbol_ledger_recent.{symbol}"
+    return None
+
+
 def _validated_master_proposal(
     output: str,
     direction: str,
@@ -1592,6 +1645,7 @@ def _validated_master_proposal(
     enforce_bindability: bool = True,
     allowed_primaries: tuple[str, ...] | None = None,
     actual_role: str | None = None,
+    recent_symbol_counts: "dict[str, int] | None" = None,
 ) -> dict | None:
     """Normalize one evidence-bound proposal before critics or Master see it."""
     allowed_primaries = _canonical_proposal_primaries(allowed_primaries)
@@ -1684,6 +1738,15 @@ def _validated_master_proposal(
     if change_symbol.rsplit(":", 1)[0] not in target_files:
         return None
     normalized["change_symbol"] = change_symbol
+
+    # P0-B hard ledger veto (see _ledger_recent_change_symbol_error): exact
+    # mirror of the audit's repetitive-direction rule, fired per proposal so
+    # the schema-retry machinery can pivot the scout inside this generation.
+    if (
+        _ledger_recent_change_symbol_error(change_symbol, recent_symbol_counts)
+        is not None
+    ):
+        return None
 
     raw_chain = data.get("reachable_chain")
     if not isinstance(raw_chain, list) or not 2 <= len(raw_chain) <= 8:
@@ -1898,6 +1961,7 @@ def _master_proposal_projection_hints(
     require_snapshot_evidence: bool = False,
     evidence_mode: str | None = None,
     allowed_primaries: tuple[str, ...] | None = None,
+    recent_symbol_counts: "dict[str, int] | None" = None,
 ) -> list[str]:
     """Return stable field-level hints without weakening proposal validation.
 
@@ -1990,6 +2054,13 @@ def _master_proposal_projection_hints(
     else:
         if change_symbol.rsplit(":", 1)[0] not in target_files:
             errors.append("proposal_change_symbol_not_in_target_files")
+        # P0-B: expose the hard ledger veto as its own rejection code so the
+        # schema-repair prompt can tell the scout to pivot to a fresh symbol.
+        ledger_error = _ledger_recent_change_symbol_error(
+            change_symbol, recent_symbol_counts
+        )
+        if ledger_error is not None:
+            errors.append(ledger_error)
 
     raw_chain = data.get("reachable_chain")
     chain: list[str] = []
@@ -2206,6 +2277,7 @@ def _master_proposal_projection_hints(
         evidence_mode=evidence_mode,
         enforce_bindability=False,
         allowed_primaries=allowed_primaries,
+        recent_symbol_counts=recent_symbol_counts,
     )
     if isinstance(budget_probe, dict):
         bindability_error = _proposal_worker_bindability_error(budget_probe)
@@ -2225,6 +2297,7 @@ def _proposal_contract_invalid_detail_hints(
     allowed_primaries: tuple[str, ...] | None = None,
     expected_measurement_target: str | None = None,
     forbidden_measurement_target: str | None = None,
+    recent_symbol_counts: "dict[str, int] | None" = None,
     max_details: int = 3,
 ) -> list[str]:
     """Concrete field-level codes behind the generic ``proposal_contract_invalid`` fallback.
@@ -2256,6 +2329,7 @@ def _proposal_contract_invalid_detail_hints(
         require_snapshot_evidence=require_snapshot_evidence,
         evidence_mode=evidence_mode,
         allowed_primaries=allowed_primaries,
+        recent_symbol_counts=recent_symbol_counts,
     )
     data, _mode = parse_json_output_with_mode(output or "")
     if not isinstance(data, dict):

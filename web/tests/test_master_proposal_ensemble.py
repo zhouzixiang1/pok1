@@ -4645,3 +4645,252 @@ def test_local_rate_identifier_not_bound_as_foreign_rate_alias(tmp_path):
     assert not any(
         item.startswith("proposal_mechanism_foreign_targets") for item in errors
     ), errors
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# P0-B (2026-10-20): hard proposal-stage recent-directions ledger veto.
+# Exact mirror of audit_agents' repetitive-direction override —
+# recent_symbol_counts(6, exclude_version=next_v) fires at >= 2 — moved to
+# proposal validation so the bounded schema-retry machinery pivots the scout
+# inside the same generation instead of burning a Master+audit cycle.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _proposal_with_symbol(
+    direction: str,
+    symbol: str,
+    *,
+    snapshot: bool = False,
+    fresh: bool = False,
+) -> str:
+    """A valid proposal for ``direction`` retargeted onto ``symbol``."""
+    payload = json.loads(_raw_proposal(direction, snapshot=snapshot, fresh=fresh))
+    leaf = symbol.rsplit(":", 1)[1]
+    payload["source_symbols"] = [
+        "policy.py:get_baseline_decision",
+        symbol,
+    ]
+    payload["change_symbol"] = symbol
+    payload["reachable_chain"] = ["policy.py:get_baseline_decision", symbol]
+    payload["evidence_refs"] = [
+        "source:policy.py:get_baseline_decision",
+        f"source:{symbol}",
+    ]
+    if snapshot:
+        payload["evidence_refs"].append(
+            "snapshot:head_to_head.json#/"
+            f"{bot_name(STRICT_TARGET_V)} vs {bot_name(STRICT_TARGET_V + 1)}"
+        )
+        payload["evidence_refs"].append(
+            f"snapshot:bot_stats.json#/{bot_name(STRICT_SOURCE_V)}"
+        )
+    payload["expected_diff"] = (
+        f"{direction} changes get_baseline_decision through the existing "
+        f"{leaf} call edge before the deadline."
+    )
+    return "```json\n" + json.dumps(payload) + "\n```"
+
+
+def _validator_kwargs(tmp_path, monkeypatch):
+    """Shared validator inputs: a real source graph over the shared source."""
+    import agent_master
+
+    source_dir = tmp_path / "national_v143"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    return {"source_graph": graph, "national_policy_only": True}
+
+
+def test_ledger_recent_symbol_rejected_with_new_error_code(
+    monkeypatch, tmp_path
+):
+    import agent_master
+
+    kwargs = _validator_kwargs(tmp_path, monkeypatch)
+    ledger = {"policy.py:_choose_intent_mechanism": 2}
+
+    rejected = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        recent_symbol_counts=ledger,
+        **kwargs,
+    )
+    assert rejected is None
+    hints = agent_master._master_proposal_projection_hints(
+        _proposal("mechanism"),
+        recent_symbol_counts=ledger,
+        **kwargs,
+    )
+    assert (
+        "proposal_symbol_ledger_recent.policy.py:_choose_intent_mechanism"
+        in hints
+    )
+
+
+def test_ledger_fresh_symbol_and_null_counts_pass(monkeypatch, tmp_path):
+    import agent_master
+
+    kwargs = _validator_kwargs(tmp_path, monkeypatch)
+    ledger = {"policy.py:_choose_intent_mechanism": 2}
+
+    # A fresh symbol (including one held by this direction's own registered
+    # schema-retry pin — pins are only ever registered on ledger-clean
+    # symbols because the ledger code releases the pin) passes the veto.
+    fresh = agent_master._validated_master_proposal(
+        _proposal_with_symbol("mechanism", "policy.py:_choose_intent"),
+        "mechanism",
+        recent_symbol_counts=ledger,
+        **kwargs,
+    )
+    assert fresh is not None
+    assert fresh["change_symbol"] == "policy.py:_choose_intent"
+    assert not any(
+        str(item).startswith("proposal_symbol_ledger_recent")
+        for item in agent_master._master_proposal_projection_hints(
+            _proposal_with_symbol("mechanism", "policy.py:_choose_intent"),
+            recent_symbol_counts=ledger,
+            **kwargs,
+        )
+    )
+    # counts=None reproduces the audit's fail-open except: pass — callers
+    # without a ledger view never veto.
+    fail_open = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        recent_symbol_counts=None,
+        **kwargs,
+    )
+    assert fail_open is not None
+    # A 1-of-6 entry does not fire (>= 2 threshold, same as the audit).
+    single = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        recent_symbol_counts={"policy.py:_choose_intent_mechanism": 1},
+        **kwargs,
+    )
+    assert single is not None
+
+
+def test_ledger_veto_repair_guidance_rendered(monkeypatch):
+    import agent_master
+
+    guidance = agent_master._proposal_schema_repair_guidance(
+        ["proposal_symbol_ledger_recent.policy.py:_bluff_allowed"],
+        require_snapshot_evidence=False,
+    )
+    assert "policy.py:_bluff_allowed" in guidance
+    assert ">= 2 of the last 6 generation attempts" in guidance
+    assert "DIFFERENT existing file.py:symbol" in guidance
+
+
+@pytest.mark.asyncio
+async def test_ledger_recent_symbol_pivots_within_generation(
+    monkeypatch, tmp_path
+):
+    """End to end: a ledger-recent symbol is rejected at the proposal stage,
+    the pin is released (unpin token, not keep-symbol), and the schema retry
+    pivots to a fresh symbol so the packet still lands 3/3 proposals."""
+    import agent_master
+    import recent_directions
+
+    source_dir = tmp_path / "national_v143"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    monkeypatch.setattr(
+        recent_directions,
+        "recent_symbol_counts",
+        lambda *_args, **_kwargs: {"policy.py:_choose_intent_mechanism": 2},
+    )
+    retry_prompts: list[str] = []
+
+    async def fake_query(
+        prompt, _ctx, _ui, role_name, _log_file, tools=None, **kwargs
+    ):
+        if role_name.startswith("MASTER PROPOSAL CRITIC"):
+            ids = list(dict.fromkeys(re.findall(
+                r'"proposal_id":"([0-9a-f]{16})"', prompt
+            )))
+            return (
+                _critic_output(agent_master, ids),
+                0.0,
+                {},
+            )
+        if "SCHEMA RETRY" in role_name:
+            retry_prompts.append(prompt)
+            return (
+                _proposal_with_symbol(
+                    "mechanism", "policy.py:_choose_intent", snapshot=True
+                ),
+                0.0,
+                {},
+            )
+        direction = role_name.split("PROPOSAL ", 1)[1].split()[0]
+        return _proposal(direction, snapshot=True), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    packet_text = await agent_master._run_master_proposal_ensemble(
+        "frozen planning context",
+        source_v=STRICT_TARGET_V,
+        next_v=149,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+    )
+    packet = json.loads(packet_text)
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    accepted_symbols = {
+        proposal["change_symbol"] for proposal in packet["ordered_proposals"]
+    }
+    # The ledger-recent symbol never survives to the packet; the retry
+    # pivoted to a fresh symbol instead of dying at master_plan_audit.
+    assert "policy.py:_choose_intent_mechanism" not in accepted_symbols
+    assert "policy.py:_choose_intent" in accepted_symbols
+    # The ledger veto was surfaced to the scout with actionable guidance…
+    assert retry_prompts, "the ledger-rejected direction must get a retry"
+    assert any(
+        ">= 2 of the last 6 generation attempts" in prompt
+        and "policy.py:_choose_intent_mechanism" in prompt
+        for prompt in retry_prompts
+    )
+    # …and the pin was RELEASED (unpin token), not kept: a pinned retry on a
+    # ledger-recent symbol could only reproduce the same deterministic
+    # rejection.
+    assert not any(
+        "Keep change_symbol exactly policy.py:_choose_intent_mechanism" in prompt
+        for prompt in retry_prompts
+    )
+    assert any(
+        "choose a NEW change_symbol" in prompt for prompt in retry_prompts
+    )
+
+
+def test_recent_directions_avoid_set_rendering(monkeypatch):
+    """P0-B context front-load: only >= 2-of-6 symbols render, bounded."""
+    import agent_master
+    import recent_directions
+
+    monkeypatch.setattr(
+        recent_directions,
+        "recent_symbol_counts",
+        lambda *_args, **_kwargs: {
+            "policy.py:_bluff_allowed": 2,
+            "policy.py:_fresh_symbol": 1,
+            "policy.py:_decision_from_equity": 3,
+        },
+    )
+    rendered = agent_master._recent_directions_avoid_set(149)
+    assert "policy.py:_bluff_allowed" in rendered
+    assert "policy.py:_decision_from_equity" in rendered
+    assert "policy.py:_fresh_symbol" not in rendered
+    assert "proposal_symbol_ledger_recent" in rendered
+    assert len(rendered) <= 1500
+
+    monkeypatch.setattr(
+        recent_directions,
+        "recent_symbol_counts",
+        lambda *_args, **_kwargs: {},
+    )
+    assert agent_master._recent_directions_avoid_set(149) == ""

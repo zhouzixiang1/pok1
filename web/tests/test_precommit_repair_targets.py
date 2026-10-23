@@ -108,3 +108,131 @@ def test_compatibility_flag_cannot_expand_policy_write_scope():
         ["national_bot.py", "precompute.py", "policy.py", "helper.py"],
         allow_protocol_files=True,
     ) == ["policy.py"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# P0-A (2026-10-20): repair-worker symbol-domain lock.  Production
+# evidence: v599's repair worker modified three ``_bluff_allowed``
+# parameters unrelated to its plan symbol (4 review rejections); v600's
+# deleted that function's river-air branch (7 rejections + circuit
+# breaker).  Every repair surface — the orchestrator-facing precommit
+# directive, the precommit repair worker prompt, the quality-contract
+# repair prompt, and the review-rework fallback prompt — must carry the
+# hard lock interpolated from the checkpoint's frozen proposal binding.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _plan_binding_checkpoint():
+    checkpoint = _checkpoint()
+    checkpoint["master_plan"] = {
+        "proposal_binding": {
+            "change_symbol": "policy.py:_refinement_prior_equity",
+            "reachable_chain": [
+                "policy.py:iter_decisions",
+                "policy.py:_refinement_prior_equity",
+            ],
+        }
+    }
+    return checkpoint
+
+
+def test_planned_change_symbol_domain_extracts_binding():
+    checkpoint = _plan_binding_checkpoint()
+    assert tool_planning._planned_change_symbol_domain(checkpoint) == (
+        "policy.py:_refinement_prior_equity",
+        "policy.py:iter_decisions, policy.py:_refinement_prior_equity",
+    )
+    # No plan / no binding degrades to empty, never to a fabricated symbol.
+    assert tool_planning._planned_change_symbol_domain(_checkpoint()) == ("", "")
+
+
+def test_precommit_repair_task_carries_symbol_domain_lock():
+    checkpoint = _plan_binding_checkpoint()
+    feedback = checkpoint["gate_results"]["precommit_eval"]["directive"]
+    task = tool_planning._precommit_repair_task("policy.py", checkpoint, feedback)
+    prompt = task["worker_prompt"]
+    assert "Symbol-domain lock" in prompt
+    assert "policy.py:_refinement_prior_equity" in prompt
+    assert "iter_decisions" in prompt
+    assert "Any edit to other symbols/functions will be rejected by review" in prompt
+    assert "successive partial edits" in prompt
+
+
+def test_precommit_repair_task_symbol_lock_survives_missing_plan():
+    feedback = _checkpoint()["gate_results"]["precommit_eval"]["directive"]
+    task = tool_planning._precommit_repair_task(
+        "policy.py", _checkpoint(), feedback
+    )
+    # The lock still names the rule when the plan binding is unavailable.
+    assert "Symbol-domain lock" in task["worker_prompt"]
+    assert "plan binding unavailable" in task["worker_prompt"]
+
+
+def test_quality_contract_repair_task_carries_symbol_domain_lock():
+    checkpoint = _plan_binding_checkpoint()
+    checkpoint["stage"] = "quality_failed"
+    contract = {
+        "blocker": "quality_gate",
+        "file": "policy.py",
+        "evidence": "reviewer rejected an unrelated three-parameter edit",
+    }
+    preservation = "This is a gate repair for bots/national_cloud_v{next_v}."
+    task = tool_planning._quality_contract_task(
+        contract, checkpoint, preservation, "quality_repair"
+    )
+    prompt = task["worker_prompt"]
+    assert "Symbol-domain lock" in prompt
+    assert "policy.py:_refinement_prior_equity" in prompt
+    assert "Any edit to other symbols/functions will be rejected by review" in prompt
+
+
+def test_review_rework_fallback_prompt_carries_symbol_domain_lock():
+    checkpoint = _plan_binding_checkpoint()
+    checkpoint["stage"] = "repair_planned"
+    checkpoint["reviewer_feedback"] = (
+        "Rejected: the candidate edited _bluff_allowed outside its planned "
+        "change_symbol; restore the planned scope."
+    )
+    checkpoint["gate_results"]["review"] = {
+        "passed": False,
+        "approved": False,
+        "feedback": checkpoint["reviewer_feedback"],
+    }
+    tasks = tool_planning._synthesize_rework_tasks_from_checkpoint(
+        checkpoint, checkpoint["reviewer_feedback"]
+    )
+    assert tasks, "review rework must synthesize a repair task"
+    prompts = [str(task.get("worker_prompt") or "") for task in tasks]
+    assert any(
+        "Symbol-domain lock" in prompt
+        and "policy.py:_refinement_prior_equity" in prompt
+        for prompt in prompts
+    )
+
+
+def test_tool_eval_precommit_directive_interpolates_planned_symbols(monkeypatch):
+    import tool_eval
+
+    checkpoint = _plan_binding_checkpoint()
+    monkeypatch.setattr(
+        tool_eval,
+        "_matching_checkpoint",
+        lambda version, source_v=None: (
+            checkpoint
+            if version == checkpoint["next_v"]
+            and source_v == checkpoint["source_v"]
+            else None
+        ),
+    )
+    clause = tool_eval._precommit_repair_symbol_domain_clause(
+        checkpoint["next_v"], checkpoint["source_v"]
+    )
+    assert "Symbol-domain lock" in clause
+    assert "policy.py:_refinement_prior_equity" in clause
+    assert "Any edit to other symbols/functions will be rejected by review" in clause
+
+    # A missing matching checkpoint still renders the lock (fallback
+    # wording), never an empty directive clause.
+    fallback = tool_eval._precommit_repair_symbol_domain_clause(999, 998)
+    assert "Symbol-domain lock" in fallback
+    assert "plan binding unavailable" in fallback

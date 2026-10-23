@@ -67,17 +67,31 @@ _log = logging.getLogger("pok.master")
 # prompt token) instead of burning the single permitted retry on a re-fail.
 # Matching is exact-prefix so sibling codes that merely share the
 # ``proposal_mechanism_target_`` stem (e.g. ``proposal_mechanism_target_mismatch``)
-# do NOT unpin — only these three classes prove the target shape itself cannot
+# do NOT unpin — only these classes prove the target shape itself cannot
 # satisfy the contract.  The bare ``proposal_mechanism_target_invalid`` was
 # removed (2026-09-13): it is the scalar mechanism_target spelling check,
 # unrelated to the pinned change_symbol's shape, so unpinning the change_symbol
 # on it produced a misleading "pick a NEW target" instruction while the actual
 # repair is to re-spell mechanism_target in place.
+# P0-B (2026-10-20): ``proposal_symbol_ledger_recent.`` joins this family.
+# It is not a mechanism-shape code, but it proves exactly the same thing
+# about the pinned target — a deterministic, target-specific veto that a
+# retry pinned to that symbol can only reproduce.  Releasing the pin lets
+# the scout pivot to a fresh symbol WITHIN the same generation instead of
+# dying at the post-hoc master_plan_audit (7/28 generation deaths).
 _TARGET_INFEASIBLE_HINT_PREFIXES = (
     "proposal_mechanism_target_missing_from_executable_fields",
     "proposal_mechanism_qualified_target_identifier_continuation",
     "proposal_mechanism_root_scoped_unknown_leaf",
+    "proposal_symbol_ledger_recent.",
 )
+
+# P0-B (2026-10-20): the proposal-stage ledger veto token.  A rescue-round
+# attempt whose fresh hints carry this prefix died on a deterministic
+# symbol-specific guard (the same guaranteed-death shape as the v576
+# symbol-policy classes below), so its rejected symbol is forced into the
+# rescue avoid set instead of being re-proposed.
+_LEDGER_RECENT_HINT_PREFIX = "proposal_symbol_ledger_recent."
 
 # v449-v452 pass-rate fix (2026-09-13): each direction previously owned
 # exactly ONE schema/distinctness retry, so a retry that fixed the original
@@ -170,6 +184,20 @@ async def _run_master_proposal_ensemble(
     if protocol_bootstrap_prepared_only and singleton_no_strength:
         raise ValueError("Master proposal planning mode is ambiguous")
     allowed_primaries = _am._canonical_proposal_primaries(allowed_primaries)
+
+    # P0-B (2026-10-20): the shared recent-directions ledger view for the
+    # hard proposal-stage veto — the exact same counting helper, window, and
+    # exclude_version the post-hoc master_plan_audit uses (audit_agents:
+    # recent_symbol_counts(6, exclude_version=int(next_v)), fire at >= 2),
+    # computed once so every direction/attempt grades against one frozen
+    # view.  Fail-open to None (check disabled) exactly like the audit's
+    # try/except when the ledger cannot be read.
+    try:
+        from recent_directions import recent_symbol_counts as _rd_counts
+
+        ledger_recent_counts = _rd_counts(6, exclude_version=int(next_v))
+    except Exception:
+        ledger_recent_counts = None
 
     context_digest = hashlib.sha256(planning_context.encode("utf-8")).hexdigest()
     try:
@@ -493,6 +521,7 @@ async def _run_master_proposal_ensemble(
             forbidden_measurement_target=(
                 _am.bot_name(int(next_v)) if require_snapshot_evidence else None
             ),
+            recent_symbol_counts=ledger_recent_counts,
         )
         return ["proposal_contract_invalid", *details]
 
@@ -532,6 +561,7 @@ async def _run_master_proposal_ensemble(
             ),
             allowed_primaries=allowed_primaries,
             actual_role=proposal_actual_role(result),
+            recent_symbol_counts=ledger_recent_counts,
         )
         if proposal is None:
             repair = {"kind": "schema"}
@@ -551,6 +581,7 @@ async def _run_master_proposal_ensemble(
                     require_snapshot_evidence=require_snapshot_evidence,
                     evidence_mode=evidence_mode,
                     allowed_primaries=allowed_primaries,
+                    recent_symbol_counts=ledger_recent_counts,
                 )
                 or _contract_invalid_fallback_hints(output)
             )
@@ -788,6 +819,7 @@ async def _run_master_proposal_ensemble(
                     ),
                     allowed_primaries=allowed_primaries,
                     actual_role=proposal_actual_role(result),
+                    recent_symbol_counts=ledger_recent_counts,
                 )
                 if proposal is None:
                     primary_hints = _am._master_proposal_projection_hints(
@@ -798,6 +830,7 @@ async def _run_master_proposal_ensemble(
                         require_snapshot_evidence=require_snapshot_evidence,
                         evidence_mode=evidence_mode,
                         allowed_primaries=allowed_primaries,
+                        recent_symbol_counts=ledger_recent_counts,
                     )
                     fresh_hints = (
                         list(primary_hints)
@@ -1147,10 +1180,14 @@ async def _run_master_proposal_ensemble(
             # not on field-level schema shape.  Its output symbol is not
             # "innocent": re-proposing it is guaranteed death at the same
             # guard on the rescue attempt, so it must be avoided below.
+            # P0-B: the hard ledger veto token is the same guaranteed-death
+            # shape — the symbol is vetoed by the ledger, not by fixable
+            # prose — so it joins the forced-avoid extraction.
             symbol_policy_failure_symbol = (
                 _resolve_output_change_symbol(failed_output)
                 if any(
                     str(hint).startswith(_SYMBOL_POLICY_FAILURE_PREFIXES)
+                    or str(hint).startswith(_LEDGER_RECENT_HINT_PREFIX)
                     for hint in (fresh_hints or ())
                 )
                 else ""

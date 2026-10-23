@@ -98,6 +98,7 @@ from agent_master_validation import (  # noqa: F401
     _canonical_provider_worker_prompt,
     _canonicalize_selected_proposal_metadata,
     _fuzzy_resolve_symbol,
+    _ledger_recent_change_symbol_error,
     _master_final_emission_guard,
     _master_proposal_projection_hints,
     _master_proposal_repair_kind,
@@ -176,6 +177,50 @@ async def _run_master_proposal_ensemble(
         strict_checkpoint=strict_checkpoint,
         allowed_primaries=allowed_primaries,
     )
+
+
+def _recent_directions_avoid_set(next_v: int) -> str:
+    """Compact ledger-derived hard avoid list for proposal scouts (P0-B).
+
+    The advisory RECENT DIRECTIONS prose is appended LAST to the 10k
+    match-analysis budget (``_recent_directions_block`` in
+    generation_scheduler) and is the first casualty of the head-keeping
+    trim, so scouts never saw the symbols the audit's repetitive-direction
+    veto would kill — the rejection then burned a full Master+audit cycle
+    (7/28 generation deaths).  This block renders exactly the ledger's
+    >= 2-of-last-6 symbols as an EARLY, non-truncatable section of the
+    proposal planning context, using the same counting helper and window as
+    the audit (``recent_directions.recent_symbol_counts(6,
+    exclude_version=next_v)``).  Fail-open: no ledger rows (fresh checkout,
+    bootstrap, unreadable logs) render an empty string and the hard
+    proposal-validation gate stays the authority.  Size is structurally
+    bounded: the 6-generation window admits at most three >= 2-count
+    symbols; the render is additionally capped at 1500 chars.
+    """
+    try:
+        from recent_directions import recent_symbol_counts
+
+        counts = recent_symbol_counts(6, exclude_version=int(next_v))
+    except Exception:
+        return ""
+    avoid = [
+        f"{symbol} ({seen}x)"
+        for symbol, seen in sorted(
+            counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0]))
+        )
+        if int(seen) >= 2
+    ]
+    if not avoid:
+        return ""
+    return (
+        "HARD AVOID SET (deterministic recent-directions ledger; same rule "
+        "as the master plan audit): these change symbols were already "
+        "targeted in >= 2 of the last 6 generation attempts. A proposal "
+        "naming one of them as change_symbol is hard-rejected with "
+        "proposal_symbol_ledger_recent before selection — pick a "
+        "structurally different existing policy.py symbol instead: "
+        + "; ".join(avoid)
+    )[:1500]
 
 
 def _line_budget_summary(bot_v: int, *, baseline_label: str = "source") -> str:
@@ -783,6 +828,16 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             "authority beyond the final scout capability block.",
         ),
         ("Generation and runtime contract", master_ctx),
+        # P0-B (2026-10-20): compact, early, non-truncatable ledger avoid set.
+        # The advisory RECENT DIRECTIONS prose sits at the tail of the 10k
+        # match-analysis budget below and is the first thing the head-keeping
+        # trim drops; this section keeps the hard constraint visible to every
+        # scout regardless of that truncation.  Rendered only when the ledger
+        # actually holds >= 2-of-6 symbols, so an empty pool adds nothing.
+        (
+            "Recent-direction avoid set (hard gate)",
+            _recent_directions_avoid_set(int(next_v)),
+        ),
         ("Stagnation diagnosis", stagnation_info),
         ("Match analysis", match_analysis_trimmed),
         ("Performance verification", perf_trimmed),

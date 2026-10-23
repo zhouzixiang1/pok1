@@ -1256,6 +1256,27 @@ def _build_pool_gate_spec(opponents, *, first_strict: bool) -> tuple[dict | None
     return spec, None
 
 
+def _precommit_repair_symbol_domain_clause(v, source_v):
+    """P0-A (2026-10-20): lock the precommit repair to the planned symbols.
+
+    Repair workers kept drifting outside the generation's planned
+    change_symbol set (v599 edited three unrelated ``_bluff_allowed``
+    parameters, v600 deleted its river-air branch), burning review
+    rejection after review rejection.  The clause is interpolated from the
+    live checkpoint's frozen ``proposal_binding``; ledger/checkpoint read
+    failures degrade to an empty string, never to a fabricated symbol.
+    """
+    ckpt = _matching_checkpoint(v, source_v) or {}
+    try:
+        from tool_planning_quality_contracts import (
+            _repair_symbol_domain_clause,
+        )
+
+        return _repair_symbol_domain_clause(ckpt)
+    except Exception:
+        return ""
+
+
 async def _run_national_precommit_backend(
     *,
     v: int,
@@ -2031,12 +2052,16 @@ async def _run_national_precommit_backend(
                 reason="first_strict_control_regression",
             )
         else:
+            _symbol_domain_clause = _precommit_repair_symbol_domain_clause(
+                v, source_v
+            )
             result["directive"] = (
                 f"National precommit FAILED (attempt {precommit_attempt}/{MAX_PRECOMMIT_RETRIES}, "
                 f"seed round {precommit_seed_round}/{PRECOMMIT_SEED_ROUNDS_MAX}) — "
                 f"the final gate now uses {'native TCP ' if native_tcp_mode else ''}national 70-hand rules, not local mirror battle. "
                 f"Do NOT call run_precommit_eval again on unchanged code. Rework the bot against "
                 f"{worst_opponent} ({worst_wins}W-{worst_losses}L) and the listed blockers. "
+                f"{_symbol_domain_clause} "
                 "A repaired candidate is re-sampled exactly once with a fresh independent "
                 "deck seed under the same unchanged gates (pre-registered; no retry-until-pass)."
             )

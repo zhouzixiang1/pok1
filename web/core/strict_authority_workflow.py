@@ -1290,6 +1290,18 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
             raise StrictAuthorityError(
                 "strict_authority_projection_source_digest_mismatch"
             )
+        # P0-B (2026-10-20): same recent-directions ledger view as the
+        # ensemble and the master plan audit (recent_symbol_counts(6,
+        # exclude_version=next_v), fire at >= 2); fail-open to None when the
+        # ledger cannot be read, exactly like the audit's try/except.
+        try:
+            from recent_directions import recent_symbol_counts as _rd_counts
+
+            ledger_recent_counts = _rd_counts(
+                6, exclude_version=int(binding.get("next_v"))
+            )
+        except Exception:
+            ledger_recent_counts = None
         evidence_mode = str(
             context.get("evidence_mode")
             or "fresh_strict_control_no_strength"
@@ -1323,6 +1335,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
             forbidden_measurement_target=None,
             allowed_primaries=allowed_primaries,
             actual_role=str(call.get("actual_role") or ""),
+            recent_symbol_counts=ledger_recent_counts,
         )
         if not isinstance(projected, dict):
             hints = _master_proposal_projection_hints(
@@ -1336,6 +1349,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                 national_policy_only=True,
                 evidence_mode=evidence_mode,
                 allowed_primaries=allowed_primaries,
+                recent_symbol_counts=ledger_recent_counts,
             )
             if not hints:
                 # v450 pass-rate fix: the bare generic token gave the durable
@@ -1357,6 +1371,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                         evidence_mode=evidence_mode,
                         allowed_primaries=allowed_primaries,
                         expected_measurement_target=expected_measurement_target,
+                        recent_symbol_counts=ledger_recent_counts,
                     ),
                 ]
             projection_detail_errors = [
