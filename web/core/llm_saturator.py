@@ -968,6 +968,93 @@ def _saturator_provider_paused() -> bool:
     return _saturator_pause_remaining_sec() > 0.0
 
 
+# --- Pipeline rate-budget priority (2026-10-23) -----------------------------
+#
+# Permit preemption (below) protects the pipeline's LOCAL semaphore slot; a
+# GLM 1302-class failure is an ACCOUNT-level rate budget shared with every
+# in-flight fill stream. The fill lane's own local pause is capped at 30s
+# while the pipeline's durable cooldown walks 8→120s, so under sustained
+# frequency pressure the saturator relaunches first, re-trips the account
+# ceiling, and the pipeline's retry dies mid-ensemble again (observed
+# 2026-10-23 18:46–19:08: three master attempts, ~2M scout tokens each,
+# every one killed by a mid-stream 1302 while saturator packets kept
+# landing between them). The durable availability pause is the right
+# signal: saturator dispatches are exempt from persisting it (2026-10-18
+# amplifier fix), so an ACTIVE ``service_unavailable`` episode means a
+# PIPELINE role just died on provider frequency pressure — the fill lane
+# stands down until the pause clears plus a grace window, and clears its
+# in-flight packets once per episode so the pipeline retry dispatches into
+# a quiet account.
+
+_PIPELINE_RATE_YIELD_GRACE_DEFAULT_SEC = 90.0
+_RATE_PAUSE_POLL_INTERVAL_SEC = 2.0
+_pipeline_rate_yield_until: float = 0.0
+_last_rate_pause_poll_ts: float = 0.0
+_last_rate_pause_poll: "dict | None" = None
+
+
+def _pipeline_rate_yield_grace_sec() -> float:
+    try:
+        return max(
+            0.0,
+            float(
+                os.environ.get(
+                    "POK_LLM_SATURATOR_PIPELINE_RATE_YIELD_SEC",
+                    str(_PIPELINE_RATE_YIELD_GRACE_DEFAULT_SEC),
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return _PIPELINE_RATE_YIELD_GRACE_DEFAULT_SEC
+
+
+def _pipeline_rate_block_state(pause: "dict | None") -> "tuple[bool, float]":
+    """Pure view: is the durable pause an ACTIVE frequency-class episode?
+
+    Returns ``(blocked, auto_resume_epoch_sec)``. Only ``service_unavailable``
+    (GLM 1302 / bare-429 frequency pressure) counts: a confirmed 1308 quota
+    window already carries its own long saturator stand-down in
+    ``_note_saturator_provider_failure`` and must not be double-handled. An
+    unparseable/missing resume timestamp stays blocked with ``0.0`` — the
+    caller's yield floor still applies.
+    """
+    if not isinstance(pause, dict) or not pause.get("active"):
+        return False, 0.0
+    if pause.get("category") != "service_unavailable":
+        return False, 0.0
+    resume_ts = 0.0
+    raw = pause.get("auto_resume_at")
+    if isinstance(raw, str) and raw:
+        try:
+            import datetime as _dt
+
+            resume_ts = _dt.datetime.fromisoformat(raw).timestamp()
+        except ValueError:
+            resume_ts = 0.0
+    return True, resume_ts
+
+
+def _poll_pipeline_rate_block() -> "tuple[bool, float]":
+    """Throttled read of the durable pause store for the rate-block view.
+
+    The store read takes a file lock shared with every persist site, so the
+    loop polls at most once per ``_RATE_PAUSE_POLL_INTERVAL_SEC`` and caches
+    the projection between polls; any read failure reads as "not blocked"
+    (fail-open keeps a broken store from idling the fill lane forever).
+    """
+    global _last_rate_pause_poll_ts, _last_rate_pause_poll
+    now = time.time()
+    if now - _last_rate_pause_poll_ts >= _RATE_PAUSE_POLL_INTERVAL_SEC:
+        _last_rate_pause_poll_ts = now
+        try:
+            from llm_availability_store import load_llm_pause
+
+            _last_rate_pause_poll = load_llm_pause()
+        except Exception:
+            _last_rate_pause_poll = None
+    return _pipeline_rate_block_state(_last_rate_pause_poll)
+
+
 #: Provider-transport child comm names for the RAM oversell guard.
 #: 2026-10-21 fix (review 必改1): under POK_LLM_TRANSPORT=codex every
 #: provider child's comm is ``codex`` (live service observed six of them),
@@ -1467,6 +1554,33 @@ def saturator_preempt_n(
     return min(int(waiting), int(in_flight))
 
 
+def saturator_rate_preempt_n(
+    *,
+    rate_blocked: bool,
+    rate_block_age_sec: float,
+    in_flight: int,
+    already_done: bool,
+    min_age_sec: float = 15.0,
+) -> int:
+    """How many in-flight fill packets to cancel for pipeline rate priority.
+
+    Fires ONCE per rate-block episode, after the episode has persisted at
+    least ``min_age_sec`` (the same ``POK_LLM_SATURATOR_PREEMPT_AFTER_SEC``
+    knob as permit preemption — transient single-1302 blips must not kill
+    healthy packets). Unlike permit preemption the count is not bounded by
+    waiter count: the goal is to clear the ACCOUNT request-rate ceiling our
+    own streams are holding, so every live fill packet is a victim. Tokens
+    already burned on cancelled packets are the accepted cost of producer
+    priority: one pipeline master ensemble that survives is worth more than
+    the bounded research packets behind it.
+    """
+    if not rate_blocked or already_done or in_flight <= 0:
+        return 0
+    if rate_block_age_sec < min_age_sec:
+        return 0
+    return int(in_flight)
+
+
 def _task_is_live(task) -> bool:
     if task.done() or task.cancelled():
         return False
@@ -1528,6 +1642,10 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
     started_at: "dict[object, float]" = {}
     last_housekeep = 0.0
     last_preempt_at: float | None = None
+    rate_block_since: "float | None" = None
+    rate_preempt_done = False
+    rate_yield_announced = False
+    global _pipeline_rate_yield_until
 
     async def _launch(sid: int):
         try:
@@ -1560,6 +1678,32 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 _pending_age = 0.0
                 _pipeline_waiting = 0
                 _has_capacity = True
+            rate_blocked, rate_resume_ts = _poll_pipeline_rate_block()
+            if rate_blocked:
+                if rate_block_since is None:
+                    rate_block_since = time.time()
+                yield_floor = time.time() + 30.0
+                yield_until = max(
+                    rate_resume_ts + _pipeline_rate_yield_grace_sec(),
+                    yield_floor,
+                )
+                if yield_until > _pipeline_rate_yield_until:
+                    _pipeline_rate_yield_until = yield_until
+                if not rate_yield_announced:
+                    rate_yield_announced = True
+                    log.warning(
+                        "saturator standing down for pipeline rate-block: "
+                        "durable service_unavailable pause (a pipeline role "
+                        "died on provider frequency pressure); no launches "
+                        "until %s",
+                        time.strftime(
+                            "%H:%M:%S", time.localtime(_pipeline_rate_yield_until)
+                        ),
+                    )
+            else:
+                rate_block_since = None
+                rate_preempt_done = False
+                rate_yield_announced = False
             in_flight = {t for t in in_flight if not t.done()}
             started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
             live_tasks = {t for t in in_flight if _task_is_live(t)}
@@ -1594,7 +1738,34 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 last_preempt_at = time.time()
                 if victims:
                     await asyncio.wait(set(victims), timeout=2.0)
-            skip_refill = bool(n_preempt)
+            n_rate_preempt = saturator_rate_preempt_n(
+                rate_blocked=rate_blocked,
+                rate_block_age_sec=(
+                    (time.time() - rate_block_since)
+                    if rate_block_since is not None
+                    else 0.0
+                ),
+                in_flight=len(live_tasks),
+                already_done=rate_preempt_done,
+                min_age_sec=_preempt_after_sec(),
+            )
+            if n_rate_preempt:
+                rate_victims = list(live_tasks)
+                for victim in rate_victims:
+                    log.warning(
+                        "saturator rate-preempting session %s: pipeline is "
+                        "provider-rate-blocked; clearing in-flight fill so "
+                        "the pipeline retry dispatches into a quiet account "
+                        "(in-flight=%d)",
+                        getattr(victim, "get_name", lambda: "?")(),
+                        len(rate_victims),
+                    )
+                    victim.cancel()
+                rate_preempt_done = True
+                last_preempt_at = time.time()
+                if rate_victims:
+                    await asyncio.wait(set(rate_victims), timeout=2.0)
+            skip_refill = bool(n_preempt) or bool(n_rate_preempt)
             in_flight = {t for t in in_flight if not t.done()}
             started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
             live_n = sum(1 for t in in_flight if _task_is_live(t))
@@ -1630,7 +1801,11 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 in_flight = {t for t in in_flight if not t.done()}
                 started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
                 live_n = sum(1 for t in in_flight if _task_is_live(t))
-                if skip_refill or _saturator_provider_paused():
+                if (
+                    skip_refill
+                    or _saturator_provider_paused()
+                    or time.time() < _pipeline_rate_yield_until
+                ):
                     break
                 ok, reason = saturator_may_launch(
                     in_flight=live_n,
@@ -1659,6 +1834,10 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 await asyncio.sleep(0.5)
             if _saturator_provider_paused():
                 await asyncio.sleep(min(max(_saturator_pause_remaining_sec(), 0.5), 60.0))
+            elif time.time() < _pipeline_rate_yield_until:
+                await asyncio.sleep(
+                    min(max(_pipeline_rate_yield_until - time.time(), 0.5), 60.0)
+                )
             elif not in_flight:
                 await asyncio.sleep(5.0)
             else:
@@ -1683,6 +1862,7 @@ __all__ = [
     "saturator_job_for",
     "saturator_may_launch",
     "saturator_preempt_n",
+    "saturator_rate_preempt_n",
     "extract_saturator_contracts",
     "render_findings_record",
 ]
