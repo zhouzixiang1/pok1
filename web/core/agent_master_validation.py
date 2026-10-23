@@ -665,6 +665,11 @@ def _proposal_schema_repair_guidance(
             "Under the selected root, keep only that root's known child fields; "
             "remove any unrecognized leaf and express the same fact through "
             "the root's existing fields only." + children_clause
+            + " A poker-literature leaf (pfr, preflop_pfr, vpip standalone) is "
+            "not a real decision-context field. If the intended lever is a "
+            "decision-context DATA field rather than code, retarget the "
+            "proposal at the policy.py function that CONSUMES that field — "
+            "a data path can never be the change_symbol."
         )
     if any(
         "proposal_mechanism_target_missing" in item

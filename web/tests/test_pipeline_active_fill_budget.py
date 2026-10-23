@@ -50,6 +50,7 @@ from llm_saturator import (
 def _reset_active_counter(monkeypatch):
     monkeypatch.setattr(llm_concurrency, "_pipeline_active", 0)
     monkeypatch.setattr(llm_concurrency, "_pipeline_active_first_ts", None)
+    monkeypatch.setattr(llm_concurrency, "_pipeline_active_last_change_ts", None)
     yield
     # monkeypatch restores the module attributes afterwards.
 
@@ -145,14 +146,39 @@ class TestLeakReconciliation:
         monkeypatch.setattr(llm_concurrency, "_pipeline_active", 1)
         import time as _time
 
+        # Stale = NO acquire/release events for the window (audit counter-1),
+        # not "continuously active since the epoch".
         monkeypatch.setattr(
             llm_concurrency,
-            "_pipeline_active_first_ts",
+            "_pipeline_active_last_change_ts",
             _time.time() - 7200,
         )
         with caplog.at_level("WARNING", logger="llm_concurrency"):
             assert pipeline_active_count() == 0
         assert any("stale" in rec.message for rec in caplog.records)
+
+    def test_continuous_relay_activity_never_resets(self, monkeypatch):
+        # A pipeline relaying streams without ever going idle keeps the
+        # counter legitimately positive — the stale reset must not clear it
+        # (audit counter-1: clearing it unleashed a refill wave onto live
+        # pipeline streams).
+        monkeypatch.setattr(
+            llm_concurrency, "_SHARED_LLM_SEMAPHORE", _FakeCrossLoopSem(2)
+        )
+        monkeypatch.setattr(llm_concurrency, "_pipeline_active", 2)
+        import time as _time
+
+        monkeypatch.setattr(
+            llm_concurrency,
+            "_pipeline_active_first_ts",
+            _time.time() - 7200,
+        )
+        monkeypatch.setattr(
+            llm_concurrency,
+            "_pipeline_active_last_change_ts",
+            _time.time() - 5,
+        )
+        assert pipeline_active_count() == 2
 
 
 class TestFillCapGate:

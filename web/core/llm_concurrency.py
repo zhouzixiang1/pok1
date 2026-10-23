@@ -629,15 +629,26 @@ def llm_semaphore_has_capacity(n: int = 1) -> bool:
 
 _pipeline_pending: int = 0
 _pipeline_first_pending_ts: "float | None" = None
+_pipeline_pending_lock = threading.Lock()
 
 
 def _note_pipeline_pending(delta: int) -> None:
+    """Queue-pending pipeline demand counter.
+
+    Guarded by a threading lock (2026-10-23 audit counter-2): the wrapper's
+    enter/exit run on the ASGI loop AND on private per-worker loops
+    (``run_async_off_event_loop``), and the unguarded read-modify-write lost
+    concurrent ``-1`` updates permanently (empirically reproduced: 8 threads
+    x 40k pairs drifted 3-25 high), leaving ``pipeline_pending_count() >= 1``
+    forever with zero self-heal — periodic phantom permit-preempts of fill.
+    """
     global _pipeline_pending, _pipeline_first_pending_ts
-    _pipeline_pending = max(0, _pipeline_pending + delta)
-    if _pipeline_pending > 0 and _pipeline_first_pending_ts is None:
-        _pipeline_first_pending_ts = time.time()
-    elif _pipeline_pending == 0:
-        _pipeline_first_pending_ts = None
+    with _pipeline_pending_lock:
+        _pipeline_pending = max(0, _pipeline_pending + delta)
+        if _pipeline_pending > 0 and _pipeline_first_pending_ts is None:
+            _pipeline_first_pending_ts = time.time()
+        elif _pipeline_pending == 0:
+            _pipeline_first_pending_ts = None
 
 
 def pipeline_pending_count() -> int:
@@ -666,6 +677,7 @@ def pipeline_pending_age_sec() -> float:
 #: and killed in-flight pipeline dispatches mid-ensemble).
 _pipeline_active: int = 0
 _pipeline_active_first_ts: "float | None" = None
+_pipeline_active_last_change_ts: "float | None" = None
 _pipeline_active_lock = threading.Lock()
 
 #: A counter that never returns to 0 for longer than any possible role
@@ -696,9 +708,16 @@ def _note_pipeline_active(delta: int) -> None:
     the shared semaphore is a CrossLoopSemaphore used from private loops
     and the ASGI loop, so the counter must be loop-agnostic (never an
     asyncio primitive)."""
-    global _pipeline_active, _pipeline_active_first_ts
+    global _pipeline_active, _pipeline_active_first_ts, _pipeline_active_last_change_ts
     with _pipeline_active_lock:
         _pipeline_active = max(0, _pipeline_active + delta)
+        # Every successful note IS an acquire/release event: refresh the
+        # activity stamp so the stale-reset below measures "time since the
+        # counter last moved", not "time since the epoch of continuous
+        # activity" — a continuously-relaying pipeline (deep-parallelism
+        # steady state) never trips it, a true leak (no further events)
+        # still does (2026-10-23 audit counter-1).
+        _pipeline_active_last_change_ts = time.time()
         if _pipeline_active > 0 and _pipeline_active_first_ts is None:
             _pipeline_active_first_ts = time.time()
         elif _pipeline_active == 0:
@@ -712,38 +731,45 @@ def pipeline_active_count() -> int:
     pipeline stream holds one permit, so the counter can never legitimately
     exceed the semaphore's total holders — clamp to ``holders``; (2) zero
     holders with a nonzero counter is a proven leak — hard reset; (3) a
-    counter stuck positive longer than ``POK_LLM_PIPELINE_ACTIVE_STALE_SEC``
-    (default 3600s, above every role timeout) is a leak — hard reset with a
-    system event. All resets fail toward 0 (fill lane reopens), the opposite
+    counter with NO acquire/release events for longer than
+    ``POK_LLM_PIPELINE_ACTIVE_STALE_SEC`` (default 3600s, above every role
+    timeout) is a leak — hard reset with a system event. Layer (3) measures
+    counter inactivity, not continuous activity: a pipeline that relays
+    streams without ever going idle must NOT be reset (that used to unleash
+    a fill refill wave onto live pipeline streams, 2026-10-23 audit
+    counter-1). All resets fail toward 0 (fill lane reopens), the opposite
     direction of the producer-priority guarantee this counter feeds."""
-    global _pipeline_active, _pipeline_active_first_ts
+    global _pipeline_active, _pipeline_active_first_ts, _pipeline_active_last_change_ts
     sem = _get_shared_semaphore()
     with _pipeline_active_lock:
         if sem is None:
             if _pipeline_active:
                 _pipeline_active = 0
                 _pipeline_active_first_ts = None
+                _pipeline_active_last_change_ts = None
             return 0
         holders = int(getattr(sem, "holders", 0) or 0)
         if holders <= 0 and _pipeline_active > 0:
             _pipeline_active = 0
             _pipeline_active_first_ts = None
+            _pipeline_active_last_change_ts = None
             return 0
         if _pipeline_active > holders:
             _pipeline_active = holders
         if (
             _pipeline_active > 0
-            and _pipeline_active_first_ts is not None
-            and (time.time() - _pipeline_active_first_ts)
+            and _pipeline_active_last_change_ts is not None
+            and (time.time() - _pipeline_active_last_change_ts)
             > _pipeline_active_stale_sec()
         ):
             _log.warning(
-                "pipeline_active counter stale for %.0fs; resetting to 0 "
-                "(leaked acquire without release)",
-                time.time() - _pipeline_active_first_ts,
+                "pipeline_active counter stale (no acquire/release events) "
+                "for %.0fs; resetting to 0 (leaked acquire without release)",
+                time.time() - _pipeline_active_last_change_ts,
             )
             _pipeline_active = 0
             _pipeline_active_first_ts = None
+            _pipeline_active_last_change_ts = None
         return _pipeline_active
 
 

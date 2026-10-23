@@ -381,8 +381,20 @@ def _compose_worker_task_prompt(task, reviewer_feedback):
             _clause = _repair_symbol_domain_clause(_wk_ckpt)
             if _clause:
                 base_prompt = base_prompt + "\n\n" + _clause
-    except Exception:
-        pass
+    except Exception as exc:
+        # The clause contract says "never silently omitted" — a failed
+        # injection must at least leave a durable breadcrumb (audit lock-6:
+        # the previous bare pass left an unlocked worker undiagnosable).
+        try:
+            from evolution_infra import log_system_event
+
+            log_system_event(
+                "pipeline.worker_symbol_lock_injection_failed",
+                "warning",
+                f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+        except Exception:
+            pass
     if not reviewer_feedback:
         return base_prompt
     if _is_file_scoped_quality_repair_task(task) or _is_file_scoped_precommit_repair_task(task):

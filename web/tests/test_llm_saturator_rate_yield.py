@@ -75,6 +75,18 @@ class TestRateBlockState:
         assert blocked is True
         assert resume_ts == 0.0
 
+    def test_long_expired_resume_is_stale_not_blocked(self):
+        # Audit yield-1: load_llm_pause never reconciles an expired record —
+        # without this guard the yield re-armed now+30s every tick forever.
+        pause = _active_pause(resume_in_sec=-7200.0)
+        blocked, _ = _pipeline_rate_block_state(pause)
+        assert blocked is False
+
+    def test_recently_expired_resume_still_blocks_for_the_grace_window(self):
+        pause = _active_pause(resume_in_sec=-30.0)  # grace 90s still running
+        blocked, _ = _pipeline_rate_block_state(pause)
+        assert blocked is True
+
 
 class TestRatePreemptN:
     def test_fires_for_all_in_flight_after_threshold(self):
@@ -146,6 +158,8 @@ class TestYieldGrace:
 
 class TestPollThrottle:
     def test_poll_reads_store_then_uses_cache(self, monkeypatch):
+        import asyncio
+
         monkeypatch.setattr(llm_saturator, "_last_rate_pause_poll_ts", 0.0)
         monkeypatch.setattr(llm_saturator, "_last_rate_pause_poll", None)
         reads = []
@@ -157,12 +171,17 @@ class TestPollThrottle:
         import llm_availability_store
 
         monkeypatch.setattr(llm_availability_store, "load_llm_pause", fake_load)
-        blocked1, _ = _poll_pipeline_rate_block()
-        blocked2, _ = _poll_pipeline_rate_block()
-        assert blocked1 is True and blocked2 is True
+        ok1, blocked1, _ = asyncio.run(_poll_pipeline_rate_block())
+        ok2, blocked2, _ = asyncio.run(_poll_pipeline_rate_block())
+        assert ok1 is True and blocked1 is True
+        assert ok2 is True and blocked2 is True
         assert len(reads) == 1  # second call served from the throttled cache
 
-    def test_store_failure_reads_as_not_blocked(self, monkeypatch):
+    def test_store_failure_keeps_episode_state(self, monkeypatch):
+        # Audit yield-4: a failed read must NOT read as "cleared" — the
+        # caller keeps its episode (poll_ok=False).
+        import asyncio
+
         monkeypatch.setattr(llm_saturator, "_last_rate_pause_poll_ts", 0.0)
         monkeypatch.setattr(llm_saturator, "_last_rate_pause_poll", None)
 
@@ -172,7 +191,9 @@ class TestPollThrottle:
         import llm_availability_store
 
         monkeypatch.setattr(llm_availability_store, "load_llm_pause", boom)
-        assert _poll_pipeline_rate_block() == (False, 0.0)
+        ok, blocked, _ = asyncio.run(_poll_pipeline_rate_block())
+        assert ok is False
+        assert blocked is False  # caller must ignore this, not clear on it
 
 
 def test_launch_gate_source_honours_yield_window(monkeypatch):

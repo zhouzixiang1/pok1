@@ -266,6 +266,34 @@ def _render_reviewer_provider_prompt(inputs):
         )
     else:
         raise ValueError("Reviewer semantic mode is not recognized")
+    # Declared symbol domain (2026-10-23 audit lock-2/3/4): the worker-side
+    # symbol-domain lock promises that chain CALL SITES may carry minimal
+    # mechanical adaptation; without the matching criteria here the reviewer
+    # judged those same diffs as free-text "unrelated strategy drift" and the
+    # two authorities disagreed (v605: two rejections on a whitelisted call
+    # site). Crossover generations additionally inherit the second parent's
+    # form at unchanged sites, so textual difference from the source parent
+    # alone is not drift either.
+    try:
+        _binding = (master_plan or {}).get("proposal_binding") or {}
+        _change_symbol = str(_binding.get("change_symbol") or "").strip()
+    except Exception:
+        _change_symbol = ""
+    if review_semantic_mode == "strategy_implementation_v1" and _change_symbol:
+        semantic_instructions += (
+            "\n\nDeclared symbol domain: the planned change_symbol is "
+            f"`{_change_symbol}`. A verified chain call site whose diff only "
+            "adapts to the interface change made inside the change_symbol "
+            "(e.g. passing/renaming an argument) is NOT strategy drift; "
+            "adding new strategy logic, branches, conditions, thresholds, or "
+            "helpers at a call site (or restoring-then-extending it) IS "
+            "drift. In crossover generations a chain site may also carry the "
+            "second parent's inherited form — textual difference from the "
+            "source parent alone is not drift; judge by what was ADDED "
+            "beyond the planned symbol and mechanical adaptation. "
+            "Module-level comment-only additions are documentation, not "
+            "strategy drift (commented-out code still is)."
+        )
     source_v = int(inputs["source_v"])
     next_v = int(inputs["next_v"])
     strict_bootstrap = bool(inputs["strict_bootstrap"])

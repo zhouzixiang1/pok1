@@ -1008,7 +1008,11 @@ def _pipeline_rate_yield_grace_sec() -> float:
         return _PIPELINE_RATE_YIELD_GRACE_DEFAULT_SEC
 
 
-def _pipeline_rate_block_state(pause: "dict | None") -> "tuple[bool, float]":
+def _pipeline_rate_block_state(
+    pause: "dict | None",
+    now: "float | None" = None,
+    grace_sec: "float | None" = None,
+) -> "tuple[bool, float]":
     """Pure view: is the durable pause an ACTIVE frequency-class episode?
 
     Returns ``(blocked, auto_resume_epoch_sec)``. Only ``service_unavailable``
@@ -1017,6 +1021,15 @@ def _pipeline_rate_block_state(pause: "dict | None") -> "tuple[bool, float]":
     ``_note_saturator_provider_failure`` and must not be double-handled. An
     unparseable/missing resume timestamp stays blocked with ``0.0`` — the
     caller's yield floor still applies.
+
+    Stale-record guard (2026-10-23 audit yield-1): a record whose
+    ``auto_resume_at`` passed longer than one grace window ago is NOT
+    blocked. ``load_llm_pause`` never reconciles — only a dispatch through
+    ``run_claude_query`` flips ``active`` back — and the yield itself stops
+    every saturator dispatch, so without this guard an expired record under a
+    parked orchestrator re-armed ``now + 30s`` every tick and starved the
+    fill lane forever in a self-reinforcing loop. A fresh failure
+    re-persists a new future resume, which re-qualifies normally.
     """
     if not isinstance(pause, dict) or not pause.get("active"):
         return False, 0.0
@@ -1031,16 +1044,29 @@ def _pipeline_rate_block_state(pause: "dict | None") -> "tuple[bool, float]":
             resume_ts = _dt.datetime.fromisoformat(raw).timestamp()
         except ValueError:
             resume_ts = 0.0
+    if resume_ts > 0.0:
+        grace = (
+            grace_sec
+            if grace_sec is not None
+            else _pipeline_rate_yield_grace_sec()
+        )
+        ts = time.time() if now is None else now
+        if resume_ts + grace < ts:
+            return False, 0.0
     return True, resume_ts
 
 
-def _poll_pipeline_rate_block() -> "tuple[bool, float]":
+async def _poll_pipeline_rate_block() -> "tuple[bool, bool, float]":
     """Throttled read of the durable pause store for the rate-block view.
 
-    The store read takes a file lock shared with every persist site, so the
-    loop polls at most once per ``_RATE_PAUSE_POLL_INTERVAL_SEC`` and caches
-    the projection between polls; any read failure reads as "not blocked"
-    (fail-open keeps a broken store from idling the fill lane forever).
+    Returns ``(poll_ok, blocked, auto_resume_epoch_sec)``. The store read
+    takes an exclusive flock shared with persist's fsync write path, so it
+    runs off the ASGI loop (``asyncio.to_thread`` — the watchdog offloads
+    the same class of read for the same reason) at most once per
+    ``_RATE_PAUSE_POLL_INTERVAL_SEC``, cached between polls. A FAILED read
+    returns ``poll_ok=False`` and the caller keeps its episode state — a
+    transient IO/lock error must not read as "cleared" (which used to reset
+    the episode and re-arm a full preempt 15s later, audit yield-4).
     """
     global _last_rate_pause_poll_ts, _last_rate_pause_poll
     now = time.time()
@@ -1049,10 +1075,12 @@ def _poll_pipeline_rate_block() -> "tuple[bool, float]":
         try:
             from llm_availability_store import load_llm_pause
 
-            _last_rate_pause_poll = load_llm_pause()
+            _last_rate_pause_poll = await asyncio.to_thread(load_llm_pause)
         except Exception:
             _last_rate_pause_poll = None
-    return _pipeline_rate_block_state(_last_rate_pause_poll)
+            return False, False, 0.0
+    blocked, resume_ts = _pipeline_rate_block_state(_last_rate_pause_poll)
+    return True, blocked, resume_ts
 
 
 #: Provider-transport child comm names for the RAM oversell guard.
@@ -1749,14 +1777,33 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
             else:
                 pipeline_active_since = None
                 pipeline_yield_preempt_done = False
-            rate_blocked, rate_resume_ts = _poll_pipeline_rate_block()
+            rate_poll_ok, rate_blocked, rate_resume_ts = (
+                await _poll_pipeline_rate_block()
+            )
             if rate_blocked:
                 if rate_block_since is None:
                     rate_block_since = time.time()
-                yield_floor = time.time() + 30.0
+                # Grace scales with the pipeline's actual durable cooldown
+                # (audit yield-2): an isolated first-occurrence 1302 cools
+                # down in 8s — a flat +90s grace amplified that single blip
+                # to a 98s fill stand-down. The long ensemble window is
+                # already protected by the pipeline-active fill cap, so the
+                # yield only needs to cover the retry itself.
+                cooldown_remaining = (
+                    max(0.0, rate_resume_ts - time.time())
+                    if rate_resume_ts > 0.0
+                    else 30.0
+                )
+                effective_grace = max(
+                    15.0,
+                    min(
+                        _pipeline_rate_yield_grace_sec(),
+                        2.0 * cooldown_remaining,
+                    ),
+                )
                 yield_until = max(
-                    rate_resume_ts + _pipeline_rate_yield_grace_sec(),
-                    yield_floor,
+                    rate_resume_ts + effective_grace,
+                    time.time() + 30.0,
                 )
                 if yield_until > _pipeline_rate_yield_until:
                     _pipeline_rate_yield_until = yield_until
@@ -1766,12 +1813,15 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                         "saturator standing down for pipeline rate-block: "
                         "durable service_unavailable pause (a pipeline role "
                         "died on provider frequency pressure); no launches "
-                        "until %s",
+                        "until %s (grace %.0fs)",
                         time.strftime(
                             "%H:%M:%S", time.localtime(_pipeline_rate_yield_until)
                         ),
+                        effective_grace,
                     )
-            else:
+            elif rate_poll_ok:
+                # Only a SUCCESSFUL not-blocked read clears the episode —
+                # a transient store read failure keeps it (audit yield-4).
                 rate_block_since = None
                 rate_preempt_done = False
                 rate_yield_announced = False
@@ -1809,6 +1859,12 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                 last_preempt_at = time.time()
                 if victims:
                     await asyncio.wait(set(victims), timeout=2.0)
+            # Refresh the live snapshot between preempt kinds (audit yield-3):
+            # the decision above may have just cancelled tasks; counting them
+            # again double-preempts corpses and double-waits.
+            in_flight = {t for t in in_flight if not t.done()}
+            live_tasks = {t for t in in_flight if _task_is_live(t)}
+            started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
             n_rate_preempt = saturator_rate_preempt_n(
                 rate_blocked=rate_blocked,
                 rate_block_age_sec=(
@@ -1832,10 +1888,16 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                         len(rate_victims),
                     )
                     victim.cancel()
+                # No last_preempt_at here: the rate-yield window already
+                # blocks refill for this episode, and arming the holdoff
+                # would needlessly delay the refill the yield allows (audit
+                # yield-3). The holdoff is the permit-preempt's design.
                 rate_preempt_done = True
-                last_preempt_at = time.time()
                 if rate_victims:
                     await asyncio.wait(set(rate_victims), timeout=2.0)
+            in_flight = {t for t in in_flight if not t.done()}
+            live_tasks = {t for t in in_flight if _task_is_live(t)}
+            started_at = {t: ts for t, ts in started_at.items() if t in in_flight}
             n_pipeline_yield = saturator_pipeline_yield_preempt_n(
                 pipeline_active=_pipeline_active_now,
                 in_flight=len(live_tasks),
@@ -1869,8 +1931,11 @@ async def run_llm_saturator(shutdown_mgr=None) -> None:
                         len(pipeline_victims),
                     )
                     victim.cancel()
+                # No last_preempt_at here either: the pipeline-active cap
+                # itself is the sustained protection; arming the holdoff
+                # kept the below-cap refill slot blocked for 15s after a
+                # natural completion (audit yield-3).
                 pipeline_yield_preempt_done = True
-                last_preempt_at = time.time()
                 if pipeline_victims:
                     await asyncio.wait(set(pipeline_victims), timeout=2.0)
             skip_refill = (
