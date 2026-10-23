@@ -163,20 +163,7 @@ You check ONLY these five areas:
    on a real national transcript. Require an exact firing tuple and a
    one-predicate control pair, plus an observable action difference and nonzero
    consumed telemetry. Static
-   imports/call sites and isolated helper tests do not prove reachability.
-   Evidence-authority scoping: when the system-supplied selected-capability
-   evidence names a typed capability check whose `ok` is true and whose digest
-   binds this proposal, that passed check IS the dynamic authority for the
-   mechanism's reachability — do not reject solely because its
-   `evidence_scope` declares
-   `reachable_symbol_delta_plus_typed_capability_only;not_full_counterfactual_or_strength_proof`;
-   full transcript counterfactuals and strength are the native precommit
-   gate's authority, not this review's. A missing, failed, malformed, or
-   content-unbound selected-capability check remains a hard rejection, and you
-   must still verify the producer→consumer chain exists in the candidate
-   source itself (static reachability from the decision path) plus every
-   other item in this checklist.
-   For
+   imports/call sites and isolated helper tests do not prove reachability. For
    donk, verify hero BB calls an SB raise and acts first on the flop with
    `decision_context.line.can_donk`. For delayed probe, verify
    hero BB calls an SB raise, checks flop, the in-position aggressor passes with
