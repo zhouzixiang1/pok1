@@ -366,6 +366,23 @@ def _compose_worker_task_prompt(task, reviewer_feedback):
     contract_block = _runtime_contract_block(task)
     if contract_block:
         base_prompt = base_prompt + "\n\n" + contract_block
+    # Symbol-domain lock for the INITIAL worker pass (2026-10-23, v603): the
+    # repair surfaces already render _repair_symbol_domain_clause, but v603's
+    # crossover worker drifted outside its declared plan symbol on the FIRST
+    # pass (undeclared edits to 4 symbols + replacing rather than preserving
+    # the parent terminal-response adjustment), correctly rejected by review
+    # 3 times -> quality breaker.  The same hard lock now gates the initial
+    # worker prompt whenever the plan binding is resolvable.
+    try:
+        from tool_planning_quality_contracts import _repair_symbol_domain_clause
+        from evolution_infra import read_pipeline_checkpoint
+        _wk_ckpt = read_pipeline_checkpoint()
+        if _wk_ckpt is not None:
+            _clause = _repair_symbol_domain_clause(_wk_ckpt)
+            if _clause:
+                base_prompt = base_prompt + "\n\n" + _clause
+    except Exception:
+        pass
     if not reviewer_feedback:
         return base_prompt
     if _is_file_scoped_quality_repair_task(task) or _is_file_scoped_precommit_repair_task(task):

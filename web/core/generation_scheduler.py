@@ -1861,6 +1861,47 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
             _drought_parents = _pick_crossover_parents(
                 ratings, active_v, selection_view=selection_view
             )
+            # Pair rotation (2026-10-23): the picker is deterministic on the
+            # frozen strength order, so it re-selects the SAME pair after
+            # every drought-forced attempt (observed: 598x185 for v603/v604/
+            # v605).  When the most recent drought-forced crossover above the
+            # high-water already used this pair and died, skip the top parent-B
+            # candidate so the next strongest distinct lineage gets the
+            # structural attempt instead of a fourth identical pairing.
+            if _drought_parents and len(_drought_parents) > 1:
+                try:
+                    from abandoned_version_ledger import (
+                        load_abandoned_version_receipts,
+                    )
+                    _prev = None
+                    for _r in reversed(load_abandoned_version_receipts() or []):
+                        if (
+                            isinstance(_r, dict)
+                            and isinstance(_r.get("version"), int)
+                            and _r["version"] > active_v
+                            and isinstance(_r.get("checkpoint"), dict)
+                        ):
+                            _ck = _r["checkpoint"]
+                            if _ck.get("parent2_v") is not None:
+                                _prev = (
+                                    _ck.get("source_v"),
+                                    _ck.get("parent2_v"),
+                                )
+                                break
+                    if _prev == (
+                        _drought_parents[0],
+                        _drought_parents[1],
+                    ):
+                        _rotated = _pick_crossover_parents(
+                            ratings,
+                            active_v,
+                            selection_view=selection_view,
+                            exclude_parent_b=_drought_parents[1],
+                        )
+                        if _rotated:
+                            _drought_parents = _rotated
+                except Exception:
+                    pass
             if _drought_parents:
                 strategy = "crossover"
                 parents = _drought_parents
@@ -2491,7 +2532,7 @@ def _pick_oscillation_breakout_source(oscillating, current_v, selection_view=Non
     return _gs._pick_oscillation_breakout_source(oscillating, current_v, selection_view=selection_view)
 
 
-def _pick_crossover_parents(ratings, current_v, selection_view=None):
+def _pick_crossover_parents(ratings, current_v, selection_view=None, exclude_parent_b=None):
     """Delegate to generation_scheduler_source_selection."""
     return _gs._pick_crossover_parents(ratings, current_v, selection_view=selection_view)
 

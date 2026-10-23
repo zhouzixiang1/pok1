@@ -681,6 +681,7 @@ def _pick_crossover_parents(
     ratings,
     current_v,
     selection_view=None,
+    exclude_parent_b=None,
 ) -> tuple | None:
     """Select parents solely from the immutable frozen strength order.
 
@@ -760,7 +761,23 @@ def _pick_crossover_parents(
         for candidate, version in candidates
         if abs(version - va) >= 3
     ]
+    # Drought-breaker rotation (2026-10-23): drop the exhausted pairing's
+    # parent-B (by version) so the next strongest distinct lineage is chosen.
+    if exclude_parent_b is not None:
+        _excl = int(exclude_parent_b)
+        gap_candidates = [
+            (candidate, version)
+            for candidate, version in gap_candidates
+            if version != _excl
+        ]
+        candidates = [
+            (candidate, version)
+            for candidate, version in candidates
+            if version != _excl
+        ]
     selection_mode = "version_gap" if gap_candidates else "adjacent_fallback"
+    if not (gap_candidates or candidates):
+        return None
     parent_b, vb = (gap_candidates or candidates)[0]
 
     try:
