@@ -1875,19 +1875,28 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                     )
                     _prev = None
                     for _r in reversed(load_abandoned_version_receipts() or []):
-                        if (
+                        if not (
                             isinstance(_r, dict)
                             and isinstance(_r.get("version"), int)
                             and _r["version"] > active_v
-                            and isinstance(_r.get("checkpoint"), dict)
                         ):
-                            _ck = _r["checkpoint"]
-                            if _ck.get("parent2_v") is not None:
-                                _prev = (
-                                    _ck.get("source_v"),
-                                    _ck.get("parent2_v"),
-                                )
-                                break
+                            continue
+                        # The ledger writes the frozen checkpoint as
+                        # ``checkpoint_envelope`` (its top level carries
+                        # source_v/parent2_v); the plain ``checkpoint`` key
+                        # has never existed in any of the 414+ rows, so the
+                        # original isinstance(_r.get("checkpoint")) guard
+                        # left _prev None forever and the rotation never
+                        # fired (found 2026-10-24, v606 closing audit).
+                        _ck = _r.get("checkpoint_envelope")
+                        if not isinstance(_ck, dict):
+                            _ck = _r.get("checkpoint")
+                        if isinstance(_ck, dict) and _ck.get("parent2_v") is not None:
+                            _prev = (
+                                _ck.get("source_v"),
+                                _ck.get("parent2_v"),
+                            )
+                            break
                     if _prev == (
                         _drought_parents[0],
                         _drought_parents[1],

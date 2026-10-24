@@ -1366,7 +1366,7 @@ component since 2026-08-16 (`CHIP_COMPONENT_WEIGHT=0.25` at full chip-sample
 reliability in `rating_snapshot.py::_score_components`, basis suffix
 `_plus_net_chips`) plus the historical tiebreaker — W/L-only scores
 systematically overrated fold-heavy bots. Precommit defaults to
-`PRECOMMIT_DEFAULT_N_GAMES=12` per opponent (the parent gate needs >=6
+`PRECOMMIT_DEFAULT_N_GAMES=8` per opponent (lowered from 12 on 2026-10-21; the parent gate needs >=6
 samples vs the parent to be reachable), and an exact W/L tie passes only when
 the paired net-chip bootstrap CI LOWER bound is positive
 (`PRECOMMIT_PARENT_TIE_CI_LOWER_MIN`). Every precommit outcome (pass or fail)
