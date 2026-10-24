@@ -633,3 +633,27 @@ def test_publication_drought_breaker_forces_crossover(monkeypatch, tmp_path):
                 )
     assert strategy == "crossover" and parents == (11, 27) and source_v == 11
     assert events and events[0][0] == "pipeline.publication_drought_crossover"
+
+
+def test_pick_crossover_parents_wrapper_forwards_exclude_parent_b(monkeypatch):
+    """The delegation wrapper must forward exclude_parent_b (2026-10-24).
+
+    Found by the v605 closing audit: the wrapper accepted the kwarg but
+    dropped it on delegation, so the drought-breaker pair-rotation branch
+    would silently re-pick the same dead pairing.
+    """
+    received = {}
+
+    def fake_pick(ratings, current_v, selection_view=None, exclude_parent_b=None):
+        received["exclude_parent_b"] = exclude_parent_b
+        return (79, 11)
+
+    import generation_scheduler as gs_mod
+    import generation_scheduler_source_selection as gss
+
+    monkeypatch.setattr(gss, "_pick_crossover_parents", fake_pick)
+    assert gs_mod._pick_crossover_parents({"rows": []}, 98, exclude_parent_b=185) == (79, 11)
+    assert received["exclude_parent_b"] == 185
+    # Default path still omits the kwarg's effect (None forwarded fine).
+    assert gs_mod._pick_crossover_parents({"rows": []}, 98) == (79, 11)
+    assert received["exclude_parent_b"] is None

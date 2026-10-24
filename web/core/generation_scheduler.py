@@ -2533,8 +2533,20 @@ def _pick_oscillation_breakout_source(oscillating, current_v, selection_view=Non
 
 
 def _pick_crossover_parents(ratings, current_v, selection_view=None, exclude_parent_b=None):
-    """Delegate to generation_scheduler_source_selection."""
-    return _gs._pick_crossover_parents(ratings, current_v, selection_view=selection_view)
+    """Delegate to generation_scheduler_source_selection.
+
+    ``exclude_parent_b`` must be forwarded: the drought-breaker pair-rotation
+    branch relies on it to avoid re-picking the same dead pairing. The
+    wrapper silently dropped it when the companion was extracted
+    (2026-10-24 v605 closing audit), which would have made the rotation a
+    no-op whenever the previous pair still topped the strength order.
+    """
+    return _gs._pick_crossover_parents(
+        ratings,
+        current_v,
+        selection_view=selection_view,
+        exclude_parent_b=exclude_parent_b,
+    )
 
 
 def _bare_commit_gate_ledger_ok(v, ckpt):
