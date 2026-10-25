@@ -704,3 +704,69 @@ def test_drought_rotation_reads_checkpoint_envelope(monkeypatch, tmp_path):
             break
     assert prev2 == (1, 2)
     assert _json.dumps(legacy[0]["checkpoint"])  # shape sanity
+
+
+def test_path_independent_dead_pair_rotation(monkeypatch):
+    """2026-10-25 (v612 closing finding): the stagnation crossover path
+    re-picked the dead pair 608x598 three times because the drought block's
+    ``strategy != 'crossover'`` guard short-circuits. The prepare path now
+    rotates parent-B whenever the chosen pair equals the last dead pairing,
+    regardless of which branch selected it.
+    """
+    import generation_scheduler as gs_mod
+
+    monkeypatch.setattr(gs_mod, "_last_dead_crossover_pair", lambda active_v: (608, 598))
+    calls = []
+
+    def fake_pick(ratings, current_v, selection_view=None, exclude_parent_b=None):
+        calls.append(exclude_parent_b)
+        if exclude_parent_b is None:
+            return (608, 598)  # the dead pair tops the strength order again
+        return (608, 579)  # rotation picks the next-strongest parent-B
+
+    monkeypatch.setattr(gs_mod, "_pick_crossover_parents", fake_pick)
+    events = []
+    monkeypatch.setattr(
+        gs_mod,
+        "log_system_event",
+        lambda kind, sev, msg, data=None: events.append((kind, msg)),
+    )
+
+    # Simulate the prepare-path rotation block for a stagnation-chosen pair.
+    strategy, parents, source_v = "crossover", (608, 598), 608
+    if strategy == "crossover" and parents and len(parents) > 1:
+        _dead = gs_mod._last_dead_crossover_pair(608)
+        if _dead == (parents[0], parents[1]):
+            _rotated_pair = gs_mod._pick_crossover_parents(
+                {"rows": []}, 608, selection_view=None, exclude_parent_b=parents[1]
+            )
+            if _rotated_pair and len(_rotated_pair) > 1:
+                gs_mod.log_system_event(
+                    "pipeline.crossover_dead_pair_rotated",
+                    "warn",
+                    "rotated",
+                    {"prev_pair": list(_dead)},
+                )
+                parents = _rotated_pair
+                source_v = parents[0]
+
+    assert parents == (608, 579)  # rotated off the dead pair
+    assert source_v == 608
+    assert calls == [598]
+    assert events and events[0][0] == "pipeline.crossover_dead_pair_rotated"
+
+
+def test_last_dead_crossover_pair_reads_envelope(monkeypatch):
+    import generation_scheduler as gs_mod
+    import abandoned_version_ledger as ledger
+
+    # Ledger order: oldest first; a single-parent row (no parent2_v) at the
+    # tail must be skipped in favour of the last CROSSOVER receipt.
+    receipts = [
+        {"version": 610, "checkpoint_envelope": {"source_v": 608, "parent2_v": 598}},
+        {"version": 612, "checkpoint_envelope": {"source_v": 608, "parent2_v": 598}},
+        {"version": 613, "checkpoint_envelope": {"source_v": 608}},
+    ]
+    monkeypatch.setattr(ledger, "load_abandoned_version_receipts", lambda: receipts)
+    assert gs_mod._last_dead_crossover_pair(608) == (608, 598)
+    assert gs_mod._last_dead_crossover_pair(613) is None

@@ -1930,6 +1930,44 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None, *, slot_id=N
                     },
                 )
 
+    # Path-independent dead-pair rotation (2026-10-25, v612 closing finding):
+    # the stagnation branch of _decide_strategy picks crossover parents
+    # WITHOUT exclude_parent_b and returns early, so the drought block above
+    # (guarded by ``strategy != 'crossover'``) never runs while stagnation
+    # keeps selecting crossover — observed live: 608x598 re-picked three
+    # times in a row (v611/v612/v613) with drought already >= 4 and the
+    # rotation branch unreachable. Whatever path chose the pair, when it is
+    # IDENTICAL to the most recent terminal crossover's dead pairing, rotate
+    # parent-B so a distinct lineage gets the structural attempt.
+    if strategy == "crossover" and parents and len(parents) > 1:
+        try:
+            _dead = _last_dead_crossover_pair(active_v)
+            if _dead == (parents[0], parents[1]):
+                _rotated_pair = _pick_crossover_parents(
+                    ratings,
+                    active_v,
+                    selection_view=selection_view,
+                    exclude_parent_b=parents[1],
+                )
+                if _rotated_pair and len(_rotated_pair) > 1:
+                    log_system_event(
+                        "pipeline.crossover_dead_pair_rotated",
+                        "warn",
+                        "Selected crossover pair "
+                        f"{bot_name(parents[0])} x {bot_name(parents[1])} "
+                        "matches the most recent dead pairing "
+                        f"(v{_dead[0]} x v{_dead[1]}); rotating parent-B",
+                        {
+                            "prev_pair": list(_dead),
+                            "new_pair": list(_rotated_pair),
+                            "excluded_parent_b": parents[1],
+                        },
+                    )
+                    parents = _rotated_pair
+                    source_v = parents[0]
+        except Exception:
+            pass
+
     # --- P1-1: Continuous Degeneration Diagnosis ---
     mechanical_urgent = _mechanical_urgent_intervention_eligible(
         bot_name(active_v),
@@ -2556,6 +2594,35 @@ def _pick_crossover_parents(ratings, current_v, selection_view=None, exclude_par
         selection_view=selection_view,
         exclude_parent_b=exclude_parent_b,
     )
+
+
+def _last_dead_crossover_pair(active_v):
+    """The most recent terminal crossover's (source_v, parent2_v) above the
+    published high-water, from the abandon ledger — or None.
+
+    Receipts persist the frozen checkpoint as ``checkpoint_envelope`` (top
+    level carries source_v/parent2_v); the legacy plain ``checkpoint`` key is
+    accepted for compatibility. Rows without parent2_v are skipped (single-
+    parent generations never form a dead PAIR).
+    """
+    try:
+        from abandoned_version_ledger import load_abandoned_version_receipts
+
+        for _r in reversed(load_abandoned_version_receipts() or []):
+            if not (
+                isinstance(_r, dict)
+                and isinstance(_r.get("version"), int)
+                and _r["version"] > active_v
+            ):
+                continue
+            _ck = _r.get("checkpoint_envelope")
+            if not isinstance(_ck, dict):
+                _ck = _r.get("checkpoint")
+            if isinstance(_ck, dict) and _ck.get("parent2_v") is not None:
+                return (_ck.get("source_v"), _ck.get("parent2_v"))
+    except Exception:
+        return None
+    return None
 
 
 def _bare_commit_gate_ledger_ok(v, ckpt):
