@@ -738,6 +738,90 @@ def _planned_change_symbol_domain(ckpt):
     return change_symbol, ", ".join(chain_items)
 
 
+def _extract_parent_functions(policy_path, wanted):
+    """AST-extract top-level function sources by name (system-owned read)."""
+    try:
+        src = Path(policy_path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    found = {}
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {}
+    lines = src.splitlines(keepends=True)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted:
+            segment = "".join(lines[node.lineno - 1: node.end_lineno])
+            found[node.name] = segment
+    return found
+
+
+def _authorized_parent_restore_section(ckpt, feedback, parent_policy_path=None):
+    """Authorized byte-identical restore set for crossover review-repair.
+
+    v611/v612/v614 review-loop deaths (2026-10-26 analysis, verified): the
+    reviewer demands whole-function restores to the SOURCE PARENT's form for
+    symbols OUTSIDE the symbol-domain lock, while the repair worker neither
+    may read the parent bytes nor edit those symbols — the demanded fix is
+    structurally unexecutable, every repair round converges on small
+    lock-internal items instead, and the final verdict repeats the first
+    round's demands verbatim. For crossover checkpoints (``parent2_v``
+    present) this section authorizes exactly the reviewer-named symbols for
+    restore and injects the parent's function bytes (system-owned read,
+    sha256-bound) so the restore is executable verbatim. Non-crossover
+    checkpoints and unresolvable parents render nothing.
+    """
+    try:
+        parent2 = ckpt.get("parent2_v")
+        source_v = ckpt.get("source_v")
+        if parent2 is None or source_v is None or not feedback:
+            return ""
+        text = str(feedback)
+        if len(text) > 12000:
+            text = text[:6000] + "\n...\n" + text[-6000:]
+        # Reviewer verdicts cite symbols as `policy.py:_name` or `_name`
+        # (backticked or bare). Only names that EXIST in the parent policy
+        # become restore targets.
+        wanted = set(re.findall(r"policy\.py:([A-Za-z_][A-Za-z0-9_]*)", text))
+        wanted |= set(
+            name
+            for name in re.findall(r"`?(_[A-Za-z][A-Za-z0-9_]*)`?", text)
+        )
+        if not wanted:
+            return ""
+        path = parent_policy_path
+        if path is None:
+            path = Path(__file__).resolve().parents[2] / "bots" / bot_name(source_v) / "policy.py"
+        funcs = _extract_parent_functions(path, wanted)
+        if not funcs:
+            return ""
+        blocks = []
+        for name in sorted(funcs):
+            body = funcs[name]
+            digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+            if len(body) > 4000:
+                body = body[:4000] + "\n# ... (truncated; read the parent file section if longer)"
+            blocks.append(
+                f"### `policy.py:{name}` (parent sha256[:16]={digest})\n"
+                "```python\n" + body + "\n```"
+            )
+        return (
+            "\n\n# Authorized parent-restore set (crossover review-repair)\n"
+            "This generation is a crossover child. The reviewer verdict above "
+            "demands restoring some functions to the SOURCE PARENT'S form. "
+            "Those restores are AUTHORIZED even though the symbols sit "
+            "outside the symbol-domain lock: replace each listed function "
+            "BYTE-IDENTICALLY with the injected parent form below (no "
+            "renaming, no semantic refactors, no extra edits inside them). "
+            "The sha256 prefix binds each injected body; a restore that does "
+            "not reproduce it is a failed repair. All other lock rules still "
+            "apply.\n\n" + "\n\n".join(blocks)
+        )
+    except Exception:
+        return ""
+
+
 def _repair_symbol_domain_clause(ckpt):
     """Hard symbol-domain lock clause for repair directives/prompts (P0-A).
 

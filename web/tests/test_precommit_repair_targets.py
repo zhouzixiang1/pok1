@@ -236,3 +236,70 @@ def test_tool_eval_precommit_directive_interpolates_planned_symbols(monkeypatch)
     fallback = tool_eval._precommit_repair_symbol_domain_clause(999, 998)
     assert "Symbol-domain lock" in fallback
     assert "plan binding unavailable" in fallback
+
+
+def test_authorized_parent_restore_section_for_crossover(tmp_path):
+    """2026-10-26: crossover review-repair must make the reviewer-demanded
+    parent restores executable (v611/v612/v614 non-convergent loops)."""
+    from tool_planning_quality_contracts import (
+        _authorized_parent_restore_section,
+    )
+
+    parent = tmp_path / "policy.py"
+    parent.write_text(
+        "def _strategy_adjustments(ctx):\n"
+        "    return ctx['x'] + 1\n"
+        "\n"
+        "def _unrelated(ctx):\n"
+        "    return 2\n",
+        encoding="utf-8",
+    )
+    ckpt = {"parent2_v": 598, "source_v": 608, "next_v": 616}
+    feedback = (
+        "Rejected: `_strategy_adjustments` carries inherited drift; restore "
+        "its national_cloud_v608 form. Also policy.py:_unrelated was removed."
+    )
+    section = _authorized_parent_restore_section(
+        ckpt, feedback, parent_policy_path=parent
+    )
+    assert "Authorized parent-restore set" in section
+    assert "policy.py:_strategy_adjustments" in section
+    assert "def _strategy_adjustments(ctx):" in section
+    assert "def _unrelated(ctx):" in section
+    assert "sha256" in section
+    assert "BYTE-IDENTICALLY" in section
+
+    single = {"parent2_v": None, "source_v": 608}
+    assert _authorized_parent_restore_section(single, feedback, parent_policy_path=parent) == ""
+
+    quiet = _authorized_parent_restore_section(
+        ckpt, "Rejected: evidence depth insufficient.", parent_policy_path=parent
+    )
+    assert quiet == ""
+
+
+def test_review_rework_prompt_carries_parent_restore(tmp_path):
+    """The review-rework fallback prompt interpolates the restore section."""
+    parent = tmp_path / "policy.py"
+    parent.write_text(
+        "def _strategy_adjustments(ctx):\n    return ctx['x'] + 1\n",
+        encoding="utf-8",
+    )
+    import tool_planning_quality_rework as rw
+
+    real_section = rw._qc._authorized_parent_restore_section
+    ckpt = {
+        "next_v": 616,
+        "source_v": 608,
+        "parent2_v": 598,
+        "stage": "repair_planned",
+        "reviewer_feedback": "Rejected: `_strategy_adjustments` drift; restore v608 form.",
+        "gate_results": {"review": {"passed": False, "approved": False, "feedback": "Rejected: `_strategy_adjustments` drift; restore v608 form."}},
+    }
+    tasks = rw._synthesize_rework_tasks_from_checkpoint(
+        ckpt, ckpt["reviewer_feedback"]
+    )
+    assert tasks
+    prompts = [str(t.get("worker_prompt") or "") for t in tasks]
+    assert any("Authorized parent-restore set" in p for p in prompts), prompts[0][:300]
+    assert callable(real_section)

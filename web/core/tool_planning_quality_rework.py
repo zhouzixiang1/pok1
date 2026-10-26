@@ -310,6 +310,14 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=''):
     # fallback prompt, so the symbol-domain lock must ride here too — not
     # only in the quality-contract builder.
     review_symbol_lock = _qc._repair_symbol_domain_clause(ckpt)
-    prompt = f'{preservation.format(next_v=ckpt.get('next_v'))}\n\nExact gate feedback:\n{feedback}\n\n{review_symbol_lock}\n\nRequired method:\n{method}'
+    # Crossover review-repair (2026-10-26): authorize the reviewer-demanded
+    # parent restores with injected parent bytes — without this the demanded
+    # fix is unexecutable (v611/v612/v614 non-convergent loops).
+    _parent_restore = (
+        _qc._authorized_parent_restore_section(ckpt, feedback)
+        if is_review_rework
+        else ""
+    )
+    prompt = f'{preservation.format(next_v=ckpt.get('next_v'))}\n\nExact gate feedback:\n{feedback}\n\n{review_symbol_lock}{_parent_restore}\n\nRequired method:\n{method}'
     repair_blocker = 'review_rejection' if is_review_rework else 'quality_gate'
     return [{'worker_id': worker_id, 'role': role, 'target_files': targets, 'must_change_files': targets, 'worker_prompt': prompt, 'task_kind': task_kind, 'repair_blocker': repair_blocker, 'repair_contract': {'blocker': repair_blocker, 'files': targets, 'evidence': feedback[:2000], 'source_stage': str(stage or '')}}]
