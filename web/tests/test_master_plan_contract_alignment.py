@@ -1415,6 +1415,37 @@ def test_selected_proposal_quality_requires_executed_typed_check(tmp_path):
         + selected["change_symbol"]
     ]
 
+    # The review-repair counterpart invariant (2026-10-26 mutex): restoring
+    # every OTHER reachable-chain member to its frozen baseline while the
+    # planned change_symbol keeps its real delta is a PASSING quality state.
+    # This is exactly what the authorized parent-restore section commands, so
+    # the two contracts must agree instead of dead-locking the repair loop.
+    change_only_packet = deepcopy(packet)
+    for symbol in selected["reachable_chain"]:
+        if symbol == selected["change_symbol"]:
+            continue
+        change_only_packet["proposal_source_symbol_digests"][
+            selected["proposal_id"]
+        ][symbol] = agent_master._source_symbol_ast_digest(
+            candidate_dir,
+            symbol,
+        )
+    change_only_plan = deepcopy(master_plan)
+    change_only_plan["proposal_ensemble"] = change_only_packet
+    change_only_plan["proposal_binding"] = agent_master._selected_proposal_binding(
+        selected,
+        change_only_packet,
+    )
+    change_only = tool_gates._selected_proposal_quality_evidence(
+        change_only_plan,
+        transition,
+        candidate_dir=candidate_dir,
+    )
+    assert change_only["ok"] is True
+    assert change_only["reachable_symbol_diff_ok"] is True
+    assert change_only["changed_reachable_symbols"] == [selected["change_symbol"]]
+    assert change_only["errors"] == []
+
     # Comments and formatting are deliberately excluded by the AST digest and
     # therefore cannot manufacture a change to the selected mechanism.
     formatting_only = tmp_path / "formatting_only_candidate"

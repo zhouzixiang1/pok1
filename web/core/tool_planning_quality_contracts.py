@@ -757,6 +757,33 @@ def _extract_parent_functions(policy_path, wanted):
     return found
 
 
+def _planned_symbol_bare_name(value):
+    """``policy.py:_name`` -> ``_name``; bare symbols pass through."""
+    return str(value or "").strip().rsplit(":", 1)[-1]
+
+
+def _restore_conflicts_with_planned_change_symbol(ckpt, names):
+    """Detect the unsatisfiable restore/change_symbol conflict (zero-LLM).
+
+    Authorizing a byte-identical restore of the generation's own planned
+    ``change_symbol`` is structurally unsatisfiable: the machine-projected
+    changed-symbol gate requires that exact symbol to differ from the frozen
+    proposal baseline (``proposal_quality_change_symbol_unchanged``). v620
+    (2026-10-26) died on exactly this: the reviewer's drift report merely
+    NAMED ``policy.py:_opponent_sample_weight`` as the one allowed symbol, the
+    restore-set extractor read that mention as a restore demand, and four
+    review rounds were burned on a contract that can never pass quality.
+
+    Returns the conflicting bare symbol name when the reviewer-named symbols
+    include the plan's ``change_symbol``, otherwise ``""``.
+    """
+    change_symbol, _chain = _planned_change_symbol_domain(ckpt)
+    planned = _planned_symbol_bare_name(change_symbol)
+    if not planned:
+        return ""
+    return planned if planned in set(names or ()) else ""
+
+
 def _authorized_parent_restore_section(ckpt, feedback, parent_policy_path=None):
     """Authorized byte-identical restore set for crossover review-repair.
 
@@ -771,13 +798,33 @@ def _authorized_parent_restore_section(ckpt, feedback, parent_policy_path=None):
     restore and injects the parent's function bytes (system-owned read,
     sha256-bound) so the restore is executable verbatim. Non-crossover
     checkpoints and unresolvable parents render nothing.
+
+    Two carve-outs keep the section from contradicting a live gate
+    (2026-10-26):
+
+    * the generation's planned ``change_symbol`` is NEVER a restore target —
+      the changed-symbol gate requires it to differ from the baseline, so a
+      reviewer mention of it is not an authorization (explicit carve-out text
+      is rendered instead);
+    * injected bodies are complete, and the digest binds the complete body.
+      The former 4000-char clamp demanded a sha256 the worker could never
+      reproduce from the prompt (v620 ``_decision_from_equity``: 5461 chars,
+      four rounds judged "parent form not restored").
+
+    Reviewer side notes (``NOTE: ...`` / ``Also notes`` / ``Other checks:``)
+    are not repair demands and never authorize a restore.
     """
     try:
         parent2 = ckpt.get("parent2_v")
         source_v = ckpt.get("source_v")
         if parent2 is None or source_v is None or not feedback:
             return ""
-        text = str(feedback)
+        # Side notes are diagnostics, not directives; extract only the
+        # blocking part of the verdict (shared convention with
+        # ``_review_repair_target_files``).
+        text = _review_primary_feedback_text(str(feedback))
+        if not text:
+            return ""
         if len(text) > 12000:
             text = text[:6000] + "\n...\n" + text[-6000:]
         # Reviewer verdicts cite symbols as `policy.py:_name` or `_name`
@@ -790,34 +837,63 @@ def _authorized_parent_restore_section(ckpt, feedback, parent_policy_path=None):
         )
         if not wanted:
             return ""
+        held_change_symbol = _restore_conflicts_with_planned_change_symbol(
+            ckpt, wanted
+        )
+        if held_change_symbol:
+            wanted.discard(held_change_symbol)
         path = parent_policy_path
         if path is None:
             path = Path(__file__).resolve().parents[2] / "bots" / bot_name(source_v) / "policy.py"
-        funcs = _extract_parent_functions(path, wanted)
-        if not funcs:
+        funcs = _extract_parent_functions(path, wanted) if wanted else {}
+        if not funcs and not held_change_symbol:
             return ""
-        blocks = []
-        for name in sorted(funcs):
-            body = funcs[name]
-            digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
-            if len(body) > 4000:
-                body = body[:4000] + "\n# ... (truncated; read the parent file section if longer)"
-            blocks.append(
-                f"### `policy.py:{name}` (parent sha256[:16]={digest})\n"
-                "```python\n" + body + "\n```"
+        sections = []
+        if funcs:
+            blocks = []
+            for name in sorted(funcs):
+                body = funcs[name]
+                digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+                # Never clamp the injected body: the digest below binds the
+                # COMPLETE function, so a truncated injection would command a
+                # sha256 no faithful worker could ever reproduce.
+                blocks.append(
+                    f"### `policy.py:{name}` (parent sha256[:16]={digest}; "
+                    "digest covers this complete function body)\n"
+                    "```python\n" + body + "\n```"
+                )
+            sections.append(
+                "\n\n# Authorized parent-restore set (crossover review-repair)\n"
+                "This generation is a crossover child. The reviewer verdict "
+                "above names the functions listed below. Replacing each "
+                "listed function BYTE-IDENTICALLY with its injected SOURCE "
+                "PARENT form is AUTHORIZED even though the symbols sit "
+                "outside the symbol-domain lock: no renaming, no semantic "
+                "refactors, no extra edits inside them. The sha256 prefix "
+                "binds the complete injected body; a restore that does not "
+                "reproduce it is a failed repair. All other lock rules still "
+                "apply.\n\n" + "\n\n".join(blocks)
             )
-        return (
-            "\n\n# Authorized parent-restore set (crossover review-repair)\n"
-            "This generation is a crossover child. The reviewer verdict above "
-            "demands restoring some functions to the SOURCE PARENT'S form. "
-            "Those restores are AUTHORIZED even though the symbols sit "
-            "outside the symbol-domain lock: replace each listed function "
-            "BYTE-IDENTICALLY with the injected parent form below (no "
-            "renaming, no semantic refactors, no extra edits inside them). "
-            "The sha256 prefix binds each injected body; a restore that does "
-            "not reproduce it is a failed repair. All other lock rules still "
-            "apply.\n\n" + "\n\n".join(blocks)
-        )
+        if held_change_symbol:
+            carve_tail = (
+                "while restoring the functions listed above."
+                if funcs
+                else "without turning it into a parent-form restore."
+            )
+            carve_out = (
+                "\n\n# Planned change_symbol carve-out (hard)\n"
+                f"`policy.py:{held_change_symbol}` is this generation's "
+                "planned change_symbol. It is the ONE symbol that MUST differ "
+                "from this generation's frozen planning baseline: the "
+                "machine-projected changed-symbol review rejects any candidate "
+                "whose change_symbol matches its baseline. A reviewer mention "
+                "of it is therefore NOT a restore authorization, and the "
+                "repair must never replace it byte-identically with the source "
+                "parent form. Keep (or re-apply) the planned change inside it "
+                + carve_tail
+            )
+            sections.append(carve_out)
+        return "".join(sections)
     except Exception:
         return ""
 

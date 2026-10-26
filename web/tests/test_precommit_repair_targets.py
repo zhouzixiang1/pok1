@@ -1,5 +1,6 @@
 """Strict policy-epoch precommit repair routing tests."""
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -276,6 +277,272 @@ def test_authorized_parent_restore_section_for_crossover(tmp_path):
         ckpt, "Rejected: evidence depth insufficient.", parent_policy_path=parent
     )
     assert quiet == ""
+
+
+_RESTORE_PARENT_SOURCE = (
+    "def iter_decisions(ctx):\n"
+    "    return _strategy_adjustments(ctx)\n"
+    "\n"
+    "def _strategy_adjustments(ctx):\n"
+    "    return ctx['x'] + 1\n"
+    "\n"
+    "def _unrelated(ctx):\n"
+    "    return 2\n"
+    "\n"
+    "def _note_only(ctx):\n"
+    "    return 3\n"
+)
+
+
+def _restore_ckpt(change_symbol="policy.py:_strategy_adjustments"):
+    """Crossover review-repair checkpoint bound to a frozen plan."""
+
+    return {
+        "parent2_v": 27,
+        "source_v": 608,
+        "next_v": 621,
+        "master_plan": {
+            "selected_proposal_id": "proposal-1",
+            "proposal_ensemble": {
+                "proposal_source_symbol_digests": {"proposal-1": {}},
+            },
+            "proposal_binding": {
+                "change_symbol": change_symbol,
+                "reachable_chain": [
+                    "policy.py:iter_decisions",
+                    change_symbol,
+                ],
+            },
+        },
+    }
+
+
+def test_authorized_parent_restore_section_excludes_planned_change_symbol(tmp_path):
+    """2026-10-26 mutex: a restore authorization for the plan's own
+    change_symbol is unsatisfiable (the changed-symbol gate requires it to
+    differ from the baseline). v620 injected exactly that."""
+    from tool_planning_quality_contracts import (
+        _authorized_parent_restore_section,
+        _restore_conflicts_with_planned_change_symbol,
+    )
+
+    parent = tmp_path / "policy.py"
+    parent.write_text(_RESTORE_PARENT_SOURCE, encoding="utf-8")
+    ckpt = _restore_ckpt()
+    feedback = (
+        "Rejected: the planned contract permits changes only to "
+        "`policy.py:_strategy_adjustments`, but the candidate also wires "
+        "`_unrelated` from `policy.py:iter_decisions`. Restore the parent "
+        "forms."
+    )
+
+    # The mutex is detected deterministically from the frozen binding.
+    assert _restore_conflicts_with_planned_change_symbol(
+        ckpt, {"_unrelated", "_strategy_adjustments"}
+    ) == "_strategy_adjustments"
+    # Non-conflicting mention sets and missing bindings never fabricate one.
+    assert (
+        _restore_conflicts_with_planned_change_symbol(ckpt, {"_unrelated"}) == ""
+    )
+    assert (
+        _restore_conflicts_with_planned_change_symbol(
+            {"parent2_v": 27, "source_v": 608}, {"_strategy_adjustments"}
+        )
+        == ""
+    )
+    assert (
+        _restore_conflicts_with_planned_change_symbol(
+            _restore_ckpt("_strategy_adjustments"), {"_strategy_adjustments"}
+        )
+        == "_strategy_adjustments"
+    )
+
+    section = _authorized_parent_restore_section(
+        ckpt, feedback, parent_policy_path=parent
+    )
+    # The planned change_symbol is never injected as a parent form ...
+    assert "### `policy.py:_strategy_adjustments`" not in section
+    assert "def _strategy_adjustments(ctx):" not in section
+    # ... and the carve-out adjudicates the conflict explicitly.
+    assert "Planned change_symbol carve-out (hard)" in section
+    assert "`policy.py:_strategy_adjustments`" in section
+    assert "NOT a restore authorization" in section
+    # Every other reviewer-named symbol — including reachable-chain call
+    # sites that are NOT the change_symbol — stays authorized.
+    assert "### `policy.py:_unrelated`" in section
+    assert "### `policy.py:iter_decisions`" in section
+    assert "def _unrelated(ctx):" in section
+    assert "def iter_decisions(ctx):" in section
+
+    # Non-mutex feedback (no change_symbol mention) is byte-for-byte the
+    # pre-existing behavior: authorized, and no carve-out invented.
+    clean = _authorized_parent_restore_section(
+        ckpt,
+        "Rejected: `_unrelated` drift; restore its national_cloud_v608 form.",
+        parent_policy_path=parent,
+    )
+    assert "### `policy.py:_unrelated`" in clean
+    assert "Planned change_symbol carve-out" not in clean
+    assert "### `policy.py:_strategy_adjustments`" not in clean
+
+
+def test_authorized_parent_restore_section_ignores_reviewer_note_side_notes(tmp_path):
+    """Symbols named only in reviewer NOTE sections are not restore demands."""
+
+    from tool_planning_quality_contracts import (
+        _authorized_parent_restore_section,
+    )
+
+    parent = tmp_path / "policy.py"
+    parent.write_text(_RESTORE_PARENT_SOURCE, encoding="utf-8")
+    feedback = (
+        "Rejected: `_unrelated` inherits the parent drift; restore its "
+        "national_cloud_v608 form.\n\n"
+        "NOTE: This is an in-place repair. `_note_only` and `iter_decisions` "
+        "are style observations only.\n"
+    )
+    section = _authorized_parent_restore_section(
+        _restore_ckpt(), feedback, parent_policy_path=parent
+    )
+    assert "### `policy.py:_unrelated`" in section
+    assert "### `policy.py:_note_only`" not in section
+    assert "### `policy.py:iter_decisions`" not in section
+
+
+def test_authorized_parent_restore_section_injects_full_body_above_4000_chars(
+    tmp_path,
+):
+    """A clamped body + a digest of the complete function is a contract the
+    worker can never satisfy (v620: 5461-char `_decision_from_equity` cut at
+    4000, 4 rounds judged "parent form not restored")."""
+
+    from tool_planning_quality_contracts import (
+        _authorized_parent_restore_section,
+    )
+
+    lines = ["def _big(ctx):"]
+    for index in range(200):
+        lines.append(f"    value_{index} = ctx.get('k{index}', {index})")
+    lines.append("    return value_199 + 424242")
+    body = "\n".join(lines) + "\n"
+    assert len(body) > 4000
+
+    parent = tmp_path / "policy.py"
+    parent.write_text(body, encoding="utf-8")
+    section = _authorized_parent_restore_section(
+        _restore_ckpt("policy.py:_strategy_adjustments"),
+        "Rejected: `_big` must be restored to its parent form.",
+        parent_policy_path=parent,
+    )
+    assert "### `policy.py:_big`" in section
+    assert "(truncated" not in section
+    assert body in section
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    assert f"sha256[:16]={digest}" in section
+    assert "return value_199 + 424242" in section
+
+
+def test_authorized_parent_restore_section_renders_carve_out_without_parent_funcs(
+    tmp_path,
+):
+    """When the reviewer names ONLY the change_symbol, the section still
+    adjudicates it (and injects nothing else)."""
+
+    from tool_planning_quality_contracts import (
+        _authorized_parent_restore_section,
+    )
+
+    parent = tmp_path / "policy.py"
+    parent.write_text(_RESTORE_PARENT_SOURCE, encoding="utf-8")
+    section = _authorized_parent_restore_section(
+        _restore_ckpt(),
+        "Rejected: restore `_strategy_adjustments` to its parent form.",
+        parent_policy_path=parent,
+    )
+    assert "### `policy.py:_strategy_adjustments`" not in section
+    assert "Planned change_symbol carve-out (hard)" in section
+    assert "### `policy.py:_unrelated`" not in section
+
+
+def test_review_rework_prompt_carve_out_keeps_planned_change_symbol(
+    tmp_path, monkeypatch
+):
+    """The review-rework prompt inherits the carve-out: the planned change
+    survives while the reviewer-named drift function is restored."""
+
+    import tool_planning_quality_contracts as contracts
+    import tool_planning_quality_rework as rw
+
+    monkeypatch.setattr(
+        contracts,
+        "_extract_parent_functions",
+        lambda _path, wanted: {
+            name: f"def {name}(ctx):\n    return 1\n"
+            for name in wanted
+            if name in {"_strategy_adjustments", "_unrelated"}
+        },
+    )
+    feedback = (
+        "Rejected: the planned contract permits changes only to "
+        "`policy.py:_strategy_adjustments`, but the candidate also changed "
+        "`_unrelated`."
+    )
+    ckpt = {
+        "next_v": 621,
+        "source_v": 608,
+        "parent2_v": 27,
+        "stage": "repair_planned",
+        "reviewer_feedback": feedback,
+        "master_plan": _restore_ckpt()["master_plan"],
+        "gate_results": {
+            "review": {"passed": False, "approved": False, "feedback": feedback}
+        },
+    }
+    tasks = rw._synthesize_rework_tasks_from_checkpoint(ckpt, feedback)
+    assert tasks
+    prompt = "\n".join(str(task.get("worker_prompt") or "") for task in tasks)
+    assert "Authorized parent-restore set" in prompt
+    assert "### `policy.py:_unrelated`" in prompt
+    assert "### `policy.py:_strategy_adjustments`" not in prompt
+    assert "Planned change_symbol carve-out (hard)" in prompt
+
+
+def test_review_rework_prompt_omits_restore_section_for_approved_review(
+    monkeypatch,
+):
+    """A passing review never renders restore authorization (the section is
+    review-rejection-only, even if the prose mentions symbols)."""
+
+    import tool_planning_quality_contracts as contracts
+    import tool_planning_quality_rework as rw
+
+    monkeypatch.setattr(
+        contracts,
+        "_extract_parent_functions",
+        lambda _path, wanted: {
+            name: f"def {name}(ctx):\n    return 1\n" for name in wanted
+        },
+    )
+    feedback = "Approved. `_unrelated` and `_strategy_adjustments` were reviewed."
+    ckpt = {
+        "next_v": 621,
+        "source_v": 608,
+        "parent2_v": 27,
+        "stage": "critic_checked",
+        "reviewer_feedback": feedback,
+        "master_plan": _restore_ckpt()["master_plan"],
+        "gate_results": {
+            "review": {"passed": True, "approved": True, "feedback": feedback}
+        },
+    }
+    tasks = rw._synthesize_rework_tasks_from_checkpoint(ckpt, feedback)
+    # A non-rework stage synthesizes nothing; and even when the same checkpoint
+    # is force-classified as a repair stage the approved review is not one.
+    assert tasks == []
+    assert (
+        rw._qc._is_review_rework_checkpoint(dict(ckpt, stage="repair_planned"))
+        is False
+    )
 
 
 def test_review_rework_prompt_carries_parent_restore(tmp_path):
