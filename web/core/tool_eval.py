@@ -44,6 +44,9 @@ from precommit_eval_contract import (
     validate_precommit_plan,
 )
 from strength_order import (
+    PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+    PRECOMMIT_AGGREGATE_MIN_SAMPLES,
+    PRECOMMIT_PARENT_MIN_SAMPLES,
     is_precommit_gate_matchup,
     is_strength_matchup,
 )
@@ -531,6 +534,207 @@ def _rotate_precommit_plan_for_repair_round(
         pass
     return rotated, None
 
+
+# ──────────────────────────────────────────────
+# Ambiguous failure: pre-register the fresh-seed sample instead of repairing
+# ──────────────────────────────────────────────
+# The frozen plan already pre-registers two independent deck seeds per
+# generation (round 1 + the single fresh-seed sample purchased by
+# ``precommit_rework_count``).  A non-decisive failure — no gate matchup shows
+# a ``losses >= wins + margin`` regression at its own minimum sample depth —
+# carries almost no information about the candidate, so the one available
+# second sample is strictly more informative than an unguided Worker rework.
+# A decisive regression keeps the historical in-place repair.  Either way the
+# generation still gets at most two independent samples: this path consumes
+# the same ``precommit_rework_count`` unit the repair path consumes, so a
+# second failure follows the ordinary repair/circuit-breaker route.
+def _precommit_failure_is_decisive(matchups) -> bool:
+    """Whether the failed sample proves a regression the repair must address.
+
+    Reuses the precommit gate's own minimum sample depth and loss margin
+    (``strength_order``); no threshold is introduced or relaxed here.  A
+    decisive failure is one the aggregate gate or one matchup leg would have
+    blocked on the loss margin alone.
+    """
+
+    gate_wins = 0
+    gate_losses = 0
+    gate_samples = 0
+    for matchup in matchups or []:
+        if not isinstance(matchup, dict) or not is_precommit_gate_matchup(matchup):
+            continue
+        wins = int(matchup.get("wins", 0) or 0)
+        losses = int(matchup.get("losses", 0) or 0)
+        draws = int(matchup.get("draws", 0) or 0)
+        samples = wins + losses + draws
+        if (
+            samples >= PRECOMMIT_PARENT_MIN_SAMPLES
+            and losses >= wins + PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN
+        ):
+            return True
+        gate_wins += wins
+        gate_losses += losses
+        gate_samples += samples
+    return bool(
+        gate_samples >= PRECOMMIT_AGGREGATE_MIN_SAMPLES
+        and gate_losses >= gate_wins + PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN
+    )
+
+
+def _precommit_seed_resample_preferred(
+    *,
+    result: dict,
+    precommit_plan: dict | None,
+    checkpoint: dict | None,
+    gate_failure_class: str,
+) -> bool:
+    """True when an ambiguous round-1 failure should buy the fresh-seed sample."""
+
+    if not isinstance(result, dict) or result.get("passed") is not False:
+        return False
+    if gate_failure_class not in {"regression", "failed_unknown"}:
+        # ``infra_timeout`` (including the exhausted-attempt rewrite to
+        # ``regression``) is a harness failure, never a policy result: it must
+        # keep its own retry path and must not consume the rework unit.
+        return False
+    ckpt = checkpoint if isinstance(checkpoint, dict) else {}
+    if int(ckpt.get("precommit_rework_count", 0) or 0) != 0:
+        # The single rework unit is already spent (either by the fresh-seed
+        # resample or by an in-place repair): no third sample exists.
+        return False
+    if not isinstance(precommit_plan, dict):
+        return False
+    try:
+        if plan_seed_round(precommit_plan) != 1:
+            return False
+    except PrecommitEvalContractError:
+        return False
+    return not _precommit_failure_is_decisive(result.get("matchups"))
+
+
+def _pre_register_precommit_seed_resample(
+    *, v: int, source_v: int, prior_rework_count: int
+) -> bool:
+    """Restore the unchanged candidate to ``critic_checked`` for seed round 2.
+
+    One exact-CAS checkpoint write consumes the single rework counter unit
+    (``precommit_rework_count`` -> 1).  The next ``run_precommit_eval`` then
+    rebuilds the frozen plan under seed round 2
+    (``_rotate_precommit_plan_for_repair_round``), and because the write's
+    stage gate allowlist prunes ``gate_results.precommit_eval``,
+    ``route_policy`` routes straight back to ``run_precommit_eval`` instead of
+    ``execute_workers``.  Candidate bytes, opponents, per-opponent sample
+    depths, gate thresholds and the evaluation contract are untouched.
+    """
+
+    checkpoint = _matching_checkpoint(v, source_v)
+    if (
+        not isinstance(checkpoint, dict)
+        or str(checkpoint.get("stage") or "") != "precommit_failed"
+    ):
+        return False
+    feedback = (
+        "Precommit round 1 failed without a decisive regression. The candidate "
+        "bytes are UNCHANGED: do NOT rework. The checkpoint was restored to "
+        "critic_checked and the single independent-seed sample round 2 was "
+        "pre-registered (precommit_rework_count=1). Call run_precommit_eval to "
+        "re-sample the unchanged candidate under the same frozen opponents, "
+        "sample depths, gate thresholds and evaluation contract with a fresh "
+        "deck seed. A second failure abandons this generation; no third sample "
+        "exists."
+    )
+    persisted = write_pipeline_checkpoint(
+        v,
+        source_v,
+        "critic_checked",
+        reviewer_feedback=feedback,
+        precommit_rework_count=int(prior_rework_count) + 1,
+        expected_checkpoint_revision=checkpoint.get("checkpoint_revision"),
+        expected_checkpoint_stage="precommit_failed",
+        expected_workflow_run_id=checkpoint.get("workflow_run_id"),
+    )
+    if not persisted:
+        return False
+    try:
+        log_system_event(
+            "pipeline.precommit_seed_resample_instead_of_repair",
+            "info",
+            (
+                f"Precommit round 1 failed ambiguously for v{v}; skipping the "
+                "in-place Worker repair and pre-registering the single "
+                "independent-seed resample (round 2)."
+            ),
+            {
+                "version": v,
+                "source_v": source_v,
+                "prior_precommit_rework_count": int(prior_rework_count),
+                "precommit_rework_count": int(prior_rework_count) + 1,
+                "restored_stage": "critic_checked",
+                "expected_checkpoint_stage": "precommit_failed",
+                "seed_round": 2,
+                "seed_rounds_max": PRECOMMIT_SEED_ROUNDS_MAX,
+            },
+        )
+    except Exception:
+        pass
+    return True
+
+
+def _apply_precommit_seed_resample_instead_of_repair(
+    *,
+    v: int,
+    source_v: int,
+    result: dict,
+    precommit_plan: dict | None,
+    checkpoint: dict | None,
+    gate_failure_class: str,
+) -> bool:
+    """Restore ``critic_checked`` and rewrite the failure payload for round 2.
+
+    Must run only after the failed gate and its durable attempt record are both
+    on disk.  A failed restore write is side-effect free and keeps the
+    historical ``precommit_failed -> execute_workers`` repair route.
+    """
+
+    if not _precommit_seed_resample_preferred(
+        result=result,
+        precommit_plan=precommit_plan,
+        checkpoint=checkpoint,
+        gate_failure_class=gate_failure_class,
+    ):
+        return False
+    prior_rework_count = int(
+        (checkpoint or {}).get("precommit_rework_count", 0) or 0
+    )
+    if not _pre_register_precommit_seed_resample(
+        v=v,
+        source_v=source_v,
+        prior_rework_count=prior_rework_count,
+    ):
+        return False
+    result["precommit_seed_resample_pre_registered"] = True
+    result["precommit_rework_count"] = prior_rework_count + 1
+    result["precommit_resample_seed_round"] = 2
+    result["directive"] = (
+        f"National precommit round 1 FAILED without a decisive regression "
+        f"(seed round 1/{PRECOMMIT_SEED_ROUNDS_MAX}). The candidate bytes are "
+        "UNCHANGED and the checkpoint is restored to critic_checked with the "
+        "single independent-seed sample round 2 pre-registered "
+        "(precommit_rework_count=1). Do NOT call execute_workers and do NOT "
+        "rework the bot. Call run_precommit_eval now: it re-samples the "
+        "unchanged candidate under the same frozen opponents, sample depths, "
+        "gate thresholds and evaluation contract with a fresh deck seed. A "
+        "second failure abandons this generation; no third sample exists."
+    )
+    result["intent"] = make_intent(
+        "retry_same_tool",
+        next_tool="run_precommit_eval",
+        failure_class="regression",
+        authority="tool:precommit_eval",
+        safe_to_auto_execute=True,
+        reason="precommit_seed_resample_pre_registered",
+    )
+    return True
 
 
 def set_precommit_shutdown(token: threading.Event | None = None):
@@ -2024,6 +2228,11 @@ async def _run_national_precommit_backend(
         ))
     result["scorecard"] = scorecard.model_dump()
 
+    # Gate classification of this failed sample (empty when it passed or when
+    # the empty-pool first-strict control owns its own journal).  The
+    # ambiguous-failure resample rule reads the same value the failure branch
+    # below used to choose infra-retry vs repair.
+    precommit_failure_class = ""
     if passed:
         result["failure_class"] = "passed"
         result["intent"] = make_intent(
@@ -2082,6 +2291,7 @@ async def _run_national_precommit_backend(
             _precommit_gate_class = classify_precommit_gate(
                 {"passed": False, "blockers": blockers}
             )
+            precommit_failure_class = _precommit_gate_class
             if _precommit_gate_class == "infra_timeout" and precommit_attempt < MAX_PRECOMMIT_RETRIES:
                 result["directive"] = (
                     f"National precommit could not reach a conclusive verdict "
@@ -2157,6 +2367,29 @@ async def _run_national_precommit_backend(
             v,
             source_v,
             _matching_checkpoint(v, source_v),
+        )
+
+    # Pre-registered independent-seed resample instead of an in-place repair.
+    # A non-decisive round-1 failure (no gate matchup proves a
+    # ``losses >= wins + margin`` regression) carries almost no information
+    # about the candidate, so the single available fresh-seed sample is
+    # strictly more informative than an unguided Worker rework.  The restore
+    # runs only after BOTH the failed gate and its durable attempt record are
+    # on disk; a failed restore write keeps the historical
+    # ``precommit_failed -> execute_workers`` repair route.
+    if (
+        not passed
+        and not system_control_plan
+        and checkpoint_recorded
+        and attempt_history_recorded
+    ):
+        _apply_precommit_seed_resample_instead_of_repair(
+            v=v,
+            source_v=source_v,
+            result=result,
+            precommit_plan=precommit_plan,
+            checkpoint=_matching_checkpoint(v, source_v),
+            gate_failure_class=precommit_failure_class,
         )
 
     if append_candidate_event:

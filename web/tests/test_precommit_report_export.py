@@ -173,3 +173,120 @@ def test_export_and_append_hook_write_reports(tmp_path: Path):
     hook_report = tmp_path / "precommit_reports" / "v590.json"
     assert hook_report.is_file()
     assert json.loads(hook_report.read_text(encoding="utf-8"))["version"] == 590
+
+
+def _round_scorecard(*, version: int, primary_score: float) -> dict:
+    scorecard = json.loads(json.dumps(_entry(version=version)["scorecard"]))
+    scorecard["primary_score"] = primary_score
+    return scorecard
+
+
+def test_two_rounds_keep_both_round_evidence_and_canonical_is_latest(
+    tmp_path: Path,
+):
+    """Round 2 must not erase round 1; ``vN.json`` keeps the latest round."""
+
+    ledger = tmp_path / "candidates.jsonl"
+    entry = _entry(version=622)
+    for round_number, primary_score in ((1, 0.4167), (2, 0.75)):
+        candidate_store.append_candidate_event(
+            "precommit_finished",
+            version=622,
+            source_v=585,
+            candidate_id=entry["candidate_id"],
+            run_id=entry["run_id"],
+            workflow_profile_id=entry["workflow_profile_id"],
+            parent_ids=entry["parent_ids"],
+            stage=entry["stage"],
+            gate=entry["gate"],
+            scorecard=_round_scorecard(
+                version=622, primary_score=primary_score
+            ),
+            metrics={
+                "passed": False,
+                "net_chips_mean": -1889.5,
+                "precommit_seed_round": round_number,
+                "precommit_repair_round": round_number - 1,
+            },
+            failures=entry["failures"],
+            failure_class=entry["failure_class"],
+            path=ledger,
+        )
+
+    report_dir = tmp_path / "precommit_reports"
+    canonical = report_dir / "v622.json"
+    first_round = report_dir / "v622_round1.json"
+    second_round = report_dir / "v622_round2.json"
+    assert sorted(path.name for path in report_dir.iterdir()) == [
+        "v622.json",
+        "v622_round1.json",
+        "v622_round2.json",
+    ]
+    latest = json.loads(canonical.read_text(encoding="utf-8"))
+    round_one = json.loads(first_round.read_text(encoding="utf-8"))
+    round_two = json.loads(second_round.read_text(encoding="utf-8"))
+    assert latest["primary_score"] == 0.75
+    assert latest["sample_round"] == 2
+    assert round_one["primary_score"] == 0.4167
+    assert round_one["sample_round"] == 1
+    assert round_two["sample_round"] == 2
+    # Canonical bytes and the round copy come from the same built report.
+    assert canonical.read_text(encoding="utf-8") == second_round.read_text(
+        encoding="utf-8"
+    )
+    assert "seed" not in json.dumps(latest).lower()
+
+
+def test_round_copy_failure_does_not_block_canonical_report(
+    tmp_path: Path, monkeypatch
+):
+    """A failed round copy is a warning; the canonical report still lands."""
+
+    canonical = precommit_report.report_path(tmp_path, 589)
+    real_write = precommit_report._write_json_atomic
+
+    def flaky_write(path, payload):
+        if path.name != canonical.name:
+            raise OSError("round copy unavailable")
+        return real_write(path, payload)
+
+    warnings: list[str] = []
+
+    class _Recorder:
+        def warning(self, message, *args, **kwargs):
+            warnings.append(message)
+
+    monkeypatch.setattr(precommit_report, "_write_json_atomic", flaky_write)
+    # The autouse test fixture mutes the real ``pok`` logger, so record the
+    # warning through the module's logger boundary instead of caplog.
+    monkeypatch.setattr(precommit_report, "log", _Recorder())
+    entry = _entry()
+    entry["metrics"] = {"precommit_seed_round": 1}
+    path = precommit_report.write_precommit_report(tmp_path, entry)
+    assert path == canonical
+    assert canonical.is_file()
+    payload = json.loads(canonical.read_text(encoding="utf-8"))
+    assert payload["version"] == 589
+    assert payload["sample_round"] == 1
+    assert not (tmp_path / "precommit_reports" / "v589_round1.json").exists()
+    assert warnings == ["precommit round evidence copy failed"]
+
+
+def test_legacy_entry_round_copy_uses_stable_source_timestamp(tmp_path: Path):
+    """No round metrics: the copy is keyed by the stable event timestamp."""
+
+    entry = _entry()
+    first = precommit_report.write_precommit_report(tmp_path, entry)
+    second = precommit_report.write_precommit_report(tmp_path, entry)
+    assert first == second == precommit_report.report_path(tmp_path, 589)
+    report_dir = tmp_path / "precommit_reports"
+    assert sorted(path.name for path in report_dir.iterdir()) == [
+        "v589.json",
+        "v589_19700101T000203Z.json",
+    ]
+    copy = json.loads(
+        (report_dir / "v589_19700101T000203Z.json").read_text(encoding="utf-8")
+    )
+    assert copy["sample_round"] is None
+    assert copy["precommit_attempt"] is None
+    assert copy["source_event_timestamp"] == 123.0

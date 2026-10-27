@@ -280,6 +280,28 @@ def test_malformed_and_symlinked_reports_are_ignored(tmp_path: Path):
     ).exists()
 
 
+def test_round_evidence_copies_do_not_become_versions(tmp_path: Path):
+    """``vN_roundK.json`` copies are evidence, never a scannable version."""
+
+    results = tmp_path / "results"
+    for round_number in (1, 2):
+        entry = _entry(version=589)
+        entry["metrics"] = {"precommit_seed_round": round_number}
+        _write_report(results, entry)
+    _write_quarantine(results, 589)
+
+    summary = diagnostic_manifest.sync_diagnostic_manifests(results)
+
+    assert summary["scanned"] == 1
+    assert summary["created"] == 1
+    assert summary["skipped_invalid"] == 0
+    manifest = _manifest(results, 589)
+    assert manifest["evaluation_report"] == "precommit_reports/v589.json"
+    report_dir = results / precommit_report.REPORT_DIR_NAME
+    assert (report_dir / "v589_round1.json").is_file()
+    assert (report_dir / "v589_round2.json").is_file()
+
+
 def test_loop_disabled_is_a_noop(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("POK_DIAGNOSTIC_MANIFEST_ENABLED", "0")
     _write_report(tmp_path / "results", _entry(version=589))

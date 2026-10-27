@@ -1,7 +1,10 @@
 """Seed-free precommit evaluation reports.
 
 Every precommit outcome (pass or fail) becomes a stable, digest-bound JSON
-report under ``RESULTS_DIR/precommit_reports/v<N>.json``.  The report is
+report under ``RESULTS_DIR/precommit_reports/v<N>.json``.  The canonical file
+always holds the latest round; each round also keeps a copy beside it
+(``v<N>_round<k>.json``, or a stable event-timestamp label for legacy rows) so
+a later repair round cannot erase the earlier round's evidence.  The report is
 derived from the candidate ledger's frozen scorecard; it is an evaluation
 product, never a publication authority.  Publication still requires the
 native precommit gate to pass.
@@ -11,11 +14,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
+
+log = logging.getLogger("pok.precommit_report")
 
 SCHEMA_VERSION = 1
 KIND = "precommit-evaluation-report-v1"
@@ -36,6 +43,12 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     return value
+
+
+def _positive_int(value: Any) -> int | None:
+    """Return ``value`` only when it is a genuine positive ``int``."""
+
+    return value if type(value) is int and value >= 1 else None
 
 
 def _scorecard_gates(entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -86,6 +99,11 @@ def build_precommit_report(
     metrics = gate.get("metrics")
     if not isinstance(metrics, dict):
         metrics = {}
+    # Ledger-level metrics (the event's own ``metrics`` dict) carry the round
+    # bookkeeping; the gate-level metrics above are the scorecard evidence.
+    event_metrics = entry.get("metrics")
+    if not isinstance(event_metrics, dict):
+        event_metrics = {}
     outcome = metrics.get("outcome_gate")
     if not isinstance(outcome, dict):
         outcome = {}
@@ -132,6 +150,17 @@ def build_precommit_report(
         "generated_at": generated_at
         or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source_event_timestamp": entry.get("timestamp"),
+        # Round identity of this precommit evaluation.  ``sample_round`` is the
+        # frozen plan's seed round (1 = first sample, 2 = the one pre-registered
+        # independent-seed repair round); ``precommit_attempt`` distinguishes
+        # re-runs of the same round.  Both stay top-level (never inside the
+        # ``_redact`` subtrees) and carry no plan seed material.
+        "sample_round": _positive_int(
+            event_metrics.get("precommit_seed_round")
+        ),
+        "precommit_attempt": _positive_int(
+            event_metrics.get("precommit_attempt")
+        ),
         "gate": gate.get("name"),
         "status": status,
         "precommit_passed": precommit_passed,
@@ -193,6 +222,45 @@ def report_path(results_dir: str | Path, version: int) -> Path:
     return Path(results_dir) / REPORT_DIR_NAME / f"v{int(version)}.json"
 
 
+def report_round_path(results_dir: str | Path, version: int, label: str) -> Path:
+    """Round/timestamp evidence copy beside the canonical per-version report.
+
+    The canonical ``v<N>.json`` keeps its "latest round wins" meaning; these
+    copies preserve earlier rounds.  The name never matches the diagnostic
+    scan's ``^v(\\d+)\\.json$`` pattern, so readers are unaffected.
+    """
+
+    return Path(results_dir) / REPORT_DIR_NAME / f"v{int(version)}_{label}.json"
+
+
+def _round_label(report: dict[str, Any]) -> str:
+    """File-label for the round copy, or ``""`` when none can be derived.
+
+    ``sample_round`` is the round identity.  ``precommit_attempt`` is NOT one:
+    the rework transition clears the checkpoint counter, so both rounds report
+    attempt 1.  It is only a disambiguator for same-round re-runs.  Legacy rows
+    without round metrics fall back to the stable source event timestamp (never
+    ``generated_at``, which is the wall clock of each export run and would emit
+    a new file every backfill).
+    """
+
+    round_value = _positive_int(report.get("sample_round"))
+    if round_value is not None:
+        attempt = _positive_int(report.get("precommit_attempt"))
+        if attempt is not None:
+            return f"round{round_value}_attempt{attempt}"
+        return f"round{round_value}"
+    timestamp = report.get("source_event_timestamp")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+        return ""
+    if not math.isfinite(timestamp) or timestamp <= 0:
+        return ""
+    try:
+        return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(float(timestamp)))
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 def diagnostic_manifest_path(results_dir: str | Path, version: int) -> Path:
     return (
         Path(results_dir)
@@ -241,6 +309,16 @@ def write_precommit_report(
         return None
     path = report_path(results_dir, version)
     _write_json_atomic(path, report)
+    # Conservative round evidence: the canonical report above is authoritative
+    # and already durable, so a failing copy can never block the main path.
+    try:
+        label = _round_label(report)
+        if label:
+            _write_json_atomic(
+                report_round_path(results_dir, version, label), report
+            )
+    except Exception:
+        log.warning("precommit round evidence copy failed", exc_info=True)
     return path
 
 

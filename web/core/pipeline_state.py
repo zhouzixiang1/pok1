@@ -1033,6 +1033,15 @@ def validate_stage_transition(current_stage, proposed_stage):
         if proposed_stage == "critic_checked":
             return True, "infra_precommit_retry_recovery"
         return False, f"infra_timed_out_recovery_requires_critic_checked: {proposed_stage}"
+    if current_stage == "precommit_failed" and proposed_stage == "critic_checked":
+        # Pre-registered independent-seed resample: the unchanged candidate is
+        # restored to the stage that owns precommit execution, and the single
+        # rework counter unit is consumed (precommit_rework_count += 1).  The
+        # next precommit therefore rebuilds the frozen plan under seed round 2
+        # instead of replaying the failed deck schedule, while a second failure
+        # still follows the ordinary repair/circuit-breaker route (no third
+        # sample).  Mirrors the infra_timed_out -> critic_checked recovery edge.
+        return True, "precommit_seed_resample_restore"
     if (
         current_stage in _EARLY_GENERATION_STAGES
         or proposed_stage in _EARLY_GENERATION_STAGES
