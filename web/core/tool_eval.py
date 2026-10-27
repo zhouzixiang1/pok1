@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -540,45 +541,116 @@ def _rotate_precommit_plan_for_repair_round(
 # ──────────────────────────────────────────────
 # The frozen plan already pre-registers two independent deck seeds per
 # generation (round 1 + the single fresh-seed sample purchased by
-# ``precommit_rework_count``).  A non-decisive failure — no gate matchup shows
-# a ``losses >= wins + margin`` regression at its own minimum sample depth —
-# carries almost no information about the candidate, so the one available
-# second sample is strictly more informative than an unguided Worker rework.
-# A decisive regression keeps the historical in-place repair.  Either way the
-# generation still gets at most two independent samples: this path consumes
-# the same ``precommit_rework_count`` unit the repair path consumes, so a
-# second failure follows the ordinary repair/circuit-breaker route.
-def _precommit_failure_is_decisive(matchups) -> bool:
-    """Whether the failed sample proves a regression the repair must address.
+# ``precommit_rework_count``).  A non-decisive failure carries almost no
+# information about the candidate, so the one available second sample is
+# strictly more informative than an unguided Worker rework — the 2026-10-27
+# two-round evidence (6 samples, 4 repairs worse, 1 unchanged, 1 better;
+# mean primary score 0.475 -> 0.443) shows the repair path walks a candidate
+# away from its parent on noise.  A decisive regression keeps the historical
+# in-place repair.  Either way the generation still gets at most two
+# independent samples: this path consumes the same ``precommit_rework_count``
+# unit the repair path consumes, so a second failure follows the ordinary
+# repair/circuit-breaker route.
+def _precommit_aggregate_evidence(result) -> tuple[int, int, float | None, float | None]:
+    """Aggregate W/L and the paired net-chip CI from a precommit gate result.
 
-    Reuses the precommit gate's own minimum sample depth and loss margin
-    (``strength_order``); no threshold is introduced or relaxed here.  A
-    decisive failure is one the aggregate gate or one matchup leg would have
-    blocked on the loss margin alone.
+    Returns ``(wins, losses, ci_lower, ci_upper)``.  Tolerates the three shapes
+    the same evidence takes in this codebase: the live gate result
+    (``total_wins``/``total_losses`` + ``paired_bootstrap``), the persisted
+    round report (``aggregate``), and a bare matchup list.
     """
 
-    gate_wins = 0
-    gate_losses = 0
-    gate_samples = 0
-    for matchup in matchups or []:
-        if not isinstance(matchup, dict) or not is_precommit_gate_matchup(matchup):
-            continue
-        wins = int(matchup.get("wins", 0) or 0)
-        losses = int(matchup.get("losses", 0) or 0)
-        draws = int(matchup.get("draws", 0) or 0)
-        samples = wins + losses + draws
-        if (
-            samples >= PRECOMMIT_PARENT_MIN_SAMPLES
-            and losses >= wins + PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN
-        ):
-            return True
-        gate_wins += wins
-        gate_losses += losses
-        gate_samples += samples
-    return bool(
-        gate_samples >= PRECOMMIT_AGGREGATE_MIN_SAMPLES
-        and gate_losses >= gate_wins + PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN
+    def _int(value) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _float(value) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    if isinstance(result, (list, tuple)):
+        wins = losses = 0
+        for matchup in result:
+            if not isinstance(matchup, dict) or not is_precommit_gate_matchup(matchup):
+                continue
+            wins += _int(matchup.get("wins"))
+            losses += _int(matchup.get("losses"))
+        return wins, losses, None, None
+    if not isinstance(result, dict):
+        return 0, 0, None, None
+
+    aggregate = result.get("aggregate")
+    if isinstance(aggregate, dict):
+        wins = _int(aggregate.get("wins"))
+        losses = _int(aggregate.get("losses"))
+        ci = aggregate.get("net_chips_ci") or []
+        if isinstance(ci, (list, tuple)) and len(ci) == 2:
+            return wins, losses, _float(ci[0]), _float(ci[1])
+        return wins, losses, None, None
+
+    wins = _int(result.get("total_wins"))
+    losses = _int(result.get("total_losses"))
+    if "total_wins" not in result:
+        wins = losses = 0
+        for matchup in result.get("matchups") or []:
+            if not isinstance(matchup, dict) or not is_precommit_gate_matchup(matchup):
+                continue
+            wins += _int(matchup.get("wins"))
+            losses += _int(matchup.get("losses"))
+    bootstrap = result.get("paired_bootstrap") or {}
+    if isinstance(bootstrap, dict):
+        return (
+            wins,
+            losses,
+            _float(bootstrap.get("aggregate_ci_lower")),
+            _float(bootstrap.get("aggregate_ci_upper")),
+        )
+    return wins, losses, None, None
+
+
+def _binomial_tail_p(losses: int, decided: int) -> float:
+    """Exact one-sided P(wins <= decided - losses) for a fair coin."""
+
+    if decided <= 0:
+        return 1.0
+    wins = max(0, decided - losses)
+    if wins >= decided:
+        return 1.0
+    return sum(math.comb(decided, k) for k in range(0, wins + 1)) / float(
+        2 ** decided
     )
+
+
+def _precommit_failure_is_decisive(result) -> bool:
+    """Whether the failed sample proves a regression the repair must address.
+
+    Decisive means one of the gate's two independent evidence channels shows a
+    regression that noise cannot explain; both are computed by the gate itself,
+    so no threshold is introduced here:
+
+    * the aggregate paired net-chip bootstrap CI lies entirely below zero, or
+    * the aggregate W/L record is a one-sided exact binomial outlier
+      (``p < 0.05``).
+
+    A deficit that is merely a strict-inequality loss (the 20W/20L v628 sample
+    that consumed a whole 92-minute round) is *not* decisive: it is the
+    definition of an ambiguous sample, and it gets the fresh-seed second
+    sample instead of an unguided repair.
+    """
+
+    wins, losses, ci_lower, ci_upper = _precommit_aggregate_evidence(result)
+    decided = wins + losses
+    if ci_upper is not None and ci_lower is not None:
+        if ci_upper < 0.0:
+            return True
+    if decided >= PRECOMMIT_AGGREGATE_MIN_SAMPLES:
+        if _binomial_tail_p(losses, decided) < 0.05:
+            return True
+    return False
 
 
 def _precommit_seed_resample_preferred(
@@ -609,7 +681,7 @@ def _precommit_seed_resample_preferred(
             return False
     except PrecommitEvalContractError:
         return False
-    return not _precommit_failure_is_decisive(result.get("matchups"))
+    return not _precommit_failure_is_decisive(result)
 
 
 def _pre_register_precommit_seed_resample(

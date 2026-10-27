@@ -51,8 +51,8 @@ def _matchup(wins, losses, draws=0, opponent="national_cloud_v8", **extra):
     }
 
 
-def _failure(matchups):
-    return {
+def _failure(matchups, ci=None):
+    result = {
         "passed": False,
         "failure_class": "regression",
         "blockers": [{
@@ -66,6 +66,15 @@ def _failure(matchups):
         "precommit_attempt": 1,
         "intent": {"kind": "abandon"},
     }
+    if ci is not None:
+        result["paired_bootstrap"] = {
+            "aggregate_ci_lower": ci[0],
+            "aggregate_ci_upper": ci[1],
+            "net_chips_samples": sum(
+                item["wins"] + item["losses"] + item["draws"] for item in matchups
+            ),
+        }
+    return result
 
 
 def _checkpoint(*, stage="precommit_failed", revision=7, rework_count=0):
@@ -145,18 +154,24 @@ def test_ambiguous_tie_failure_restores_critic_checked_and_preregisters_round_tw
 
 
 @pytest.mark.parametrize(
-    "matchups",
+    "matchups,ci",
     [
-        # Aggregate 11W-13L: losses == wins + 2 with n >= 8.
-        [_matchup(5, 7), _matchup(6, 6, opponent="national_cloud_v5")],
-        # One parent leg 4W-8L: n >= 6 and losses >= wins + 2.
-        [_matchup(4, 8), _matchup(10, 4, opponent="national_cloud_v5")],
+        # Aggregate 5W-15L over 20 decided matches: an exact one-sided
+        # binomial tail of 0.021 — the sample proves a regression.
+        ([_matchup(2, 6), _matchup(3, 9, opponent="national_cloud_v5")], None),
+        # Aggregate 6W-14L is inside the noise band (p=0.058), but the paired
+        # net-chip bootstrap CI is entirely below zero: the chip channel
+        # proves the loss on its own.
+        (
+            [_matchup(3, 7), _matchup(3, 7, opponent="national_cloud_v5")],
+            (-5000.0, -100.0),
+        ),
     ],
 )
-def test_decisive_regression_keeps_the_in_place_repair(monkeypatch, matchups):
+def test_decisive_regression_keeps_the_in_place_repair(monkeypatch, matchups, ci):
     checkpoint = _checkpoint()
     writes, events = _install_restore_harness(monkeypatch, checkpoint)
-    result = _failure(matchups)
+    result = _failure(matchups, ci=ci)
     result["directive"] = "Rework the bot against the parent."
 
     applied = tool_eval._apply_precommit_seed_resample_instead_of_repair(
@@ -370,3 +385,90 @@ def test_seed_resample_restore_is_an_explicit_stage_machine_edge(monkeypatch):
     }
     assert pipeline_state.route_policy(stale)["next_tool"] == "execute_workers"
     assert plan_seed_round(_plan(2)) == 2
+
+
+# --- calibration against every real precommit report on disk -----------------
+#
+# The 17 failed round reports between v589 and v628 (persisted under
+# RESULTS_DIR/precommit_reports as (wins, losses, aggregate net-chip CI)).
+# Only two of them are a statistically established regression; the other 15
+# are coincidences at parity — exactly the samples where an unguided repair
+# walks the candidate away from its parent on noise.
+REAL_FAILED_SAMPLES = {
+    "v589": (20, 28, -5962.4, 2501.0),
+    "v590": (21, 27, -5345.3, 2492.9),
+    "v595": (19, 21, -5218.2, 3910.0),
+    "v597": (13, 27, -8772.2, -691.1),
+    "v599": (21, 27, -6229.6, 1548.8),
+    "v600": (21, 19, -3446.3, 4926.0),
+    "v601": (20, 28, -6401.4, 1470.1),
+    "v605": (15, 25, -7815.9, 1169.4),
+    "v609": (23, 25, -4068.3, 3652.7),
+    "v610": (25, 23, -2638.7, 5525.5),
+    "v611": (22, 26, -4935.7, 3199.4),
+    "v617": (21, 27, -6235.2, 1537.3),
+    "v621": (19, 29, -7893.3, 774.2),
+    "v622": (21, 27, -5068.3, 2831.5),
+    "v625": (20, 20, -4298.4, 4339.3),
+    "v627": (16, 32, -7423.1, 278.0),
+    "v628": (20, 20, -4355.5, 4515.4),
+}
+
+DECISIVE_SAMPLES = {"v597", "v627"}
+
+
+@pytest.mark.parametrize("name", sorted(REAL_FAILED_SAMPLES))
+def test_real_precommit_samples_classify_decisive_only_when_proven(name):
+    wins, losses, ci_lower, ci_upper = REAL_FAILED_SAMPLES[name]
+    result = {
+        "passed": False,
+        "total_wins": wins,
+        "total_losses": losses,
+        "total_draws": 0,
+        "paired_bootstrap": {
+            "aggregate_ci_lower": ci_lower,
+            "aggregate_ci_upper": ci_upper,
+        },
+    }
+    assert tool_eval._precommit_failure_is_decisive(result) is (
+        name in DECISIVE_SAMPLES
+    )
+
+
+def test_round_report_shape_classifies_the_same_way():
+    # The persisted report carries the aggregate block (wins/losses/net_chips_ci)
+    # instead of the live gate result's total_* + paired_bootstrap pair.
+    report = {
+        "precommit_passed": False,
+        "aggregate": {
+            "wins": 20,
+            "losses": 20,
+            "draws": 0,
+            "net_chips_ci": [-4355.5, 4515.4],
+        },
+        "matchups": [{"opponent": "national_cloud_v608", "wins": 4, "losses": 4, "draws": 0}],
+    }
+    assert tool_eval._precommit_failure_is_decisive(report) is False
+    report["aggregate"] = {"wins": 13, "losses": 27, "draws": 0,
+                           "net_chips_ci": [-8772.2, -691.1]}
+    assert tool_eval._precommit_failure_is_decisive(report) is True
+
+
+def test_binomial_tail_is_exact_at_the_sample_depths_this_gate_uses():
+    # n=40: 14W is p=0.040 (decisive), 15W is p=0.077 (not).
+    assert tool_eval._binomial_tail_p(26, 40) < 0.05
+    assert tool_eval._binomial_tail_p(25, 40) > 0.05
+    # n=48: 17W is p=0.023 (decisive), 18W is p=0.056 (not).
+    assert tool_eval._binomial_tail_p(31, 48) < 0.05
+    assert tool_eval._binomial_tail_p(30, 48) > 0.05
+    assert tool_eval._binomial_tail_p(0, 0) == 1.0
+
+
+def test_thin_or_missing_evidence_is_not_decisive():
+    # A 4W-4L sample cannot distinguish anything, and an unparsable payload
+    # must not be turned into a decisive regression.
+    assert tool_eval._precommit_failure_is_decisive(
+        {"total_wins": 4, "total_losses": 4, "total_draws": 0}
+    ) is False
+    assert tool_eval._precommit_failure_is_decisive({}) is False
+    assert tool_eval._precommit_failure_is_decisive(None) is False
