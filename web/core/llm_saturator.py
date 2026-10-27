@@ -1138,6 +1138,33 @@ def _mem_available_mb() -> int | None:
     return None
 
 
+def _cgroup_unreclaimable_bytes(base: Path) -> "int | None":
+    """Usage (bytes) the kernel cannot evict from this cgroup.
+
+    ``memory.current`` is dominated by page cache in a read-heavy run, and the
+    kernel evicts that cache before it throttles an allocation. Charging it as
+    pressure closed saturator admission at 222 MB "headroom" on 2026-10-27
+    while ``memory.stat`` showed 866 MB of reclaimable ``file`` against 622 MB
+    ``anon``. ``anon`` + ``slab_unreclaimable`` is the usage ``memory.high``
+    actually throttles against.
+    """
+    try:
+        raw = (base / "memory.stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    values: dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in {"anon", "slab_unreclaimable"}:
+            try:
+                values[parts[0]] = int(parts[1])
+            except ValueError:
+                return None
+    if "anon" not in values:
+        return None
+    return values["anon"] + values.get("slab_unreclaimable", 0)
+
+
 def _cgroup_memory_headroom_mb(
     cgroup_file: str = "/proc/self/cgroup",
     cgroup_root: str = "/sys/fs/cgroup",
@@ -1145,13 +1172,14 @@ def _cgroup_memory_headroom_mb(
     """Headroom (MB) inside this service's cgroup v2 ``memory.high``.
 
     Parses the unified-hierarchy line (``0::<path>``) and reads
-    ``memory.high``/``memory.current`` under the root. Returns None — gate
-    inactive, fail-open — when the cgroup has no numeric limit
-    (``memory.high = max``), is not v2, or any read fails; the MemAvailable
-    gate remains the fallback. Host MemAvailable cannot see pressure inside
-    the service cgroup (deploy fact: pok-evolution.service memory.high was
-    2400 MiB, raised to 2700 MiB on 2026-10-10), which is exactly where AIMD
-    upshifts add claude children.
+    ``memory.high`` against the cgroup's unreclaimable usage (``memory.stat``),
+    falling back to ``memory.current`` when the stat file is unavailable.
+    Returns None — gate inactive, fail-open — when the cgroup has no numeric
+    limit (``memory.high = max``), is not v2, or any read fails; the
+    MemAvailable gate remains the fallback. Host MemAvailable cannot see
+    pressure inside the service cgroup (deploy fact: pok-evolution.service
+    memory.high was 2400 MiB, raised to 2700 MiB on 2026-10-10), which is
+    exactly where AIMD upshifts add transport children.
     """
     try:
         raw = Path(cgroup_file).read_text(encoding="utf-8")
@@ -1168,8 +1196,12 @@ def _cgroup_memory_headroom_mb(
         if not high_raw.isdigit():
             return None  # "max" or unrecognized -> no cgroup limit
         high_bytes = int(high_raw)
-        cur_bytes = int((base / "memory.current").read_text(encoding="utf-8").strip())
-        return max(0, (high_bytes - cur_bytes) // (1024 * 1024))
+        used_bytes = _cgroup_unreclaimable_bytes(base)
+        if used_bytes is None:
+            used_bytes = int(
+                (base / "memory.current").read_text(encoding="utf-8").strip()
+            )
+        return max(0, (high_bytes - used_bytes) // (1024 * 1024))
     except (OSError, ValueError):
         return None
 
