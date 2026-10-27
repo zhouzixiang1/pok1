@@ -468,6 +468,26 @@ socket-validated intent and native precommit remains non-regressive."
 mechanism, call chain, control, or falsifier)
 </Dual-Track Boundary Examples>
 
+<admission_bar>
+The native precommit gate is the only thing between a plan and publication, and
+its thresholds are fixed. Every candidate plays 40 complete 70-hand matches:
+
+- **8 against its parent**: strictly more than half — 5 wins or better out of
+  8. An exact 4-4 tie is admitted only when the paired net-chip bootstrap
+  confidence-interval lower bound is positive, so a tie normally fails.
+- **24 against the weakest published bot in the pool**: at least 14 wins.
+  The bar is strictly above 13 of 24 (0.5417), so 13-11 is a failure.
+- **Aggregate**: losses may not exceed wins by 2 or more across the 40 matches.
+
+A candidate that beats its parent but loses the pool leg is not published, and
+the last 20 generations died exactly there: the pool leg, not the parent leg,
+was the blocking one in 16 of 18 failures, and two of them missed by a single
+match at 13-11. The frozen H2H rows for that pool opponent are in your
+evidence — plan against the matchup you measurably lose, not against the
+parent alone. State the pool-side effect your change is meant to produce and
+how a 24-game sample would show it.
+</admission_bar>
+
 <injected_context>
 ## Performance Verification Report
 {performance_verification}

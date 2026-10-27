@@ -344,7 +344,7 @@ def test_latest_abandon_reason_fail_closed(monkeypatch):
         raise RuntimeError("ledger unreadable")
 
     monkeypatch.setattr(evolution_infra, "load_abandoned_version_receipts", boom)
-    assert llm_saturator._latest_abandon_reason_for_prompt() == ""
+    assert llm_saturator._latest_abandon_reason_for_prompt() == ("", "")
 
 
 def test_latest_abandon_reason_reads_last_row(monkeypatch):
@@ -354,14 +354,47 @@ def test_latest_abandon_reason_reads_last_row(monkeypatch):
         evolution_infra,
         "load_abandoned_version_receipts",
         lambda: [
-            {"reason": "old"},
-            {"reason": "prepared_baseline_contract_digest_mismatch"},
+            {"reason": "old", "version": 7, "timestamp": 1.0},
+            {
+                "reason": "prepared_baseline_contract_digest_mismatch",
+                "version": 8,
+                "timestamp": 2.0,
+            },
         ],
     )
-    assert (
-        llm_saturator._latest_abandon_reason_for_prompt()
-        == "prepared_baseline_contract_digest_mismatch"
+    assert llm_saturator._latest_abandon_reason_for_prompt() == (
+        "prepared_baseline_contract_digest_mismatch",
+        "8:2.0",
     )
+
+
+def test_abandon_attribution_is_deduped_per_receipt(monkeypatch):
+    """One attribution packet per receipt, not one per session forever (2026-10-27).
+
+    The 30 h aggregate showed 552 attribution packets (38% of all sessions,
+    156 M tokens) replaying the same stale receipt at 0.28 M tokens each while
+    every study job carried 0.74-1.66 M. A new abandon must re-arm the job.
+    """
+    import evolution_infra
+
+    rows = [{"reason": "precommit_rework_circuit_breaker", "version": 628, "timestamp": 9.5}]
+    monkeypatch.setattr(
+        evolution_infra, "load_abandoned_version_receipts", lambda: list(rows)
+    )
+    monkeypatch.setattr(llm_saturator, "_attributed_abandon_key", None)
+    # First session of the receipt attributes it ...
+    assert llm_saturator._pending_abandon_reason() == "precommit_rework_circuit_breaker"
+    llm_saturator._note_abandon_attribution_launched()
+    # ... every later session falls back to the three study jobs ...
+    assert llm_saturator._pending_abandon_reason() == ""
+    names = {
+        llm_saturator.saturator_job_for(i, abandon_reason=None)["name"]
+        for i in range(6)
+    }
+    assert names == {"matchup_packet", "line_audit", "function_trace"}
+    # ... until a new receipt appears.
+    rows.append({"reason": "master_exhausted (2 fails)", "version": 629, "timestamp": 10.5})
+    assert llm_saturator._pending_abandon_reason() == "master_exhausted (2 fails)"
 
 
 # --- provider-failure pause is tiered by availability category (2026-10-04) --

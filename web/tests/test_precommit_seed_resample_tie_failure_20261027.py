@@ -472,3 +472,24 @@ def test_thin_or_missing_evidence_is_not_decisive():
     ) is False
     assert tool_eval._precommit_failure_is_decisive({}) is False
     assert tool_eval._precommit_failure_is_decisive(None) is False
+
+
+def test_real_state_machine_backs_the_resample_restore():
+    # Exercises the production transition validator the checkpoint writer calls,
+    # not a monkeypatched stand-in: the edge must be authorized ...
+    ok, reason = pipeline_state.validate_stage_transition(
+        "precommit_failed", "critic_checked"
+    )
+    assert ok is True
+    assert reason == "precommit_seed_resample_restore"
+    # ... the destination's gate allowlist must drop the failed precommit gate
+    # (otherwise route_policy would send the generation back to execute_workers
+    # and the resample would never run) ...
+    assert "precommit_eval" not in pipeline_state.STAGE_GATE_ALLOWLIST["critic_checked"]
+    assert pipeline_state.NEXT_TOOL_BY_STAGE["critic_checked"] == "run_precommit_eval"
+    # ... and the restore must not be treated as a rework reset, so the
+    # consumed precommit_rework_count unit and precommit_attempt survive.
+    assert (
+        pipeline_state.is_rework_reset_transition("precommit_failed", "critic_checked")
+        is False
+    )

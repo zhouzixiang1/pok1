@@ -650,3 +650,47 @@ def test_all_roles_bind_the_v10_strong_baseline_controls():
         ):
             assert token in prompt, (role, token)
         assert "neutral" in prompt or "fail-closed" in prompt, role
+
+
+def test_audit_prompt_treats_one_prior_symbol_use_as_incremental():
+    """A single ledger appearance must not be a blocking repetition (2026-10-27).
+
+    The previous wording ("a plan whose change_symbol already appears here is
+    NOT novel -> repetitive") made the LLM auditor stricter than the system's
+    own deterministic rule (``recent_symbol_counts(6) >= 2``). Every symbol in
+    the parent policy then becomes blacklisted after one use, and the audit
+    rejects internally coherent, correctly-cited plans: v626 was abandoned for
+    re-using v622's ``_candidate_raise_fractions`` even though the auditor
+    confirmed the plan cited the frozen v608-vs-v79 weakness row correctly.
+    """
+    audit = _prompt("master_plan_audit.md")
+    ledger = audit[audit.index("Recent Directions Ledger"):audit.index("</data>")]
+    assert "TWICE OR MORE" in ledger
+    assert "appears ONCE" in ledger
+    assert "never by itself a blocking" in ledger
+    assert "a plan whose change_symbol already appears here" not in audit
+
+
+def test_master_prompt_states_the_real_precommit_admission_bar():
+    """The planner must see the gate it is graded on (2026-10-27).
+
+    16 of the 18 failed precommit samples between v589 and v628 were blocked by
+    the pool leg against the same opponent (11-13, 10-14, 9-15 wins of 24) while
+    the parent leg passed; two of them lost by a single match at 13-11. The
+    prompt states the bar so a plan targets the matchup it measurably loses.
+    """
+    from strength_order import (
+        PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+        PRECOMMIT_PARENT_MAX_SCORE,
+    )
+    from tool_eval import PRECOMMIT_POOL_WEAKEST_N_GAMES
+
+    master = _prompt("master_prompt.md")
+    bar = master[master.index("<admission_bar>"):master.index("</admission_bar>")]
+    assert PRECOMMIT_POOL_WEAKEST_N_GAMES == 24
+    assert "24 against the weakest published bot" in bar
+    assert "at least 14 wins" in bar
+    assert "13-11 is a failure" in bar
+    assert PRECOMMIT_PARENT_MAX_SCORE == 0.50
+    assert "strictly more than half" in bar
+    assert f"by {PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN} or more" in bar

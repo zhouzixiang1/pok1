@@ -298,10 +298,20 @@ def saturator_job_for(
     return {"name": name, "prompt": prompt, "bot_limit": int(bot_limit)}
 
 
-def _latest_abandon_reason_for_prompt() -> str:
-    """Best-effort last receipt reason for the abandon-attribution job.
+#: Receipt identity (``version:timestamp``) already handed to an
+#: abandon-attribution packet in this process.  Deduping is the difference
+#: between attributing eight abandons a day and re-attributing ONE stale
+#: receipt forever: the 30 h aggregate on 2026-10-27 showed 552 attribution
+#: sessions (38% of all packets, 156 M tokens) all describing the same last
+#: row, at 0.28 M tokens each against 0.74-1.66 M for the study jobs.
+_attributed_abandon_key: str | None = None
 
-    Failures here must never break saturator launch: the ledger is
+
+def _latest_abandon_reason_for_prompt() -> tuple[str, str]:
+    """Best-effort newest abandon receipt: ``(reason, receipt_key)``.
+
+    ``receipt_key`` is empty when the ledger is unreadable or empty.  Failures
+    here must never break saturator launch: the ledger is
     publication-authority and may be unreadable from this background task.
     """
     try:
@@ -309,10 +319,33 @@ def _latest_abandon_reason_for_prompt() -> str:
 
         rows = load_abandoned_version_receipts()
         if not rows:
-            return ""
-        return str(rows[-1].get("reason") or "").strip()
+            return "", ""
+        row = rows[-1]
+        reason = str(row.get("reason") or "").strip()
+        key = "%s:%s" % (row.get("version"), row.get("timestamp"))
+        return reason, key
     except Exception:
+        return "", ""
+
+
+def _pending_abandon_reason() -> str:
+    """The abandon reason to attribute now, or ``""`` when already attributed."""
+
+    reason, key = _latest_abandon_reason_for_prompt()
+    if not reason or not key:
         return ""
+    if key == _attributed_abandon_key:
+        return ""
+    return reason
+
+
+def _note_abandon_attribution_launched() -> None:
+    """Mark the newest receipt as attributed (called once the packet launches)."""
+
+    global _attributed_abandon_key
+    _reason, key = _latest_abandon_reason_for_prompt()
+    if key:
+        _attributed_abandon_key = key
 
 
 def _normalize_saturator_contract(raw: object) -> dict[str, str] | None:
@@ -618,10 +651,13 @@ async def _one_saturator_session(session_id: int) -> dict:
         focus = None
         bots: "list[Path]" = []
     else:
+        abandon_reason = _pending_abandon_reason()
         job = saturator_job_for(
             session_id,
-            abandon_reason=_latest_abandon_reason_for_prompt() or None,
+            abandon_reason=abandon_reason or None,
         )
+        if abandon_reason:
+            _note_abandon_attribution_launched()
         job_name = str(job["name"])
         bots = _saturator_bots(session_id, limit=int(job["bot_limit"]))
         focus = bots[0] if bots else None

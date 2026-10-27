@@ -53,10 +53,22 @@ Analyze the Master plan systematically:
 ## Recent Directions Ledger (published AND abandoned attempts)
 {recent_directions}
 System-owned extract of the change symbols the most recent generation
-attempts actually targeted. Score direction novelty against BOTH this ledger
-and the completion commits: a plan whose change_symbol already appears here
-is NOT novel — mark direction_novelty "repetitive" unless the plan supplies
-materially new frozen evidence for that exact symbol.
+attempts actually targeted. Score direction novelty against this ledger and
+the completion commits in this order, and let the ledger's count decide:
+
+1. The change_symbol appears in neither the ledger nor a supplied completion
+   commit -> `"novel"`.
+2. It appears TWICE OR MORE in the last six attempts -> `"repetitive"` and
+   `overall_pass` false. The system enforces this same rule deterministically,
+   so a plan that reaches you in this state is already stale.
+3. It appears ONCE -> this is `"incremental"`, never by itself a blocking
+   result. Fail it only when the plan's evidence is ALSO not aligned with the
+   frozen snapshot, or when the plan offers nothing the earlier attempt did
+   not already have. Re-targeting one symbol with fresh measured evidence is
+   how a direction earns a second attempt; the ledger is mostly abandoned
+   attempts, so a single appearance is not a verdict.
+4. It appears three or more times across the completion commits with no
+   material change in approach -> `"repetitive"` and `overall_pass` false.
 </data>
 
 <h2h_verbatim_rule>
