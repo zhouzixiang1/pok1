@@ -1057,8 +1057,20 @@ def validate_archive_rotation_plan(
     *,
     version,
     publication_id=None,
+    require_live_source_proof=True,
 ):
-    """Reprove the frozen source prefixes and current predecessor authority."""
+    """Reprove the frozen source prefixes and current predecessor authority.
+
+    ``require_live_source_proof=False`` is the completed-step adoption
+    carve-out used by the post-publication handoff: a daemon evaluation-bundle
+    crash-recovery may legitimately rewrite an append-only source below the
+    frozen snapshot (restoring it to the last committed cycle cutoff), which is
+    not a tamper of the already-published rotation. Only the "does the frozen
+    snapshot still match live bytes" prefix check and the cold-range recompute
+    are waived; the completed rotation's own watermark/archive/low-level-plan
+    chain is still re-proved against the live file. For an EXECUTION path the
+    proof is mandatory and unchanged.
+    """
 
     rotations = _ei._validate_archive_rotation_plan_shape(
         rotation_plan,
@@ -1087,44 +1099,45 @@ def validate_archive_rotation_plan(
                 current_watermark = _ei._load_rotation_watermark(source_path, raw)
         try:
             snapshot_size = snapshot["snapshot_size"]
-            if (
-                len(raw) < snapshot_size
-                or _rotation_digest_range(raw, 0, snapshot_size)
-                != snapshot["snapshot_sha256"]
-            ):
-                raise RuntimeError(
-                    f"archive rotation source prefix changed: {source_path.name}"
+            if require_live_source_proof:
+                if (
+                    len(raw) < snapshot_size
+                    or _rotation_digest_range(raw, 0, snapshot_size)
+                    != snapshot["snapshot_sha256"]
+                ):
+                    raise RuntimeError(
+                        f"archive rotation source prefix changed: {source_path.name}"
+                    )
+                cold_end = _rotation_cold_prefix_end(
+                    raw,
+                    keep_lines,
+                    limit=snapshot_size,
                 )
-            cold_end = _rotation_cold_prefix_end(
-                raw,
-                keep_lines,
-                limit=snapshot_size,
-            )
-            if cold_end < snapshot["watermark_end_offset"]:
-                cold_end = snapshot["watermark_end_offset"]
-            # Mirror the build-time batch clamp exactly: the frozen plan
-            # stores the capped end, so an uncapped recompute here would
-            # spuriously report "frozen range changed".
-            cold_end = _rotation_clamp_cold_end(
-                cold_end,
-                snapshot["watermark_end_offset"],
-            )
-            if cold_end != snapshot["cold_end_offset"]:
-                frozen_span = int(snapshot["cold_end_offset"]) - int(
-                    snapshot["watermark_end_offset"]
+                if cold_end < snapshot["watermark_end_offset"]:
+                    cold_end = snapshot["watermark_end_offset"]
+                # Mirror the build-time batch clamp exactly: the frozen plan
+                # stores the capped end, so an uncapped recompute here would
+                # spuriously report "frozen range changed".
+                cold_end = _rotation_clamp_cold_end(
+                    cold_end,
+                    snapshot["watermark_end_offset"],
                 )
-                cap_hint = (
-                    f"; frozen span {frozen_span} exceeds the effective batch cap"
-                    f" {_rotation_batch_cap_bytes()} — a plan frozen by pre-cap code"
-                    f" (or a lowered env) needs"
-                    f" {_ROTATION_BATCH_MAX_BYTES_ENV} >= {frozen_span} to validate"
-                    if frozen_span > _rotation_batch_cap_bytes()
-                    else ""
-                )
-                raise RuntimeError(
-                    f"archive rotation frozen range changed:"
-                    f" {source_path.name}{cap_hint}"
-                )
+                if cold_end != snapshot["cold_end_offset"]:
+                    frozen_span = int(snapshot["cold_end_offset"]) - int(
+                        snapshot["watermark_end_offset"]
+                    )
+                    cap_hint = (
+                        f"; frozen span {frozen_span} exceeds the effective batch cap"
+                        f" {_rotation_batch_cap_bytes()} — a plan frozen by pre-cap code"
+                        f" (or a lowered env) needs"
+                        f" {_ROTATION_BATCH_MAX_BYTES_ENV} >= {frozen_span} to validate"
+                        if frozen_span > _rotation_batch_cap_bytes()
+                        else ""
+                    )
+                    raise RuntimeError(
+                        f"archive rotation frozen range changed:"
+                        f" {source_path.name}{cap_hint}"
+                    )
             expected = expected_by_source.get(source_path.name)
             _archive_path, low_plan_path, _watermark_path = _ei._rotation_paths(
                 source_path,

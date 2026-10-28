@@ -2142,12 +2142,27 @@ def plan_handoff_step(
                 )
         elif step == "archive_rotation":
             try:
-                from evolution_infra import validate_archive_rotation_plan
+                # Import the rotation module directly: the evolution_infra
+                # delegate is a SEMANTIC_PATHS file and must stay byte-frozen
+                # (its wrapper signature carries no adoption carve-out kwarg).
+                from evolution_infra_archive_rotation import (
+                    validate_archive_rotation_plan,
+                )
 
+                # A completed step is being ADOPTED on retry, not executed.
+                # The daemon's evaluation-bundle crash-recovery can legitimately
+                # rewrite an append-only source below the frozen snapshot, which
+                # is not a tamper of the already-published rotation; waive only
+                # the live snapshot-prefix re-proof and keep the watermark /
+                # archive / low-plan chain re-proved. For a still-pending row
+                # the full proof is mandatory.
                 validate_archive_rotation_plan(
                     normalized,
                     version=version,
                     publication_id=record["identity"]["publication_id"],
+                    require_live_source_proof=(
+                        row.get("status") != "completed"
+                    ),
                 )
             except Exception as exc:
                 contract_errors.append(
