@@ -2369,6 +2369,24 @@ async def run_master_impl(args):
     except Exception:
         pass
 
+    # Durable direction ledger: record the SEALED selected change_symbol the
+    # moment the plan becomes checkpoint-owned (2026-10-28 audit: the log
+    # tail-scan recorded the wrong symbol 12/12 because master_io.txt tails
+    # end in the per-proposal compilation-contract block, so the audit's
+    # mechanical repetitive veto never fired and burned symbols already
+    # exhausted in reaped generations). Advisory ledger, never a gate:
+    # failure here must not block the generation.
+    try:
+        from recent_directions import record_planned_direction
+
+        record_planned_direction(
+            next_v,
+            source_v,
+            data.get("proposal_binding"),
+        )
+    except Exception:
+        pass
+
     result = {
         "plan": data,
         "logs": ui.get_output(),
