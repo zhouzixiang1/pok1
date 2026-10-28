@@ -1399,6 +1399,32 @@ def _reap_generation_trees(
         if version is None or version in protected:
             continue
         if version in abandoned_set:
+            # Deletion is authorized by the abandon ledger itself, but the
+            # tree's disappearance must still be observable: the 2026-10-28
+            # evidence audit found 24 abandoned trees (v599-v624) reaped with
+            # ZERO rows in reaped_generation_trees.jsonl, which silently
+            # blanked every log-derived consumer (the direction ledger window
+            # spanned 37 version numbers while claiming 12). Best-effort
+            # receipt; a failed receipt logs loudly but does not keep the
+            # tree — the abandon receipt, not this one, is its authority.
+            try:
+                _append_reaped_tree_receipt(
+                    results_dir,
+                    {
+                        "schema_version": 1,
+                        "kind": "abandoned_generation_tree_reaped",
+                        "reaped_at": time.time(),
+                        "version": version,
+                        "tree": child.name,
+                        "bytes_freed": _path_size(child),
+                        "reason": "abandon_ledger_authorized_rotation",
+                    },
+                )
+            except Exception as exc:
+                log.warning(
+                    "abandoned tree %s reaped WITHOUT reap receipt: %s",
+                    child.name, exc,
+                )
             freed += _rm(child)
             removed += 1
             continue

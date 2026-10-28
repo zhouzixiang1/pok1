@@ -217,7 +217,17 @@ def test_saturator_attribution_prompt_maps_both_crossover_tokens():
         "crossover_llm_exhausted:v566xv11",
         "crossover_provenance_exhausted:v566xv11",
     ):
-        job = llm_saturator.saturator_job_for(3, abandon_reason=reason)
+        # The attribution job is the LAST rotation entry whenever an abandon
+        # receipt is present; scan for its session id instead of a magic
+        # number (the 2026-10-28 packet widening moved any hardcoded index
+        # off the attribution slot).
+        session_id = next(
+            i
+            for i in range(50)
+            if llm_saturator.saturator_job_for(i, abandon_reason=reason)["name"]
+            == "abandon_attribution"
+        )
+        job = llm_saturator.saturator_job_for(session_id, abandon_reason=reason)
         assert job["name"] == "abandon_attribution", reason
         prompt = str(job["prompt"])
         assert reason in prompt

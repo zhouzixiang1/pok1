@@ -215,13 +215,21 @@ def test_abandoned_ledger_versions_do_not_use_orphan_receipts(tmp_path: Path):
         orphan_result_tree_max_age_sec=ORPHAN_WINDOW,
     )
 
-    # v500: abandoned outside the keep window — legacy branch, no receipt.
+    # v500: abandoned outside the keep window — deleted on ledger authority;
+    # since 2026-10-28 it ALSO leaves a reap receipt (the evidence audit
+    # found 24 abandoned trees vanished with zero receipts, silently
+    # blanking every log-derived consumer window).
     assert not (results / "v500").exists()
     # v501: abandoned inside the keep window — kept.
     assert (results / "v501").exists()
     # v600: no ledger row at all — orphan branch, receipt required.
     assert not (results / "v600").exists()
-    assert [row["version"] for row in _reaped_tree_receipts(results)] == [600]
+    receipts = _reaped_tree_receipts(results)
+    assert {row["version"] for row in receipts} == {500, 600}
+    assert {row["kind"] for row in receipts} == {
+        "abandoned_generation_tree_reaped",
+        "orphan_result_tree_reaped",
+    }
 
 
 def test_consumer_checkpoint_reference_excludes_orphan_reap(tmp_path: Path):

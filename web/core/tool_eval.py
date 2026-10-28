@@ -625,18 +625,60 @@ def _binomial_tail_p(losses: int, decided: int) -> float:
     )
 
 
+def _pool_leg_tail_p(result) -> "float | None":
+    """One-sided binomial tail for the pool-weakest admission leg, or None.
+
+    Finds the ``did_not_beat_pool_weakest`` blocker's opponent, reads that
+    matchup's W/L and returns P(losses >= observed | p=0.5, n=decided) — i.e.
+    how far below 50% the candidate sits against the pool's OWN weakest
+    member. The aggregate tail dilutes this signal with parent/bootstrap
+    legs, so a candidate measurably worse than the weakest can look ambiguous
+    in aggregate (v634 round1: aggregate tail 0.21, pool leg 10W-14L
+    tail 0.09) while the admission leg is already a regression the fresh-seed
+    round cannot fix (2026-10-28 audit: pool-leg drift 12→8 and 10→8 on the
+    two F1 resamples, each costing a full 48-match native round).
+    """
+    if not isinstance(result, dict):
+        return None
+    label = None
+    for blocker in result.get("blockers") or []:
+        if (
+            isinstance(blocker, dict)
+            and blocker.get("reason") == "did_not_beat_pool_weakest"
+        ):
+            label = str(blocker.get("opponent") or "") or None
+            break
+    if label is None:
+        return None
+    for matchup in result.get("matchups") or []:
+        if not isinstance(matchup, dict) or str(matchup.get("opponent")) != label:
+            continue
+        wins = int(matchup.get("wins") or 0)
+        losses = int(matchup.get("losses") or 0)
+        decided = wins + losses
+        if decided < 8:
+            return None
+        return _binomial_tail_p(losses, decided)
+    return None
+
+
 def _precommit_failure_is_decisive(result) -> bool:
     """Whether the failed sample proves a regression the repair must address.
 
-    Decisive means one of the gate's two independent evidence channels shows a
-    regression that noise cannot explain; both are computed by the gate itself,
-    so no threshold is introduced here:
+    Decisive means one of the gate's independent evidence channels shows a
+    regression that noise cannot explain; all are computed by the gate
+    itself, so no new judgement is introduced here:
 
     * the aggregate paired net-chip bootstrap CI lies entirely below zero, or
     * the aggregate W/L record is a one-sided exact binomial outlier
-      (``p < 0.05``).
+      (``p < 0.05``), or
+    * the pool-weakest admission leg is itself a binomial outlier
+      (``p < 0.10``, 2026-10-28 audit; deliberately looser than the aggregate
+      because the leg alone gates admission — a candidate that loses to the
+      pool's weakest by a significant margin will lose that leg under any
+      deck seed, so the F1 fresh-seed round is guaranteed native-time waste).
 
-    A deficit that is merely a strict-inequality loss (the 20W/20L v628 sample
+    A deficit that is merely a strict-inequality loss (the 20W/20L sample
     that consumed a whole 92-minute round) is *not* decisive: it is the
     definition of an ambiguous sample, and it gets the fresh-seed second
     sample instead of an unguided repair.
@@ -650,6 +692,9 @@ def _precommit_failure_is_decisive(result) -> bool:
     if decided >= PRECOMMIT_AGGREGATE_MIN_SAMPLES:
         if _binomial_tail_p(losses, decided) < 0.05:
             return True
+    pool_tail = _pool_leg_tail_p(result)
+    if pool_tail is not None and pool_tail < 0.10:
+        return True
     return False
 
 

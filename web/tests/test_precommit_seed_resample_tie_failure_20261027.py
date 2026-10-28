@@ -493,3 +493,57 @@ def test_real_state_machine_backs_the_resample_restore():
         pipeline_state.is_rework_reset_transition("precommit_failed", "critic_checked")
         is False
     )
+
+
+# ── pool-leg decisive channel (2026-10-28 audit) ────────────────────
+# The fresh-seed round cannot rescue a candidate measurably worse than the
+# pool's OWN weakest member: v634 round1 pool 10W-14L (tail 0.27) stayed
+# ambiguous (correctly resampled), while a 8W-16L pool leg (tail 0.076) is
+# a proven admission regression and must abandon immediately instead of
+# burning another full 48-match native round.
+from tool_eval import _pool_leg_tail_p, _precommit_failure_is_decisive
+
+
+def _pool_failure(pool_opponent, pool_wins, pool_losses, aggregate):
+    agg_wins, agg_losses, ci_lower, ci_upper = aggregate
+    return {
+        "passed": False,
+        "failure_class": "regression",
+        "blockers": [
+            {"reason": "did_not_beat_pool_weakest", "opponent": pool_opponent},
+            {"reason": "aggregate_native_regression", "opponent": "aggregate"},
+        ],
+        "matchups": [
+            {"opponent": pool_opponent, "wins": pool_wins, "losses": pool_losses, "draws": 0},
+            {"opponent": "parent", "wins": 0, "losses": 0, "draws": 0},
+        ],
+        "total_wins": agg_wins, "total_losses": agg_losses, "total_draws": 0,
+        "paired_bootstrap": {"ci_lower": ci_lower, "ci_upper": ci_upper},
+    }
+
+
+def test_pool_leg_tail_reads_the_blocked_opponent_matchup():
+    # real v634 round1 shape: aggregate 25W-23L (ambiguous), pool 10W-14L
+    r = _pool_failure("national_cloud_v173", 10, 14, (25, 23, -6000.0, 3000.0))
+    assert round(_pool_leg_tail_p(r), 4) == 0.2706
+    assert _precommit_failure_is_decisive(r) is False  # still gets the fresh-seed round
+
+
+def test_significantly_losing_pool_leg_is_decisive():
+    # pool leg 8W-16L (tail 0.076) while aggregate is merely below bar
+    r = _pool_failure("national_cloud_v173", 8, 16, (25, 23, -6000.0, 3000.0))
+    assert _pool_leg_tail_p(r) < 0.10
+    assert _precommit_failure_is_decisive(r) is True
+
+
+def test_missing_pool_blocker_leaves_aggregate_rule_in_charge():
+    r = {
+        "passed": False,
+        "failure_class": "regression",
+        "blockers": [{"reason": "did_not_beat_parent", "opponent": "national_cloud_v632"}],
+        "matchups": [{"opponent": "national_cloud_v632", "wins": 3, "losses": 5, "draws": 0}],
+        "total_wins": 25, "total_losses": 23,
+        "paired_bootstrap": {"ci_lower": -6000.0, "ci_upper": 3000.0},
+    }
+    assert _pool_leg_tail_p(r) is None
+    assert _precommit_failure_is_decisive(r) is False
