@@ -121,10 +121,10 @@ def test_saturator_job_rotation_splits_work():
         "matchup_packet",
         "function_trace",
     ]
-    # 2026-10-28: wider evidence scope per packet (matchup 5, others 3) — the
-    # per-prompt token count is the consumption lever the account is bound on.
-    assert llm_saturator.saturator_job_for(0)["bot_limit"] == 4
-    assert llm_saturator.saturator_job_for(1)["bot_limit"] == 3
+    # 2026-10-28: the canonical_candidates contract caps read dirs at 1-2;
+    # uplift comes from FULLER reads of the permitted dirs, never more bots.
+    assert llm_saturator.saturator_job_for(0)["bot_limit"] == 2
+    assert llm_saturator.saturator_job_for(1)["bot_limit"] == 1
     for i in range(3):
         prompt = str(llm_saturator.saturator_job_for(i)["prompt"])
         assert "HARD STOP" in prompt
