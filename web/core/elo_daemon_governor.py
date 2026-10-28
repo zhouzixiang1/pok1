@@ -307,8 +307,13 @@ class DaemonWorkerGovernor:
         self._journal_reader = journal_reader or _default_journal_reader
         self._event_sink = event_sink or _default_event_sink
 
-        self._effective = self._load_persisted()
         self._floor = min(_min_workers_floor(), self.env_workers)
+        # A persisted value below a newly raised floor would otherwise stick
+        # forever: every downshift branch holds at the floor and the upshift
+        # branch needs sustained low load, which never happens under stream
+        # pressure. Re-clamp upward at boot so the operator floor is
+        # authoritative for the whole process lifetime.
+        self._effective = max(self._floor, self._load_persisted())
         self._last_sample_ts: float = -1e18
         self._last_action_ts: float = -1e18
         self._over_streak = 0

@@ -799,3 +799,28 @@ def test_default_floor_still_drops_to_one(monkeypatch):
     assert gov_mod._min_workers_floor() == 1
     monkeypatch.setenv("POK_GOVERNOR_MIN_WORKERS", "3")
     assert gov_mod._min_workers_floor() == 3
+
+
+
+def test_raised_floor_reclamps_persisted_state_at_boot(tmp_path, monkeypatch):
+    """A persisted workers=1 must not outlive a raised operator floor."""
+
+    monkeypatch.setenv("POK_GOVERNOR_MIN_WORKERS", "2")
+    state = tmp_path / "daemon_worker_governor_state.json"
+    state.write_text(json.dumps({"schema_version": 1, "effective_workers": 1,
+                                 "env_workers_cap": 6}), encoding="utf-8")
+    gov = gov_mod.DaemonWorkerGovernor(
+        6,
+        results_dir=tmp_path,
+        now=gov_mod.time.time,
+        loadavg_path=tmp_path / "loadavg",
+        memory_events_path=tmp_path / "memory.events",
+        memory_current_path=tmp_path / "memory.current",
+        memory_high_path=tmp_path / "memory.high",
+        cpu_pressure_path=tmp_path / "cpu.pressure",
+        llm_metrics_path=tmp_path / "llm_call_metrics.jsonl",
+        journal_reader=lambda _s: "",
+        event_sink=lambda *a: None,
+        logger=None,
+    )
+    assert gov.effective_workers == 2
