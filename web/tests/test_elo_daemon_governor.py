@@ -753,3 +753,49 @@ def test_governor_never_touches_pairs_identity():
     assert "runtime_profile" not in code_strings
     assert "POK_DAEMON_PAIRS" not in code_names
     assert "--pairs" not in code_strings
+
+
+def test_operator_min_worker_floor_holds_under_llm_protection(harness, monkeypatch):
+    """POK_GOVERNOR_MIN_WORKERS keeps a second native match running (2026-10-28).
+
+    Measured posture: the account is prompt-rate bound (61-66 admitted prompts
+    per hour, ~50 rejected), so one extra match worker costs the LLM streams
+    almost nothing while halving the post-publication eval_wait stall (the
+    daemon completes one match per ~8-minute cycle at a single worker).
+    """
+    monkeypatch.setenv("POK_GOVERNOR_MIN_WORKERS", "2")
+    # Rebuild through the harness wiring (clock, signal paths, event sink) so
+    # the tick driver and the decision log stay authoritative.
+    harness.gov = gov_mod.DaemonWorkerGovernor(
+        6,
+        results_dir=harness.tmp,
+        now=harness.clock,
+        loadavg_path=harness.loadavg,
+        memory_events_path=harness.memory_events,
+        memory_current_path=harness.memory_current,
+        memory_high_path=harness.memory_high,
+        cpu_pressure_path=harness.cpu_pressure,
+        llm_metrics_path=harness.metrics,
+        journal_reader=harness._read_journal,
+        event_sink=harness._emit,
+        logger=harness,
+    )
+    harness.set_load(1.0)
+    harness.append_metric(timeout_kind="stall", age_sec=60.0)
+    assert harness.tick() == 2
+    events = harness.decisions()
+    assert events[-1][3]["action"] == "down"
+    assert events[-1][3]["reason"] == "llm_stream_protection"
+    # Already at the floor: the next protected sample holds instead of dropping.
+    harness.append_metric(timeout_kind="stall", age_sec=30.0)
+    assert harness.tick() == 2
+    assert harness.decisions()[-1][3]["reason"] == "llm_stream_protection"
+
+
+def test_default_floor_still_drops_to_one(monkeypatch):
+    monkeypatch.delenv("POK_GOVERNOR_MIN_WORKERS", raising=False)
+    assert gov_mod._min_workers_floor() == 1
+    monkeypatch.setenv("POK_GOVERNOR_MIN_WORKERS", "not-a-number")
+    assert gov_mod._min_workers_floor() == 1
+    monkeypatch.setenv("POK_GOVERNOR_MIN_WORKERS", "3")
+    assert gov_mod._min_workers_floor() == 3

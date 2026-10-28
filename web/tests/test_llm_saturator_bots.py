@@ -108,17 +108,23 @@ def test_saturator_bots_empty_pool(monkeypatch):
 
 
 def test_saturator_job_rotation_splits_work():
-    names = [llm_saturator.saturator_job_for(i)["name"] for i in range(6)]
+    names = [llm_saturator.saturator_job_for(i)["name"] for i in range(8)]
+    # 2026-10-28: matchup_packet is weighted 2:1:1 (duplicate rotation entry)
+    # because it carries the widest evidence scope and feeds the Master.
     assert names == [
         "matchup_packet",
         "line_audit",
+        "matchup_packet",
         "function_trace",
         "matchup_packet",
         "line_audit",
+        "matchup_packet",
         "function_trace",
     ]
-    assert llm_saturator.saturator_job_for(0)["bot_limit"] == 2
-    assert llm_saturator.saturator_job_for(1)["bot_limit"] == 1
+    # 2026-10-28: wider evidence scope per packet (matchup 5, others 3) — the
+    # per-prompt token count is the consumption lever the account is bound on.
+    assert llm_saturator.saturator_job_for(0)["bot_limit"] == 4
+    assert llm_saturator.saturator_job_for(1)["bot_limit"] == 3
     for i in range(3):
         prompt = str(llm_saturator.saturator_job_for(i)["prompt"])
         assert "HARD STOP" in prompt
@@ -305,8 +311,17 @@ def test_extract_saturator_contracts_rejects_empty_claim():
 
 
 def test_saturator_job_with_abandon_reason_adds_attribution():
+    # The rotation now walks 4 study slots (matchup twice) before the optional
+    # attribution slot, so probe the rotation instead of hard-coding an index.
+    indices = [
+        i for i in range(8)
+        if llm_saturator.saturator_job_for(
+            i, abandon_reason="prepared_baseline_contract_digest_mismatch v316"
+        )["name"] == "abandon_attribution"
+    ]
+    assert len(indices) == 1, indices
     job = llm_saturator.saturator_job_for(
-        3, abandon_reason="prepared_baseline_contract_digest_mismatch v316"
+        indices[0], abandon_reason="prepared_baseline_contract_digest_mismatch v316"
     )
     assert job["name"] == "abandon_attribution"
     assert job["bot_limit"] == 1

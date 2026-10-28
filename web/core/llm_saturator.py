@@ -205,45 +205,69 @@ These are planning hypotheses, NOT statistical authority, NOT H2H or snapshot: e
 
 _SATURATOR_PROMPT = """\
 You are a senior heads-up no-limit poker researcher running a BOUNDED
-two-bot matchup packet (FOCUS vs OPPONENT). This is one packet, not a
-marathon.
+multi-bot matchup packet (FOCUS vs OPPONENT, with PEER bots as lineage
+controls). One packet, not a marathon — but the evidence phase is meant to be
+the expensive part of it.
 
-Phase 1: Read policy.py in BOTH directories (whole file). Skim precompute.py
-only if policy.py imports it. Do not reread the same file without a new
-question.
+Phase 1 — EVIDENCE (do all of it; this is the analysis, not preparation):
+  a. Read FOCUS policy.py and OPPONENT policy.py IN FULL (chunk a large file
+     rather than skimming the first decision function).
+  b. Read both national_runtime_manifest.json files and, when policy.py
+     imports it, precompute.py.
+  c. Read the SAME decision chain (the functions you are about to analyse,
+     not necessarily the whole file) in every PEER bot listed in the job
+     header, and record the one concrete way each peer differs from FOCUS.
+     Peers are lineage controls: read them selectively so the transcript stays
+     inside the model's context window.
+  d. Only then start Phase 2. Never analyse a symbol you have not read in
+     this session; re-read the exact function immediately before you cite it.
 
-Phase 2: Name the three largest strategic asymmetries (preflop, flop c-bet,
-river). Quote exact functions. Which FOCUS lines does THIS opponent punish?
+Phase 2: Name the FIVE largest strategic asymmetries (preflop, flop c-bet,
+turn sizing, river, all-in commitment). Quote exact functions with the line
+you actually read. Which FOCUS lines does THIS opponent punish, and what do
+the peers do differently there?
 
-Phase 3: Walk 6 concrete hands (specify holes + board; mix button/blind and
-deep/short). Trace both bots through code.
+Phase 3: Walk 12 concrete hands (holes + board; mix button/blind and
+deep/short). For each hand, re-read the FOCUS and OPPONENT lines you rely on
+immediately before writing the trace, and name them.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 _SATURATOR_LINE_AUDIT_PROMPT = """\
-You are auditing ONE published FOCUS bot (no opponent). Bounded packet.
+You are auditing ONE published FOCUS bot against the peers of the same
+epoch. Bounded packet, but the audit is evidence-first.
 
-Phase 1: Read its policy.py fully. Map one street only — pick preflop if
-session depth is even, flop otherwise.
+Phase 1 — EVIDENCE: Read FOCUS policy.py IN FULL plus its
+national_runtime_manifest.json. Then read policy.py of each PEER bot listed
+in the job header and collect how each peer solves the same street you are
+about to audit. Map ONE street only — preflop if session depth is even, flop
+otherwise. Cite only functions you read in this session.
 
 Phase 2: List every function that can emit fold/pass/allin/raise for that
-street. Quote the legality / sizing / fallback path.
+street. Quote the legality / sizing / fallback path, and for each one say
+whether any peer handles it differently.
 
-Phase 3: Find 4 concrete bugs or EV leaks (too-tight fold, illegal-intent
-risk, unused opponent field, sizing that never hits a legal raise_to).
+Phase 3: Find 8 concrete bugs or EV leaks (too-tight fold, illegal-intent
+risk, unused opponent field, sizing that never hits a legal raise_to, a
+branch no peer needs). For each, re-read the exact lines before writing it.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 _SATURATOR_FUNCTION_TRACE_PROMPT = """\
-You are tracing the FOCUS bot's decision spine. Bounded packet.
+You are tracing the FOCUS bot's decision spine against its peers. Bounded
+packet, evidence-first.
 
-Phase 1: Read policy.py. Locate the ABI entry (the function that receives
-decision_context and returns fold/pass/allin/raise).
+Phase 1 — EVIDENCE: Read FOCUS policy.py IN FULL and locate the ABI entry
+(the function that receives decision_context and returns fold/pass/allin/
+raise). Read national_runtime_manifest.json. Then read the PEER bots' policy
+files listed in the job header and locate the same entry in each — record the
+one structural difference per peer (extra branch, different weight source,
+different legality guard).
 
 Phase 2: Trace three named helpers that actually change the returned intent
-(typical names: a dispatcher, a raise builder, an opponent weight). For each:
-inputs, branch table, what happens on missing tracker fields.
+(a dispatcher, a raise builder, an opponent weight). For each: inputs, branch
+table, missing-tracker behaviour, and how a peer differs.
 
-Phase 3: Show one hand where helper A and helper B disagree, and which one
-wins.
+Phase 3: Show THREE hands where helper A and helper B disagree; say which one
+wins each and why. Re-read each cited function immediately before writing it.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 
@@ -285,10 +309,24 @@ def saturator_job_for(
     code-study jobs. The live session injects the latest abandon receipt
     when one exists, adding a fourth job that attributes the failure.
     """
+    # Packet breadth (2026-10-28): the per-prompt token count is the dial that
+    # actually raised consumption (687K -> 1.11M per admitted prompt on
+    # 2026-10-27), because the account is prompt-rate bound, not token bound.
+    # Wider evidence scope costs turns, not extra prompts: matchup reads FOCUS
+    # + OPPONENT + three lineage peers, the other two read FOCUS + two peers.
+    # matchup_packet is listed twice on purpose: the rotation is a plain
+    # ``session_id % len(jobs)`` walk, so a duplicate entry is the weighting.
+    # It carries the widest evidence scope (FOCUS + OPPONENT + 3 peers) and
+    # produces the 1-3 change_symbol contracts the Master actually cites, so a
+    # 50/25/25 split raises both tokens per admitted prompt and planning value
+    # without dropping the two code-level studies entirely.
     jobs: list[tuple[str, str, int]] = [
-        ("matchup_packet", _SATURATOR_PROMPT, 2),
-        ("line_audit", _SATURATOR_LINE_AUDIT_PROMPT, 1),
-        ("function_trace", _SATURATOR_FUNCTION_TRACE_PROMPT, 1),
+        # 4/3 keeps the accumulated transcript inside a 128K-class context
+        # window (five full policies plus the hand traces would not fit).
+        ("matchup_packet", _SATURATOR_PROMPT, 4),
+        ("line_audit", _SATURATOR_LINE_AUDIT_PROMPT, 3),
+        ("matchup_packet", _SATURATOR_PROMPT, 4),
+        ("function_trace", _SATURATOR_FUNCTION_TRACE_PROMPT, 3),
     ]
     if abandon_reason:
         jobs.append(

@@ -80,6 +80,24 @@ GOVERNOR_LOAD1_DOWN_THRESHOLD = 3.0
 GOVERNOR_LOAD1_UP_THRESHOLD = 2.5
 GOVERNOR_DOWN_CONSECUTIVE = 2
 GOVERNOR_UP_CONSECUTIVE = 3
+
+
+def _min_workers_floor() -> int:
+    """Operator floor for native match concurrency (``POK_GOVERNOR_MIN_WORKERS``).
+
+    Default 1 keeps the historical "yield every core to the LLM streams"
+    posture.  The measured 2026-10-28 posture is that the account is
+    PROMPT-rate bound, not CPU bound (61-66 admitted prompts/hour with ~50
+    rejected), so a second match worker costs the streams almost nothing while
+    halving the post-publication ``eval_wait`` stall: with one worker the
+    daemon completes one match per ~8-minute cycle, so a new bot needs ~3 h to
+    reach the 24-game floor.  The floor never overrides the env worker cap.
+    """
+
+    try:
+        return max(1, int(os.environ.get("POK_GOVERNOR_MIN_WORKERS", "1")))
+    except (TypeError, ValueError):
+        return 1
 GOVERNOR_MIN_ACTION_INTERVAL_SEC = 120.0
 #: memory.current/memory.high ratio that counts as memory pressure.
 GOVERNOR_MEMORY_PRESSURE_RATIO = 0.95
@@ -290,6 +308,7 @@ class DaemonWorkerGovernor:
         self._event_sink = event_sink or _default_event_sink
 
         self._effective = self._load_persisted()
+        self._floor = min(_min_workers_floor(), self.env_workers)
         self._last_sample_ts: float = -1e18
         self._last_action_ts: float = -1e18
         self._over_streak = 0
@@ -406,9 +425,9 @@ class DaemonWorkerGovernor:
         if self._llm_protection_active(snapshot):
             self._under_streak = 0
             self._over_streak = 0
-            if self._effective > 1:
+            if self._effective > self._floor:
                 self._apply(
-                    1,
+                    self._floor,
                     action="down",
                     reason="llm_stream_protection",
                     snapshot=snapshot,
@@ -441,9 +460,9 @@ class DaemonWorkerGovernor:
         if memory_pressure:
             self._over_streak = 0
             self._under_streak = 0
-            if self._effective > 1:
+            if self._effective > self._floor:
                 self._apply(
-                    self._effective - 1,
+                    max(self._floor, self._effective - 1),
                     action="down",
                     reason="memory_high",
                     snapshot=snapshot,
@@ -459,14 +478,14 @@ class DaemonWorkerGovernor:
             self._over_streak += 1
             self._under_streak = 0
             if self._over_streak >= GOVERNOR_DOWN_CONSECUTIVE:
-                if self._effective > 1 and self._action_gap_ok(now_ts):
+                if self._effective > self._floor and self._action_gap_ok(now_ts):
                     self._apply(
-                        self._effective - 1,
+                        max(self._floor, self._effective - 1),
                         action="down",
                         reason="load_exceeded_hysteresis",
                         snapshot=snapshot,
                     )
-                elif self._effective <= 1:
+                elif self._effective <= self._floor:
                     self._emit_decision(
                         "floor_hold",
                         "load_exceeded_hysteresis",
