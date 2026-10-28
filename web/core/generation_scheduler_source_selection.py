@@ -22,6 +22,63 @@ _COMBINED_RECOMMENDATIONS = {
 # regresses).  See _pick_crossover_parents.
 _MIN_CROSSOVER_POOL_SIZE = 12
 
+# 2026-10-28 evidence audit: 75 crossover_llm_exhausted abandons, 71% of them
+# concentrated in 3 parent pairs (v11xv173 burned 21 times). The scheduler's
+# LAST ABANDON block only hands the LLM an advisory "pick a different pair",
+# and the drought rotation excludes at most the single most recent pairing —
+# the strength-ranked selection re-picks the same pair every generation once
+# the immediate retry passes. Pairings that have exhausted crossover this
+# many times are now HARD-excluded from the deterministic picker (pool
+# starvation then falls back to single-parent Master evolution, which is
+# strictly cheaper than another exhausted pair).
+_DEAD_PAIR_EXHAUSTION_THRESHOLD = 3
+
+
+def _dead_crossover_partners(parent_a_version):
+    """Versions vb such that {parent_a, vb} exhausted crossover repeatedly.
+
+    Counted from the durable abandon ledger (reason carries
+    crossover_llm_exhausted / crossover_provenance_exhausted; the frozen
+    checkpoint_envelope supplies source_v/parent2_v). Fail-open to an empty
+    set when the ledger is unreadable: the picker then behaves exactly as
+    before. Ordered pair identity is lineage, not direction, so the key is
+    normalized.
+    """
+    try:
+        from abandoned_version_ledger import load_abandoned_version_receipts
+
+        rows = load_abandoned_version_receipts() or []
+    except Exception:
+        return frozenset()
+    counts: dict = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reason = str(row.get("reason") or "")
+        if (
+            "crossover_llm_exhausted" not in reason
+            and "crossover_provenance_exhausted" not in reason
+        ):
+            continue
+        checkpoint = row.get("checkpoint_envelope")
+        if not isinstance(checkpoint, dict):
+            checkpoint = row.get("checkpoint")
+        if not isinstance(checkpoint, dict):
+            continue
+        va = checkpoint.get("source_v")
+        vb = checkpoint.get("parent2_v")
+        if not (isinstance(va, int) and isinstance(vb, int)) or va == vb:
+            continue
+        pair = frozenset({int(va), int(vb)})
+        counts[pair] = counts.get(pair, 0) + 1
+    return frozenset(
+        other
+        for pair, count in counts.items()
+        if count >= _DEAD_PAIR_EXHAUSTION_THRESHOLD and parent_a_version in pair
+        for other in pair
+        if other != parent_a_version
+    )
+
 
 def _normalize_combined_control(combined):
     """Fail closed on weak-model values even when a test/caller bypasses Pydantic."""
@@ -775,6 +832,41 @@ def _pick_crossover_parents(
             for candidate, version in candidates
             if version != _excl
         ]
+    # Persistent dead-pair hard avoidance (2026-10-28 audit): every pairing
+    # that already exhausted crossover _DEAD_PAIR_EXHAUSTION_THRESHOLD+
+    # times is excluded for good, not just the most recent one. When the
+    # exclusion leaves no distinct lineage at all, return None — the caller
+    # falls back to single-parent Master evolution instead of re-burning a
+    # dead pair.
+    _dead_partners = _dead_crossover_partners(va)
+    if _dead_partners:
+        gap_candidates = [
+            (candidate, version)
+            for candidate, version in gap_candidates
+            if version not in _dead_partners
+        ]
+        candidates = [
+            (candidate, version)
+            for candidate, version in candidates
+            if version not in _dead_partners
+        ]
+        try:
+            _gs.log_system_event(
+                "pipeline.crossover_dead_pair_avoidance",
+                "info",
+                (
+                    f"Crossover parent B candidates pruned for {parent_a}: "
+                    f"dead pairings {sorted(_dead_partners)}"
+                ),
+                {
+                    "parent_a": parent_a,
+                    "excluded_parent_b_versions": sorted(_dead_partners),
+                    "threshold": _DEAD_PAIR_EXHAUSTION_THRESHOLD,
+                    "remaining_gap_candidates": [name for name, _ in gap_candidates],
+                },
+            )
+        except Exception:
+            pass
     selection_mode = "version_gap" if gap_candidates else "adjacent_fallback"
     if not (gap_candidates or candidates):
         return None
