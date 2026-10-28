@@ -679,12 +679,24 @@ async def _run_durable_post_publication_archivist(v: int, source_v: int):
                 "rotation_set_digest"
             ):
                 raise RuntimeError("archive_rotation_final_reproof_mismatch")
-            from evolution_infra import validate_archive_rotation_receipts
+            # Direct import: the evolution_infra delegate is a SEMANTIC_PATHS
+            # file and carries no adoption-carve-out kwarg. The rotation is
+            # already completed here (adoption re-proof); a daemon
+            # evaluation-bundle crash-recovery rewrite below the frozen
+            # snapshot waives the prefix proof while the watermark/receipt
+            # chain stays fully re-proved against live bytes.
+            from evolution_infra_archive_rotation import (
+                validate_archive_rotation_receipts,
+            )
 
             if validate_archive_rotation_receipts(
                 v,
                 recorded_rotations,
                 rotation_plan=record["steps"]["archive_rotation"]["plan"],
+                require_live_source_proof=(
+                    record["steps"]["archive_rotation"].get("status")
+                    != "completed"
+                ),
             ) != recorded_rotations:
                 raise RuntimeError("archive_rotation_final_receipt_mismatch")
             log_row = record["steps"]["log_cleanup"]

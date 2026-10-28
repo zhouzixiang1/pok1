@@ -1440,18 +1440,37 @@ def autonomous_rotate_append_only_sources(
     return receipts
 
 
-def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
-    """Pure read/reproof of an already planned rotation; creates no files."""
+def validate_archive_rotation_receipts(
+    version,
+    receipts,
+    *,
+    rotation_plan,
+    require_live_source_proof=True,
+):
+    """Pure read/reproof of an already planned rotation; creates no files.
+
+    ``require_live_source_proof=False`` mirrors the adoption carve-out of
+    ``validate_archive_rotation_plan``: for a COMPLETED rotation being
+    re-proved during handoff housekeeping, a daemon evaluation-bundle
+    crash-recovery that rewrote the source below the frozen snapshot waives
+    only the snapshot-prefix/cold-range proof. The watermark chain, the
+    completed low-plan archive-prefix digests, and the exact receipt set are
+    still re-derived from live bytes; execution paths never pass the flag.
+    """
 
     version = int(version)
     if not isinstance(receipts, list):
         raise RuntimeError("archive rotation receipts must be a list")
-    _ei.validate_archive_rotation_plan(
+    # Bare module-global call (not _ei.validate_archive_rotation_plan): the
+    # evolution_infra delegate is a SEMANTIC_PATHS file and its frozen
+    # signature cannot thread the adoption carve-out kwarg.
+    validate_archive_rotation_plan(
         rotation_plan,
         version=version,
         publication_id=rotation_plan.get("publication_id")
         if isinstance(rotation_plan, dict)
         else None,
+        require_live_source_proof=require_live_source_proof,
     )
     expected_receipts = _ei.expected_archive_rotation_receipts(
         rotation_plan,

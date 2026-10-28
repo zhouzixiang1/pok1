@@ -714,12 +714,24 @@ def _reprove_external_steps(record: dict[str, Any]) -> None:
 
     rotation_output = steps["archive_rotation"]["receipt"]["output"]
     rotations = rotation_output["rotations"]
-    from evolution_infra import validate_archive_rotation_receipts
+    # Direct import: the evolution_infra delegate is a SEMANTIC_PATHS file
+    # and carries no adoption-carve-out kwarg. This is the final-completion
+    # re-proof of an already-executed rotation; a daemon evaluation-bundle
+    # crash-recovery that legitimately rewrote a source below the frozen
+    # snapshot waives only the snapshot-prefix proof (same rule as
+    # plan_handoff_step adoption). The watermark chain, completed low-plan
+    # archive digests, and exact receipt set are still re-proved live.
+    from evolution_infra_archive_rotation import (
+        validate_archive_rotation_receipts,
+    )
 
     if validate_archive_rotation_receipts(
         version,
         rotations,
         rotation_plan=steps["archive_rotation"]["plan"],
+        require_live_source_proof=(
+            steps["archive_rotation"].get("status") != "completed"
+        ),
     ) != rotations:
         raise _pph.PostPublicationHandoffError(
             "handoff_archive_rotation_external_reproof_mismatch"

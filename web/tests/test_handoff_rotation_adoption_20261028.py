@@ -177,6 +177,29 @@ def test_execution_paths_keep_the_mandatory_proof(rotation_env):
         rotation_module.archive_rotate_files(_VERSION, plan)
 
 
+def test_completed_receipts_reproof_adopts_despite_rewrite(rotation_env):
+    """Housekeeping's final receipts re-proof accepts a completed rotation
+    after a crash-recovery rewrite (waiving only the snapshot prefix)."""
+    results, archive = rotation_env
+    original = _seed_match_history(results, cold_lines=4000, keep_lines=800)
+    plan, _snapshot, watermark = _complete_rotation(results, archive)
+    receipts = evolution_infra.expected_archive_rotation_receipts(
+        plan, version=_VERSION, publication_id=_PUBLICATION_ID
+    )
+    _crash_recovery_rewrite(results, original, watermark["end_offset"])
+    with pytest.raises(RuntimeError, match="source prefix changed"):
+        rotation_module.validate_archive_rotation_receipts(
+            _VERSION, receipts, rotation_plan=plan
+        )
+    adopted = rotation_module.validate_archive_rotation_receipts(
+        _VERSION,
+        receipts,
+        rotation_plan=plan,
+        require_live_source_proof=False,
+    )
+    assert adopted == receipts
+
+
 # ── plan_handoff_step wiring ─────────────────────────────────────────
 
 
