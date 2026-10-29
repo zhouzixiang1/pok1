@@ -220,9 +220,10 @@ Phase 2: Name the FIVE largest strategic asymmetries (preflop, flop c-bet,
 turn sizing, river, all-in commitment). Quote exact functions with the line
 you actually read. Which FOCUS lines does THIS opponent punish?
 
-Phase 3: Walk 12 concrete hands (holes + board; mix button/blind and
-deep/short). For each hand, re-read the FOCUS and OPPONENT lines you rely on
-immediately before writing the trace, and name them.
+Phase 3: Walk 16 concrete hands (holes + board; mix button/blind,
+deep/short, and at least four multi-street all-in runouts). For each hand,
+re-read the FOCUS and OPPONENT lines you rely on immediately before writing
+the trace, and name them.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 _SATURATOR_LINE_AUDIT_PROMPT = """\
@@ -255,8 +256,13 @@ Phase 2: Trace FIVE named helpers that actually change the returned intent
 (a dispatcher, a raise builder, an opponent weight, a legality guard, a
 fallback). For each: inputs, full branch table, missing-tracker behaviour.
 
-Phase 3: Show THREE hands where helper A and helper B disagree; say which one
+Phase 3: Show SIX hands where helper A and helper B disagree; say which one
 wins each and why. Re-read each cited function immediately before writing it.
+
+Phase 4 (only when policy.py imports precompute.py): trace how the precomputed
+table actually reaches the returned intent — which equity/rank-mask lookup
+feeds which helper, with the exact call sites you re-read. If there is no
+import, state that once and skip.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 
