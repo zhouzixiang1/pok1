@@ -80,6 +80,19 @@ _REMOTE_PUBLICATION_CACHE = {
     "inflight_generation": None,
 }
 
+#: 2026-10-29 daemon-crash root cause: a ``git ls-remote`` timeout armed the
+#: provider-exception path below, which cached an EMPTY verified set for the
+#: full TTL; the rating daemon's active-pool refresh then intersected local
+#: tags with that poisoned cache, produced zero bots, and the (frozen,
+#: SEMANTIC_PATHS) ``pick_matches`` divided by the empty pool. An error is not
+#: evidence of de-publication: on provider failure we now NEVER touch the
+#: cache, and callers may use the last successful proof while it is younger
+#: than this grace window. Past the grace window the honest empty answer is
+#: returned (fail-closed for the effect boundaries is preserved elsewhere:
+#: publication/mutation paths re-prove through their own generation-fenced
+#: checks, and any tag or pool mutation calls ``_clear_remote_publication_cache``).
+_REMOTE_PUBLICATION_STALE_GRACE_SEC = 300.0
+
 
 def _clear_remote_publication_cache():
     with _REMOTE_PUBLICATION_CACHE_CONDITION:
@@ -209,10 +222,30 @@ def _remote_published_completion_versions(tag_versions) -> set[int]:
             verified.add(version)
     except Exception as exc:
         log.error(
-            "Remote publication proof unavailable; active pool fails closed: %s",
+            "Remote publication proof unavailable; serving last good proof "
+            "within the stale grace window: %s",
             exc,
         )
-        verified = set()
+        with _REMOTE_PUBLICATION_CACHE_CONDITION:
+            last_good_age = (
+                time.monotonic()
+                - float(_REMOTE_PUBLICATION_CACHE.get("checked_at") or 0.0)
+            )
+            last_good_matches = _REMOTE_PUBLICATION_CACHE.get("key") == cache_key
+            cached_versions = set(_REMOTE_PUBLICATION_CACHE.get("versions") or ())
+            _REMOTE_PUBLICATION_CACHE["inflight_key"] = None
+            _REMOTE_PUBLICATION_CACHE["inflight_generation"] = None
+            _REMOTE_PUBLICATION_CACHE_CONDITION.notify_all()
+        # The provider error is NOT evidence of de-publication. Serve the
+        # last successful proof while it is recent enough; only past the
+        # grace window answer empty (and never poison the cache, which is
+        # what previously zeroed the rating daemon's active pool).
+        if (
+            last_good_matches
+            and last_good_age <= _REMOTE_PUBLICATION_STALE_GRACE_SEC
+        ):
+            return cached_versions
+        return set()
     with _REMOTE_PUBLICATION_CACHE_CONDITION:
         refresh_is_current = bool(
             _REMOTE_PUBLICATION_CACHE.get("generation")

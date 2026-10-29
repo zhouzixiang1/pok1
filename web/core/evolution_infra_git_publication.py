@@ -107,15 +107,21 @@ def _git(*args, check=True):
     ``_ei._git(...)`` rather than calling this function directly.
     """
     with _git_concurrency_sem:
+        # ls-remote is a read-only remote probe and the published-pool proof
+        # depends on it; the flat 30s was too tight during external-network
+        # congestion (2026-10-29: 29 timeouts, each arming the fail-closed
+        # proof path once and clearing the rating daemon's active pool).
+        # Other git operations keep the historical 30s.
+        _timeout = 120 if args and args[0] == "ls-remote" else 30
         try:
             result = subprocess.run(
                 ["git"] + list(args),
                 cwd=str(_ei.PROJECT_ROOT),
                 capture_output=True, text=True,
-                timeout=30
+                timeout=_timeout
             )
         except subprocess.TimeoutExpired:
-            raise RuntimeError(f"git {args[0]}: timed out after 30s")
+            raise RuntimeError(f"git {args[0]}: timed out after {_timeout}s")
     if check and result.returncode != 0:
         raise RuntimeError(f"git {args[0]}: {result.stderr.strip()}")
     return result.stdout.strip()

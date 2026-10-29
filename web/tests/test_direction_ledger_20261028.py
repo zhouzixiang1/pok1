@@ -24,6 +24,15 @@ def _mk_tree(results: Path, version: int, tail_symbols: "list[str]") -> None:
     (d / "master_io.txt").write_text(body, encoding="utf-8")
 
 
+def _mk_tree_with_binding(results: Path, version: int, sealed: str, tail_symbols: "list[str]") -> None:
+    """Tree as it really looks: tail garbage + a findable proposal_binding."""
+    _mk_tree(results, version, tail_symbols)
+    binding = json.dumps({"proposal_binding": {"change_symbol": sealed}})
+    (results / f"v{version}" / "logs" / "master_plan_audit_io.txt").write_text(
+        "prompt text\n" + binding + "\n", encoding="utf-8"
+    )
+
+
 def test_record_and_load_roundtrip(tmp_path):
     ok = recent_directions.record_planned_direction(
         640,
@@ -66,15 +75,20 @@ def test_ledger_wins_over_the_wrong_tail_scan(tmp_path):
     assert rows == [(650, "policy.py:_sealed_selected")]
 
 
-def test_tail_scan_fallback_only_for_pre_ledger_versions(tmp_path):
-    _mk_tree(tmp_path, 651, ["policy.py:_legacy_tail"])
-    _mk_tree(tmp_path, 652, ["policy.py:_other_tail"])
-    recent_directions.record_planned_direction(
-        652, 1, {"change_symbol": "policy.py:_sealed"}, results_dir=tmp_path
+def test_fallback_uses_sealed_binding_never_bare_tail(tmp_path):
+    # Tree without a durable ledger row: the fallback reads the SEALED
+    # proposal_binding (2026-10-29 second-round-audit guard), never the
+    # bare last-change_symbol tail match (ensemble proposal #3).
+    _mk_tree_with_binding(
+        tmp_path,
+        651,
+        "policy.py:_sealed_legacy",
+        ["policy.py:_prop1", "policy.py:_prop2", "policy.py:_wrong_tail"],
     )
+    _mk_tree(tmp_path, 652, ["policy.py:_no_binding_at_all"])
     rows = recent_directions.recent_change_symbols(12, results_dir=tmp_path)
-    assert dict(rows) == {652: "policy.py:_sealed", 651: "policy.py:_legacy_tail"}
-    assert rows[0][0] == 652  # newest-first preserved
+    # v651 recoverable via binding; v652 SKIPPED, not mislabeled from the tail
+    assert dict(rows) == {651: "policy.py:_sealed_legacy"}
 
 
 def test_exclude_version_drops_own_generation_from_counts(tmp_path):

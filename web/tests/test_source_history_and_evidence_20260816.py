@@ -239,8 +239,13 @@ def test_recent_directions_module_shared_ledger(tmp_path):
     for v, symbol in ((187, "_refinement_prior_equity"), (186, "_bluff_allowed")):
         log_dir = tmp_path / f"v{v}" / "logs"
         log_dir.mkdir(parents=True)
-        (log_dir / "master_io.txt").write_text(
-            f'{{"change_symbol": "policy.py:{symbol}"}}', encoding="utf-8"
+        # 2026-10-29 audit guard: the fallback reads the SEALED
+        # proposal_binding object, never a bare last-change_symbol match
+        # (the tail of real master_io.txt is the per-proposal compilation
+        # contract block; that extraction was 12/12 wrong in production).
+        (log_dir / "master_plan_audit_io.txt").write_text(
+            f'{{"proposal_binding": {{"change_symbol": "policy.py:{symbol}"}}}}',
+            encoding="utf-8",
         )
     rows = rd.recent_change_symbols(results_dir=tmp_path)
     assert rows == [(187, "policy.py:_refinement_prior_equity"), (186, "policy.py:_bluff_allowed")]

@@ -35,6 +35,38 @@ _CHANGE_SYMBOL_RE = re.compile(
     r'"change_symbol"\s*:\s*"(policy\.py:[A-Za-z_][A-Za-z0-9_]*)"'
 )
 _VERSION_DIR_RE = re.compile(r"v\d+")
+# Two real in-log forms of the SELECTED plan (never the ensemble tail block):
+# the durable sealed binding inside the audit prompt, and the accepted
+# final_plan object in the master log.
+_BINDING_HEAD_RE = re.compile(r'"(?:proposal_binding|final_plan)"\s*:\s*\{')
+_ENSEMBLE_KEY_RE = re.compile(r'"proposal_ensemble"')
+
+
+def _sealed_symbol_from_log(path: "Path | None") -> "str | None":
+    """Extract the SEALED selected-plan symbol from a master/audit log.
+
+    Scans each ``proposal_binding`` / ``final_plan`` object window for the
+    change_symbol; windows that contain a ``proposal_ensemble`` render (all
+    three proposals' contracts) are skipped, because a regex search there
+    lands on proposal #3 — the extraction that was 12/12 wrong in production
+    (2026-10-28 audit; the bare last-match tail scan is the disproven form).
+    Returns None when no unambiguous selected-plan object exists — the caller
+    must SKIP the version, never guess.
+    """
+    if path is None or not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for m in _BINDING_HEAD_RE.finditer(text):
+        window = text[m.end():m.end() + 6000]
+        if _ENSEMBLE_KEY_RE.search(window):
+            continue
+        sm = _CHANGE_SYMBOL_RE.search(window)
+        if sm:
+            return sm.group(1)
+    return None
 _LEDGER_NAME = "direction_ledger.jsonl"
 
 
@@ -240,18 +272,22 @@ def recent_change_symbols(
         if exclude_version is not None and v == int(exclude_version):
             continue
         log = d / "logs" / "master_io.txt"
-        if not log.is_file():
+        # 2026-10-29 second-round audit guard: the fallback must never use the
+        # disproven tail scan (last "change_symbol" match = ensemble proposal
+        # #3, NOT the selected plan — 12/12 wrong). Sealed extraction from a
+        # proposal_binding object only; a tree without a findable binding is
+        # skipped, never mislabeled.
+        sealed_symbol = None
+        for candidate in (
+            d / "logs" / "master_plan_audit_io.txt",
+            log,
+        ):
+            sealed_symbol = _sealed_symbol_from_log(candidate)
+            if sealed_symbol is not None:
+                break
+        if sealed_symbol is None:
             continue
-        try:
-            size = log.stat().st_size
-            with log.open("rb") as fh:
-                fh.seek(max(0, size - 400_000))
-                tail = fh.read().decode("utf-8", errors="replace")
-        except OSError:
-            continue
-        symbols = _CHANGE_SYMBOL_RE.findall(tail)
-        if symbols:
-            rows.append((v, symbols[-1]))
+        rows.append((v, sealed_symbol))
     return rows
 
 

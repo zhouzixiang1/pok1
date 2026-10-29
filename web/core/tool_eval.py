@@ -633,10 +633,20 @@ def _pool_leg_tail_p(result) -> "float | None":
     how far below 50% the candidate sits against the pool's OWN weakest
     member. The aggregate tail dilutes this signal with parent/bootstrap
     legs, so a candidate measurably worse than the weakest can look ambiguous
-    in aggregate (v634 round1: aggregate tail 0.21, pool leg 10W-14L
-    tail 0.09) while the admission leg is already a regression the fresh-seed
-    round cannot fix (2026-10-28 audit: pool-leg drift 12→8 and 10→8 on the
-    two F1 resamples, each costing a full 48-match native round).
+    in aggregate while the admission leg is already a regression the
+    fresh-seed round cannot fix (2026-10-28 audit: the pool leg drifted WORSE
+    after resample in v630 12W→8W tail 0.0758 and v634 10W→8W tail 0.0758,
+    each costing a full 48-match native round).
+
+    Calibrated numbers (2026-10-29 second-round audit, deployed function
+    recomputation — an earlier draft of this docstring misstated the 10W-14L
+    tail as 0.09; the true value at n=24 is P(W<=10)=0.2706, and the 0.10
+    decisive threshold therefore only catches round-1 legs of 8W-16L or
+    worse; whether to tighten toward 0.2-0.3 is gated on forward v638+
+    samples because rescue-ability is unobservable at n=5):
+      pool leg at r1: v630 12W-12L 0.5806 / v631 9W-15L 0.1537 /
+                      v634 10W-14L 0.2706 / v635 13W-11L 0.7294 /
+                      v637 10W-14L 0.2706
     """
     if not isinstance(result, dict):
         return None

@@ -111,8 +111,13 @@ def test_recent_directions_block_names_recycled_symbols(tmp_path, monkeypatch):
     ):
         log_dir = results / f"v{v}" / "logs"
         log_dir.mkdir(parents=True)
-        (log_dir / "master_io.txt").write_text(
-            'noise before\n{"plan": {"change_symbol": "policy.py:' + symbol + '"}}\n',
+        # 2026-10-29 audit guard: production truth lives in the audit io log's
+        # sealed proposal_binding; the bare tail match in master_io.txt is the
+        # disproven extraction (12/12 wrong) and must not feed the ledger.
+        (log_dir / "master_plan_audit_io.txt").write_text(
+            'noise before\n{"proposal_binding": {"change_symbol": "policy.py:'
+            + symbol
+            + '"}}\n',
             encoding="utf-8",
         )
     repo = tmp_path / "repo"
