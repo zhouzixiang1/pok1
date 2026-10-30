@@ -1184,7 +1184,11 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
             # time (v174-v187: _bluff_allowed re-proposed 7 gens). The
             # ledger is authoritative here.
             try:
-                from recent_directions import recent_symbol_counts
+                from recent_directions import (
+                    recent_symbol_counts,
+                    veto_mode,
+                    veto_rule_text,
+                )
 
                 _selected_symbol = str(
                     ((master_plan.get("proposal_binding") or {}).get(
@@ -1194,19 +1198,35 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
                 _counts = recent_symbol_counts(6, exclude_version=int(next_v))
                 _seen = _counts.get(_selected_symbol, 0)
                 if _selected_symbol and _seen >= 2:
+                    _rule = veto_rule_text(_seen)
                     data = dict(data)
                     data["direction_novelty"] = "repetitive"
                     data["overall_pass"] = False
                     data["retry_recommended"] = True
                     data.setdefault("contradictions", [])
                     data["contradictions"] = list(data["contradictions"]) + [
-                        f"change_symbol {_selected_symbol} already targeted "
-                        f"in {_seen} of the last 6 generation attempts "
+                        f"change_symbol {_selected_symbol} is {_rule} "
                         "(recent directions ledger)"
                     ]
+                    # R3 (queue #4, 2026-10-30): durable event for the FIRST
+                    # time this override fires.  Before this every 0-hit
+                    # reading was only proof the override did not fire — the
+                    # log.warning line is not searchable in events.jsonl and
+                    # the audit io file rotates with the generation tree.
+                    log_system_event(
+                        "pipeline.master_plan_audit_direction_veto",
+                        "warning",
+                        f"Master plan audit override: {_selected_symbol} is "
+                        + _rule,
+                        {
+                            "change_symbol": _selected_symbol,
+                            "seen": int(_seen),
+                            "veto_mode": veto_mode(),
+                        },
+                    )
                     log.warning(
                         "Master plan audit override: repetitive direction "
-                        "%s (%d/6 recent attempts)",
+                        "%s (%d recent, mode-weighted)",
                         _selected_symbol, _seen,
                     )
             except Exception:

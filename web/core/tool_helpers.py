@@ -1209,6 +1209,15 @@ def _select_precommit_opponents(
                     "details": str(exc)[:400],
                 }
                 break
+            except _pool_ratchet.PoolRatchetConfigError as exc:
+                # Mis-set POK_POOL_WEAKEST_MIN_GAMES (queue #3 knob): fails
+                # closed as an explicit blocker, same posture as the
+                # publish_mode error path above — never a silent fallback.
+                pool_weakest_blocker = {
+                    "reason": "pool_weakest_config_invalid",
+                    "details": str(exc)[:400],
+                }
+                break
             if _weakest_row is None:
                 # Pool smaller than two or every row excluded (bootstrap
                 # degeneration): no admission opponent.

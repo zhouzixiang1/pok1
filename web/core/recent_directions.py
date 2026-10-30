@@ -297,10 +297,238 @@ def recent_symbol_counts(
     results_dir: "str | Path | None" = None,
     exclude_version: int | None = None,
 ) -> "dict[str, int]":
-    """Recycling counts keyed by change symbol over the last N generations."""
+    """Recycling counts keyed by change symbol over the recent window.
+
+    Mode-dispatched (queue #4, 2026-10-30) via ``POK_DIRECTION_VETO_MODE``:
+
+    - ``attempt`` (code default, byte-identical history): every planned slot
+      counts, whatever happened to it — how RECENTLY a direction was tried.
+    - ``outcome``: the queue #4 outcome-weighted W12 view — only native-gate
+      deaths increment, a publication outranks older attempts, plan-stage
+      deaths count 0.  The window widens to ``POK_DIRECTION_VETO_WINDOW``
+      (default 12) regardless of ``max_versions``; the threshold (>=2) and
+      the consumers' code strings are unchanged, so the ensemble, the audit,
+      the hard-avoid render, and the strict-authority replay (which must
+      never byte-drift mid-generation) all flip together through this one
+      function — there is no live-vs-replay semantic split to reconcile.
+    """
+
+    if veto_mode() == "outcome":
+        return recent_symbol_failure_counts(
+            veto_window(),
+            results_dir=results_dir,
+            exclude_version=exclude_version,
+        )
     counts: "dict[str, int]" = {}
     for _v, symbol in recent_change_symbols(
         max_versions, results_dir=results_dir, exclude_version=exclude_version
     ):
         counts[symbol] = counts.get(symbol, 0) + 1
     return counts
+
+
+VETO_MODE_ENV = "POK_DIRECTION_VETO_MODE"
+VETO_WINDOW_ENV = "POK_DIRECTION_VETO_WINDOW"
+VETO_MODES = ("attempt", "outcome")
+
+
+def veto_mode() -> str:
+    """``attempt`` (W6 plan-attempt counting) or ``outcome`` (W12 weighted).
+
+    Unknown values fail closed to ``attempt`` — the historical, more
+    permissive-on-novel-but-refuted directions semantics is NOT the safe
+    side; the safe side is the byte-identical default: a typo in the env key
+    must not silently enable an untested veto.
+    """
+
+    raw = str(os.environ.get(VETO_MODE_ENV) or "").strip().lower()
+    return raw if raw in VETO_MODES else "attempt"
+
+
+def veto_window() -> int:
+    """Generation window used in ``outcome`` mode (12 default, 6..24 bound)."""
+
+    raw = str(os.environ.get(VETO_WINDOW_ENV) or "").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return 12
+    return n if 6 <= n <= 24 else 12
+
+
+def veto_rule_text(seen: int, window: "int | None" = None) -> str:
+    """One canonical prose rendering of the fired veto, mode-aware.
+
+    All four consumer prompts/messages render through here so a scout, an
+    audit contradiction, and a repair hint can never describe different
+    rules than the code applied.
+    """
+
+    mode = veto_mode()
+    if mode == "outcome":
+        win = int(window if window is not None else veto_window())
+        return (
+            f"already refuted by the native gates in {seen} of the last {win} "
+            "generation attempts (outcome-weighted directions ledger: only "
+            "precommit/quality-breaker deaths count, a published success "
+            "outranks older failures, plan-stage deaths are noise)"
+        )
+    win = int(window if window is not None else 6)
+    return f"already targeted in >= 2 of the last {win} generation attempts"
+
+
+# Reasons that count as a NATIVE-GATE failure for the outcome-weighted view.
+# Both breakers are reached only after the candidate cleared planning, so the
+# direction itself was graded and then REFUTED by evaluation evidence:
+# ``precommit_rework_circuit_breaker`` (the 2-round precommit cap) and
+# ``quality_rework_circuit_breaker``. Everything else — ``master_audit_rejected``
+# (the audit's own repetitive veto among them), plan-stage exhaustion,
+# infrastructure abandonment — is a PROCESS failure that says nothing about
+# whether the symbol works at the tables, and never increments.
+_NATIVE_GATE_FAILURE_REASONS = frozenset(
+    {
+        "precommit_rework_circuit_breaker",
+        "quality_rework_circuit_breaker",
+    }
+)
+
+
+def _abandon_outcomes(results_dir: "str | Path | None") -> "dict[int, str]":
+    """version -> last abandon reason class (a mid-flight version is absent).
+
+    Best effort: an unreadable ledger yields an empty map, which the caller
+    reads as "no deaths" — the conservative direction for a veto (a symbol
+    with unknown outcome is never condemned, matching the fail-open posture
+    of ``recent_symbol_counts``).
+    """
+
+    base = Path(results_dir) if results_dir is not None else _ledger_path()
+    if base is None:
+        return {}
+    path = base / "abandoned_versions.jsonl"
+    outcomes: "dict[int, str]" = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    row = json.loads(stripped)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                version = row.get("version")
+                if type(version) is not int:
+                    continue
+                reason = str(row.get("reason") or "")
+                # Reason strings carry a free-text tail on some producers
+                # (``master_audit_rejected v642: ...``); the class is the
+                # first token.
+                outcomes[version] = reason.split(":", 1)[0].split(" ", 1)[0].strip()
+    except OSError:
+        return {}
+    return outcomes
+
+
+def published_version_set(
+    results_dir: "str | Path | None" = None,
+) -> "set[int]":
+    """Versions with an evaluation report showing an empty blocker list.
+
+    ``passed`` is deliberately NOT trusted as the signal — legacy report
+    writers left it unset on a publishing pass (v629.json: no ``passed``
+    key, ``blockers: []`` while the version carries a completion tag).
+    The report files are one-per-version (``v<N>.json`` and the F1
+    ``v<N>_round<k>.json`` resamples); an attempted-but-abandoned version
+    keeps its last failing report, so a round file with blockers never
+    marks a version published.
+    """
+
+    base = Path(results_dir) if results_dir is not None else _ledger_path()
+    if base is None:
+        return set()
+    rep_dir = base / "precommit_reports"
+    published: "set[int]" = set()
+    try:
+        names = os.listdir(rep_dir)
+    except OSError:
+        return set()
+    for name in names:
+        m = re.fullmatch(r"v(\d+)(?:_round\d+)?\.json", name)
+        if not m:
+            continue
+        try:
+            row = json.loads((rep_dir / name).read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        blockers = row.get("blockers")
+        if isinstance(blockers, list) and not blockers:
+            published.add(int(m.group(1)))
+    return published
+
+
+def recent_symbol_failure_counts(
+    max_versions: int = 12,
+    *,
+    results_dir: "str | Path | None" = None,
+    exclude_version: int | None = None,
+    override: "dict[str, int] | None" = None,
+) -> "dict[str, int]":
+    """Outcome-weighted per-symbol native-gate failure counts (queue #4).
+
+    The W6 attempt-counting veto (``recent_symbol_counts``) grades a symbol
+    by how RECENTLY it was planned, regardless of how the attempt ended.
+    Real replay (2026-10-30, ledger + abandon ledger + precommit reports,
+    v628-v643 window): ``_candidate_raise_fractions`` was sealed for v641
+    while its W6 count read 0 — v630/v633/v634 deaths had already slid out
+    of the six-slot window — and v641 then burned a full generation dying on
+    the same symbol. Meanwhile v636's clean ``_realized_call_equity``
+    publication (v625/v628 earlier failures) shows a published success
+    genuinely rehabilitates a symbol.
+
+    Semantics (calibrated on that replay):
+    - only NATIVE-GATE deaths increment (``_NATIVE_GATE_FAILURE_REASONS``):
+      the candidate reached evaluation and was refuted there;
+    - a symbol's most recent outcome DOMINATES: walking newest-first, the
+      first publication seen for a symbol freezes it at its count-so-far
+      (a publication outranks everything older — v636-style rehabilitation
+      survives);
+    - plan-stage deaths (audit rejects, exhaustion, infra) count 0 — they
+      carry no table evidence;
+    - the window is 12 generation slots (newest-first, ``exclude_version``
+      still skips the generation currently being planned);
+    - a version still mid-flight at the newest edge counts 0 (unknown
+      outcome must not veto).
+
+    ``override`` lets tests/callers supply the map directly; when supplied
+    it is returned as-is (positive counts only). Never raises: unreadable
+    stores yield ``{}`` and the callers stay fail-open.
+    """
+
+    if override is not None:
+        return {k: int(v) for k, v in override.items() if int(v) > 0}
+    try:
+        rows = recent_change_symbols(
+            max_versions, results_dir=results_dir, exclude_version=exclude_version
+        )
+        deaths = _abandon_outcomes(results_dir)
+        published = published_version_set(results_dir)
+    except Exception:
+        return {}
+    counts: "dict[str, int]" = {}
+    decided: "set[str]" = set()
+    for version, symbol in rows:  # newest-first
+        if symbol in decided:
+            continue  # this symbol's most recent outcome was a publication;
+            # everything older than it is outranked and must not re-increment.
+        if version in published:
+            decided.add(symbol)
+            continue
+        if deaths.get(version) in _NATIVE_GATE_FAILURE_REASONS:
+            counts[symbol] = counts.get(symbol, 0) + 1
+        # else: plan-stage death or alive/unaccounted — counts 0, no increment.
+    return {symbol: n for symbol, n in counts.items() if n > 0}

@@ -492,8 +492,9 @@ def _proposal_schema_repair_guidance(
             add(
                 "The change_symbol "
                 + item.split(".", 1)[1]
-                + " was already targeted in >= 2 of the last 6 generation "
-                "attempts (recent directions ledger) and is hard-rejected "
+                + " is "
+                + _recent_symbol_counts_rule_text(None)
+                + " (recent directions ledger) and is hard-rejected "
                 "as a repetitive direction — no amount of re-evidence "
                 "unlocks it. Choose a DIFFERENT existing file.py:symbol from "
                 "the verified index that fits this direction's lens, and "
@@ -1601,6 +1602,18 @@ def _parse_master_proposal_output_with_mode(
     return parsed, _PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE
 
 
+def _recent_symbol_counts_rule_text(
+    recent_counts: "dict[str, int] | None",
+) -> str:
+    """Canonical mode-aware rule prose for events/hints (queue #4 / R3)."""
+    try:
+        from recent_directions import veto_rule_text
+
+        return veto_rule_text(2)
+    except Exception:
+        return "already targeted in >= 2 of the last 6 generation attempts"
+
+
 def _ledger_recent_change_symbol_error(
     change_symbol: object,
     recent_counts: "dict[str, int] | None",
@@ -1747,10 +1760,29 @@ def _validated_master_proposal(
     # P0-B hard ledger veto (see _ledger_recent_change_symbol_error): exact
     # mirror of the audit's repetitive-direction rule, fired per proposal so
     # the schema-retry machinery can pivot the scout inside this generation.
-    if (
-        _ledger_recent_change_symbol_error(change_symbol, recent_symbol_counts)
-        is not None
-    ):
+    # R3 (queue #4, 2026-10-30): this path emitted ZERO durable events — the
+    # proposal-stage veto was invisible to every audit lane (all "0 hits"
+    # readings so far only proved the AUDIT override never fired; the scouts
+    # were silently rejecting on ledger grounds the pipeline never recorded).
+    _ledger_error = _ledger_recent_change_symbol_error(
+        change_symbol, recent_symbol_counts
+    )
+    if _ledger_error is not None:
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.proposal_symbol_ledger_veto",
+                "warning",
+                f"Proposal-stage ledger veto: {change_symbol} — "
+                + _recent_symbol_counts_rule_text(recent_symbol_counts),
+                {
+                    "change_symbol": change_symbol,
+                    "seen": int((recent_symbol_counts or {}).get(change_symbol, 0)),
+                },
+            )
+        except Exception:
+            pass
         return None
 
     raw_chain = data.get("reachable_chain")

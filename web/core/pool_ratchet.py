@@ -80,6 +80,75 @@ REAP_PROTECTION_PROFILE_POOL_RATCHET = "pool_ratchet"
 # is unknown is never nominated as weakest while any measured row exists.
 POOL_WEAKEST_WILSON_MIN_GAMES = 600
 POOL_WEAKEST_FALLBACK_RD_CAP = 150.0
+
+# Queue #3 (2026-10-30): the tier-0 measured-strength sample floor is now
+# env-tunable.  Why: at 600 games the pool's tier-0 population was a SINGLE
+# member for 29 consecutive generations (v173 monopoly — block-30 pool audit),
+# because 600 daemon games accrue at ~4.5 days per new entrant while the
+# ratchet keeps the pool young — every fresh publication enters tier 1 and
+# stays there for weeks.  A permanent monopoly means the admission gate tests
+# one fixed opponent forever: no cross-member discrimination, and v173's
+# measured 0.4651 becomes a standing bar candidates can specialize against.
+#
+# Bounds 100..600, code default 600 (unset = byte-identical to the 2026-10-16
+# calibration).  The floor is 100, NOT lower, deliberately: at ~100 games the
+# Wilson-95% lower bound is ±0.098 wide at p≈.47 — a measured-STRONG member
+# can draw a bound below a genuinely weak one, re-opening the exact
+# rd-inflation-style mis-nomination (v11 nominated weakest over 993 games)
+# this floor was introduced to kill.  A production 300 halves the accrual
+# wait at ±0.055 — still a conservative draw-risk band, and the fail-safe
+# direction of a wrong pick is unchanged (gate targets a too-strong member,
+# lowering the admission rate, never the reverse).
+POOL_WEAKEST_WILSON_MIN_GAMES_ENV = "POK_POOL_WEAKEST_MIN_GAMES"
+POOL_WEAKEST_WILSON_MIN_GAMES_FLOOR = 100
+POOL_WEAKEST_WILSON_MIN_GAMES_CEIL = 600
+
+
+def pool_weakest_min_games() -> int:
+    """Effective tier-0 sample floor for the pool-weakest ordering key.
+
+    Read at the same freeze moments as the rest of the ratchet configuration
+    (precommit plan build, pool_reap handoff plan build), never mid-deck: an
+    in-flight generation's gate target is already bound into its frozen plan.
+    Unset/empty returns ``POOL_WEAKEST_WILSON_MIN_GAMES`` (600).  An
+    out-of-range or non-integer value fails fast with a system event, exactly
+    like ``pool_target_size`` — a mis-set floor must not silently degrade the
+    measured-strength tiering.
+    """
+
+    raw = str(os.environ.get(POOL_WEAKEST_WILSON_MIN_GAMES_ENV) or "").strip()
+    if not raw:
+        return POOL_WEAKEST_WILSON_MIN_GAMES
+    try:
+        games = int(raw)
+    except ValueError:
+        games = None
+    if (
+        games is None
+        or not (
+            POOL_WEAKEST_WILSON_MIN_GAMES_FLOOR
+            <= games
+            <= POOL_WEAKEST_WILSON_MIN_GAMES_CEIL
+        )
+    ):
+        message = (
+            f"Invalid {POOL_WEAKEST_WILSON_MIN_GAMES_ENV}={raw!r}; expected an "
+            f"integer in [{POOL_WEAKEST_WILSON_MIN_GAMES_FLOOR}, "
+            f"{POOL_WEAKEST_WILSON_MIN_GAMES_CEIL}] "
+            f"({POOL_WEAKEST_WILSON_MIN_GAMES_FLOOR} = the Wilson half-width "
+            "where a measured-strong member can be mis-nominated weakest; "
+            "600 = the 2026-10-16 calibration)"
+        )
+        _log_config_error(
+            "pipeline.pool_ratchet_config_invalid",
+            POOL_WEAKEST_WILSON_MIN_GAMES_ENV,
+            raw,
+            message,
+        )
+        raise PoolRatchetConfigError(f"pool_weakest_min_games_invalid:{raw}")
+    return games
+
+
 # Two-sided 95% normal quantile for the Wilson score interval.
 WILSON_95_Z = 1.959963984540054
 
@@ -261,6 +330,7 @@ def select_pool_weakest(rows, exclude_names=None) -> dict | None:
 
     from bot_namespace import parse_bot_version
 
+    min_games_floor = pool_weakest_min_games()
     excluded = {str(name) for name in (exclude_names or set())}
     eligible: list[tuple[tuple[int, float, int, int], dict]] = []
     for row in rows or []:
@@ -277,7 +347,7 @@ def select_pool_weakest(rows, exclude_names=None) -> dict | None:
             ) from None
         version = parse_bot_version(name)
         win_rate = _numeric(row.get("win_rate"))
-        if games >= POOL_WEAKEST_WILSON_MIN_GAMES and win_rate is not None:
+        if games >= min_games_floor and win_rate is not None:
             key = (
                 0,
                 wilson_lower_bound(win_rate, games),

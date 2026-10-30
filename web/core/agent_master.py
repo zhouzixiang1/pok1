@@ -191,14 +191,20 @@ def _recent_directions_avoid_set(next_v: int) -> str:
     >= 2-of-last-6 symbols as an EARLY, non-truncatable section of the
     proposal planning context, using the same counting helper and window as
     the audit (``recent_directions.recent_symbol_counts(6,
-    exclude_version=next_v)``).  Fail-open: no ledger rows (fresh checkout,
-    bootstrap, unreadable logs) render an empty string and the hard
+    exclude_version=next_v)`` — the helper itself mode-dispatches via
+    ``POK_DIRECTION_VETO_MODE``; see ``veto_rule_text`` for the canonical
+    rule prose).  Fail-open: no ledger rows (fresh checkout, bootstrap,
+    unreadable logs) render an empty string and the hard
     proposal-validation gate stays the authority.  Size is structurally
-    bounded: the 6-generation window admits at most three >= 2-count
-    symbols; the render is additionally capped at 1500 chars.
+    bounded: a 6-generation attempt window admits at most three >= 2-count
+    symbols (an outcome window is bounded the same way by construction);
+    the render is additionally capped at 1500 chars.
     """
     try:
-        from recent_directions import recent_symbol_counts
+        from recent_directions import (
+            recent_symbol_counts,
+            veto_rule_text,
+        )
 
         counts = recent_symbol_counts(6, exclude_version=int(next_v))
     except Exception:
@@ -214,10 +220,10 @@ def _recent_directions_avoid_set(next_v: int) -> str:
         return ""
     return (
         "HARD AVOID SET (deterministic recent-directions ledger; same rule "
-        "as the master plan audit): these change symbols were already "
-        "targeted in >= 2 of the last 6 generation attempts. A proposal "
-        "naming one of them as change_symbol is hard-rejected with "
-        "proposal_symbol_ledger_recent before selection — pick a "
+        "as the master plan audit): these change symbols are "
+        + veto_rule_text(2)
+        + ". A proposal naming one of them as change_symbol is hard-rejected "
+        "with proposal_symbol_ledger_recent before selection — pick a "
         "structurally different existing policy.py symbol instead: "
         + "; ".join(avoid)
     )[:1500]

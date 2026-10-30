@@ -190,7 +190,10 @@ async def _run_master_proposal_ensemble(
     # exclude_version the post-hoc master_plan_audit uses (audit_agents:
     # recent_symbol_counts(6, exclude_version=int(next_v)), fire at >= 2),
     # computed once so every direction/attempt grades against one frozen
-    # view.  Fail-open to None (check disabled) exactly like the audit's
+    # view.  The helper itself is mode-dispatched (queue #4:
+    # POK_DIRECTION_VETO_MODE=attempt|outcome), so the ensemble, the audit,
+    # the hard-avoid render and the strict replay can never disagree.
+    # Fail-open to None (check disabled) exactly like the audit's
     # try/except when the ledger cannot be read.
     try:
         from recent_directions import recent_symbol_counts as _rd_counts

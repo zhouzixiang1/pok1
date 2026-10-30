@@ -367,10 +367,15 @@ def _select_reap_candidate_from_snapshot(
         # extension yields whenever it would strand the pool without any
         # victim — "pool > cap implies a victim" outranks the alignment.
         from pool_ratchet import (
-            POOL_WEAKEST_WILSON_MIN_GAMES,
+            pool_weakest_min_games,
             wilson_lower_bound,
         )
 
+        # Same effective floor as the pool-weakest gate key (queue #3 knob):
+        # the gate's tier-0 nomination and the reap protection set must grade
+        # measured strength at ONE games floor, never a frozen 600 vs a live
+        # env value that can diverge.
+        _floor = pool_weakest_min_games()
         lb_by_name: dict[str, float] = {}
         for name in active_bots:
             row = inputs[name]
@@ -378,7 +383,7 @@ def _select_reap_candidate_from_snapshot(
             member_games = int(row.get("games", 0) or 0)
             if (
                 win_rate is not None
-                and member_games >= POOL_WEAKEST_WILSON_MIN_GAMES
+                and member_games >= _floor
             ):
                 lb_by_name[name] = wilson_lower_bound(win_rate, member_games)
         if lb_by_name:
