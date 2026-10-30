@@ -276,8 +276,6 @@ def test_invalid_floor_select_raises_config_error_and_helpers_blockers(tmp_path,
 
 
 # ---- live-replay guard: the exact v628-v643 shape the fix was calibrated on
-
-
 def test_live_replay_candidate_raise_fractions_would_veto():
     """The v641 admission case, replayed through the pure counting logic.
 
@@ -297,3 +295,163 @@ def test_live_replay_candidate_raise_fractions_would_veto():
     assert counts["policy.py:_candidate_raise_fractions"] >= 2
     assert "policy.py:_realized_call_equity" not in counts
     assert "policy.py:_bluff_allowed" not in counts
+
+
+def test_default_path_siblings_resolve_from_results_dir(tmp_path, monkeypatch):
+    """PRODUCTION-SIGNATURE regression (2026-10-30 deploy verification).
+
+    Every production call site omits ``results_dir`` (agent_master.py,
+    agent_master_ensemble.py, audit_agents.py, strict_authority_workflow.py
+    all call ``recent_symbol_counts(6, exclude_version=next_v)``), so the
+    helpers must resolve the SIBLING stores (abandoned_versions.jsonl,
+    precommit_reports/) from ``evolution_infra.RESULTS_DIR`` — NOT from
+    ``_ledger_path()``, which returns a FILE path
+    (``…/results/direction_ledger.jsonl``); joining a sibling under it names
+    a path that can never exist and the readers silently return empty,
+    making outcome mode a no-op exactly where it matters.  The original 22
+    cases all passed ``results_dir=`` explicitly and therefore could not see
+    this.  Also accepts the ledger-FILE form (the historical caller
+    convention) and normalizes it to the directory.
+    """
+    res = tmp_path / "results"
+    res.mkdir()
+    _mk_ledger(res, [(9, "policy.py:_x"), (8, "policy.py:_x")])
+    _mk_abandons(
+        res,
+        [
+            (9, "precommit_rework_circuit_breaker"),
+            (8, "precommit_rework_circuit_breaker"),
+        ],
+    )
+    import evolution_infra
+
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", res, raising=False)
+    # production signature: no results_dir at all
+    counts = recent_directions.recent_symbol_failure_counts(
+        12, exclude_version=10
+    )
+    assert counts == {"policy.py:_x": 2}, counts
+    assert len(recent_directions._abandon_outcomes(None)) == 2
+    # the ledger-FILE path form must normalize to the same directory
+    ledger_file = res / "direction_ledger.jsonl"
+    assert len(recent_directions._abandon_outcomes(ledger_file)) == 2
+    assert recent_directions.published_version_set(ledger_file) == set()
+    # and mode dispatch through the production signature
+    monkeypatch.setenv(recent_directions.VETO_MODE_ENV, "outcome")
+    assert recent_directions.recent_symbol_counts(6, exclude_version=10) == {
+        "policy.py:_x": 2
+    }
+
+# ---- R3: the veto EVENT path must be asserted, not just the counting -------
+
+
+def test_proposal_stage_veto_emits_event(monkeypatch, tmp_path):
+    """The proposal hard-reject must leave a durable event (R3 gap fix).
+
+    Before 2026-10-30 every '0 hits' reading was ambiguous between 'never
+    vetoed' and 'not wired'.  Reuses the ensemble suite's exact valid-proposal
+    fixture (same kwargs shape as
+    test_ledger_recent_symbol_rejected_with_new_error_code) so the veto
+    branch is genuinely reached, and asserts the emit fires with the symbol
+    and count in the payload — and stays silent for a clean symbol.
+    """
+    import agent_master
+    import system_log
+    from test_master_proposal_ensemble import (
+        _proposal,
+        _validator_kwargs,
+    )
+
+    kwargs = _validator_kwargs(tmp_path, monkeypatch)
+    seen = []
+
+    def fake(event_type, severity, message, data=None):
+        seen.append((event_type, message, data or {}))
+
+    monkeypatch.setattr(system_log, "log_system_event", fake)
+    ledger = {"policy.py:_choose_intent_mechanism": 2}
+
+    rejected = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        recent_symbol_counts=ledger,
+        **kwargs,
+    )
+    assert rejected is None
+    veto_events = [e for e in seen if e[0] == "pipeline.proposal_symbol_ledger_veto"]
+    assert len(veto_events) == 1, seen
+    _event_type, _msg, data = veto_events[0]
+    assert data.get("change_symbol") == "policy.py:_choose_intent_mechanism"
+    assert int(data.get("seen", 0)) == 2
+
+    # A fresh symbol passes the veto and emits nothing.
+    seen.clear()
+    fresh = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        recent_symbol_counts={"policy.py:_choose_intent_mechanism": 1},
+        **kwargs,
+    )
+    assert fresh is not None
+    assert not [e for e in seen if e[0] == "pipeline.proposal_symbol_ledger_veto"]
+
+
+# ---- queue #3/R2: the per-generation observability record ------------------
+
+
+def test_pool_weakest_audit_shape(tmp_path, monkeypatch):
+    from bot_namespace import bot_name
+
+    monkeypatch.delenv(pool_ratchet.POOL_WEAKEST_WILSON_MIN_GAMES_ENV, raising=False)
+    weak = {
+        "name": bot_name(1), "rating": 1450.0, "rd": 90.0,
+        "win_rate": 0.44, "games": 700,
+    }
+    strong = {
+        "name": bot_name(2), "rating": 1520.0, "rd": 60.0,
+        "win_rate": 0.53, "games": 700,
+    }
+    mid = {
+        "name": bot_name(3), "rating": 1500.0, "rd": 70.0,
+        "win_rate": 0.49, "games": 700,
+    }
+    rows = [weak, strong, mid]
+    audit = pool_ratchet.pool_weakest_audit(rows, exclude_names={bot_name(4)})
+    assert audit["floor"] == 600
+    assert audit["tier0_count"] == 3
+    assert audit["nominee"] == bot_name(1)
+    assert audit["games"] == 700
+    assert audit["wilson_lb"] == round(pool_ratchet.wilson_lower_bound(0.44, 700), 4)
+    # rollback signature: nominee 0.44 < pool median 0.49 -> False (healthy)
+    assert audit["wr_above_pool_median"] is False
+    assert audit["pool_median_wr"] == 0.49
+    assert audit["runner_up"] == bot_name(3)
+    # an inverted pool (nominee point rate above the median) flags True: the
+    # thin-sampled 0.53 member draws a lower Wilson bound than the two
+    # established sub-median members — exactly the floor-100 mis-nomination
+    # shape the flag exists to catch.
+    inverted = [
+        {"name": bot_name(5), "rating": 1500.0, "rd": 60.0, "win_rate": 0.53, "games": 120},
+        {"name": bot_name(6), "rating": 1500.0, "rd": 60.0, "win_rate": 0.51, "games": 800},
+        {"name": bot_name(7), "rating": 1500.0, "rd": 60.0, "win_rate": 0.52, "games": 800},
+    ]
+    monkeypatch.setenv(pool_ratchet.POOL_WEAKEST_WILSON_MIN_GAMES_ENV, "100")
+    audit2 = pool_ratchet.pool_weakest_audit(inverted)
+    assert audit2["nominee"] == bot_name(5)  # LB 0.4436 < 0.4756 / 0.4854
+    assert audit2["wr_above_pool_median"] is True  # 0.53 >= median 0.52
+    monkeypatch.delenv(pool_ratchet.POOL_WEAKEST_WILSON_MIN_GAMES_ENV, raising=False)
+    # fail-open: garbage rows never raise, they yield an error key or a partial
+    assert isinstance(pool_ratchet.pool_weakest_audit([{"name": "x"}, None]), dict)
+
+
+def test_event_bus_labels_pytest_emitters(monkeypatch):
+    """Test debris must be distinguishable from service rows (2026-10-30)."""
+    import event_bus
+
+    monkeypatch.delenv("POK_PROC", raising=False)
+    monkeypatch.setattr(event_bus, "_PROC", None)
+    assert event_bus.current_proc() == "pytest"
+    monkeypatch.setattr(event_bus, "_PROC", None)
+    monkeypatch.setenv("POK_PROC", "daemon")
+    assert event_bus.current_proc() == "daemon"
+    monkeypatch.setattr(event_bus, "_PROC", None)

@@ -1160,7 +1160,8 @@ def _select_precommit_opponents(
     # Pool-ratchet admission opponent: inject the current pool-weakest member
     # from the SAME frozen snapshot rows (never live ratings), selected by the
     # pool_ratchet measured-strength key (Wilson-95% lower bound of the
-    # observed win rate at games>=600; conservative rating with rd capped at
+    # observed win rate at games >= pool_weakest_min_games(); conservative
+    # rating with rd capped at
     # 150 below that floor) so the gate targets genuinely weak members
     # instead of strong-but-rusty high-rd bots.  ``add``'s active+disk
     # filters make a just-reaped weakest
@@ -1170,6 +1171,7 @@ def _select_precommit_opponents(
     # injects nothing (byte-equivalent selection).
     pool_weakest_name = None
     pool_weakest_blocker = None
+    pool_weakest_audit_info = None
     import pool_ratchet as _pool_ratchet
 
     try:
@@ -1228,6 +1230,18 @@ def _select_precommit_opponents(
             if _weakest_name in selected:
                 pool_weakest_name = _weakest_name
                 break
+
+    # Queue #3/R2 observability: one grep-able record per plan freeze so the
+    # knob's rollback criterion (nominee point wr >= pool median, tier0
+    # collapse, argmin churn) needs no recompute.  Fail-open by construction
+    # (pool_weakest_audit never raises); never part of the frozen plan.
+    if pool_weakest_name is not None:
+        try:
+            pool_weakest_audit_info = _pool_ratchet.pool_weakest_audit(
+                rows, exclude_names={candidate, parent}
+            )
+        except Exception:
+            pool_weakest_audit_info = None
 
     from strength_order import strength_order_key
 
@@ -1290,6 +1304,7 @@ def _select_precommit_opponents(
                     "evaluation_identity_digest"
                 ),
                 "pool_weakest_selected": pool_weakest_name,
+                "pool_weakest_audit": pool_weakest_audit_info,
                 "opponents": details,
             },
         )

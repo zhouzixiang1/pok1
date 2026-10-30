@@ -467,6 +467,31 @@ pause file had already auto-resumed. Only billing/auth manual pauses
 
 ### Phase E deploy (operator → runtime)
 
+**Deck-aware stop boundary (2026-10-30, mandatory).** Before any
+`systemctl stop` for a deploy, check whether a native precommit deck is in
+flight:
+
+```bash
+python3 -c "
+import json; d=json.load(open('/home/ubuntu/pok1/.evolution_pok/web/core/results/pipeline_state.json'))
+print(d.get('next_v'), d.get('stage'), d.get('precommit_rework_count'))"
+ls /home/ubuntu/pok1/.evolution_pok/web/core/results/precommit_reports/ | tail -3
+```
+
+If the checkpoint sits at `critic_checked` with a deck running (stage set does
+not advance while `run_precommit_eval` executes), the restart DISCARDS the
+completed-match ledger of the in-flight round while keeping the frozen plan:
+measured on v643 (2026-10-30, commit 06c98122) — round-2 had completed 36/48
+matches (~69 min native, 2520 hands) when the deploy stopped the service;
+after resume the same frozen plan re-ran all 48 matches from hand 1, and the
+restart additionally burned one `precommit_attempt` slot against
+`MAX_PRECOMMIT_RETRIES=3`. Wait for the round's
+`precommit_reports/v<N>(_round<k>)?.json` to land (round wall-clock ~1.7-2.5h
+at the current depths), then stop. A resume-safe deploy during a stage whose
+exact contract set does not contain your changed paths is still REQUIRED
+(`scripts/check_stage_contract_predeploy.py` exit 0) — the deck rule is about
+not wasting native time, not about contract safety.
+
 After verifying tests on this operator checkout (`/home/ubuntu/pok1`):
 
 1. **Rating-identity preflight (P5, 2026-10-05)** — run BEFORE commit/push:

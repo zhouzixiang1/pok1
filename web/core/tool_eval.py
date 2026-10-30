@@ -120,6 +120,32 @@ PRECOMMIT_POOL_WEAKEST_N_GAMES = 24
 PRECOMMIT_POOL_WEAKEST_MIN_N_GAMES = 6
 PRECOMMIT_POOL_WEAKEST_MAX_N_GAMES = 48
 
+# Pool-leg decisive channel threshold (2026-10-30 tightening, queue #3 of the
+# block-31 audit; was 0.10 since the 2026-10-28 introduction).
+#
+# The forward-sample gate that deferred this decision is now satisfied: the
+# 2026-10-29 decision explicitly said "keep 0.10, keep collecting forward
+# samples (v640+), revisit at n>=8".  n=8 has arrived.  Every persisted r1
+# pool-leg tail in the v630-v644 corpus (exact binomial, p=0.5):
+#   v630 12W-12L 0.5806 | v631 9W-15L 0.1537 | v634 10W-14L 0.2706
+#   v635 13W-11L 0.7294 | v636 11W-13L 0.4194 | v637 10W-14L 0.2706
+#   v639 11W-13L 0.4194 | v640 12W-12L 0.5806 | v641 11W-13L 0.4194
+#   v643 11W-13L 0.4194 | v644 11W-13L 0.4194 (vs v585, the new floor-300 bar)
+# At 0.10 the channel catches 0 of 11 — it is dead on arrival and every r1
+# failure buys the fresh-seed deck by default (resample lane: 9 decks, 1
+# rescue = v640).  At 0.30 it converts exactly the three legs the resample
+# never fixed (v631 0.154, v634 0.271, v637 0.271 — each died at r2 anyway)
+# into immediate abandons, saving 3x48 matches / ~4.5h of the single-permit
+# native lane per occurrence, while the ONLY historical rescue (v640, tail
+# 0.5806) and every observed rescue-capable band stays untouched: zero
+# rescues lost on this corpus.  The corpus is n=8 with one rescue, so 0.30 is
+# calibrated-on-evidence and still the conservative side of the 0.42 option
+# (which would also cut v639/v641/v643/v644 — those four are 0.4194 exact
+# ties-plus-one-loss legs whose r2 behavior is unobserved for 644 right now).
+# Rollback is one number back to 0.10; the aggregate channels above are
+# unchanged and still the primary decisive authority.
+PRECOMMIT_POOL_LEG_DECISIVE_TAIL = 0.30
+
 
 def precommit_pool_weakest_n_games() -> int:
     """Resolve the pool-weakest admission-leg match count (freeze moment)."""
@@ -638,15 +664,17 @@ def _pool_leg_tail_p(result) -> "float | None":
     after resample in v630 12W→8W tail 0.0758 and v634 10W→8W tail 0.0758,
     each costing a full 48-match native round).
 
-    Calibrated numbers (2026-10-29 second-round audit, deployed function
-    recomputation — an earlier draft of this docstring misstated the 10W-14L
-    tail as 0.09; the true value at n=24 is P(W<=10)=0.2706, and the 0.10
-    decisive threshold therefore only catches round-1 legs of 8W-16L or
-    worse; whether to tighten toward 0.2-0.3 is gated on forward v638+
-    samples because rescue-ability is unobservable at n=5):
+    Calibrated numbers (2026-10-30 forward-sample refresh — the 2026-10-29
+    decision gated any tightening on n>=8 v638+ samples, and n=11 r1 legs are
+    now persisted; see PRECOMMIT_POOL_LEG_DECISIVE_TAIL for the corpus):
       pool leg at r1: v630 12W-12L 0.5806 / v631 9W-15L 0.1537 /
                       v634 10W-14L 0.2706 / v635 13W-11L 0.7294 /
-                      v637 10W-14L 0.2706
+                      v637 10W-14L 0.2706 / v639 11W-13L 0.4194 /
+                      v640 12W-12L 0.5806 / v641 11W-13L 0.4194 /
+                      v643 11W-13L 0.4194 / v644 11W-13L 0.4194
+    The channel fired at 0.10 on 0 of these (dead on arrival); at 0.30 it
+    catches the three legs whose r2 never recovered (v631/v634/v637) and
+    keeps the one rescue (v640, 0.5806) reachable.
     """
     if not isinstance(result, dict):
         return None
@@ -713,10 +741,12 @@ def _precommit_failure_is_decisive(result) -> bool:
     * the aggregate W/L record is a one-sided exact binomial outlier
       (``p < 0.05``), or
     * the pool-weakest admission leg is itself a binomial outlier
-      (``p < 0.10``, 2026-10-28 audit; deliberately looser than the aggregate
+      (``p < PRECOMMIT_POOL_LEG_DECISIVE_TAIL`` = 0.30 since the 2026-10-30
+      forward-sample tightening; introduced at 0.10 on 2026-10-28),
+      deliberately looser than the aggregate
       because the leg alone gates admission — a candidate that loses to the
       pool's weakest by a significant margin will lose that leg under any
-      deck seed, so the F1 fresh-seed round is guaranteed native-time waste).
+      deck seed, so the F1 fresh-seed round is guaranteed native-time waste.
 
     Why the CI channel needs the SE band: a CI that merely excludes zero by
     epsilon is bootstrap luck, not proof. v641 round1 measured
@@ -744,7 +774,7 @@ def _precommit_failure_is_decisive(result) -> bool:
         if _binomial_tail_p(losses, decided) < 0.05:
             return True
     pool_tail = _pool_leg_tail_p(result)
-    if pool_tail is not None and pool_tail < 0.10:
+    if pool_tail is not None and pool_tail < PRECOMMIT_POOL_LEG_DECISIVE_TAIL:
         return True
     return False
 

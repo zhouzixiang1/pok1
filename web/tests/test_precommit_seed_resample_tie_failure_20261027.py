@@ -526,7 +526,22 @@ def test_pool_leg_tail_reads_the_blocked_opponent_matchup():
     # real v634 round1 shape: aggregate 25W-23L (ambiguous), pool 10W-14L
     r = _pool_failure("national_cloud_v173", 10, 14, (25, 23, -6000.0, 3000.0))
     assert round(_pool_leg_tail_p(r), 4) == 0.2706
-    assert _precommit_failure_is_decisive(r) is False  # still gets the fresh-seed round
+    # 2026-10-30 forward-sample tightening (0.10 -> 0.30; corpus in
+    # tool_eval.PRECOMMIT_POOL_LEG_DECISIVE_TAIL): v634's 0.2706 leg is now
+    # DECISIVE — the resample drifted it 10W->8W and it died at r2 anyway.
+    # Under the old 0.10 threshold this exact shape bought a doomed 48-match
+    # fresh-seed round; that behavior change is the point of the band.
+    assert _precommit_failure_is_decisive(r) is True
+
+
+def test_pool_leg_tail_just_above_new_threshold_still_resamples():
+    # v643/v644-shape leg (11W-13L, tail 0.4194) stays above 0.30: the
+    # tightening deliberately does NOT cut the tie-plus-one-loss band whose
+    # r2 behavior is still being observed, and it keeps the only historical
+    # rescue (v640, 12W-12L 0.5806) reachable.
+    r = _pool_failure("national_cloud_v173", 11, 13, (25, 23, -6000.0, 3000.0))
+    assert round(_pool_leg_tail_p(r), 4) == 0.4194
+    assert _precommit_failure_is_decisive(r) is False
 
 
 def test_significantly_losing_pool_leg_is_decisive():

@@ -79,6 +79,32 @@ def _ledger_path() -> "Path | None":
         return None
 
 
+def _results_base(results_dir: "str | Path | None" = None) -> "Path | None":
+    """Resolve the RESULTS_DIR that holds the ledger, abandon ledger and reports.
+
+    The historical caller convention passes either the results DIRECTORY or an
+    explicit ledger FILE path (``_ledger_path()`` returns a file, and
+    ``record_planned_direction``/``_load_ledger_rows`` accept both), so every
+    sibling-store reader must normalize first.  Without the ``.name`` guard a
+    default (no-``results_dir``) call resolves ``direction_ledger.jsonl /
+    abandoned_versions.jsonl`` — a path that never exists — and the reader
+    silently returns empty.  Production call sites all omit ``results_dir``
+    (agent_master.py, agent_master_ensemble.py, audit_agents.py,
+    strict_authority_workflow.py), so the guard is load-bearing for the
+    outcome-weighted veto, not cosmetic (2026-10-30 deploy verification).
+    """
+
+    if results_dir is not None:
+        return Path(results_dir)
+    try:
+        from evolution_infra import RESULTS_DIR
+
+        return Path(RESULTS_DIR)
+    except Exception:
+        lp = _ledger_path()
+        return lp.parent if lp is not None else None
+
+
 def record_planned_direction(
     version: int,
     source_v: "int | None",
@@ -402,7 +428,9 @@ def _abandon_outcomes(results_dir: "str | Path | None") -> "dict[int, str]":
     of ``recent_symbol_counts``).
     """
 
-    base = Path(results_dir) if results_dir is not None else _ledger_path()
+    base = _results_base(results_dir)
+    if base is not None and base.name == _LEDGER_NAME:
+        base = base.parent
     if base is None:
         return {}
     path = base / "abandoned_versions.jsonl"
@@ -446,7 +474,9 @@ def published_version_set(
     marks a version published.
     """
 
-    base = Path(results_dir) if results_dir is not None else _ledger_path()
+    base = _results_base(results_dir)
+    if base is not None and base.name == _LEDGER_NAME:
+        base = base.parent
     if base is None:
         return set()
     rep_dir = base / "precommit_reports"

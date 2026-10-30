@@ -5,9 +5,15 @@ publication mode (``POK_PUBLISH_MODE``), the pool target capacity
 (``POK_POOL_RATCHET_TARGET_SIZE``), the reap selection policy / protection
 profile for the active mode, and selects the current pool-weakest member from
 one frozen generation-evidence snapshot by MEASURED strength (Wilson-95%
-lower bound of the observed win rate once ``games >= 600``; conservative
-Glicko with rd capped at 150 below that sample floor — 2026-10-16
-calibration, see ``POOL_WEAKEST_WILSON_MIN_GAMES``).  Tuning bytes live here
+lower bound of the observed win rate once ``games >= pool_weakest_min_games()``
+— env ``POK_POOL_WEAKEST_MIN_GAMES``, code default 600 = the 2026-10-16
+calibration; conservative Glicko with rd capped at 150 below that sample
+floor; see ``POOL_WEAKEST_WILSON_MIN_GAMES`` for the history and
+``pool_weakest_audit`` for the per-generation observability record).  The
+gate reads measured strength from selection_snapshot.json while the reap lane
+reads it from bot_stats.json, so "one floor" does not mean "one number" (the
+two files differ by ~0.0013 Wilson LB on v585 at the 2026-10-30 snapshot).
+Tuning bytes live here
 precisely so they stay
 OUT of the precommit evaluator identity (``pool_ratchet_gate.py`` is the
 replay-sensitive member bound into ``precommit_eval_contract.SEMANTIC_PATHS``;
@@ -308,9 +314,11 @@ def select_pool_weakest(rows, exclude_names=None) -> dict | None:
     """Return the weakest eligible row from one frozen snapshot row set.
 
     The ordering key is the 2026-10-16 calibration described at
-    ``POOL_WEAKEST_WILSON_MIN_GAMES`` above: rows with statistically
-    sufficient measured strength (``games >= 600`` and a numeric
-    ``win_rate``) are tier 0 ordered by the Wilson-95% LOWER bound of the
+    ``POOL_WEAKEST_WILSON_MIN_GAMES`` above, applied at the EFFECTIVE floor
+    ``pool_weakest_min_games()`` (env knob; 600 = the historical default):
+    rows with statistically sufficient measured strength (``games >=`` that
+    floor and a numeric ``win_rate``) are tier 0 ordered by the Wilson-95%
+    LOWER bound of the
     observed win rate; every other row is tier 1 ordered by the conservative
     score with rd capped at 150 (``rating - 2*min(rd, 150)``).  This replaces
     the reap victim key (bare ``conservative_rating``) for pool-weakest
@@ -379,3 +387,75 @@ def select_pool_weakest(rows, exclude_names=None) -> dict | None:
     # deterministically and repeated calls on one frozen snapshot agree.
     eligible.sort(key=lambda item: item[0])
     return eligible[0][1]
+
+
+def pool_weakest_audit(rows, exclude_names=None) -> dict:
+    """Observability payload for the pool-weakest nomination (queue #3/R2).
+
+    One per-generation record that makes the knob's rollback criterion a grep
+    instead of a recompute.  Fields (all computed from the same frozen rows
+    the selector used, never live files):
+
+    - ``floor``: the effective tier-0 sample floor this plan froze with;
+    - ``tier0_count``: rows with ``games >= floor`` and a numeric win_rate
+      (7 at floor 600, 12 at 300, 14 at 100 on the 2026-10-30 snapshot);
+    - ``games`` / ``win_rate`` / ``wilson_lb`` of the nominee;
+    - ``wr_above_pool_median``: True when the nominee's POINT win rate sits at
+      or above the pool-wide median point win rate — that is the
+      mis-nomination signature (a "weakest" bar that is not below median);
+    - ``runner_up_lb``: the second-weakest lower bound, so a churn detection
+      (>= 2 different members in 6 consecutive plans) needs no extra query.
+
+    Fail-open: any error yields the floor + an ``error`` key; the selection
+    itself is unchanged by this function and must never depend on it.
+    """
+
+    audit: dict = {}
+    try:
+        floor = pool_weakest_min_games()
+        audit["floor"] = floor
+        excluded = {str(name) for name in (exclude_names or set())}
+        tier0 = []
+        all_wr = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            try:
+                games = int(row.get("games", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            wr = _numeric(row.get("win_rate"))
+            if wr is not None:
+                all_wr.append(wr)
+            if name in excluded:
+                continue
+            if games >= floor and wr is not None:
+                tier0.append(
+                    (wilson_lower_bound(wr, games), name, games, wr)
+                )
+        audit["tier0_count"] = len(tier0)
+        pick = select_pool_weakest(rows, exclude_names=exclude_names)
+        if isinstance(pick, dict):
+            pname = str(pick.get("name") or "")
+            pgames = int(pick.get("games", 0) or 0)
+            pwr = _numeric(pick.get("win_rate"))
+            if pwr is not None:
+                audit["nominee"] = pname
+                audit["games"] = pgames
+                audit["win_rate"] = round(pwr, 4)
+                audit["wilson_lb"] = round(wilson_lower_bound(pwr, pgames), 4)
+                if all_wr:
+                    ordered = sorted(all_wr)
+                    median = ordered[len(ordered) // 2]
+                    audit["pool_median_wr"] = round(median, 4)
+                    audit["wr_above_pool_median"] = bool(pwr >= median)
+            tier0_sorted = sorted(tier0)
+            if len(tier0_sorted) >= 2:
+                audit["runner_up"] = tier0_sorted[1][1]
+                audit["runner_up_lb"] = round(tier0_sorted[1][0], 4)
+    except Exception as exc:  # observability must never break selection
+        audit["error"] = f"{type(exc).__name__}:{str(exc)[:120]}"
+    return audit

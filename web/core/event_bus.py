@@ -188,12 +188,21 @@ def _detect_proc() -> str:
 
     Priority: explicit ``POK_PROC`` env (daemon_management injects this for the
     daemon subprocess) → entry-script name → default ``orchestrator``.
+
+    ``pytest`` is detected explicitly: without it a test run fell through to
+    the ``orchestrator`` default, which made test-written rows
+    indistinguishable from service rows (2026-10-30: a pytest run inside the
+    runtime checkout appended 4 ``pipeline.pool_ratchet_config_invalid``
+    error rows to the live 327MB events.jsonl and the block-31 digest read
+    ``pool_cfg_errors=0`` — the debris is only survivable if it is labeled).
     """
     env_proc = os.environ.get("POK_PROC")
     if env_proc:
         return env_proc
     import sys
     argv0 = (sys.argv[0] or "").lower()
+    if "pytest" in argv0 or "pytest" in sys.modules:
+        return "pytest"
     # entry scripts: elo_daemon.py / orchestrator.py / main.py (uvicorn web)
     if "elo_daemon" in argv0:
         return "daemon"
