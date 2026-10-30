@@ -547,3 +547,43 @@ def test_missing_pool_blocker_leaves_aggregate_rule_in_charge():
     }
     assert _pool_leg_tail_p(r) is None
     assert _precommit_failure_is_decisive(r) is False
+
+
+# ── CI channel needs bootstrap-thickness (2026-10-30 −1·SE band) ─────
+# v641 round1 measured ci_upper=-8.1 chips with SE=2167.9 (std 13711.1,
+# n=40): the bare ci_upper<0 rule called THAT decisive and forced the
+# expensive repair lane; a 400-run resample flips the verdict with p~0.37.
+# The band requires ci_upper < -1.0*SE. Full 50-report replay: exactly one
+# dispatch flips (v641_round1), zero collateral.
+
+
+def _ci_failure(ci_lower, ci_upper, std=None, samples=None, wins=15, losses=25):
+    agg = {
+        "wins": wins, "losses": losses, "draws": 0,
+        "net_chips_ci": [ci_lower, ci_upper],
+        "samples": samples or (wins + losses),
+    }
+    if std is not None:
+        agg["net_chips_std"] = std
+        agg["net_chips_samples"] = samples or (wins + losses)
+    return {"passed": False, "failure_class": "regression",
+            "blockers": [{"reason": "aggregate_native_regression", "opponent": "aggregate"}],
+            "matchups": [], "aggregate": agg}
+
+
+def test_ci_just_below_zero_with_known_se_is_ambiguous():
+    # the real v641 round1 numbers
+    r = _ci_failure(-8090.4, -8.1, std=13711.1, samples=40)
+    assert _precommit_failure_is_decisive(r) is False  # SE=2167.9, -8.1 > -2167.9
+
+
+def test_ci_clearly_negative_beyond_one_se_stays_decisive():
+    # 2+ SE below zero: beyond bootstrap luck
+    r = _ci_failure(-9000.0, -5000.0, std=13711.1, samples=40)
+    assert _precommit_failure_is_decisive(r) is True  # -5000 < -2167.9
+
+
+def test_missing_std_falls_back_to_original_ci_rule():
+    # legacy payloads without std/net_chips_samples keep historical behavior
+    r = _ci_failure(-8090.4, -8.1)  # no std
+    assert _precommit_failure_is_decisive(r) is True  # bare ci_upper<0 applies

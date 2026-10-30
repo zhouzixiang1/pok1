@@ -672,6 +672,35 @@ def _pool_leg_tail_p(result) -> "float | None":
     return None
 
 
+def _aggregate_chip_se(result) -> "float | None":
+    """Standard error of the aggregate paired net-chip mean, or None.
+
+    Reads the same persisted fields the bootstrap CI was drawn from: report
+    shape ``aggregate.net_chips_std``/``net_chips_samples``, live gate shape
+    ``paired_bootstrap.net_chips_std``/``net_chips_samples``. Returns None
+    when either is missing so callers keep the historical rule instead of
+    silently disabling the CI channel on an old payload.
+    """
+    if not isinstance(result, dict):
+        return None
+    sources = []
+    agg = result.get("aggregate")
+    if isinstance(agg, dict):
+        sources.append(agg)
+    pb = result.get("paired_bootstrap")
+    if isinstance(pb, dict):
+        sources.append(pb)
+    for src in sources:
+        try:
+            sd = float(src.get("net_chips_std"))
+            n = int(src.get("net_chips_samples") or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 1 and sd == sd:  # NaN guard
+            return sd / math.sqrt(n)
+    return None
+
+
 def _precommit_failure_is_decisive(result) -> bool:
     """Whether the failed sample proves a regression the repair must address.
 
@@ -679,7 +708,8 @@ def _precommit_failure_is_decisive(result) -> bool:
     regression that noise cannot explain; all are computed by the gate
     itself, so no new judgement is introduced here:
 
-    * the aggregate paired net-chip bootstrap CI lies entirely below zero, or
+    * the aggregate paired net-chip bootstrap CI clears zero by at least one
+      standard error (``ci_upper < -1.0*SE``; 2026-10-30 calibration), or
     * the aggregate W/L record is a one-sided exact binomial outlier
       (``p < 0.05``), or
     * the pool-weakest admission leg is itself a binomial outlier
@@ -687,6 +717,16 @@ def _precommit_failure_is_decisive(result) -> bool:
       because the leg alone gates admission — a candidate that loses to the
       pool's weakest by a significant margin will lose that leg under any
       deck seed, so the F1 fresh-seed round is guaranteed native-time waste).
+
+    Why the CI channel needs the SE band: a CI that merely excludes zero by
+    epsilon is bootstrap luck, not proof. v641 round1 measured
+    ci_upper=-8.1 chips against SE=2168 (std 13711.1 over n=40) — a 400-run
+    resample of the same moments flips that verdict with P~0.37 — yet under
+    the bare ``ci_upper < 0`` rule it forced the expensive in-place repair
+    lane (54 min wall-clock + 40 extra matches + rework-unit spend) instead
+    of the cheap fresh-seed resample. Full replay over all 50 persisted
+    failed reports: the band changes exactly ONE dispatch (v641_round1) and
+    no other verdict anywhere in history.
 
     A deficit that is merely a strict-inequality loss (the 20W/20L sample
     that consumed a whole 92-minute round) is *not* decisive: it is the
@@ -697,7 +737,8 @@ def _precommit_failure_is_decisive(result) -> bool:
     wins, losses, ci_lower, ci_upper = _precommit_aggregate_evidence(result)
     decided = wins + losses
     if ci_upper is not None and ci_lower is not None:
-        if ci_upper < 0.0:
+        se = _aggregate_chip_se(result)
+        if ci_upper < (-1.0 * se if se is not None else 0.0):
             return True
     if decided >= PRECOMMIT_AGGREGATE_MIN_SAMPLES:
         if _binomial_tail_p(losses, decided) < 0.05:
@@ -2617,7 +2658,8 @@ async def run_precommit_eval(args):
     v = int(v)
     source_v = int(source_v)
     # Cap n_games: precommit eval is a quick regression check, NOT a full evaluation.
-    # Default is PRECOMMIT_DEFAULT_N_GAMES (12), clamped to
+    # Default is PRECOMMIT_DEFAULT_N_GAMES (8, lowered from 12 on 2026-10-21),
+    # clamped to
     # [PRECOMMIT_MIN_N_GAMES, PRECOMMIT_MAX_N_GAMES]. The regression gate uses paired net-chip
     # bootstrap CIs (the parent-gate tie-break and the aggregate gate), which are far less
     # noisy than binary W/L at the same n_games.

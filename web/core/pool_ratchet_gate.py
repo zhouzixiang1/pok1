@@ -266,8 +266,11 @@ def pool_gate_blockers(matchups, weakest_label: str, frozen_settings) -> tuple:
             "details": (
                 f"70-hand outcomes {summary['wins']}W-{summary['losses']}L-"
                 f"{summary['draws']}D score={summary['primary_match_score']:.3f}; "
-                f"pool gate requires score>{max_score:.2f} (candidate must "
-                f"beat pool weakest) with n>={min_samples}."
+                f"pool gate requires wins-equivalent (W + D/2) strictly above "
+                f"{max_score * max(summary['samples'], min_samples):.2f} of "
+                f"{summary['samples']} matches (candidate must beat pool "
+                f"weakest by a full-win margin; e.g. 13W-11L at n=24 is "
+                f"exactly at the line and does NOT pass) with n>={min_samples}."
                 + ci_note
             ),
         })
