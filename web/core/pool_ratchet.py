@@ -400,11 +400,26 @@ def pool_weakest_audit(rows, exclude_names=None) -> dict:
     - ``tier0_count``: rows with ``games >= floor`` and a numeric win_rate
       (7 at floor 600, 12 at 300, 14 at 100 on the 2026-10-30 snapshot);
     - ``games`` / ``win_rate`` / ``wilson_lb`` of the nominee;
-    - ``wr_above_pool_median``: True when the nominee's POINT win rate sits at
-      or above the pool-wide median point win rate — that is the
-      mis-nomination signature (a "weakest" bar that is not below median);
-    - ``runner_up_lb``: the second-weakest lower bound, so a churn detection
-      (>= 2 different members in 6 consecutive plans) needs no extra query.
+    - ``nominee_wr_not_below_runner_up``: PRIMARY rollback signature — True
+      when the nominee's POINT win rate is at or above the next-weakest
+      tier-0 member's point rate yet the nominee still wins on the Wilson
+      bound.  That is exactly the thin-sample mis-nomination the 2026-10-16
+      v11 bug produced: a member that is NOT genuinely weaker takes the slot
+      because its bound drew low.  Measured discrimination (2026-10-30
+      block-32 audit): floor 100 -> True (v636 wr 0.4675 vs runner-up v585
+      0.4667 at 120 games), floor 300 -> False (v585 0.4667 vs v173 0.4685),
+      floor 600 -> False (v173 0.4685 vs v83 0.4744).  With fewer than two
+      tier-0 members the field is False — no adjacent rank exists, and the
+      monopoly condition is separately visible via ``tier0_count``;
+    - ``wr_above_pool_median``: SECONDARY gross flag (nominee at/above the
+      pool-wide median).  Kept for the whole-pool-inverted shape, but it is
+      NOT the rollback criterion: the pool median sits ~0.04 ABOVE every
+      genuinely weak member, so a healthy nomination reads False at all
+      floors (measured False at 100/300/600 — the first version of this
+      field measured the pool, not the nomination; block-32 finding);
+    - ``runner_up`` / ``runner_up_wr`` / ``runner_up_lb``: the second-weakest
+      tier-0 member, so churn detection (>= 2 different nominees in 6
+      consecutive plans) needs no extra query.
 
     Fail-open: any error yields the floor + an ``error`` key; the selection
     itself is unchanged by this function and must never depend on it.
@@ -453,9 +468,27 @@ def pool_weakest_audit(rows, exclude_names=None) -> dict:
                     audit["pool_median_wr"] = round(median, 4)
                     audit["wr_above_pool_median"] = bool(pwr >= median)
             tier0_sorted = sorted(tier0)
-            if len(tier0_sorted) >= 2:
-                audit["runner_up"] = tier0_sorted[1][1]
-                audit["runner_up_lb"] = round(tier0_sorted[1][0], 4)
+            # The adjacent rank EXCLUDES the nominee's name rather than
+            # taking [0]/[1] positions: this tuple's tie order is
+            # (lb, name, games, wr) while the selector's is
+            # (lb, games, version), so positional assumptions could compare
+            # the wrong pair when two members share a bound.
+            others = [row for row in tier0_sorted if row[1] != pname]
+            if others:
+                audit["runner_up"] = others[0][1]
+                audit["runner_up_wr"] = round(others[0][3], 4)
+                audit["runner_up_lb"] = round(others[0][0], 4)
+                # PRIMARY rollback signature: the nominee must be genuinely
+                # weaker by POINT rate than the next measured rank, not just
+                # below it on a wide thin-sample bound.  Only meaningful
+                # when the nomination itself came from tier 0 — a tier-1
+                # pick has no measured adjacent rank, and that starvation
+                # shows via tier0_count instead.
+                nominee_in_tier0 = any(row[1] == pname for row in tier0_sorted)
+                if nominee_in_tier0:
+                    audit["nominee_wr_not_below_runner_up"] = bool(
+                        pwr >= others[0][3]
+                    )
     except Exception as exc:  # observability must never break selection
         audit["error"] = f"{type(exc).__name__}:{str(exc)[:120]}"
     return audit

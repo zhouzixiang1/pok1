@@ -439,7 +439,23 @@ def test_pool_weakest_audit_shape(tmp_path, monkeypatch):
     audit2 = pool_ratchet.pool_weakest_audit(inverted)
     assert audit2["nominee"] == bot_name(5)  # LB 0.4436 < 0.4756 / 0.4854
     assert audit2["wr_above_pool_median"] is True  # 0.53 >= median 0.52
+    assert audit2["nominee_wr_not_below_runner_up"] is True  # PRIMARY
     monkeypatch.delenv(pool_ratchet.POOL_WEAKEST_WILSON_MIN_GAMES_ENV, raising=False)
+    # the healthy shape must NOT fire the primary flag (nominee below the
+    # adjacent rank by point rate) — wr_above_pool_median alone could not
+    # express the live mis-nomination at all (the pool median sits ~0.04
+    # above every weak member, False at floors 100/300/600 alike — the
+    # block-32 finding that made the first version of this criterion inert).
+    assert audit["nominee_wr_not_below_runner_up"] is False  # 0.44 < 0.49
+    # single tier-0 member after exclusions: no adjacent measured rank, so
+    # the key is absent (starvation stays visible via tier0_count).
+    lonely = pool_ratchet.pool_weakest_audit(
+        rows, exclude_names={bot_name(2), bot_name(3)}
+    )
+    assert lonely["tier0_count"] == 1
+    assert lonely["nominee"] == bot_name(1)
+    assert "runner_up" not in lonely
+    assert "nominee_wr_not_below_runner_up" not in lonely
     # fail-open: garbage rows never raise, they yield an error key or a partial
     assert isinstance(pool_ratchet.pool_weakest_audit([{"name": "x"}, None]), dict)
 

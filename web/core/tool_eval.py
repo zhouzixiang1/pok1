@@ -120,31 +120,45 @@ PRECOMMIT_POOL_WEAKEST_N_GAMES = 24
 PRECOMMIT_POOL_WEAKEST_MIN_N_GAMES = 6
 PRECOMMIT_POOL_WEAKEST_MAX_N_GAMES = 48
 
-# Pool-leg decisive channel threshold (2026-10-30 tightening, queue #3 of the
-# block-31 audit; was 0.10 since the 2026-10-28 introduction).
+# Pool-leg decisive channel threshold.  0.10 since the 2026-10-28
+# introduction; 2026-10-30 tightened to 0.30 and REVERTED the same day after
+# the block-32 audit falsified the reason for the tightening.  Recorded here
+# because the claim, not the number, is the thing that was wrong:
 #
-# The forward-sample gate that deferred this decision is now satisfied: the
-# 2026-10-29 decision explicitly said "keep 0.10, keep collecting forward
-# samples (v640+), revisit at n>=8".  n=8 has arrived.  Every persisted r1
-# pool-leg tail in the v630-v644 corpus (exact binomial, p=0.5):
-#   v630 12W-12L 0.5806 | v631 9W-15L 0.1537 | v634 10W-14L 0.2706
-#   v635 13W-11L 0.7294 | v636 11W-13L 0.4194 | v637 10W-14L 0.2706
-#   v639 11W-13L 0.4194 | v640 12W-12L 0.5806 | v641 11W-13L 0.4194
-#   v643 11W-13L 0.4194 | v644 11W-13L 0.4194 (vs v585, the new floor-300 bar)
-# At 0.10 the channel catches 0 of 11 — it is dead on arrival and every r1
-# failure buys the fresh-seed deck by default (resample lane: 9 decks, 1
-# rescue = v640).  At 0.30 it converts exactly the three legs the resample
-# never fixed (v631 0.154, v634 0.271, v637 0.271 — each died at r2 anyway)
-# into immediate abandons, saving 3x48 matches / ~4.5h of the single-permit
-# native lane per occurrence, while the ONLY historical rescue (v640, tail
-# 0.5806) and every observed rescue-capable band stays untouched: zero
-# rescues lost on this corpus.  The corpus is n=8 with one rescue, so 0.30 is
-# calibrated-on-evidence and still the conservative side of the 0.42 option
-# (which would also cut v639/v641/v643/v644 — those four are 0.4194 exact
-# ties-plus-one-loss legs whose r2 behavior is unobserved for 644 right now).
-# Rollback is one number back to 0.10; the aggregate channels above are
-# unchanged and still the primary decisive authority.
-PRECOMMIT_POOL_LEG_DECISIVE_TAIL = 0.30
+#   What was claimed: 0.30 would convert three doomed pool legs (v631 0.154 /
+#   v634 0.271 / v637 0.271) into IMMEDIATE abandons, saving 3x48 matches and
+#   ~4.5h of the single-permit native lane per occurrence.
+#   What the code does: ``_precommit_failure_is_decisive`` has exactly ONE
+#   production consumer — ``_precommit_seed_resample_preferred`` (see
+#   ``return not _precommit_failure_is_decisive(result)`` below) — and it only
+#   SELECTS A LANE.  Non-decisive -> fresh-seed resample; decisive -> the
+#   in-place worker-repair lane.  BOTH lanes run a second full deck, so a
+#   tightening saves zero matches; measured lane wall-clock (lane event ->
+#   breaker) is resample 1.73h (n=8) vs repair 2.32h (n=6), so 0.30 COST
+#   ~+0.59h per firing.  The repair lane is also the empirically dead one:
+#   16/16 historical in-place repairs ended in a rework breaker with 0
+#   publications, while the resample lane holds the only rescue in the corpus
+#   (v640).  Moving legs toward the repair lane therefore lowers the
+#   publication rate — the opposite of the intent.
+#   Corpus fix: the earlier comment listed 11 legs including "v636 11W-13L
+#   0.4194"; v636_round1 actually PASSED (vs v173 16W-8L, tail 0.9680), so the
+#   failed-r1 corpus with a pool tail is n=10:
+#     v630 12W-12L 0.5806 | v631 9W-15L 0.1537 | v634 10W-14L 0.2706
+#     v635 13W-11L 0.7294 | v637 10W-14L 0.2706 | v639 11W-13L 0.4194
+#     v640 12W-12L 0.5806 | v641 11W-13L 0.4194 | v643 11W-13L 0.4194
+#     v644 11W-13L 0.4194 (vs v585, the floor-300 bar)
+#   At 0.10 the channel fires on 0/10 round-1 legs (v634's 0.2706 was the
+#   lowest), which is the honest description of the status quo: it exists for
+#   a leg so far below parity that even the resample lane is pointless, and
+#   has never met one.  Keeping 0.10 preserves that meaning and stops the
+#   channel from silently re-routing legs onto the dead lane.
+# If the goal ever becomes genuinely cutting native time on such legs, the
+# change is NOT a threshold: it is a legal terminal route for
+# ``pool_tail < X`` with pool-weakest as the only blocker, which means the
+# ``precommit_failed`` routing table and its forward-only abandon guard in
+# pipeline_state.py (SEMANTIC_PATHS + 10/12 contract-locked stages) — a
+# routing-contract change, not a tuning number.
+PRECOMMIT_POOL_LEG_DECISIVE_TAIL = 0.10
 
 
 def precommit_pool_weakest_n_games() -> int:
@@ -664,17 +678,21 @@ def _pool_leg_tail_p(result) -> "float | None":
     after resample in v630 12W→8W tail 0.0758 and v634 10W→8W tail 0.0758,
     each costing a full 48-match native round).
 
-    Calibrated numbers (2026-10-30 forward-sample refresh — the 2026-10-29
-    decision gated any tightening on n>=8 v638+ samples, and n=11 r1 legs are
-    now persisted; see PRECOMMIT_POOL_LEG_DECISIVE_TAIL for the corpus):
-      pool leg at r1: v630 12W-12L 0.5806 / v631 9W-15L 0.1537 /
-                      v634 10W-14L 0.2706 / v635 13W-11L 0.7294 /
-                      v637 10W-14L 0.2706 / v639 11W-13L 0.4194 /
-                      v640 12W-12L 0.5806 / v641 11W-13L 0.4194 /
-                      v643 11W-13L 0.4194 / v644 11W-13L 0.4194
-    The channel fired at 0.10 on 0 of these (dead on arrival); at 0.30 it
-    catches the three legs whose r2 never recovered (v631/v634/v637) and
-    keeps the one rescue (v640, 0.5806) reachable.
+    Calibrated numbers (2026-10-30 block-32 refresh, failed r1 legs with a
+    pool tail — n=10; an earlier draft wrongly listed v636, which actually
+    PASSED round 1 at 16W-8L tail 0.9680):
+      v630 12W-12L 0.5806 / v631 9W-15L 0.1537 / v634 10W-14L 0.2706 /
+      v635 13W-11L 0.7294 / v637 10W-14L 0.2706 / v639 11W-13L 0.4194 /
+      v640 12W-12L 0.5806 / v641 11W-13L 0.4194 / v643 11W-13L 0.4194 /
+      v644 11W-13L 0.4194 (vs v585, the floor-300 bar)
+    At the shipped 0.10 the channel has fired on 0 of these (the lowest
+    observed tail is v631 at 0.1537), which is its honest status: it exists
+    for a leg so far below parity that no lane is worth running, and the
+    corpus has never produced one.  A 2026-10-30 tightening to 0.30 was
+    reverted the same day — see PRECOMMIT_POOL_LEG_DECISIVE_TAIL for why the
+    "saves a deck" premise was false (this channel only picks between two
+    lanes that BOTH run a second full deck, and the lane it routes toward is
+    the one with 16/16 breaker deaths and 0 publications).
     """
     if not isinstance(result, dict):
         return None
@@ -741,12 +759,22 @@ def _precommit_failure_is_decisive(result) -> bool:
     * the aggregate W/L record is a one-sided exact binomial outlier
       (``p < 0.05``), or
     * the pool-weakest admission leg is itself a binomial outlier
-      (``p < PRECOMMIT_POOL_LEG_DECISIVE_TAIL`` = 0.30 since the 2026-10-30
-      forward-sample tightening; introduced at 0.10 on 2026-10-28),
-      deliberately looser than the aggregate
-      because the leg alone gates admission — a candidate that loses to the
-      pool's weakest by a significant margin will lose that leg under any
-      deck seed, so the F1 fresh-seed round is guaranteed native-time waste.
+      (``p < PRECOMMIT_POOL_LEG_DECISIVE_TAIL`` = 0.10; introduced
+      2026-10-28, deliberately looser than the aggregate because the leg
+      alone gates admission), or
+
+    What "decisive" does and does NOT buy: it is a LANE SELECTOR, not an
+    abandon.  Both lanes run a second full deck — the non-decisive path buys
+    the fresh-seed resample (same bytes, new one-time nonce), the decisive
+    path routes to ``precommit_failed -> execute_workers`` for an in-place
+    repair.  Measured wall-clock to the breaker: repair 2.32h (n=6) vs
+    resample 1.73h (n=8), and the repair lane has never produced a
+    publication (16/16 breaker deaths) while the resample lane holds the
+    corpus's only rescue (v640).  So a leg is only worth calling decisive
+    when it is far enough below parity that NO second sample of any kind is
+    plausibly useful — which at 0.10 means better than 8W-16L at n=24.  The
+    2026-10-30 tightening to 0.30 was reverted the same day for exactly this
+    reason; see PRECOMMIT_POOL_LEG_DECISIVE_TAIL.
 
     Why the CI channel needs the SE band: a CI that merely excludes zero by
     epsilon is bootstrap luck, not proof. v641 round1 measured

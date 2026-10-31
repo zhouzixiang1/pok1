@@ -1927,9 +1927,19 @@ def test_external_reproof_drivers_route_through_reproof_engine(
     module, results, _tmp, _mp = handoff_env
     calls = _spy_module_engine(monkeypatch, contracts)
     names = lambda: {call[0] for call in calls}
+    # 4d452440 moved the receipts re-proof to a DIRECT import of
+    # ``evolution_infra_archive_rotation.validate_archive_rotation_receipts``
+    # (the evolution_infra delegate is a SEMANTIC_PATHS file and cannot carry
+    # the adoption-carve-out kwarg), so stubbing the delegate no longer
+    # reaches the code under test — the real validator then ran on this
+    # fixture's plan and failed its key-set check.  Stub the module the call
+    # sites actually import, keeping the kwarg the sites pass.
+    import evolution_infra_archive_rotation as _eirot
+
     monkeypatch.setattr(
-        evolution_infra, "validate_archive_rotation_receipts",
-        lambda version, rotations, rotation_plan=None: list(rotations),
+        _eirot, "validate_archive_rotation_receipts",
+        lambda version, rotations, *, rotation_plan=None,
+        require_live_source_proof=True: list(rotations),
     )
     monkeypatch.setattr(
         tool_commit, "_revalidate_strict_log_archives", lambda *_a, **_k: None

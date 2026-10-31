@@ -2202,6 +2202,18 @@ async def run_disk_hygiene_loop(shutdown_mgr=None) -> None:
                             "removed": report.get("removed"),
                             "pressure": report.get("pressure"),
                             "free_bytes": report.get("free_bytes"),
+                            # Governance observability (2026-10-30): the
+                            # window decision and the events-rotation result
+                            # already live in the report but were whitelisted
+                            # out of the durable record, so "rotation has not
+                            # run since 10-22" was only re-derivable by hand
+                            # (the re-head is gated on the open stage window,
+                            # which the pipeline spends ~70% of its time
+                            # outside — invisible without these two fields).
+                            "janitor_window": report.get("janitor_window"),
+                            "events_auto_rotation": report.get(
+                                "events_auto_rotation"
+                            ),
                         },
                     )
                 except Exception:
