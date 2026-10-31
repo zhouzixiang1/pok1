@@ -184,6 +184,19 @@ class _Harness:
         monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
         monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
         monkeypatch.setattr(llm_query, "render_llm_prompt", capturing_render)
+        # Block-35 queue #5: behavioral assertion for the durable pin event
+        # (pipeline.proposal_schema_retry_pin, agent_master_ensemble.py
+        # emit site). Capture at the module attribute — the emit does a
+        # function-local ``from system_log import log_system_event``, which
+        # resolves at call time and therefore sees this patch.
+        import system_log
+
+        self.events: "list[tuple]" = []
+
+        def _capture(event_type, severity, message, data=None):
+            self.events.append((event_type, message, data or {}))
+
+        monkeypatch.setattr(system_log, "log_system_event", _capture)
 
     def retry_inputs(self, direction: str) -> list[dict]:
         return [
@@ -304,6 +317,17 @@ async def test_infeasible_target_first_round_releases_pin_and_accepts_switch(
     # The switched symbol survived into the accepted packet.
     symbols = {p["change_symbol"] for p in packet["ordered_proposals"]}
     assert "policy.py:_choose_intent" in symbols
+    # The durable pin event fired with the UNPIN decision class (block-35
+    # queue #5: the production grep that had to wait for a real schema-retry
+    # is now proven by behavior, not by a source-string scan).
+    pin_events = [
+        e for e in harness.events if e[0] == "pipeline.proposal_schema_retry_pin"
+    ]
+    assert len(pin_events) == 1, pin_events
+    _t, _msg, data = pin_events[0]
+    assert data.get("decision") == "target_infeasible_unpinned", data
+    assert data.get("pinned_change_symbol") == "policy.py:_choose_intent_mechanism"
+    assert data.get("direction") == "mechanism"
 
 
 @pytest.mark.asyncio
@@ -331,6 +355,13 @@ async def test_plain_schema_failure_still_pins_and_drops_symbol_switch(
     retry_prompt = harness.retry_prompt("mechanism")
     assert "must not switch" in retry_prompt
     assert "structurally infeasible" not in retry_prompt
+    # …and the durable event recorded the KEEP decision (same class pair as
+    # the observed production pins: decision=pinned).
+    pin_events = [
+        e for e in harness.events if e[0] == "pipeline.proposal_schema_retry_pin"
+    ]
+    assert len(pin_events) == 1, pin_events
+    assert pin_events[0][2].get("decision") == "pinned", pin_events[0][2]
 
 
 @pytest.mark.asyncio

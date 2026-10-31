@@ -285,8 +285,18 @@ def classify_pressure_tier(free_bytes: int | None, min_free_bytes: int) -> str |
     """ok / tight / critical classification of one free-space sample.
 
     ok = free >= floor; tight = floor/2 <= free < floor (the janitor's
-    ``pressure`` boolean, disk_hygiene.py:1278); critical = below floor/2.
-    ``None`` (unreadable) never counts as pressure.
+    ``pressure`` boolean, disk_hygiene.py:1992, evented at :2192); critical =
+    below floor/2.  ``None`` (unreadable) never counts as pressure.
+
+    WARNING (2026-10-31, block-35): this FLOOR-RELATIVE band is NOT the same
+    vocabulary as the janitor's ABSOLUTE gate — disk_hygiene classifies
+    critical = free < POK_DISK_MIN_FREE_GB (4 GiB) and tight < 6 GiB
+    (:159/:810-815), so in [2,4) GiB the steward says ``tight`` while the
+    janitor says ``critical``, and in [4,6) GiB the steward says ``ok`` while
+    the janitor says ``tight`` (measured disagreement on every sample under
+    6 GiB). Never substitute this tier for ``events_rotation_tier_allowed``
+    (which honors only the janitor's critical), and never read a steward
+    ``tight`` as "events rotation is allowed".
     """
     if free_bytes is None:
         return None
@@ -507,7 +517,7 @@ def _latest_hygiene_event(results_dir: Path, *, tail_bytes: int = 256 * 1024) ->
     """Newest ``pipeline.disk_hygiene_done`` row from the events tail.
 
     The janitor emits this row on every pressure-tier cycle (its condition is
-    ``freed or pressure`` — disk_hygiene.py:1429 — and tight/critical imply
+    ``freed or pressure`` — disk_hygiene.py:2192 — and tight/critical imply
     pressure), carrying ``free_bytes`` / ``bytes_freed`` for the cycle.
     """
     path = results_dir / "events.jsonl"
