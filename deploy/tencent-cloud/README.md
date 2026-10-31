@@ -487,7 +487,13 @@ after resume the same frozen plan re-ran all 48 matches from hand 1, and the
 restart additionally burned one `precommit_attempt` slot against
 `MAX_PRECOMMIT_RETRIES=3`. Wait for the round's
 `precommit_reports/v<N>(_round<k>)?.json` to land (round wall-clock ~1.7-2.5h
-at the current depths), then stop. A resume-safe deploy during a stage whose
+at the current depths), then stop. Within that, prefer the **quota-wait
+sub-window**: while the pipeline is parked in `wait_until_reset` (journal
+`Rate-limited: waiting ...`, or a future `reset_time` in
+`rate_limit_state.json`) it produces neither LLM supply nor deck progress, so
+a stop there is free — measured 2026-10-31: 1308 at 18:37:30L/reset
+19:20:52L, stop at ~19:21 with the round-2 deck not yet started, resume at
+19:25:38 routed straight back to `run_precommit_eval`. A resume-safe deploy during a stage whose
 exact contract set does not contain your changed paths is still REQUIRED
 (`scripts/check_stage_contract_predeploy.py` exit 0) — the deck rule is about
 not wasting native time, not about contract safety.
