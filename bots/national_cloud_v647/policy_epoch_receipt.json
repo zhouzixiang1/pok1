@@ -1,0 +1,15 @@
+{
+  "artifact_contract_digest": "639924a94ba2258cbf3d05965ff5a2e6df202597a1da7fec7d22a71375495312",
+  "epoch": "national_tcp_policy_v1",
+  "lineage": {
+    "mode": "strict_parent",
+    "parent_versions": [
+      640,
+      27
+    ],
+    "source_artifact_inherited": true,
+    "version_authority_high_water": 0
+  },
+  "schema_version": 1,
+  "version": 647
+}
