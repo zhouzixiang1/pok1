@@ -479,10 +479,15 @@ def test_rotation_success_uses_frozen_signature_and_emits_done(
     monkeypatch.setenv(disk_hygiene.EVENTS_ROTATION_ENV, "1")
     calls = {}
 
-    def _entry(*, actor: str, sources=None, max_batch_bytes=None):
+    def _entry(*, actor: str, sources=None, max_batch_bytes=None,
+               skips_out=None):
         calls["actor"] = actor
         calls["sources"] = sources
         calls["max_batch_bytes"] = max_batch_bytes
+        # 2026-10-31 queue #4 extended the frozen signature with skips_out
+        # (per-source rebase skip reasons); this test is the canary that
+        # guards the CALL SHAPE, so the extension is asserted, not drifted.
+        calls["skips_out_passed_as_list"] = isinstance(skips_out, list)
         return [
             {
                 "source": str(tmp_path / "events.jsonl"),
@@ -512,8 +517,11 @@ def test_rotation_success_uses_frozen_signature_and_emits_done(
     assert calls["actor"] == "disk_hygiene_janitor"
     assert calls["sources"] is None
     assert calls["max_batch_bytes"] is None
+    assert calls["skips_out_passed_as_list"] is True
     assert report is not None
     assert report.get("rotated") == 1
+    # the skip-reason channel exists and is empty on an all-rotated pass
+    assert report.get("skips") == []
     assert report["receipts"][0]["source_preserved_append_only"] is True
     done = [item for item in events if item[0] == "pipeline.events_auto_rotation_done"]
     assert done and done[0][3]["sources"][0]["end_offset"] == 128
@@ -596,3 +604,49 @@ def test_new_reaped_ledgers_are_protected_names():
         "reaped_abandon_transactions.jsonl"
         in disk_hygiene._PROTECTED_RESULT_NAMES
     )
+
+
+def test_rotation_skip_reason_is_reported_per_source(monkeypatch, tmp_path: Path):
+    """Queue #4 (2026-10-31): ``rotated: 0`` must be attributable.
+
+    The block-33/block-34 diagnoses each had to re-derive the watermark
+    arithmetic by hand because the adapter dropped the rebase layer's skip
+    token.  Drive the REAL entry with a cold backlog below the min-cold floor
+    and assert the reported reason names the gate that fired.
+    """
+
+    import evolution_infra
+    import evolution_infra_rotation_rebase as rebase
+
+    results = tmp_path / "results"
+    archive = results / "archive"
+    results.mkdir()
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
+    monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", archive)
+    _no_handoff(monkeypatch)
+    monkeypatch.setenv(disk_hygiene.EVENTS_ROTATION_ENV, "1")
+    monkeypatch.setenv(rebase.EVENTS_REBASE_ENABLED_ENV, "1")
+    monkeypatch.setenv(rebase.EVENTS_REBASE_MIN_INTERVAL_SEC_ENV, "0")
+    monkeypatch.setenv(rebase.EVENTS_REBASE_MIN_COLD_BYTES_ENV, "100000")
+    source = results / "events.jsonl"
+    # 490 bytes total, NO watermark file: the whole file is the cold prefix
+    # and still sits below the 100 KB floor. (A hand-written watermark that
+    # omits its required fields is intentionally rejected upstream as
+    # watermark_invalid — an ERROR, not a skip — verified 2026-10-31.)
+    source.write_bytes(
+        b"".join(
+            json.dumps({"row": i, "pad": "y" * 40}).encode() + b"\n"
+            for i in range(10)
+        )
+    )
+    report = disk_hygiene._events_auto_rotation_step(
+        results, window=_window(tier="critical", rotation_tier=True)
+    )
+    assert report is not None
+    assert report["rotated"] == 0
+    assert report["receipts"] == []
+    skips = report.get("skips") or []
+    assert len(skips) == 1, skips
+    assert skips[0]["source"] == "events.jsonl"
+    assert skips[0]["status"] == "skipped"
+    assert skips[0]["reason"] == "below_threshold", skips

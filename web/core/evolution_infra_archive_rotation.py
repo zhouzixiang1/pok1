@@ -1336,7 +1336,8 @@ _APPEND_ONLY_REBASE_SOURCES = frozenset({"events.jsonl"})
 
 
 def autonomous_rotate_append_only_sources(
-    *, actor: str, sources=None, max_batch_bytes: int | None = None
+    *, actor: str, sources=None, max_batch_bytes: int | None = None,
+    skips_out: "list[dict] | None" = None
 ) -> list[dict]:
     """Compress cold ``events.jsonl`` prefixes into digest-bound gzip batches.
 
@@ -1346,6 +1347,16 @@ def autonomous_rotate_append_only_sources(
     the janitor receipt shape.  Unlike publication rotation, the live file
     IS re-headed: the dropped prefix remains recoverable from the gzip
     batch, so ``source_preserved_append_only`` is False.
+
+    ``skips_out`` (2026-10-31, block-34 queue #4): an optional list that
+    receives ``{"source", "status", "reason"}`` rows for every source the
+    rebase layer SKIPPED (``below_threshold`` / ``interval`` /
+    ``handoff_active`` / ``window_unreadable`` / ``watermark_invalid`` /
+    ``disabled`` / ``source_missing`` …).  Before this the adapter's
+    ``if status == "skipped": continue`` swallowed the token, so the janitor
+    could only ever report ``rotated: 0`` and every "why" question cost a
+    round of hand-recomputing watermark arithmetic.  Observability only:
+    skipping stays non-error and the return shape is unchanged.
     """
 
     if not isinstance(actor, str) or not actor.strip():
@@ -1392,6 +1403,14 @@ def autonomous_rotate_append_only_sources(
                 f"{outcome.get('reason') or 'unknown'}"
             )
         if status == "skipped":
+            if skips_out is not None:
+                skips_out.append(
+                    {
+                        "source": source_path.name,
+                        "status": "skipped",
+                        "reason": str(outcome.get("reason") or "unknown"),
+                    }
+                )
             continue
         if status == "recovered" and not outcome.get("applied"):
             continue

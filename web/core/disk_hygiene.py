@@ -1323,8 +1323,9 @@ def _events_auto_rotation_step(
         )
         return {"skipped": "unavailable"}
     try:
+        skips: "list[dict]" = []
         receipts = autonomous_rotate_append_only_sources(
-            actor=EVENTS_ROTATION_ACTOR
+            actor=EVENTS_ROTATION_ACTOR, skips_out=skips
         )
     except Exception as exc:
         log.warning("events auto-rotation failed: %s", exc)
@@ -1357,7 +1358,16 @@ def _events_auto_rotation_step(
                 ],
             },
         )
-    return {"rotated": len(receipts), "receipts": receipts}
+    return {
+        "rotated": len(receipts),
+        "receipts": receipts,
+        # Block-34 queue #4: WHICH gate said no.  An empty receipts list used
+        # to be un-attributable (below_threshold vs interval vs handoff_active
+        # all looked identical from the outside); this row set carries the
+        # rebase-layer reason per source, surfaced through the janitor report
+        # and the durable disk_hygiene_done event by the caller.
+        "skips": skips,
+    }
 
 
 def _append_reaped_tree_receipt(results_dir: Path, row: dict[str, Any]) -> None:

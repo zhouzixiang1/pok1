@@ -520,9 +520,35 @@ After verifying tests on this operator checkout (`/home/ubuntu/pok1`):
 2. Commit/push to `origin/tencent-cloud-runtime` (operator action).
 3. In `.evolution_pok`: `git pull --ff-only --tags` (Git sync only; never
    copy files between checkouts).
+3a. **If the deploy changed `deploy/tencent-cloud/pok-evolution.service`
+    itself**: copy it and reload systemd BEFORE restarting —
+    `sudo cp deploy/tencent-cloud/pok-evolution.service /etc/systemd/system/pok-evolution.service`
+    then `sudo systemctl daemon-reload`.  Measured (2026-10-31, one-shot
+    probe unit): the two halves have DIFFERENT reload semantics —
+    `EnvironmentFile=` is re-read on every start (a plain restart picks up
+    new `env.runtime` keys), but `ExecStartPre=` lines are NOT re-read
+    without `daemon-reload` (a restart without it silently skips the new
+    preflight and only prints "unit file changed on disk").  `setup.sh`
+    does NOT cover this: its unit install is guarded by `if [ -f ]` and
+    skips an existing unit.
 4. `pokctl restart` / `systemctl restart pok-evolution` so `env.runtime`
    (`POK_GLOBAL_LLM_CONCURRENCY`, staging tier, Slice 2b flags) is
-   reloaded.
+   reloaded.  (An env-only change needs no daemon-reload; a unit change
+   needs 3a first.  They are not interchangeable.)
+4a. **Enforced preflight escape hatch.** The stage-contract pre-check now
+    runs as `ExecStartPre=` WITHOUT a leading `-` (hard gate): if the pulled
+    HEAD changes the active checkpoint's stage contract paths, the start is
+    REFUSED, and with `Restart=always` + `StartLimitBurst=5` systemd will
+    retry to a failed-unit circuit-break (`NRestarts=5`, "start request
+    repeated too quickly") — while broken, the web control plane including
+    `POST /api/control/abandon` is unavailable.  Recovery is a git rollback,
+    NOT a systemd override: `git -C .evolution_pok checkout <baseline>`
+    (`repo_baseline.head` from `pipeline_state.json`) → start (the pre-check
+    short-circuits when baseline==HEAD — proven) → let the generation
+    resume and cross a rework transition (which refreshes the baseline) →
+    re-deploy.  `scripts/abandon_contract_change_generation.py` does NOT
+    cover this: it only accepts publication-family stages
+    (verified/publishing/official_certifying), never critic_checked.
 5. Expect operator stability to reset to **0/10** after restart; schedule
    the restart in a generation empty window when possible.
 

@@ -638,6 +638,43 @@ async def _run_master_proposal_ensemble(
                     )
                     + pinned_symbol
                 )
+                # R3-symmetric observability (2026-10-31, block-34 queue #5):
+                # the pin KEEP / collision-DOWNGRADE / infeasibility-UNPIN
+                # decision had no durable event at all — grepping the role
+                # logs was the ONLY way to answer "why did the retry switch
+                # symbols" (block-34 reconstructed v647's compute_memory
+                # unpin that way).  One event per rejected attempt with the
+                # decision class, mirroring pipeline.proposal_symbol_ledger_veto.
+                try:
+                    from system_log import log_system_event
+
+                    log_system_event(
+                        "pipeline.proposal_schema_retry_pin",
+                        "info",
+                        f"Schema-retry pin decision for {direction}: "
+                        f"{pinned_symbol} -> "
+                        + (
+                            "collision-avoided"
+                            if pin_collides
+                            else "unpinned-target-infeasible"
+                            if target_infeasible
+                            else "pinned"
+                        ),
+                        {
+                            "direction": str(direction),
+                            "pinned_change_symbol": pinned_symbol,
+                            "decision": (
+                                "collision_avoid"
+                                if pin_collides
+                                else "target_infeasible_unpinned"
+                                if target_infeasible
+                                else "pinned"
+                            ),
+                            "claimed_symbols": sorted(seen_change_symbols),
+                        },
+                    )
+                except Exception:
+                    pass
             _log.warning(
                 "Master proposal %s rejected (attempt 1): %s",
                 direction,
