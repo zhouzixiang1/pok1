@@ -66,6 +66,27 @@ ExecStart=/home/ubuntu/pok1/.venv/bin/python web/main.py --host 127.0.0.1 --port
 # checklist in deploy/tencent-cloud/README.md.
 ExecStartPre=-/home/ubuntu/pok1/.venv/bin/python scripts/check_rating_identity_predeploy.py --baseline HEAD --head HEAD
 
+# Stage-contract pre-flight (2026-10-31, block-33 queue [3], ENFORCED). The
+# line above guards only the 18 SEMANTIC_PATHS files (rating identity,
+# advisory by design). The OTHER half of what makes a restart safe is the
+# ACTIVE CHECKPOINT's per-stage exact contract (_STAGE_EXACT +
+# requires_contract_unchanged, 12 locked stages) — the thing that wedged this
+# runtime for 6h35m + ~206M tokens on 2026-10-24 00:38. Direct counterfact
+# from today: evaluate_head_drift(f8796441->159cf1e5) is allowed=False with
+# head_contract_paths=[web/core/tool_eval.py] at critic_checked and True at
+# precommit_failed — the 159cf1e5 deploy was safe only because it landed two
+# minutes after v646's r2 report moved the checkpoint out of the locked
+# stage. A machine check removes the dependency on timing luck.
+# Script exit codes (verified against the source): 0 = no active checkpoint
+# or recovery has no issues; 1 = BLOCKED (deployed HEAD changes the active
+# stage's contract); 2 = cannot decide (unreadable checkpoint / import
+# failure — checkpoint writes are atomic, so a 2 means the tree is genuinely
+# unsafe to resume against). No leading '-': unlike the identity check, there
+# is no legitimate flow that must start INTO a known-locked checkpoint — the
+# documented recovery is rollback or canonical abandon with the service
+# stopped. Default --runtime-dir already points at the dual-checkout runtime.
+ExecStartPre=/home/ubuntu/pok1/.venv/bin/python scripts/check_stage_contract_predeploy.py
+
 # web/main.py spawns elo_daemon.py via start_new_session=True. mixed kills the
 # main process with SIGTERM (daemon gets it via its own session) and the
 # control group on timeout. Give the orchestrator a graceful shutdown window.
