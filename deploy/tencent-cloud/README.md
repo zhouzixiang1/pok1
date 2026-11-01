@@ -257,6 +257,14 @@ sudo systemctl {start,stop,restart,status} pok-evolution
 journalctl -u pok-evolution -f          # live logs
 journalctl -u pok-evolution --since today
 
+# armed-veto / digest replays MUST load the module from the RUNTIME tree
+# (sys.path=/home/ubuntu/pok1/.evolution_pok/web/core, matching the service
+# PID's POK_CLOUD_RUNTIME=1 + cwd). The assertable identity invariant is
+# results_dir_resolved == .evolution_pok/web/core/results — print it. An
+# operator-tree import with the default results_dir=None silently reads a tree
+# WITHOUT direction_ledger.jsonl and returns an EMPTY armed set (block-36
+# false positive; the digest's ledger_present flag is computed from a
+# hardcoded path and does NOT catch this — block-38 finding).
 # app-level logs (rotating)
 ls /home/ubuntu/pok1/.evolution_pok/web/logs/
 #   app.log              (RotatingFileHandler)
