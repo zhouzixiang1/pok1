@@ -191,13 +191,13 @@ def _recent_directions_avoid_set(next_v: int) -> str:
     >= 2-of-last-6 symbols as an EARLY, non-truncatable section of the
     proposal planning context, using the same counting helper and window as
     the audit (``recent_directions.recent_symbol_counts(6,
-    exclude_version=next_v)`` — the helper itself mode-dispatches via
-    ``POK_DIRECTION_VETO_MODE``; see ``veto_rule_text`` for the canonical
-    rule prose).  Fail-open: no ledger rows (fresh checkout, bootstrap,
+    exclude_version=next_v)`` — single outcome-weighted semantics since
+    2026-11-01; see ``veto_rule_text`` for the canonical rule prose).
+    Fail-open: no ledger rows (fresh checkout, bootstrap,
     unreadable logs) render an empty string and the hard
     proposal-validation gate stays the authority.  Size is structurally
-    bounded: a 6-generation attempt window admits at most three >= 2-count
-    symbols (an outcome window is bounded the same way by construction);
+    bounded: the 12-slot outcome window admits only symbols with >= 2
+    native-gate deaths;
     the render is additionally capped at 1500 chars.
     """
     try:

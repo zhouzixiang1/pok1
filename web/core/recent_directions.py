@@ -318,61 +318,46 @@ def recent_change_symbols(
 
 
 def recent_symbol_counts(
-    max_versions: int = 6,
+    max_versions: int = 12,
     *,
     results_dir: "str | Path | None" = None,
     exclude_version: int | None = None,
 ) -> "dict[str, int]":
-    """Recycling counts keyed by change symbol over the recent window.
+    """Outcome-weighted recycling counts keyed by change symbol.
 
-    Mode-dispatched (queue #4, 2026-10-30) via ``POK_DIRECTION_VETO_MODE``:
+    Single-semantics helper (2026-11-01): the queue #4 attempt/outcome mode
+    knob and its W6 plan-attempt branch were DELETED after the fork they
+    predicted was produced by production, not just replay — v650's frozen
+    ledger armed ``policy.py:_candidate_raise_fractions`` (deaths v641 +
+    v649) in the outcome view while the attempt view armed nothing, and the
+    v650 scout prompts rendered the outcome text 5/5 times. The old
+    attempt semantics had falsified itself in the other direction too (it
+    passed crf through at v641/v647/v649 while two native-gate deaths were
+    already on the ledger). Two modes on one ledger is one mode too many.
 
-    - ``attempt`` (code default, byte-identical history): every planned slot
-      counts, whatever happened to it — how RECENTLY a direction was tried.
-    - ``outcome``: the queue #4 outcome-weighted W12 view — only native-gate
-      deaths increment, a publication outranks older attempts, plan-stage
-      deaths count 0.  The window widens to ``POK_DIRECTION_VETO_WINDOW``
-      (default 12) regardless of ``max_versions``; the threshold (>=2) and
-      the consumers' code strings are unchanged, so the ensemble, the audit,
-      the hard-avoid render, and the strict-authority replay (which must
-      never byte-drift mid-generation) all flip together through this one
-      function — there is no live-vs-replay semantic split to reconcile.
+    Semantics (see ``recent_symbol_failure_counts`` for the full calibration):
+    only NATIVE-GATE deaths increment, a publication outranks older
+    failures, plan-stage deaths count 0, window = ``POK_DIRECTION_VETO_WINDOW``
+    (default 12) ledger slots, threshold (>= 2) unchanged. All four consumers
+    (ensemble veto, audit override, hard-avoid render, strict-authority
+    replay) share this one function, so there is no live-vs-replay split.
+    ``max_versions`` is retained for call-signature stability and ignored
+    (the window is env-governed); the call sites pass it as a positional
+    legacy 6.
     """
 
-    if veto_mode() == "outcome":
-        return recent_symbol_failure_counts(
-            veto_window(),
-            results_dir=results_dir,
-            exclude_version=exclude_version,
-        )
-    counts: "dict[str, int]" = {}
-    for _v, symbol in recent_change_symbols(
-        max_versions, results_dir=results_dir, exclude_version=exclude_version
-    ):
-        counts[symbol] = counts.get(symbol, 0) + 1
-    return counts
+    return recent_symbol_failure_counts(
+        veto_window(),
+        results_dir=results_dir,
+        exclude_version=exclude_version,
+    )
 
 
-VETO_MODE_ENV = "POK_DIRECTION_VETO_MODE"
 VETO_WINDOW_ENV = "POK_DIRECTION_VETO_WINDOW"
-VETO_MODES = ("attempt", "outcome")
-
-
-def veto_mode() -> str:
-    """``attempt`` (W6 plan-attempt counting) or ``outcome`` (W12 weighted).
-
-    Unknown values fail closed to ``attempt`` — the historical, more
-    permissive-on-novel-but-refuted directions semantics is NOT the safe
-    side; the safe side is the byte-identical default: a typo in the env key
-    must not silently enable an untested veto.
-    """
-
-    raw = str(os.environ.get(VETO_MODE_ENV) or "").strip().lower()
-    return raw if raw in VETO_MODES else "attempt"
 
 
 def veto_window() -> int:
-    """Generation window used in ``outcome`` mode (12 default, 6..24 bound)."""
+    """Generation window in ledger slots (12 default, 6..24 bound)."""
 
     raw = str(os.environ.get(VETO_WINDOW_ENV) or "").strip()
     try:
@@ -383,24 +368,20 @@ def veto_window() -> int:
 
 
 def veto_rule_text(seen: int, window: "int | None" = None) -> str:
-    """One canonical prose rendering of the fired veto, mode-aware.
+    """One canonical prose rendering of the fired veto.
 
-    All four consumer prompts/messages render through here so a scout, an
-    audit contradiction, and a repair hint can never describe different
-    rules than the code applied.
+    All consumer prompts/messages render through here so a scout, an audit
+    contradiction, and a repair hint can never describe different rules than
+    the code applied.
     """
 
-    mode = veto_mode()
-    if mode == "outcome":
-        win = int(window if window is not None else veto_window())
-        return (
-            f"already refuted by the native gates in {seen} of the last {win} "
-            "generation attempts (outcome-weighted directions ledger: only "
-            "precommit/quality-breaker deaths count, a published success "
-            "outranks older failures, plan-stage deaths are noise)"
-        )
-    win = int(window if window is not None else 6)
-    return f"already targeted in >= 2 of the last {win} generation attempts"
+    win = int(window if window is not None else veto_window())
+    return (
+        f"already refuted by the native gates in {seen} of the last {win} "
+        "generation attempts (outcome-weighted directions ledger: only "
+        "precommit/quality-breaker deaths count, a published success "
+        "outranks older failures, plan-stage deaths are noise)"
+    )
 
 
 # Reasons that count as a NATIVE-GATE failure for the outcome-weighted view.

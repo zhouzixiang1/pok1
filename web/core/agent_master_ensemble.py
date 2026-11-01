@@ -188,10 +188,11 @@ async def _run_master_proposal_ensemble(
     # P0-B (2026-10-20): the shared recent-directions ledger view for the
     # hard proposal-stage veto — the exact same counting helper, window, and
     # exclude_version the post-hoc master_plan_audit uses (audit_agents:
-    # recent_symbol_counts(6, exclude_version=int(next_v)), fire at >= 2),
+    # recent_symbol_counts(6, exclude_version=int at >= 2),
     # computed once so every direction/attempt grades against one frozen
-    # view.  The helper itself is mode-dispatched (queue #4:
-    # POK_DIRECTION_VETO_MODE=attempt|outcome), so the ensemble, the audit,
+    # view.  Single outcome-weighted semantics since 2026-11-01 (the
+    # attempt/outcome mode knob was deleted once the fork it predicted
+    # shipped to production bytes at v650), so the ensemble, the audit,
     # the hard-avoid render and the strict replay can never disagree.
     # Fail-open to None (check disabled) exactly like the audit's
     # try/except when the ledger cannot be read.

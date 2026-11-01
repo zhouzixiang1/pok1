@@ -1605,13 +1605,17 @@ def _parse_master_proposal_output_with_mode(
 def _recent_symbol_counts_rule_text(
     recent_counts: "dict[str, int] | None",
 ) -> str:
-    """Canonical mode-aware rule prose for events/hints (queue #4 / R3)."""
+    """Canonical rule prose for events/hints (queue #4 / R3); single
+    outcome-weighted semantics since the 2026-11-01 mode-knob removal."""
     try:
         from recent_directions import veto_rule_text
 
         return veto_rule_text(2)
     except Exception:
-        return "already targeted in >= 2 of the last 6 generation attempts"
+        return (
+            "already refuted by the native gates in 2 of the last 12 "
+            "generation attempts"
+        )
 
 
 def _ledger_recent_change_symbol_error(

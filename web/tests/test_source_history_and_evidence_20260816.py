@@ -249,11 +249,12 @@ def test_recent_directions_module_shared_ledger(tmp_path):
         )
     rows = rd.recent_change_symbols(results_dir=tmp_path)
     assert rows == [(187, "policy.py:_refinement_prior_equity"), (186, "policy.py:_bluff_allowed")]
+    # single semantics (2026-11-01): sealed rows alone count 0 until a
+    # NATIVE-GATE death lands on them — give 187 one and assert the split.
+    with (tmp_path / "abandoned_versions.jsonl").open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"version": 187, "reason": "precommit_rework_circuit_breaker"}) + "\n")
     counts = rd.recent_symbol_counts(results_dir=tmp_path)
-    assert counts == {
-        "policy.py:_refinement_prior_equity": 1,
-        "policy.py:_bluff_allowed": 1,
-    }
+    assert counts == {"policy.py:_refinement_prior_equity": 1}
     assert rd.recent_change_symbols(results_dir=tmp_path / "none") == []
 
 

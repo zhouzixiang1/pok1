@@ -4779,7 +4779,10 @@ def test_ledger_veto_repair_guidance_rendered(monkeypatch):
         require_snapshot_evidence=False,
     )
     assert "policy.py:_bluff_allowed" in guidance
-    assert ">= 2 of the last 6 generation attempts" in guidance
+    # single semantics (2026-11-01): the guidance prose is the outcome-
+    # weighted one; the old "last 6 attempts" wording retired with the knob.
+    assert "refuted by the native gates" in guidance
+    assert "of the last 12 generation attempts" in guidance
     assert "DIFFERENT existing file.py:symbol" in guidance
 
 
@@ -4851,7 +4854,7 @@ async def test_ledger_recent_symbol_pivots_within_generation(
     # The ledger veto was surfaced to the scout with actionable guidance…
     assert retry_prompts, "the ledger-rejected direction must get a retry"
     assert any(
-        ">= 2 of the last 6 generation attempts" in prompt
+        "refuted by the native gates" in prompt
         and "policy.py:_choose_intent_mechanism" in prompt
         for prompt in retry_prompts
     )

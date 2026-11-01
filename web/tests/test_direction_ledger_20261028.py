@@ -102,12 +102,23 @@ def test_exclude_version_drops_own_generation_from_counts(tmp_path):
 
 
 def test_repetitive_veto_data_flows_through_counts(tmp_path):
-    # Two prior sealed attempts + a third planning generation excluded.
-    recent_directions.record_planned_direction(654, 1, {"change_symbol": "policy.py:_same"}, results_dir=tmp_path)
-    recent_directions.record_planned_direction(655, 1, {"change_symbol": "policy.py:_same"}, results_dir=tmp_path)
-    recent_directions.record_planned_direction(656, 1, {"change_symbol": "policy.py:_other"}, results_dir=tmp_path)
+    # 2026-11-01 single semantics: two NATIVE-GATE deaths of the same sealed
+    # symbol arm the >= 2 override; plan attempts alone no longer count (the
+    # old attempt-window assertion this replaces was exactly what let v641
+    # re-burn _candidate_raise_fractions with a W6 count of 0).
+    for v in (654, 655):
+        recent_directions.record_planned_direction(
+            v, 1, {"change_symbol": "policy.py:_same"}, results_dir=tmp_path
+        )
+    recent_directions.record_planned_direction(
+        656, 1, {"change_symbol": "policy.py:_other"}, results_dir=tmp_path
+    )
+    with (tmp_path / "abandoned_versions.jsonl").open("w", encoding="utf-8") as fh:
+        for v in (654, 655):
+            fh.write(json.dumps({"version": v, "reason": "precommit_rework_circuit_breaker"}) + "\n")
     counts = recent_directions.recent_symbol_counts(6, results_dir=tmp_path, exclude_version=657)
-    assert counts["policy.py:_same"] == 2  # >= 2 of last 6 => repetitive override
+    assert counts["policy.py:_same"] == 2  # >= 2 native deaths => repetitive override
+    assert "policy.py:_other" not in counts  # alive, no death => never arms
 
 
 def test_corrupt_ledger_lines_are_skipped_not_fatal(tmp_path):

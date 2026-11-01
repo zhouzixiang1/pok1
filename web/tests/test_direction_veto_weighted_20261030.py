@@ -162,32 +162,30 @@ def test_exclude_version_and_override_and_fail_open(tmp_path):
     ) == {}
 
 
-def test_mode_dispatch_and_window(tmp_path, monkeypatch):
+def test_single_semantics_and_window(tmp_path, monkeypatch):
+    """2026-11-01: the attempt/outcome MODE knob is deleted — one semantics,
+    one window knob.  A leftover POK_DIRECTION_VETO_MODE in the environment
+    must be inert (set AND unset give identical results)."""
     res = tmp_path / "results"
     res.mkdir()
     _mk_ledger(res, [(3, "policy.py:_x"), (2, "policy.py:_x")])
     _mk_abandons(res, [(3, "master_audit_rejected v3: x"), (2, "x")])
-    monkeypatch.delenv(recent_directions.VETO_MODE_ENV, raising=False)
-    # default = attempt: every slot counts regardless of outcome.
-    assert recent_directions.recent_symbol_counts(6, results_dir=res) == {
-        "policy.py:_x": 2
-    }
-    monkeypatch.setenv(recent_directions.VETO_MODE_ENV, "outcome")
-    # outcome: plan-stage deaths count 0 -> empty map.
+    monkeypatch.delenv("POK_DIRECTION_VETO_MODE", raising=False)
+    # outcome-weighted only: plan-stage deaths count 0 -> empty map.
     assert recent_directions.recent_symbol_counts(6, results_dir=res) == {}
-    # unknown value fails closed to attempt (the byte-identical default).
-    monkeypatch.setenv(recent_directions.VETO_MODE_ENV, "outcome-ish")
-    assert recent_directions.veto_mode() == "attempt"
-    monkeypatch.setenv(recent_directions.VETO_MODE_ENV, "OUTCOME")
-    assert recent_directions.veto_mode() == "outcome"
+    monkeypatch.setenv("POK_DIRECTION_VETO_MODE", "attempt")
+    assert recent_directions.recent_symbol_counts(6, results_dir=res) == {}
+    assert not hasattr(recent_directions, "veto_mode")
+    assert not hasattr(recent_directions, "VETO_MODE_ENV")
+    monkeypatch.delenv(recent_directions.VETO_WINDOW_ENV, raising=False)
+    assert recent_directions.veto_window() == 12
     monkeypatch.setenv(recent_directions.VETO_WINDOW_ENV, "24")
     assert recent_directions.veto_window() == 24
     monkeypatch.setenv(recent_directions.VETO_WINDOW_ENV, "999")
     assert recent_directions.veto_window() == 12  # out of bound -> default
     text = recent_directions.veto_rule_text(2, window=12)
     assert "native gates" in text and "12" in text
-    monkeypatch.setenv(recent_directions.VETO_MODE_ENV, "attempt")
-    assert "last 6" in recent_directions.veto_rule_text(2)
+    assert "last 6" not in recent_directions.veto_rule_text(2)
 
 
 # ---- queue #3: env knob ---------------------------------------------------
@@ -336,8 +334,7 @@ def test_default_path_siblings_resolve_from_results_dir(tmp_path, monkeypatch):
     ledger_file = res / "direction_ledger.jsonl"
     assert len(recent_directions._abandon_outcomes(ledger_file)) == 2
     assert recent_directions.published_version_set(ledger_file) == set()
-    # and mode dispatch through the production signature
-    monkeypatch.setenv(recent_directions.VETO_MODE_ENV, "outcome")
+    # and the production signature through the single semantics
     assert recent_directions.recent_symbol_counts(6, exclude_version=10) == {
         "policy.py:_x": 2
     }
@@ -552,7 +549,7 @@ def test_audit_direction_veto_override_and_event(monkeypatch):
     _t, _m, payload = veto[0]
     assert payload["change_symbol"] == "policy.py:_armed_symbol"
     assert int(payload["seen"]) == 2
-    assert payload["veto_mode"] in ("attempt", "outcome")
+    assert "veto_mode" not in payload  # knob removed 2026-11-01
 
     # a clean symbol passes through untouched and emits nothing
     events.clear()

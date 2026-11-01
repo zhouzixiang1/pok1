@@ -1074,7 +1074,6 @@ def _apply_direction_ledger_veto(data, master_plan, next_v):
     try:
         from recent_directions import (
             recent_symbol_counts,
-            veto_mode,
             veto_rule_text,
         )
 
@@ -1109,7 +1108,6 @@ def _apply_direction_ledger_veto(data, master_plan, next_v):
                 {
                     "change_symbol": _selected_symbol,
                     "seen": int(_seen),
-                    "veto_mode": veto_mode(),
                 },
             )
             log.warning(
