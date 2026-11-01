@@ -1058,6 +1058,70 @@ def _strict_completion_commit_history(limit: int = 5) -> str:
         rows.append(f"v{version} [{tag}]\n{body[:1200]}")
     return "\n\n".join(rows)
 
+def _apply_direction_ledger_veto(data, master_plan, next_v):
+    """Deterministic repetitive-direction override on an audit result (queue #4 / R3).
+
+    Extracted verbatim from ``_run_master_plan_audit`` (2026-11-01, block-35
+    queue #5) so the override AND its durable event are reachable without the
+    whole provider round-trip: until now
+    ``pipeline.master_plan_audit_direction_veto`` had ZERO test references
+    anywhere (grep over web/tests = 0), so a 0-hit production reading could
+    not be distinguished from a broken wiring.  Returns the (possibly
+    rewritten) audit dict; never raises — a ledger that cannot be read keeps
+    the LLM's own verdict, exactly like the original inline try/except.
+    """
+
+    try:
+        from recent_directions import (
+            recent_symbol_counts,
+            veto_mode,
+            veto_rule_text,
+        )
+
+        _selected_symbol = str(
+            ((master_plan.get("proposal_binding") or {}).get(
+                "change_symbol"
+            )) or ""
+        )
+        _counts = recent_symbol_counts(6, exclude_version=int(next_v))
+        _seen = _counts.get(_selected_symbol, 0)
+        if _selected_symbol and _seen >= 2:
+            _rule = veto_rule_text(_seen)
+            data = dict(data)
+            data["direction_novelty"] = "repetitive"
+            data["overall_pass"] = False
+            data["retry_recommended"] = True
+            data.setdefault("contradictions", [])
+            data["contradictions"] = list(data["contradictions"]) + [
+                f"change_symbol {_selected_symbol} is {_rule} "
+                "(recent directions ledger)"
+            ]
+            # R3 (queue #4, 2026-10-30): durable event for the FIRST
+            # time this override fires.  Before this every 0-hit
+            # reading was only proof the override did not fire — the
+            # log.warning line is not searchable in events.jsonl and
+            # the audit io file rotates with the generation tree.
+            log_system_event(
+                "pipeline.master_plan_audit_direction_veto",
+                "warning",
+                f"Master plan audit override: {_selected_symbol} is "
+                + _rule,
+                {
+                    "change_symbol": _selected_symbol,
+                    "seen": int(_seen),
+                    "veto_mode": veto_mode(),
+                },
+            )
+            log.warning(
+                "Master plan audit override: repetitive direction "
+                "%s (%d recent, mode-weighted)",
+                _selected_symbol, _seen,
+            )
+    except Exception:
+        pass
+    return data
+
+
 async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
     """Verify Master plan coherence and alignment before Workers execute.
 
@@ -1182,55 +1246,11 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
             # compares against published commit bodies only, so a recycled
             # direction across ABANDONED generations stamps "novel" every
             # time (v174-v187: _bluff_allowed re-proposed 7 gens). The
-            # ledger is authoritative here.
-            try:
-                from recent_directions import (
-                    recent_symbol_counts,
-                    veto_mode,
-                    veto_rule_text,
-                )
-
-                _selected_symbol = str(
-                    ((master_plan.get("proposal_binding") or {}).get(
-                        "change_symbol"
-                    )) or ""
-                )
-                _counts = recent_symbol_counts(6, exclude_version=int(next_v))
-                _seen = _counts.get(_selected_symbol, 0)
-                if _selected_symbol and _seen >= 2:
-                    _rule = veto_rule_text(_seen)
-                    data = dict(data)
-                    data["direction_novelty"] = "repetitive"
-                    data["overall_pass"] = False
-                    data["retry_recommended"] = True
-                    data.setdefault("contradictions", [])
-                    data["contradictions"] = list(data["contradictions"]) + [
-                        f"change_symbol {_selected_symbol} is {_rule} "
-                        "(recent directions ledger)"
-                    ]
-                    # R3 (queue #4, 2026-10-30): durable event for the FIRST
-                    # time this override fires.  Before this every 0-hit
-                    # reading was only proof the override did not fire — the
-                    # log.warning line is not searchable in events.jsonl and
-                    # the audit io file rotates with the generation tree.
-                    log_system_event(
-                        "pipeline.master_plan_audit_direction_veto",
-                        "warning",
-                        f"Master plan audit override: {_selected_symbol} is "
-                        + _rule,
-                        {
-                            "change_symbol": _selected_symbol,
-                            "seen": int(_seen),
-                            "veto_mode": veto_mode(),
-                        },
-                    )
-                    log.warning(
-                        "Master plan audit override: repetitive direction "
-                        "%s (%d recent, mode-weighted)",
-                        _selected_symbol, _seen,
-                    )
-            except Exception:
-                pass
+            # ledger is authoritative here; the override and its durable
+            # event live in _apply_direction_ledger_veto (behaviorally
+            # tested since block-35, which closes the web/tests zero-
+            # reference gap on master_plan_audit_direction_veto).
+            data = _apply_direction_ledger_veto(data, master_plan, next_v)
             return data
 
     except asyncio.CancelledError:

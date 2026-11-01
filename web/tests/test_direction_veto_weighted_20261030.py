@@ -506,3 +506,72 @@ def test_schema_retry_pin_decision_emits_event(monkeypatch, tmp_path):
     )
     assert "pipeline.proposal_schema_retry_pin" in src
     assert src.count('"decision":') >= 1
+
+
+# ---- block-35 queue #5: the AUDIT-lane veto is now behaviorally tested ----
+
+
+def test_audit_direction_veto_override_and_event(monkeypatch):
+    """pipeline.master_plan_audit_direction_veto had ZERO test references
+    before this (block-35 grep over web/tests = 0): every production 0-hit
+    reading could not distinguish "never fired" from "not wired".  Drive the
+    extracted override directly with an armed count and assert BOTH the audit
+    rewrite and the durable event."""
+
+    import audit_agents
+    import recent_directions
+    import system_log
+
+    monkeypatch.setattr(
+        recent_directions,
+        "recent_symbol_counts",
+        lambda *_a, **_k: {"policy.py:_armed_symbol": 2, "policy.py:_other": 1},
+    )
+    events = []
+    monkeypatch.setattr(
+        system_log, "log_system_event",
+        lambda t, s, m, d=None: events.append((t, m, d or {})),
+    )
+    # audit_agents imported the symbol at module level; the helper calls it
+    # through that binding, so patch the same attribute the code resolves.
+    monkeypatch.setattr(
+        audit_agents, "log_system_event",
+        lambda t, s, m, d=None: events.append((t, m, d or {})),
+    )
+
+    data = {"overall_pass": True, "direction_novelty": "novel",
+            "contradictions": [], "retry_recommended": False}
+    plan = {"proposal_binding": {"change_symbol": "policy.py:_armed_symbol"}}
+    out = audit_agents._apply_direction_ledger_veto(data, plan, 650)
+    assert out["overall_pass"] is False
+    assert out["direction_novelty"] == "repetitive"
+    assert out["retry_recommended"] is True
+    assert any("_armed_symbol" in c for c in out["contradictions"])
+    veto = [e for e in events if e[0] == "pipeline.master_plan_audit_direction_veto"]
+    assert len(veto) == 1, events
+    _t, _m, payload = veto[0]
+    assert payload["change_symbol"] == "policy.py:_armed_symbol"
+    assert int(payload["seen"]) == 2
+    assert payload["veto_mode"] in ("attempt", "outcome")
+
+    # a clean symbol passes through untouched and emits nothing
+    events.clear()
+    plan2 = {"proposal_binding": {"change_symbol": "policy.py:_fresh"}}
+    out2 = audit_agents._apply_direction_ledger_veto(
+        {"overall_pass": True, "direction_novelty": "novel",
+         "contradictions": []}, plan2, 650
+    )
+    assert out2["overall_pass"] is True
+    assert not events
+
+    # fail-open: an unreadable ledger keeps the LLM verdict (the original
+    # inline try/except posture preserved by the extraction)
+    def _boom(*_a, **_k):
+        raise RuntimeError("ledger unreadable")
+
+    monkeypatch.setattr(recent_directions, "recent_symbol_counts", _boom)
+    out3 = audit_agents._apply_direction_ledger_veto(
+        {"overall_pass": True, "direction_novelty": "novel",
+         "contradictions": []}, plan, 650
+    )
+    assert out3["overall_pass"] is True
