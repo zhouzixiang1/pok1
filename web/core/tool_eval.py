@@ -185,11 +185,16 @@ def precommit_pool_weakest_n_games() -> int:
 
 
 # Parent-leg sample depth (2026-10-22 power calibration).  The parent gate is
-# a strict-majority screen: at p=0.5 its per-sample false-admission is 0.387
-# at n=12 (need >=7W) and 0.419 at n=24 (need >=13W), so it is deliberately
+# a strict-majority screen: at p=0.5 its per-sample false-admission is 0.363
+# at the default n=8 (need >=5W), 0.387 at n=12 (need >=7W) and 0.419 at
+# n=24 (need >=13W) — deepening RAISES it — so it is deliberately
 # NOT a 5% test.  What a deeper parent leg buys is a lower score variance
-# (SD 0.144 -> 0.102) and a higher pass rate for a genuinely stronger
-# candidate (a true 0.55 edge passes ~0.56 at n=12 vs ~0.61 at n=24), at the
+# (SD 0.177 -> 0.144 -> 0.102) and a higher pass rate for a genuinely stronger
+# candidate (a true 0.55 edge passes 0.527 at n=12 vs 0.615 at n=24; the
+# earlier "~0.56" for n=12 overstated it by .033 — corrected with the
+# block-37 recompute, which also closed the deepening candidate: 16/18 era
+# parent-dead legs are co-blocked elsewhere, E[extra pubs | n=12] = 0.0000),
+# at the
 # cost of 12 extra 70-hand matches (~24 min at the measured ~2 min/match).
 # Unset = inherit the plan-wide count (historical behavior).  When set, the
 # value is read ONCE at the plan-freeze moment and frozen as the parent
@@ -3310,9 +3315,11 @@ async def run_precommit_eval(args):
                 and str(item.get("reason") or "") == "pool_weakest_gate"
             ):
                 item["matches"] = pool_weakest_matches
-        # Parent-leg sample depth (2026-10-22 power calibration): freeze the
-        # parent opponent's own count (POK_PRECOMMIT_PARENT_N_GAMES, default
-        # 12 = historical behavior).  The parent gate threshold and every
+        # Parent-leg sample depth (2026-10-22 power calibration; default
+        # corrected by block-37): an unset POK_PRECOMMIT_PARENT_N_GAMES
+        # returns None here and the parent inherits the plan-wide per-opponent
+        # count (currently 8, PRECOMMIT_DEFAULT_N_GAMES) — it is NOT 12.
+        # The parent gate threshold and every
         # other leg are untouched; only the number of fresh 70-hand parent
         # samples changes.
         try:

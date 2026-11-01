@@ -1388,9 +1388,17 @@ plan with a new one-time nonce; opponents, sample depths and gate thresholds
 are carried over; both scorecards are persisted; a third sample is refused).
 Infrastructure retries keep the same plan. The optional
 `POK_PRECOMMIT_PARENT_N_GAMES` power knob is frozen at plan time and leaves
-the gate thresholds unchanged; it is off by default because the parent
-strict-majority false-admission rate is ~0.39-0.42 at n=12 or n=24, so the
-extra 12 matches mainly reduce variance at ~24 minutes of cost. The rating
+the gate thresholds unchanged; it is off by default (the unset value inherits
+`PRECOMMIT_DEFAULT_N_GAMES=8`, not the historical 12 — the code comment at
+`tool_eval.py` saying "default 12" is stale, queued for a pre-freeze fix).
+Block-37 closed the deepening candidate with numbers: strict-majority false
+admission is 0.3633 at n=8 / 0.3872 at n=12 / 0.4194 at n=24 (deepening
+RAISES it), true-.55 power rises only 0.477->0.527, and in the era-v629+
+sample 16/18 parent-dead legs were co-blocked by the pool or aggregate leg —
+n=12 buys E[extra publications]=0.0000 while its W-bar 7/12 would flip one
+marginal publication the other way (E[-0.167]) for +3.9-5.2% cadence. The
+binding leg is the pool leg (24/31 era deaths; its bar is deliberately
+unchanged at wins-equivalent strictly above 13.00/24). The rating
 daemon adds a resolve-unresolved-top-pairs scheduling term (conservative-rating
 top-5 pairs weighted by rating-deviation-vs-gap unresolvedness).
 Glicko/H2H/selection rows are published as one immutable content-addressed
