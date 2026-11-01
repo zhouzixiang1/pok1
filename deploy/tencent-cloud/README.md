@@ -525,7 +525,12 @@ After verifying tests on this operator checkout (`/home/ubuntu/pok1`):
    runtime_profile and may be tuned freely.
 2. Commit/push to `origin/tencent-cloud-runtime` (operator action).
 3. In `.evolution_pok`: `git pull --ff-only --tags` (Git sync only; never
-   copy files between checkouts).
+   copy files between checkouts). Do not batch this up: a runtime checkout
+   behind `origin` makes the next prepare fail its publish-sync guard
+   (`Prepare blocked by publish sync guard: remote_main_ahead`, measured
+   2026-11-01 after two pushes landed while v648 was terminaling) and the
+   generation idles until a pull+restart. A refs-only `fetch`+`ff-pull` is
+   safe with the service running; if the bytes matter, take the stop window.
 3a. **If the deploy changed `deploy/tencent-cloud/pok-evolution.service`
     itself**: copy it and reload systemd BEFORE restarting —
     `sudo cp deploy/tencent-cloud/pok-evolution.service /etc/systemd/system/pok-evolution.service`
