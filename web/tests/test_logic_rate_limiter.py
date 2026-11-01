@@ -1,6 +1,7 @@
 """Tests for rate_limiter.py — 429 quota exhaustion handler."""
 
 import json
+import unittest
 import os
 import time
 import tempfile
@@ -207,3 +208,89 @@ class TestIsRateLimited:
     def test_long_text_false(self):
         from llm_query import _is_rate_limited
         assert not _is_rate_limited("overloaded" + "x" * 3000)
+
+
+class TestQuotaProbeResume:
+    """Block-38 queue #1/#5: probe attempts, events, and the first-probe timing.
+
+    Before this class, wait_until_reset's probe loop had ZERO coverage — which
+    is how `from evolution_infra import log_system_event` (a name that does
+    not exist there) shipped alongside an except-pass and made every probe
+    success invisible (3 journal lines, 0 durable events) for days.
+    """
+
+    async def _run_episode(self, probe_result, hold_seconds=600.0):
+        import asyncio
+
+        import rate_limiter as rl_mod
+        import system_log
+        from rate_limiter import RateLimiter
+
+        calls: "list" = []
+        events: "list" = []
+
+        async def fake_probe():
+            calls.append(1)
+            return probe_result
+
+        def fake_event(t, s, m, d=None):
+            events.append((t, d or {}))
+
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as td:
+            rl = RateLimiter(state_file=Path(td) / "rl.json")
+            rl._reset_time = time.time() + hold_seconds
+            old_probe = rl_mod._probe_provider_quota_available
+            old_int = rl_mod._quota_probe_interval_sec
+            old_evt = system_log.log_system_event
+            rl_mod._probe_provider_quota_available = fake_probe
+            rl_mod._quota_probe_interval_sec = lambda: 300.0
+            system_log.log_system_event = fake_event
+            try:
+                task = asyncio.get_running_loop().create_task(rl.wait_until_reset())
+                await asyncio.sleep(0.2)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                return calls, events
+            finally:
+                rl_mod._probe_provider_quota_available = old_probe
+                rl_mod._quota_probe_interval_sec = old_int
+                system_log.log_system_event = old_evt
+
+    @pytest.mark.asyncio
+    async def test_first_probe_fires_on_entry_not_after_one_interval(self):
+        # old code initialized last_probe=now, so the first attempt waited a
+        # full 300s interval (leads < ~15.8min were probe-less by construction).
+        calls, events = await self._run_episode(
+            {"ok": False, "http_status": 429, "elapsed_sec": 0.5}
+        )
+        assert len(calls) >= 1, "probe must be attempted immediately on entry"
+
+    @pytest.mark.asyncio
+    async def test_rejected_probe_stays_blocked_without_resumed_event(self):
+        calls, events = await self._run_episode(
+            {"ok": False, "http_status": 429, "elapsed_sec": 0.5}
+        )
+        assert len(calls) >= 1
+        assert not [e for e in events if e[0] == "pipeline.llm_quota_probe_resumed"]
+
+    @pytest.mark.asyncio
+    async def test_successful_probe_emits_durable_event_and_breaks_wait(self):
+        calls, events = await self._run_episode(
+            {"ok": True, "http_status": 200, "elapsed_sec": 1.0}
+        )
+        resumed = [e for e in events if e[0] == "pipeline.llm_quota_probe_resumed"]
+        assert len(resumed) == 1, events
+        assert resumed[0][1]["http_status"] == 200
+
+    def test_probe_event_import_resolves(self):
+        import inspect
+
+        import rate_limiter
+
+        src = inspect.getsource(rate_limiter.RateLimiter.wait_until_reset)
+        assert "from system_log import log_system_event" in src
+        assert "from evolution_infra import log_system_event" not in src

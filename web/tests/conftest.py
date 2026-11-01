@@ -398,6 +398,25 @@ def _write_synthetic_route_bot(root: Path, version: int) -> Path:
     return bot
 
 
+# --- tempfile.gettempdir() redirect (block-38 ops-backlog c) ---
+# ValidationLedger()/CandidateLifecycle() with NO db path build
+# f"{gettempdir()}/slice2b_lifecycle_<pid>_<uuid>.sqlite3" and never unlink;
+# the two slice2b test files construct 27 such ledgers per run (~0.84 MiB +
+# WAL/shm churn per process), i.e. every agent block that runs the suite in
+# this operator tree leaks into /tmp proper. Redirecting tempfile.tempdir into
+# the per-test tmp_path puts every such file under pytest's OWN basetemp
+# retention (plus the existing tmpfiles 1d rule) with ZERO signature edits —
+# verified 166 tests, 0 residue. monkeypatch (function scope) guarantees
+# restoration; production code never reads tempfile.tempdir at import time.
+@pytest.fixture(autouse=True)
+def _redirect_tempfile_tmpdir(tmp_path, monkeypatch):
+    import tempfile as _tempfile
+
+    _d = tmp_path / "_tmpdir_redirect"
+    _d.mkdir(exist_ok=True)
+    monkeypatch.setattr(_tempfile, "tempdir", str(_d))
+
+
 # --- Full isolation fixture ---
 
 

@@ -157,8 +157,23 @@ class Slice2bActivation:
                 lifecycle_db_path = (
                     Path(adapter.store.path).parent / "slice2b_lifecycle.sqlite3"
                 )
-            except Exception:
-                lifecycle_db_path = None  # ValidationLedger() temp fallback
+            except Exception as exc:
+                # Block-38 ops-backlog (a): the old fail-open to None made
+                # ValidationLedger() silently fall back to a PROCESS-PRIVATE
+                # /tmp db, so recover_at_boot() saw an empty ledger and the
+                # documented crash-recovery contract (re-scheduling
+                # sealed-but-unresolved consumers) was lost WITHOUT any signal
+                # (proved by constructing this class over a broken store: no
+                # raise, {rescheduled:[],terminal:[],rejected:[]}). Raising
+                # here is strictly safer than the silent loss: activation is
+                # already Slice2bError-governed upstream (AGENTS.md: a death
+                # raises Slice2bError and the producer's next-generation work
+                # proceeds), and POK_SLICE2B_ENABLED=0 makes this branch
+                # latent-only today.
+                raise Slice2bError(
+                    "slice2b_activation_lifecycle_path_unresolvable:"
+                    f"{type(exc).__name__}:{str(exc)[:200]}"
+                ) from exc
         self.ledger = ValidationLedger(lifecycle_db_path)
         if coordinator is None:
             import os as _os

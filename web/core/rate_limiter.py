@@ -232,7 +232,13 @@ class RateLimiter:
         durable availability pause early via
         ``llm_availability_store.resume_quota_pause_on_probe_success``.
         """
-        last_probe = time.time()
+        # First attempt fires immediately on entry (block-38 queue #5): the
+        # old time.time() init forced every episode's first probe to wait a
+        # full POK_QUOTA_PROBE_INTERVAL_SEC AFTER the ~600s saturator-handoff
+        # lag, making leads under ~15.8min probe-less BY CONSTRUCTION (ep3/5/
+        # 16 had 0 attempts). wait > 60.0 still guards a useless last-minute
+        # probe; the interval now only spaces REPEATED attempts.
+        last_probe = 0.0
         while self.is_blocked():
             wait = self.wait_seconds()
             if wait <= 0:
@@ -247,6 +253,18 @@ class RateLimiter:
                     probe = await _probe_provider_quota_available()
                 except Exception:
                     probe = None
+                if probe is not None and probe.get("ok") is not True:
+                    # Block-38 queue #5: attempts used to be uncountable —
+                    # hit-rate could not be computed because successes had no
+                    # durable row AND failures printed nothing. A rejected/
+                    # errored probe is "still blocked", never re-arming.
+                    log.info(
+                        "Quota probe not accepted (status %s, %.1fs); staying"
+                        " blocked %.0fs ahead of the declared reset.",
+                        probe.get("http_status"),
+                        float(probe.get("elapsed_sec") or 0.0),
+                        wait,
+                    )
                 if probe is not None and probe.get("ok") is True:
                     log.info(
                         "Quota probe succeeded (HTTP %s, %.1fs) %.0fs ahead of the"
@@ -256,7 +274,15 @@ class RateLimiter:
                         wait,
                     )
                     try:
-                        from evolution_infra import log_system_event
+                        # 2026-11-02 (block-38 queue #1): this used to import
+                        # log_system_event from evolution_infra, where it does
+                        # NOT exist at module scope (only function-local
+                        # imports) — the ImportError was swallowed by the
+                        # except-pass below, so every probe success wrote 0
+                        # durable events (3 journal lines vs 0 rows in
+                        # events.jsonl + 19k archived lines). system_log is the
+                        # canonical 86-call-site path; signature compatible.
+                        from system_log import log_system_event
 
                         log_system_event(
                             "pipeline.llm_quota_probe_resumed",
@@ -269,8 +295,10 @@ class RateLimiter:
                                 "seconds_ahead_of_reset": round(wait),
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.warning(
+                            "probe-resume event emission failed: %s", exc
+                        )
                     try:
                         import llm_availability_store
 
