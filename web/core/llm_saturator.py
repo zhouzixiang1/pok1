@@ -214,7 +214,10 @@ Phase 1 — EVIDENCE (do all of it; this is the analysis, not preparation):
   b. Read both national_runtime_manifest.json files and, when policy.py
      imports it, precompute.py.
   c. Only then start Phase 2. Never analyse a symbol you have not read in
-     this session; re-read the exact function immediately before you cite it.
+     this session. The Phase 1 full reads are this session's evidence base:
+     cite from what you already read, and re-read ONLY lines you have not
+     actually seen this session — repeated re-reads of the same immutable
+     published bytes add nothing but cost.
 
 Phase 2: Name the FIVE largest strategic asymmetries (preflop, flop c-bet,
 turn sizing, river, all-in commitment). Quote exact functions with the line
@@ -222,8 +225,8 @@ you actually read. Which FOCUS lines does THIS opponent punish?
 
 Phase 3: Walk 16 concrete hands (holes + board; mix button/blind,
 deep/short, and at least four multi-street all-in runouts). For each hand,
-re-read the FOCUS and OPPONENT lines you rely on immediately before writing
-the trace, and name them.
+name the FOCUS and OPPONENT lines you rely on from your Phase 1 reads;
+open a file again only when a needed line was not actually seen this session.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 _SATURATOR_LINE_AUDIT_PROMPT = """\
@@ -240,7 +243,7 @@ street. Quote the legality / sizing / fallback path line by line.
 
 Phase 3: Find 8 concrete bugs or EV leaks (too-tight fold, illegal-intent
 risk, unused opponent field, sizing that never hits a legal raise_to, a
-dead branch). For each, re-read the exact lines before writing it.
+dead branch). For each, cite from the exact lines already read this session.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
 _SATURATOR_FUNCTION_TRACE_PROMPT = """\
@@ -257,11 +260,12 @@ Phase 2: Trace FIVE named helpers that actually change the returned intent
 fallback). For each: inputs, full branch table, missing-tracker behaviour.
 
 Phase 3: Show SIX hands where helper A and helper B disagree; say which one
-wins each and why. Re-read each cited function immediately before writing it.
+wins each and why. Cite each function from the Phase 1 read; reopen a file
+only for a line you have not actually seen this session.
 
 Phase 4 (only when policy.py imports precompute.py): trace how the precomputed
 table actually reaches the returned intent — which equity/rank-mask lookup
-feeds which helper, with the exact call sites you re-read. If there is no
+feeds which helper, with the exact call sites from your Phase 1 read. If there is no
 import, state that once and skip.
 """ + _SATURATOR_CONTRACT_SPEC + _SATURATOR_HARD_STOP
 
