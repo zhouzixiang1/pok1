@@ -1389,8 +1389,8 @@ are carried over; both scorecards are persisted; a third sample is refused).
 Infrastructure retries keep the same plan. The optional
 `POK_PRECOMMIT_PARENT_N_GAMES` power knob is frozen at plan time and leaves
 the gate thresholds unchanged; it is off by default (the unset value inherits
-`PRECOMMIT_DEFAULT_N_GAMES=8`, not the historical 12 — the code comment at
-`tool_eval.py` saying "default 12" is stale, queued for a pre-freeze fix).
+`PRECOMMIT_DEFAULT_N_GAMES=8`, not the historical 12 — the stale
+"default 12" code comment was corrected in 062340b4, block-37).
 Block-37 closed the deepening candidate with numbers: strict-majority false
 admission is 0.3633 at n=8 / 0.3872 at n=12 / 0.4194 at n=24 (deepening
 RAISES it), true-.55 power rises only 0.477->0.527, and in the era-v629+
