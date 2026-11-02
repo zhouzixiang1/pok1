@@ -294,3 +294,106 @@ class TestQuotaProbeResume:
         src = inspect.getsource(rate_limiter.RateLimiter.wait_until_reset)
         assert "from system_log import log_system_event" in src
         assert "from evolution_infra import log_system_event" not in src
+
+    async def _run_shared(self, probe_result, tmp_path, waiters=2,
+                          hold_seconds=600.0):
+        import asyncio
+
+        import rate_limiter as rl_mod
+        import system_log
+        from rate_limiter import RateLimiter
+
+        calls: "list" = []
+        events: "list" = []
+
+        async def fake_probe():
+            calls.append(time.monotonic())
+            return probe_result
+
+        def fake_event(t, s, m, d=None):
+            events.append((t, d or {}))
+
+        rl = RateLimiter(state_file=Path(tmp_path) / "rl.json")
+        # Arm the episode through the REAL transition (parse_429), which
+        # is where the shared stamp is re-armed — not by poking _reset_time.
+        parsed = rl.parse_429(
+            "Request rejected (429) · [1308][已达到 5 小时的使用上限。"
+            "您的限额将在 2099-01-01 00:00:00 重置。]"
+        )
+        assert parsed is True and rl.is_blocked()
+        old_probe = rl_mod._probe_provider_quota_available
+        old_int = rl_mod._quota_probe_interval_sec
+        old_evt = system_log.log_system_event
+        rl_mod._probe_provider_quota_available = fake_probe
+        rl_mod._quota_probe_interval_sec = lambda: 300.0
+        system_log.log_system_event = fake_event
+        tasks = [
+            asyncio.get_running_loop().create_task(rl.wait_until_reset())
+            for _ in range(waiters)
+        ]
+        try:
+            await asyncio.sleep(0.3)
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return calls, rl
+        finally:
+            rl_mod._probe_provider_quota_available = old_probe
+            rl_mod._quota_probe_interval_sec = old_int
+            system_log.log_system_event = old_evt
+
+    @pytest.mark.asyncio
+    async def test_concurrent_waiters_share_one_probe_throttle(self, tmp_path):
+        """Block-39 queue #3: the stamp is per-instance, not per-waiter.
+
+        Measured production artifact of the local variable: 8 waiters x 1
+        first-probe-on-entry = 8 "not accepted" lines inside 4 seconds
+        (09:52 episode), so the journal line count was waiters, not attempts.
+        """
+        calls, _rl = await self._run_shared(
+            {"ok": False, "http_status": 429, "elapsed_sec": 0.5},
+            tmp_path,
+            waiters=4,
+        )
+        assert len(calls) == 1, (
+            f"4 concurrent waiters fired {len(calls)} probes; the shared "
+            "self._last_probe throttle must admit exactly the first entry"
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_episode_rearms_first_probe(
+        self, tmp_path
+    ):
+        """parse_429 None->block re-arms; a consumed stamp does not block it."""
+        calls, rl = await self._run_shared(
+            {"ok": False, "http_status": 429, "elapsed_sec": 0.5},
+            tmp_path,
+            waiters=2,
+        )
+        assert len(calls) == 1
+        assert rl._last_probe > 0.0, "episode consumed the shared stamp"
+        # Same episode, repeat detection (reset still in the future): no
+        # re-arm, so a flood of detects cannot restart the stampede.
+        assert rl.parse_429(
+            "Request rejected (429) · [1308][已达到 5 小时的使用上限。"
+            "您的限额将在 2099-01-01 00:00:00 重置。]"
+        )
+        assert rl._last_probe > 0.0, "repeat detect inside one episode must not re-arm"
+        # New episode after clear: the transition re-arms entry-probing.
+        rl.clear()
+        assert rl.parse_429(
+            "Request rejected (429) · [1308][已达到 5 小时的使用上限。"
+            "您的限额将在 2099-01-01 00:00:00 重置。]"
+        )
+        assert rl._last_probe == 0.0, "None->block must re-arm first-on-entry"
+
+    def test_probe_throttle_is_instance_state_not_a_local(self):
+        import inspect
+
+        import rate_limiter
+
+        src = inspect.getsource(rate_limiter.RateLimiter.wait_until_reset)
+        assert "last_probe = 0.0" not in src, "per-waiter local stamp is back"
+        assert "self._last_probe" in src
+        init = inspect.getsource(rate_limiter.RateLimiter.__init__)
+        assert "_last_probe" in init

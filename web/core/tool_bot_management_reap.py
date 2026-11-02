@@ -362,10 +362,12 @@ def _select_reap_candidate_from_snapshot(
         # member must never be reaped on conservative-score uncertainty
         # alone (pre-alignment data: reap would take v11 — measured 3rd
         # strongest — while the gate made the candidate beat v173). Members
-        # whose Wilson lower bound (at the gate's games floor) sits strictly
-        # above the pool median lower bound join the protection set; the
-        # extension yields whenever it would strand the pool without any
-        # victim — "pool > cap implies a victim" outranks the alignment.
+        # whose Wilson lower bound (at the gate's games floor) sits at or above
+        # the pool median lower bound join the protection set (>= since the
+        # block-39 v608 median-tie finding; strict > was deleting the median
+        # row itself); the extension yields whenever it would strand the pool
+        # without any victim — "pool > cap implies a victim" outranks the
+        # alignment.
         from pool_ratchet import (
             pool_weakest_min_games,
             wilson_lower_bound,
@@ -388,8 +390,15 @@ def _select_reap_candidate_from_snapshot(
                 lb_by_name[name] = wilson_lower_bound(win_rate, member_games)
         if lb_by_name:
             median_lb = sorted(lb_by_name.values())[len(lb_by_name) // 2]
+            # Block-39 queue #2: STRICT `>` deleted the on-median row itself.
+            # v608 was reaped at the v647 freeze with lb EXACTLY == median_lb
+            # (diff 0.0 over 12 tier0 rows) despite being the pool's 4th
+            # strongest by point win rate — the upper-middle row of an even
+            # pool is by definition NOT weaker than half the pool, so the
+            # median-index row joins the protection set under `>=`. The
+            # degenerate all-tie shape stays safe via the yield guard below.
             measured_strong = {
-                name for name, lb in lb_by_name.items() if lb > median_lb
+                name for name, lb in lb_by_name.items() if lb >= median_lb
             }
             if any(
                 name not in protected_names and name not in measured_strong

@@ -6,9 +6,10 @@ by the conservative score.  Without protection, a measured-STRONG member
 whose inflated rd sinks its conservative score gets reaped while the gate
 makes candidates beat a different, measured-weak member — an anti-ratchet.
 The half-alignment: members whose Wilson lower bound (at the gate's 600-game
-floor) sits strictly above the pool median lower bound join the protection
-set, and the extension yields whenever it would strand the pool without a
-victim.
+floor) sits at or above the pool median lower bound join the protection set
+(`>=` since block-39: the strict `>` deleted the on-median row itself — v608,
+pool 4th-strongest by point win rate, reaped with lb EXACTLY == median_lb),
+and the extension yields whenever it would strand the pool without a victim.
 """
 
 import json
@@ -82,12 +83,11 @@ def test_equal_measured_strength_never_strands_the_pool(monkeypatch, tmp_path):
     """Victim-exists invariant under degenerate measured data.
 
     With every member at the SAME Wilson lower bound the measured-strong
-    set is empty (strictly-above-median), so the alignment extension is a
-    no-op and the pool still yields its conservative-weakest victim. The
-    deeper guard — the extension yields whenever it would strand the pool —
-    is structurally unreachable with plain-median + LB-median parity (the
-    median always lands inside the plain-unprotected half); this test pins
-    the victim-exists property under the degenerate tie shape.
+    set under `>=` is the ENTIRE pool, so the yield guard (the extension is
+    skipped when it would strand the pool without any victim) is what keeps
+    the conservative-weakest victim alive here. Under the pre-block-39
+    strict `>` the same set was empty and the test passed by a different
+    route; either way the pool must still yield exactly one victim.
     """
     import test_pool_reap_target_size_20261011 as helper
     import tool_commit
@@ -116,6 +116,71 @@ def test_equal_measured_strength_never_strands_the_pool(monkeypatch, tmp_path):
                       "remote_publication": {"remote_main_oid": "c" * 40}}}
     )
     assert [row["candidate"] for row in plan["targets"]] == [bot_name(1)]
+
+
+def test_on_median_row_is_protected_v608_shape(monkeypatch, tmp_path):
+    """Block-39 queue #2: strict `>` deleted the EXACT median-LB row.
+
+    Production replay of the v647 freeze: v608's Wilson lb equalled median_lb
+    with diff 0.0 (12 tier0 rows, even-count median at index 6) while being
+    the pool's 4th-strongest by point win rate — and it was reaped, because
+    `lb > median_lb` excludes the on-median row BY CONSTRUCTION. The fixture
+    below reproduces the shape: v1 sits exactly on the median lower bound,
+    is upper-half by win rate, and is conservative-WEAKEST (r=1200, rd=300).
+    Old code: v1 is the victim. Fixed code: the on-median row is protected
+    and the victim shifts to the next conservative-weakest unprotected row.
+    """
+    import test_pool_reap_target_size_20261011 as helper
+    import tool_commit
+
+    monkeypatch.setenv("POK_PUBLISH_MODE", "pool_ratchet")
+    monkeypatch.setenv("POK_POOL_RATCHET_TARGET_SIZE", "12")
+    versions = list(range(1, 14))  # 13 bots, cap 12 -> exactly 1 reap
+    ratings = {v: (1500.0 + v * 10.0, 80.0) for v in versions}
+    ratings[1] = (1200.0, 300.0)  # conservative 600 — lowest by far
+    ratings[2] = (1250.0, 60.0)  # conservative 1130 — next lowest
+    helper._setup_pool(
+        monkeypatch,
+        tmp_path,
+        versions,
+        rating_by_version=ratings,
+        priority_version=13,
+    )
+    # Measured inputs (games >= the 600 default floor). win rates chosen so
+    # v1's Wilson lb is the UNIQUE median of the 13: six rows below it
+    # (0.440..0.470) and six above (0.480, then the high-rate 700-game rows).
+    # Uniqueness was computed against pool_ratchet.wilson_lower_bound, not
+    # assumed. v1 is upper-half by win rate — the v608 profile.
+    _rewrite_bot_stats(
+        monkeypatch,
+        tmp_path,
+        {
+            7: {"games": 900, "win_rate": 0.440},
+            2: {"games": 900, "win_rate": 0.450},
+            3: {"games": 900, "win_rate": 0.455},
+            8: {"games": 900, "win_rate": 0.460},
+            9: {"games": 900, "win_rate": 0.465},
+            10: {"games": 900, "win_rate": 0.470},
+            1: {"games": 900, "win_rate": 0.475},  # exact median LB
+            11: {"games": 900, "win_rate": 0.480},
+            4: {"games": 700, "win_rate": 0.550},
+            5: {"games": 700, "win_rate": 0.555},
+            6: {"games": 700, "win_rate": 0.560},
+            12: {"games": 700, "win_rate": 0.565},
+            13: {"games": 700, "win_rate": 0.570},
+        },
+    )
+
+    plan = tool_commit._build_pool_reap_plan(
+        {"identity": {"version": 13, "publication_id": "a" * 64,
+                      "commit_oid": "b" * 40,
+                      "remote_publication": {"remote_main_oid": "c" * 40}}}
+    )
+    victims = [row["candidate"] for row in plan["targets"]]
+    assert victims == [bot_name(2)], (
+        "on-median v1 must be protected (>= since block-39); got "
+        + str(victims)
+    )
 
 
 def test_snapshot_row_shape_is_profile_gated(monkeypatch, tmp_path):

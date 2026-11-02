@@ -143,6 +143,16 @@ class RateLimiter:
 
     def __init__(self, state_file=None):
         self._reset_time: float | None = None  # Unix timestamp
+        # Block-39 queue #3: the probe throttle was a wait_until_reset LOCAL
+        # (last_probe = 0.0), so every concurrent waiter fired its own
+        # first-probe-on-entry: the 09:52 episode printed 8 "not accepted"
+        # lines inside 4 SECONDS (W=8 waiters x 1), not 8 interval-spaced
+        # attempts. A shared per-episode stamp makes the journal line count
+        # a real attempt ledger — hit-rate denominator = attempts, not
+        # waiters. Re-armed to 0.0 exactly when a NEW episode blocks
+        # (None -> reset-time transition in parse_429), so the first waiter
+        # still probes on entry (block-38 queue #5 semantics unchanged).
+        self._last_probe: float = 0.0
         self._lock = threading.Lock()
         self._state_file = state_file or RESULTS_DIR / "rate_limit_state.json"
         self._load_state()
@@ -167,6 +177,14 @@ class RateLimiter:
                     reset_ts = dt.timestamp()
                     # Sanity: reset must be in the future (allow 60s clock skew)
                     if reset_ts > time.time() - 60:
+                        if self._reset_time is None:
+                            # New episode (None -> block transition): arm
+                            # first-probe-on-entry for the SHARED stamp, so
+                            # the next waiter through wait_until_reset probes
+                            # immediately. Repeat detections inside one
+                            # episode deliberately do NOT re-arm — that would
+                            # restore per-detect stampedes. (block-39 queue #3)
+                            self._last_probe = 0.0
                         self._reset_time = reset_ts
                         self._save_state()
                         log.info("429 parsed: quota resets at %s", dt.strftime("%Y-%m-%d %H:%M:%S"))
@@ -238,17 +256,22 @@ class RateLimiter:
         # lag, making leads under ~15.8min probe-less BY CONSTRUCTION (ep3/5/
         # 16 had 0 attempts). wait > 60.0 still guards a useless last-minute
         # probe; the interval now only spaces REPEATED attempts.
-        last_probe = 0.0
+        # Block-39 queue #3: the stamp lives on the instance (self._last_probe,
+        # re-armed at the parse_429 episode transition), NOT in a local —
+        # concurrent waiters must share one throttle or the "not accepted"
+        # journal lines count waiters, not attempts (measured: 8 lines in 4s).
         while self.is_blocked():
             wait = self.wait_seconds()
             if wait <= 0:
                 break
-            if (
-                _quota_probe_enabled()
-                and wait > 60.0
-                and time.time() - last_probe >= _quota_probe_interval_sec()
-            ):
-                last_probe = time.time()
+            should_probe = False
+            if _quota_probe_enabled() and wait > 60.0:
+                now = time.time()
+                with self._lock:
+                    if now - self._last_probe >= _quota_probe_interval_sec():
+                        self._last_probe = now
+                        should_probe = True
+            if should_probe:
                 try:
                     probe = await _probe_provider_quota_available()
                 except Exception:
