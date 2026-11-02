@@ -185,8 +185,10 @@ def _saturator_max_read_calls() -> int:
 _SATURATOR_HARD_STOP = f"""
 HARD STOP: after at most {_saturator_max_read_calls()} Read tool calls, write the Phase 4 JSON array and end.
 Do not pad, do not start extra phases, do not promise a follow-up. A finished
-bounded packet is worth more than an unfinished 60-turn essay. Re-read code
-before every citation; never cite from memory.
+bounded packet is worth more than an unfinished 60-turn essay. Cite from the
+code you actually read in this session; never cite from memory. Re-open a file
+only for a line you have not seen yet — re-reading bytes already in this
+session adds cost without evidence.
 """
 
 _SATURATOR_CONTRACT_SPEC = """
