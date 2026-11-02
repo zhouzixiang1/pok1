@@ -151,7 +151,14 @@ def _compute_metrics_summary() -> dict:
         cache_write = row.get("cache_creation_input_tokens") or 0
         input_tok = row.get("input_tokens") or 0
         bucket["cache_read_tokens"] += cache_read
-        bucket["cache_eligible_tokens"] += cache_read + cache_write + input_tok
+        # CALIBER FIXED 2026-11-02 (block-40, same defect as
+        # llm_call_metrics.record): provider usage is the OpenAI-compat
+        # shape — input_tokens is the FULL prompt and cache_read is a
+        # SUBSET of it. The old `cache_read + cache_write + input_tok`
+        # denominator double-counted the cached prefix (KPI pinned ~0.48
+        # while the true value is 0.93). max() keeps the ratio sane even
+        # if a future provider returns the Anthropic shape instead.
+        bucket["cache_eligible_tokens"] += max(input_tok, cache_read + cache_write)
         for field in _AVG_MAX_FIELDS:
             value = row.get(field)
             if value is None:

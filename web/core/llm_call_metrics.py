@@ -157,11 +157,18 @@ def record_llm_call_metrics(
         output_per_sec = round(output_tok / elapsed, 1) if elapsed > 0 else None
         total_per_sec = round(total_tok / elapsed, 1) if elapsed > 0 else None
 
-        # Cache hit rate KPI (Langfuse pattern)
+        # Cache hit rate KPI (Langfuse pattern). CALIBER FIXED 2026-11-02
+        # (block-40): the provider usage here is the OpenAI-compat shape —
+        # input_tokens is the FULL prompt and cached_input_tokens is a
+        # SUBSET of it (verified on production: cached <= input holds on
+        # 7976/7976 raw_usage rows). The old Anthropic denominator treated
+        # input as the uncached remainder and ADDED it to cache_read,
+        # double-counting the cached prefix and pinning the KPI near 0.48
+        # no matter the real behavior (true value 0.93).
         cache_read = int(cache_read_input_tokens) if cache_read_input_tokens else 0
         cache_write = int(cache_creation_input_tokens) if cache_creation_input_tokens else 0
-        cache_total = cache_read + cache_write + input_tok
-        cache_hit_rate = round(cache_read / cache_total, 4) if cache_total > 0 else None
+        cache_eligible = max(input_tok, cache_read + cache_write)
+        cache_hit_rate = round(cache_read / cache_eligible, 4) if cache_eligible > 0 else None
 
         now = time.time()
         record = {
