@@ -311,19 +311,47 @@ def _recent_directions_for_audit() -> str:
     2026-08-16 audit: novelty was scored against PUBLISHED commit bodies only,
     so recycled directions across abandoned generations stamped "novel" every
     time. This ledger covers published AND abandoned attempts (extracted from
-    strict master logs; see recent_directions.py)."""
+    strict master logs; see recent_directions.py).
+
+    2026-11-03 (block-44, v658 post-mortem): the raw per-version rows invite
+    an attempt-count reading, but the SHIPPED deterministic semantics are
+    outcome-weighted (a publication acquits the symbol; only native-gate
+    deaths count; see recent_directions recent_symbol_counts). v658 was
+    killed by exactly that mismatch: ``_opponent_posterior`` appears raw-2x
+    (v653 abandoned + v656 PUBLISHED) yet the veto layer counts 0. The
+    render now emits the authoritative outcome counts as their own lines so
+    the audit grades the same quantity the override enforces
+    (``_apply_direction_ledger_veto``) — closing the fork on the LLM side;
+    the deterministic side (reversing an LLM repetitive-with-acquitted
+    verdict) is block-45 queue work with its own behavior tests."""
     try:
-        from recent_directions import published_versions, recent_change_symbols
+        from recent_directions import (
+            published_versions,
+            recent_change_symbols,
+            recent_symbol_counts,
+        )
 
         rows = recent_change_symbols(10)
         if not rows:
             return ""
         published = published_versions()
-        return "; ".join(
+        rendered = "; ".join(
             f"v{v} {sym}"
             + (" published" if v in published else " not-published")
             for v, sym in rows
         )
+        # Authoritative line: the SAME counts the deterministic veto applies
+        # (threshold >= 2 on these numbers decides repetitive). Emitted even
+        # when empty — an empty outcome view is exactly the v658 case (all
+        # appearances acquitted), and silence there would push the audit back
+        # onto raw row counts, the fork we are closing.
+        counts = recent_symbol_counts(6)
+        detail = ", ".join(f"{sym}={n}" for sym, n in sorted(counts.items()))
+        rendered += " || OUTCOME-WEIGHTED COUNTS (the rule below grades "
+        rendered += "THESE, not raw row counts; a symbol absent here has "
+        rendered += "count 0 = novel-or-incremental, never repetitive): "
+        rendered += detail or "(none)"
+        return rendered
     except Exception:
         return ""
 
@@ -1113,6 +1141,47 @@ def _apply_direction_ledger_veto(data, master_plan, next_v):
             log.warning(
                 "Master plan audit override: repetitive direction "
                 "%s (%d recent, mode-weighted)",
+                _selected_symbol, _seen,
+            )
+        elif (
+            _selected_symbol
+            and _seen < 2
+            and str(data.get("direction_novelty") or "") == "repetitive"
+            and data.get("plan_coherent", True) is not False
+            and str(data.get("evidence_alignment") or "") != "misaligned"
+            and not (data.get("contradictions") or [])
+        ):
+            # Block-44 (v658 post-mortem) symmetric correction. The audit
+            # LLM graded novelty on RAW ledger rows; the shipped rule is
+            # OUTCOME-weighted (a publication acquits; plan-stage deaths
+            # are noise), and the ledger layer is authoritative — the
+            # module docstring has said 'the ledger is authoritative' since
+            # queue #4, but the override only ever ADDED vetoes and never
+            # reversed a raw-count false positive. v658 died exactly that
+            # way: _opponent_posterior raw-2 (v653 abandoned + v656
+            # PUBLISHED) vs outcome-count 0. Correct the novelty verdict
+            # ONLY when nothing else blocks the plan (coherence, evidence
+            # alignment, contradictions all clean) so every other audit
+            # dimension stays the LLM's; emit a distinct durable event so
+            # production can count how often the fork would have fired.
+            data = dict(data)
+            data["direction_novelty"] = "incremental"
+            data["overall_pass"] = True
+            data["retry_recommended"] = False
+            log_system_event(
+                "pipeline.master_plan_audit_direction_acquitted",
+                "info",
+                f"Master plan audit correction: {_selected_symbol} judged "
+                "repetitive on raw ledger rows but outcome-weighted count "
+                f"is {_seen} (<2); novelty verdict reversed, plan passes.",
+                {
+                    "change_symbol": _selected_symbol,
+                    "seen": int(_seen),
+                },
+            )
+            log.info(
+                "Master plan audit correction: %s acquitted by the "
+                "outcome-weighted ledger (%d < 2)",
                 _selected_symbol, _seen,
             )
     except Exception:

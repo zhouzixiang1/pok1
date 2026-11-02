@@ -636,3 +636,100 @@ def test_legacy_stageless_generic_row_not_folded(tmp_path):
     _mk_ledger(results, [(670, "policy.py:_x")])
     _mk_abandons(results, [(670, "abandon_generation")])  # no stage key
     assert recent_symbol_failure_counts(12, results_dir=results) == {}
+
+
+def test_audit_veto_acquittal_arm_reverses_raw_count_fork(monkeypatch):
+    """Block-44 (v658 post-mortem): the LLM audit graded novelty on RAW
+    ledger rows (v653 abandoned + v656 PUBLISHED = 2 appearances) while the
+    shipped deterministic rule is OUTCOME-weighted (a publication acquits;
+    _opponent_posterior counted 0). The override only ever added vetoes —
+    it never reversed a raw-count false positive, so v658 died a direction
+    whose most recent attempt had just PUBLISHED. The acquittal arm now
+    reverses the verdict when the outcome count is <2 AND nothing else
+    blocks, with a distinct durable event."""
+
+    import audit_agents
+    import recent_directions
+    import system_log
+
+    monkeypatch.setattr(
+        recent_directions, "recent_symbol_counts",
+        lambda *_a, **_k: {},  # outcome view: posterior acquitted (0 deaths)
+    )
+    events = []
+    emit = lambda t, s, m, d=None: events.append((t, m, d or {}))
+    monkeypatch.setattr(audit_agents, "log_system_event", emit)
+
+    data = {
+        "overall_pass": False, "direction_novelty": "repetitive",
+        "plan_coherent": True, "evidence_alignment": "aligned",
+        "contradictions": [], "retry_recommended": True,
+    }
+    plan = {"proposal_binding": {"change_symbol": "policy.py:_opponent_posterior"}}
+    out = audit_agents._apply_direction_ledger_veto(data, plan, 658)
+    assert out["overall_pass"] is True
+    assert out["direction_novelty"] == "incremental"
+    assert out["retry_recommended"] is False
+    acq = [e for e in events if e[0] == "pipeline.master_plan_audit_direction_acquitted"]
+    assert len(acq) == 1, events
+    assert acq[0][2]["change_symbol"] == "policy.py:_opponent_posterior"
+    assert int(acq[0][2]["seen"]) == 0
+
+    # guard: other blocking dimensions are NEVER reversed by the acquittal
+    events.clear()
+    blocked = {
+        "overall_pass": False, "direction_novelty": "repetitive",
+        "plan_coherent": True, "evidence_alignment": "misaligned",
+        "contradictions": [], "retry_recommended": True,
+    }
+    out2 = audit_agents._apply_direction_ledger_veto(blocked, plan, 658)
+    assert out2["overall_pass"] is False
+    assert not events
+
+    events.clear()
+    contradicted = {
+        "overall_pass": False, "direction_novelty": "repetitive",
+        "plan_coherent": True, "evidence_alignment": "aligned",
+        "contradictions": ["real contradiction"], "retry_recommended": True,
+    }
+    out3 = audit_agents._apply_direction_ledger_veto(contradicted, plan, 658)
+    assert out3["overall_pass"] is False
+    assert not events
+
+    # the veto arm still fires when the outcome count really is >= 2
+    events.clear()
+    monkeypatch.setattr(
+        recent_directions, "recent_symbol_counts",
+        lambda *_a, **_k: {"policy.py:_opponent_posterior": 2},
+    )
+    out4 = audit_agents._apply_direction_ledger_veto(dict(data), plan, 658)
+    assert out4["overall_pass"] is False
+    assert [e[0] for e in events] == ["pipeline.master_plan_audit_direction_veto"]
+
+
+def test_audit_ledger_render_emits_authoritative_outcome_counts(monkeypatch, tmp_path):
+    """Block-44: _recent_directions_for_audit must render the SAME counts the
+    deterministic override applies, so the audit LLM cannot grade a quantity
+    the system does not enforce (v658's fork surface)."""
+
+    import audit_agents
+    import recent_directions
+
+    def fake_change_symbols(n=10, **kw):
+        return [(656, "policy.py:_a"), (653, "policy.py:_a")]
+
+    monkeypatch.setattr(recent_directions, "recent_change_symbols", fake_change_symbols)
+    monkeypatch.setattr(recent_directions, "published_versions", lambda: {656})
+    monkeypatch.setattr(
+        recent_directions, "recent_symbol_counts",
+        lambda *_a, **_k: {},  # _a acquitted: published, zero gate deaths
+    )
+    s = audit_agents._recent_directions_for_audit()
+    assert "v656 policy.py:_a published" in s
+    assert "OUTCOME-WEIGHTED COUNTS" in s
+    # fail-open shape unchanged
+    monkeypatch.setattr(
+        recent_directions, "recent_change_symbols",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("x")),
+    )
+    assert audit_agents._recent_directions_for_audit() == ""

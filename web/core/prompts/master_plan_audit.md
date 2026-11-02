@@ -53,20 +53,33 @@ Analyze the Master plan systematically:
 ## Recent Directions Ledger (published AND abandoned attempts)
 {recent_directions}
 System-owned extract of the change symbols the most recent generation
-attempts actually targeted. Score direction novelty against this ledger and
-the completion commits in this order, and let the ledger's count decide:
+attempts actually targeted. Novelty is graded by the ledger's OUTCOME-
+WEIGHTED counts (the `OUTCOME-WEIGHTED COUNTS` line at the end), NOT by
+raw row appearances: a publication ACQUITS a symbol (the direction was
+graded at the native gates and SUCCEEDED), only precommit/quality-breaker
+deaths count against it, and plan-stage deaths are noise. Score direction
+novelty against those counts and the completion commits in this order,
+and let the outcome count decide:
 
-1. The change_symbol appears in neither the ledger nor a supplied completion
-   commit -> `"novel"`.
-2. It appears TWICE OR MORE in the last six attempts -> `"repetitive"` and
-   `overall_pass` false. The system enforces this same rule deterministically,
-   so a plan that reaches you in this state is already stale.
-3. It appears ONCE -> this is `"incremental"`, never by itself a blocking
-   result. Fail it only when the plan's evidence is ALSO not aligned with the
-   frozen snapshot, or when the plan offers nothing the earlier attempt did
-   not already have. Re-targeting one symbol with fresh measured evidence is
-   how a direction earns a second attempt; the ledger is mostly abandoned
-   attempts, so a single appearance is not a verdict.
+1. The change_symbol has NO outcome count and appears in no supplied
+   completion commit -> `"novel"`. (It may still be listed as a raw row —
+   an acquitted or plan-dead appearance does not count.)
+2. Its OUTCOME COUNT (not its raw appearance count) is TWICE OR MORE in
+   the last window -> `"repetitive"` and `overall_pass` false. The system
+   enforces this same rule deterministically, so a plan that reaches you
+   in this state is already stale.
+2b. It appears TWICE OR MORE as raw rows but has NO outcome count (every
+   appearance is a publication or a plan-stage death) -> `"incremental"`,
+   never a blocking result. A symbol that already PUBLISHED successfully
+   has proven itself at the gates; re-grading it on raw appearance count
+   would forbid revisiting a known-good direction (this is the v658
+   false-positive the outcome counts exist to prevent).
+3. Its outcome count is ONE -> this is `"incremental"`, never by itself a
+   blocking result. Fail it only when the plan's evidence is ALSO not
+   aligned with the frozen snapshot, or when the plan offers nothing the
+   earlier attempt did not already have. Re-targeting one symbol with
+   fresh measured evidence is how a direction earns a second attempt; a
+   single gate-death is not a verdict.
 4. It appears three or more times across the completion commits with no
    material change in approach -> `"repetitive"` and `overall_pass` false.
 </data>
