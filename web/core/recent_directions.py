@@ -399,6 +399,33 @@ _NATIVE_GATE_FAILURE_REASONS = frozenset(
     }
 )
 
+# Block-44 read-side fold for the documented abandon fall-through: when a
+# breaker-driven death is finalized through the generic ``abandon_generation``
+# route (``forced_abandon_reason_stage_not_allowed`` path in
+# tool_bot_management), the ledger reason head is the generic token and the
+# native-gate set misses it — the deterrence ledger goes blind for that
+# generation (4/458 rows, ALL at checkpoint_stage=quality_failed; v657 is one,
+# its journal line says precommit_rework_circuit_breaker verbatim).
+# The fold is conservative and durable-only: a reason-less generic abandon
+# counts as gate-refuted ONLY when the row's OWN frozen checkpoint_stage
+# proves the candidate reached an evaluation gate (quality_failed /
+# precommit_failed / rework stages — stages plan-stage deaths can never
+# occupy). A mid-flight or unreadable stage never increments, matching the
+# fail-open posture. The folded class is a SENTINEL, not a guess at which
+# breaker fired: v657's true cause (precommit breaker, journal line) was
+# recorded at checkpoint_stage=quality_failed, so stage cannot name the
+# breaker — only the gate-side-vs-plan-side distinction the veto needs.
+_GATE_SIDE_STAGES_ON_GENERIC_REASON = frozenset(
+    {
+        "quality_failed",
+        "rework_running",
+        "repair_planned",
+        "precommit_failed",
+    }
+)
+_GENERIC_ABANDON_REASON = "abandon_generation"
+_GATE_SIDE_GENERIC_ABANDON_CLASS = "gate_side_refuted_generic"
+
 
 def _abandon_outcomes(results_dir: "str | Path | None") -> "dict[int, str]":
     """version -> last abandon reason class (a mid-flight version is absent).
@@ -435,7 +462,16 @@ def _abandon_outcomes(results_dir: "str | Path | None") -> "dict[int, str]":
                 # Reason strings carry a free-text tail on some producers
                 # (``master_audit_rejected v642: ...``); the class is the
                 # first token.
-                outcomes[version] = reason.split(":", 1)[0].split(" ", 1)[0].strip()
+                cls = reason.split(":", 1)[0].split(" ", 1)[0].strip()
+                if cls == _GENERIC_ABANDON_REASON:
+                    # Block-44 fold: only trust the stage when the ledger
+                    # row itself froze it (schema-1/2 both carry
+                    # checkpoint_stage); an unknown/missing stage keeps the
+                    # generic class, which the gate set correctly ignores.
+                    stage = str(row.get("checkpoint_stage") or "").strip()
+                    if stage in _GATE_SIDE_STAGES_ON_GENERIC_REASON:
+                        cls = _GATE_SIDE_GENERIC_ABANDON_CLASS
+                outcomes[version] = cls
     except OSError:
         return {}
     return outcomes
@@ -539,7 +575,12 @@ def recent_symbol_failure_counts(
         if version in published:
             decided.add(symbol)
             continue
-        if deaths.get(version) in _NATIVE_GATE_FAILURE_REASONS:
+        if deaths.get(version) in (
+            _NATIVE_GATE_FAILURE_REASONS
+            # Block-44 fold: a generic abandon whose frozen stage proves an
+            # evaluation-gate death counts as gate-refuted too.
+            | {_GATE_SIDE_GENERIC_ABANDON_CLASS}
+        ):
             counts[symbol] = counts.get(symbol, 0) + 1
         # else: plan-stage death or alive/unaccounted — counts 0, no increment.
     return {symbol: n for symbol, n in counts.items() if n > 0}

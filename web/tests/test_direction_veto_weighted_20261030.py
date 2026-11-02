@@ -585,3 +585,54 @@ def test_audit_direction_veto_override_and_event(monkeypatch):
          "contradictions": []}, plan, 650
     )
     assert out3["overall_pass"] is True
+
+
+# ---- block-44: generic-abandon gate-side fold ---------------------------
+
+def _mk_abandons_staged(results: Path, rows) -> None:
+    lines = [
+        json.dumps({"version": v, "reason": r, "checkpoint_stage": s,
+                    "kind": "abandoned"})
+        for v, r, s in rows
+    ]
+    (results / "abandoned_versions.jsonl").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+
+def test_generic_abandon_folds_only_with_gate_side_stage(tmp_path):
+    """A breaker death finalized via generic abandon_generation (the
+    documented forced-abandon fall-through, 4/458 rows, ALL quality_failed)
+    must count as gate-refuted ONLY when the row's frozen stage proves an
+    evaluation-gate death. Plan-side/unknown stage never increments."""
+    from recent_directions import recent_symbol_failure_counts
+
+    results = tmp_path / "results"
+    results.mkdir()
+    _mk_ledger(results, [(660, "policy.py:_a"), (661, "policy.py:_b"),
+                         (662, "policy.py:_c"), (663, "policy.py:_d")])
+    _mk_abandons_staged(
+        results,
+        [
+            (660, "abandon_generation", "quality_failed"),   # fold -> counts
+            (661, "abandon_generation", "direction_audited"),  # plan-side -> NO
+            (662, "abandon_generation", ""),                    # unknown -> NO
+            (663, "precommit_rework_circuit_breaker",
+             "precommit_failed"),                               # named -> counts
+        ],
+    )
+    counts = recent_symbol_failure_counts(12, results_dir=results)
+    assert counts == {"policy.py:_a": 1, "policy.py:_d": 1}, counts
+
+
+def test_legacy_stageless_generic_row_not_folded(tmp_path):
+    """Schema-1-era rows without checkpoint_stage keep the generic class and
+    stay uncounted — the fold must not retroactively condemn old deaths whose
+    stage was never frozen (durable-only conservatism)."""
+    from recent_directions import recent_symbol_failure_counts
+
+    results = tmp_path / "results"
+    results.mkdir()
+    _mk_ledger(results, [(670, "policy.py:_x")])
+    _mk_abandons(results, [(670, "abandon_generation")])  # no stage key
+    assert recent_symbol_failure_counts(12, results_dir=results) == {}
