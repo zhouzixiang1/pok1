@@ -437,6 +437,19 @@ def test_pool_weakest_audit_shape(tmp_path, monkeypatch):
     assert audit2["nominee"] == bot_name(5)  # LB 0.4436 < 0.4756 / 0.4854
     assert audit2["wr_above_pool_median"] is True  # 0.53 >= median 0.52
     assert audit2["nominee_wr_not_below_runner_up"] is True  # PRIMARY
+    # block-39 band fields: the FLAG-AND-BAND rollback criterion must be
+    # computable FROM the record alone (before this, runner_up_games did not
+    # exist and both durable production TRUEs could only be judged noise by
+    # reconstructing games off neighbouring fields). runner_up v6 (wr .51,
+    # 800 games); margin +.02 sits OUTSIDE the single-match granularity band
+    # 1/120 + 1/800 = .009583 — so unlike the two real TRUEs (inside band),
+    # THIS shape is a genuine nomination signal.
+    assert audit2["runner_up_games"] == 800
+    assert audit2["margin_point_wr"] == 0.02
+    assert audit2["margin_granularity_band"] == 0.009583
+    assert audit2["margin_outside_band"] is True
+    # floor 100 filters nobody out of a 3-row pool -> knob inert, announced.
+    assert audit2["floor_is_not_a_tier"] is True
     monkeypatch.delenv(pool_ratchet.POOL_WEAKEST_WILSON_MIN_GAMES_ENV, raising=False)
     # the healthy shape must NOT fire the primary flag (nominee below the
     # adjacent rank by point rate) — wr_above_pool_median alone could not

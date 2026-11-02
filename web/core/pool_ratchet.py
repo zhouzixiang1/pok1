@@ -489,6 +489,44 @@ def pool_weakest_audit(rows, exclude_names=None) -> dict:
                     audit["nominee_wr_not_below_runner_up"] = bool(
                         pwr >= others[0][3]
                     )
+                    # Block-39 runbook gap: the rollback criterion is FLAG-AND-
+                    # BAND, but the band was never emitted, so the criterion
+                    # could not be evaluated from the record alone (operators
+                    # had to reconstruct games off neighboring fields).
+                    # One-match combined granularity = 1/g_nominee + 1/g_runner;
+                    # an |margin| INSIDE that band is single-game noise, not a
+                    # nomination signal (measured: BOTH durable TRUEs sat inside
+                    # it, so band-corrected consecutive-TRUE count = 0).
+                    g_ru = int(others[0][2] or 0)
+                    band = (
+                        (1.0 / pgames if pgames > 0 else 0.0)
+                        + (1.0 / g_ru if g_ru > 0 else 0.0)
+                    )
+                    # round to the same display precision the neighboring
+                    # keys use; raw float subtraction (.53 - .51 = .019999…)
+                    # would otherwise leak representation error into the
+                    # record. The OUTSIDE test uses unrounded values.
+                    margin = pwr - others[0][3]
+                    audit["runner_up_games"] = g_ru
+                    audit["margin_point_wr"] = round(margin, 6)
+                    audit["margin_granularity_band"] = round(band, 6)
+                    audit["margin_outside_band"] = bool(abs(margin) > band)
+            # Floor-is-no-tier self-announcement (block-39 branch C): the
+            # measured-strength tier only discriminates when SOME members
+            # fall below the games floor. tier0_count >= eligible pool rows
+            # means the knob is inert (floor 150 vs pool minimum 206 games
+            # was exactly this state) — say it in the record.
+            eligible = sum(
+                1
+                for row in rows
+                if isinstance(row, dict)
+                and str(row.get("name") or "") not in excluded
+                and row.get("name")
+                and _numeric(row.get("win_rate")) is not None
+            )
+            audit["floor_is_not_a_tier"] = bool(
+                eligible > 0 and int(audit.get("tier0_count", 0)) >= eligible
+            )
     except Exception as exc:  # observability must never break selection
         audit["error"] = f"{type(exc).__name__}:{str(exc)[:120]}"
     return audit
