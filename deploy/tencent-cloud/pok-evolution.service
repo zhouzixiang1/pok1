@@ -102,7 +102,14 @@ ExecStartPre=/home/ubuntu/pok1/.venv/bin/python scripts/check_stage_contract_pre
 # pokctl/nohup launches outside systemd, not to this unit.
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=120
+# P6->P7 (2026-11-03, block-44): 120 still raced the app's own 120s LLM
+# drain — measured 01:52:19 SIGKILL exactly 120.0s after 01:50:19 SIGTERM
+# while 1302-storm role streams were finalizing (Result=timeout,
+# ExecMainStatus=9; checkpoint rev5 clean, deck verified 0 so zero match
+# loss, but the stop was not graceful). 180 = 120 drain + 60 exit/reap
+# margin. Deck-silent verification BEFORE every stop remains mandatory —
+# this knob protects shutdown hygiene, not mid-match bytes.
+TimeoutStopSec=180
 
 # Restart=always (2026-10-18 robustness): the control plane must never stay
 # down. on-failure missed clean-exit hangs (a bug path exiting 0 left the
