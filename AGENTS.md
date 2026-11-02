@@ -1522,9 +1522,18 @@ reproduces the same deterministic rejection. The repair prompt renders
 those pin/budget/sample hints (a
 missing renderer branch left 85 generations blind). The shared
 cross-generation direction ledger lives in
-`recent_directions.py` (rendered advisory into master_context, and the plan
-audit overrides `direction_novelty` to "repetitive" when the selected symbol
-appears in >= 2 of the last 6 attempts). Saturator packets persist 1-3
+`recent_directions.py` (rendered advisory into master_context; the plan
+audit overrides `direction_novelty` to "repetitive" when the selected
+symbol's OUTCOME-weighted count is >= 2 — native-gate deaths only, a
+publication acquits, plan-stage deaths are noise — and since block-44 the
+override is symmetric: an LLM "repetitive" resting on RAW row appearances
+with outcome-count <2 and no other blocking finding is ACQUMITTED back to
+"incremental" with a durable
+`pipeline.master_plan_audit_direction_acquitted` event. The audit PROMPT
+renders the same authoritative outcome counts (`OUTCOME-WEIGHTED COUNTS`
+line) so both layers grade one quantity — the v658 fork (raw-2 via a
+publication vs outcome-0 killing a just-succeeded direction) is closed on
+both sides; see FIXES 2026-11-03). Saturator packets persist 1-3
 hypothesized `change_symbol` contracts (plus an abandon-attribution job when
 a ledger receipt exists) into `match_analysis`; Master must pick or
 explicitly reject each listed symbol, but those rows are **not**
