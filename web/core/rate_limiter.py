@@ -240,6 +240,100 @@ class RateLimiter:
                 return ""
             return datetime.fromtimestamp(self._reset_time).strftime("%Y-%m-%d %H:%M:%S")
 
+    def _probe_allowed(self, wait: float) -> bool:
+        """Throttle gate for ONE attempt across every quota wait path.
+
+        The stamp is instance-level (block-39 queue #3): concurrent waiters
+        AND the durable-pause loop share one cadence, so the "not accepted"
+        journal lines count provider attempts, not waiters.
+        """
+        if not _quota_probe_enabled() or wait <= 60.0:
+            return False
+        now = time.time()
+        with self._lock:
+            if now - self._last_probe >= _quota_probe_interval_sec():
+                self._last_probe = now
+                return True
+        return False
+
+    async def maybe_probe_ahead(self, wait: float):
+        """Probe the provider once ahead of a declared reset, if due.
+
+        Returns the probe result dict when an attempt was made (accepted or
+        rejected), or None when NO attempt fired. NEVER clears the local
+        block itself — the accepted path goes through
+        ``llm_availability_store.resume_quota_pause_on_probe_success``,
+        whose provider-authority reload drops the durable pause AND (via
+        crash-recovered state) keeps both wait paths honest. A rejected or
+        errored probe is "still blocked": nothing re-arms, nothing extends.
+
+        Wired into BOTH wait paths (block-39 analyst #1 finding): the
+        rate_limiter block wait (``wait_until_reset``) and the durable-pause
+        cooldown loop (``_honor_active_llm_pause``). The 04:34→04:58 episode
+        proved the pause path resumes strictly ON the declared reset because
+        nothing ever probed it: 1410s of sleep, 0 probe lines, and the
+        first-accepted-request evidence went unclaimed.
+        """
+        if not self._probe_allowed(wait):
+            return None
+        try:
+            probe = await _probe_provider_quota_available()
+        except Exception:
+            probe = None
+        if probe is not None and probe.get("ok") is not True:
+            # Block-38 queue #5: attempts used to be uncountable —
+            # hit-rate could not be computed because successes had no
+            # durable row AND failures printed nothing. A rejected/
+            # errored probe is "still blocked", never re-arming.
+            log.info(
+                "Quota probe not accepted (status %s, %.1fs); staying"
+                " blocked %.0fs ahead of the declared reset.",
+                probe.get("http_status"),
+                float(probe.get("elapsed_sec") or 0.0),
+                wait,
+            )
+        elif probe is not None and probe.get("ok") is True:
+            log.info(
+                "Quota probe succeeded (HTTP %s, %.1fs) %.0fs ahead of the"
+                " declared reset — resuming early.",
+                probe.get("http_status"),
+                float(probe.get("elapsed_sec") or 0.0),
+                wait,
+            )
+            try:
+                # 2026-11-02 (block-38 queue #1): this used to import
+                # log_system_event from evolution_infra, where it does
+                # NOT exist at module scope (only function-local
+                # imports) — the ImportError was swallowed by the
+                # except-pass below, so every probe success wrote 0
+                # durable events (3 journal lines vs 0 rows in
+                # events.jsonl + 19k archived lines). system_log is the
+                # canonical 86-call-site path; signature compatible.
+                from system_log import log_system_event
+
+                log_system_event(
+                    "pipeline.llm_quota_probe_resumed",
+                    "success",
+                    "Provider accepted a quota probe before the declared"
+                    " reset; resuming early.",
+                    {
+                        "http_status": probe.get("http_status"),
+                        "elapsed_sec": probe.get("elapsed_sec"),
+                        "seconds_ahead_of_reset": round(wait),
+                    },
+                )
+            except Exception as exc:
+                log.warning("probe-resume event emission failed: %s", exc)
+            try:
+                import llm_availability_store
+
+                llm_availability_store.resume_quota_pause_on_probe_success(
+                    probe
+                )
+            except Exception as exc:
+                log.warning("Probe-resume of the durable pause failed: %s", exc)
+        return probe
+
     async def wait_until_reset(self, shutdown_mgr=None):
         """Block until the quota resets. Checks shutdown_mgr every 30s.
 
@@ -256,83 +350,13 @@ class RateLimiter:
         # lag, making leads under ~15.8min probe-less BY CONSTRUCTION (ep3/5/
         # 16 had 0 attempts). wait > 60.0 still guards a useless last-minute
         # probe; the interval now only spaces REPEATED attempts.
-        # Block-39 queue #3: the stamp lives on the instance (self._last_probe,
-        # re-armed at the parse_429 episode transition), NOT in a local —
-        # concurrent waiters must share one throttle or the "not accepted"
-        # journal lines count waiters, not attempts (measured: 8 lines in 4s).
         while self.is_blocked():
             wait = self.wait_seconds()
             if wait <= 0:
                 break
-            should_probe = False
-            if _quota_probe_enabled() and wait > 60.0:
-                now = time.time()
-                with self._lock:
-                    if now - self._last_probe >= _quota_probe_interval_sec():
-                        self._last_probe = now
-                        should_probe = True
-            if should_probe:
-                try:
-                    probe = await _probe_provider_quota_available()
-                except Exception:
-                    probe = None
-                if probe is not None and probe.get("ok") is not True:
-                    # Block-38 queue #5: attempts used to be uncountable —
-                    # hit-rate could not be computed because successes had no
-                    # durable row AND failures printed nothing. A rejected/
-                    # errored probe is "still blocked", never re-arming.
-                    log.info(
-                        "Quota probe not accepted (status %s, %.1fs); staying"
-                        " blocked %.0fs ahead of the declared reset.",
-                        probe.get("http_status"),
-                        float(probe.get("elapsed_sec") or 0.0),
-                        wait,
-                    )
-                if probe is not None and probe.get("ok") is True:
-                    log.info(
-                        "Quota probe succeeded (HTTP %s, %.1fs) %.0fs ahead of the"
-                        " declared reset — resuming early.",
-                        probe.get("http_status"),
-                        float(probe.get("elapsed_sec") or 0.0),
-                        wait,
-                    )
-                    try:
-                        # 2026-11-02 (block-38 queue #1): this used to import
-                        # log_system_event from evolution_infra, where it does
-                        # NOT exist at module scope (only function-local
-                        # imports) — the ImportError was swallowed by the
-                        # except-pass below, so every probe success wrote 0
-                        # durable events (3 journal lines vs 0 rows in
-                        # events.jsonl + 19k archived lines). system_log is the
-                        # canonical 86-call-site path; signature compatible.
-                        from system_log import log_system_event
-
-                        log_system_event(
-                            "pipeline.llm_quota_probe_resumed",
-                            "success",
-                            "Provider accepted a quota probe before the declared"
-                            " reset; resuming early.",
-                            {
-                                "http_status": probe.get("http_status"),
-                                "elapsed_sec": probe.get("elapsed_sec"),
-                                "seconds_ahead_of_reset": round(wait),
-                            },
-                        )
-                    except Exception as exc:
-                        log.warning(
-                            "probe-resume event emission failed: %s", exc
-                        )
-                    try:
-                        import llm_availability_store
-
-                        llm_availability_store.resume_quota_pause_on_probe_success(
-                            probe
-                        )
-                    except Exception as exc:
-                        log.warning(
-                            "Probe-resume of the durable pause failed: %s", exc
-                        )
-                    break
+            probe = await self.maybe_probe_ahead(wait)
+            if probe is not None and probe.get("ok") is True:
+                break
             # Sleep in chunks so we can check shutdown
             chunk = min(wait, _SHUTDOWN_CHECK_INTERVAL)
             log.info("Rate-limited: waiting %.0fs (reset at %s)", wait, self.reset_time_str())

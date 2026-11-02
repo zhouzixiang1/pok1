@@ -57,7 +57,7 @@ import json
 import time
 
 import orchestrator as _o
-from llm_availability import LLMAvailabilityBlocked
+from llm_availability import QUOTA_429, LLMAvailabilityBlocked
 from llm_availability_store import (
     LLMAvailabilityPauseError,
     active_llm_pause,
@@ -320,6 +320,31 @@ async def _honor_active_llm_pause(ui=None, shutdown_mgr=None, *, max_wait_sec=No
             return False
 
         wait = max(0.0, float(wait))
+        # Block-39 structural gap: this loop slept the WHOLE projected wait
+        # (measured: 1410s, 0 probe lines) and resumed strictly on the
+        # declared reset, while the provider window may have re-opened
+        # earlier — the accepted-request evidence simply went unclaimed,
+        # because only wait_until_reset ever probed. A trusted quota pause
+        # now probes through the SAME shared throttle
+        # (rate_limiter.maybe_probe_ahead: one attempt per episode-entry +
+        # per POK_QUOTA_PROBE_INTERVAL_SEC across BOTH wait paths). A probe
+        # accepted there resumes the durable pause through the store's own
+        # provider authority (resume_quota_pause_on_probe_success), so the
+        # immediate re-query below sees None and returns True without
+        # sleeping the rest of the wait. Non-quota categories never probe:
+        # 1302 cooldowns are seconds-to-minutes and probing would only burn
+        # the shared stamp. Fail-open: observability must never break the
+        # pause wait; probe errors mean "still blocked", nothing re-armed.
+        if wait > 60.0 and category == QUOTA_429:
+            try:
+                from rate_limiter import rate_limiter as _rl
+
+                await _rl.maybe_probe_ahead(wait)
+            except Exception as exc:
+                _o.log.debug("durable-pause probe skipped: %s", exc)
+            state = active_llm_pause()
+            if state is None:
+                return True
         if wait > 0 and not announced_cooldown:
             announced_cooldown = True
             msg = (

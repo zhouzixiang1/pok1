@@ -147,6 +147,105 @@ def test_cooldown_clears_after_one_window(monkeypatch):
     assert calls["n"] == 2  # initial read + one re-query
 
 
+def test_quota_pause_probes_and_resumes_early(monkeypatch):
+    """Block-39 structural gap: the durable-pause path must probe at all.
+
+    Measured production shape (04:34->04:58): a 1410s quota cooldown slept
+    the WHOLE wait with 0 probe lines because only wait_until_reset probed.
+    Now a trusted quota pause routes through the shared probe step, and an
+    accepted probe resumes the pause through the store authority — the loop
+    re-queries immediately instead of sleeping out the remaining wait.
+    """
+    import rate_limiter as rl_mod
+
+    probes = {"n": 0}
+    reads = {"n": 0}
+
+    def fake_pause():
+        reads["n"] += 1
+        if reads["n"] == 1:
+            # Quota pause with a long declared-reset wait (the 04:34 shape).
+            return _pause_state(category="quota_429", resume_in=1410.0)
+        # The accepted probe resumed the durable pause through the store.
+        return None
+
+    async def fake_probe(self, wait):
+        probes["n"] += 1
+        assert wait > 60.0
+        return {"ok": True, "http_status": 200, "elapsed_sec": 1.0}
+
+    monkeypatch.setattr(pac, "active_llm_pause", fake_pause)
+    monkeypatch.setattr(pac, "pause_wait_seconds", lambda state, **k: 1410.0)
+    monkeypatch.setattr(rl_mod.RateLimiter, "maybe_probe_ahead", fake_probe)
+    assert asyncio.run(pac._honor_active_llm_pause(None, None)) is True
+    assert probes["n"] == 1  # exactly one shared-throttle attempt
+    assert reads["n"] == 2  # probe then immediate re-query, no 1410s sleep
+
+
+def test_service_unavailable_pause_never_probes(monkeypatch):
+    """1302/bare-429 cooldowns are seconds-to-minutes; probing the QUOTA
+    window authority for them would only burn the shared stamp."""
+    import rate_limiter as rl_mod
+
+    probes = {"n": 0}
+
+    async def fake_probe(self, wait):
+        probes["n"] += 1
+        return {"ok": False, "http_status": 429, "elapsed_sec": 0.1}
+
+    def fake_pause():
+        return _pause_state(category="service_unavailable", resume_in=120.0)
+
+    monkeypatch.setattr(pac, "active_llm_pause", fake_pause)
+    monkeypatch.setattr(pac, "pause_wait_seconds", lambda state, **k: 120.0)
+    monkeypatch.setattr(rl_mod.RateLimiter, "maybe_probe_ahead", fake_probe)
+    loop = asyncio.new_event_loop()
+
+    async def _run_bounded():
+        task = loop.create_task(pac._honor_active_llm_pause(None, None, max_wait_sec=0.5))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return "cancelled"
+        return "done"
+
+    loop.run_until_complete(_run_bounded())
+    loop.close()
+    assert probes["n"] == 0  # non-quota categories stay probe-free
+
+
+def test_quota_probe_failure_still_sleeps_the_wait(monkeypatch):
+    """Rejected probe = 'still blocked': the pause loop keeps honoring the
+    declared reset, never an early resume (block-38 never-re-arm rule)."""
+    import rate_limiter as rl_mod
+
+    reads = {"n": 0}
+
+    def fake_pause():
+        reads["n"] += 1
+        return _pause_state(category="quota_429", resume_in=3600.0)
+
+    async def fake_probe(self, wait):
+        return {"ok": False, "http_status": 429, "elapsed_sec": 0.5}
+
+    monkeypatch.setattr(pac, "active_llm_pause", fake_pause)
+    monkeypatch.setattr(pac, "pause_wait_seconds", lambda state, **k: 3600.0)
+    monkeypatch.setattr(rl_mod.RateLimiter, "maybe_probe_ahead", fake_probe)
+    loop = asyncio.new_event_loop()
+
+    async def _run_bounded():
+        # max_wait 0.5s: the wedged-store guard path returns after the probe
+        # failed and the wait stayed — proving the loop did NOT exit early.
+        return await pac._honor_active_llm_pause(None, None, max_wait_sec=0.4)
+
+    result = loop.run_until_complete(_run_bounded())
+    loop.close()
+    assert result is False  # still paused; no false early resume
+    assert reads["n"] >= 2  # one pre-probe read + post-probe re-query
+
+
 def test_shutdown_during_cooldown_stops(monkeypatch):
     monkeypatch.setattr(pac, "active_llm_pause", lambda: _pause_state())
     monkeypatch.setattr(pac, "pause_wait_seconds", lambda state, **k: 30.0)

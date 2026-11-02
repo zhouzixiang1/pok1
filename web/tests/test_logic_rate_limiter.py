@@ -291,7 +291,10 @@ class TestQuotaProbeResume:
 
         import rate_limiter
 
-        src = inspect.getsource(rate_limiter.RateLimiter.wait_until_reset)
+        # Block-39: the probe step moved into the shared maybe_probe_ahead so
+        # BOTH wait paths (rate_limiter block + durable pause) fire through
+        # it. The dead-import regression guard follows the code.
+        src = inspect.getsource(rate_limiter.RateLimiter.maybe_probe_ahead)
         assert "from system_log import log_system_event" in src
         assert "from evolution_infra import log_system_event" not in src
 
@@ -392,8 +395,21 @@ class TestQuotaProbeResume:
 
         import rate_limiter
 
-        src = inspect.getsource(rate_limiter.RateLimiter.wait_until_reset)
-        assert "last_probe = 0.0" not in src, "per-waiter local stamp is back"
-        assert "self._last_probe" in src
+        gate = inspect.getsource(rate_limiter.RateLimiter._probe_allowed)
+        assert "last_probe = 0.0" not in gate, "per-waiter local stamp is back"
+        assert "self._last_probe" in gate
         init = inspect.getsource(rate_limiter.RateLimiter.__init__)
         assert "_last_probe" in init
+        # Structural invariant (block-39): BOTH quota wait paths probe
+        # through the one shared step. If either path drops the call, the
+        # durable-pause episode (1410s, 0 probes measured) silently returns.
+        assert (
+            "maybe_probe_ahead"
+            in inspect.getsource(rate_limiter.RateLimiter.wait_until_reset)
+        )
+        import orchestrator_abandon_and_cost as pac
+
+        assert (
+            "maybe_probe_ahead"
+            in inspect.getsource(pac._honor_active_llm_pause)
+        )
