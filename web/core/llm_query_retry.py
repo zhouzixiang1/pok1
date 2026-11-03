@@ -59,6 +59,12 @@ from llm_availability import LLMAvailabilityBlocked, LLMAvailabilityTrace
 # claude_agent_sdk message types, so no circular dependency with llm_query.
 import llm_query_codex as _cx
 
+# ZCode app-server transport adapter (POK_LLM_TRANSPORT=zcode).  Same shape and
+# same no-circular-dependency rule as the codex adapter: a third value of the
+# SAME selector key, so switching is one env var and the codex path remains the
+# instant rollback.
+import llm_query_zcode as _zc
+
 # NOTE: ``llm_query`` imports this module at its own top level.  To avoid a
 # circular import we do NOT ``import llm_query`` at module scope.  Each
 # function that needs to read a monkeypatchable parent symbol (claude_query,
@@ -1107,13 +1113,21 @@ async def _run_stream_with_signature_retry_attempts(
         # adapter spawns a one-shot ``codex exec`` process and yields the same
         # SDK message objects, so everything below (semaphore acquisition,
         # _process_stream, billing, metrics, cleanup) is shared verbatim.
+        # The zcode adapter drives one local ZCode app-server session and
+        # yields the same message objects; it streams part.delta events, so
+        # TTFT/stall policy keeps working.
         # The claude branch is byte-identical to the pre-codex path.
         # P7-1: the codex branch receives the dispatch-declared write scope so
         # build_argv can select workspace-write + writable_roots (the claude
         # branch enforces the same scope through its options.hooks guards).
         _codex_transport = _cx.codex_transport_enabled()
+        _zcode_transport = _zc.zcode_transport_enabled()
         if _codex_transport:
             owned_transport = _cx.new_codex_exec_transport(
+                full_prompt, options, allowed_write_dir
+            )
+        elif _zcode_transport:
+            owned_transport = _zc.new_zcode_transport(
                 full_prompt, options, allowed_write_dir
             )
         else:
@@ -1123,6 +1137,12 @@ async def _run_stream_with_signature_retry_attempts(
         try:
             if _codex_transport:
                 query_gen = _cx.codex_query(
+                    prompt=full_prompt,
+                    options=options,
+                    transport=owned_transport,
+                )
+            elif _zcode_transport:
+                query_gen = _zc.zcode_query(
                     prompt=full_prompt,
                     options=options,
                     transport=owned_transport,
