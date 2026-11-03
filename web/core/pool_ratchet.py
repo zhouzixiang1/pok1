@@ -419,7 +419,23 @@ def pool_weakest_audit(rows, exclude_names=None) -> dict:
       field measured the pool, not the nomination; block-32 finding);
     - ``runner_up`` / ``runner_up_wr`` / ``runner_up_lb``: the second-weakest
       tier-0 member, so churn detection (>= 2 different nominees in 6
-      consecutive plans) needs no extra query.
+      consecutive plans) needs no extra query;
+    - block-39 FLAG-AND-BAND additions (520c748f): ``runner_up_games`` plus
+      ``margin_point_wr`` / ``margin_granularity_band`` (1/g_nominee +
+      1/g_runner — one-match combined granularity) / ``margin_outside_band``
+      (the AND-leg of the rollback criterion: a TRUE flag INSIDE the band is
+      single-game noise, both durable production TRUEs were) and
+      ``floor_is_not_a_tier`` (tier0_count >= eligible rows = knob inert,
+      e.g. floor 150 vs a pool whose minimum sat above it).
+
+    Replay discipline (block-42/44 lesson, twice tripped): an OFFLINE
+    recompute of this audit MUST load POK_POOL_WEAKEST_MIN_GAMES from
+    deploy/tencent-cloud/env.runtime (production value 150 today; the code
+    default 600 grades a different pool — tier0 15/15 live vs 8/15 at the
+    default was measured on the same snapshot) AND run from the runtime
+    repo root with the runtime module identity; a replay without both prints
+    plausible but different numbers (and from web/core an EMPTY pool reads
+    as tier0_count 0 rather than erroring).
 
     Fail-open: any error yields the floor + an ``error`` key; the selection
     itself is unchanged by this function and must never depend on it.
