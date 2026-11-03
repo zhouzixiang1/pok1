@@ -541,6 +541,44 @@ class ZCodeEventTranslator:
             )
         ]
 
+#: Env var names the CLI reads for provider config discovery.
+_BUILTIN_CONFIG_ENV = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"
+_BUILTIN_BUNDLED_CONFIG_ENV = "ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE"
+_PERSONAL_CONFIG_ENV = "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"
+
+
+def _resolve_active_builtin_config(base_dir: str) -> str | None:
+    """Newest ``.../provider/<platform>/<version>/endpoint-*/zcode-builtin.json``.
+
+    The CLI stores one built-in provider snapshot per (platform, app version,
+    endpoint) with no machine-readable "current" pointer, so the newest file
+    wins. Absent candidates return ``None`` and the child keeps the CLI's own
+    resolution (which is what fails under systemd).
+    """
+
+    root = os.path.join(base_dir, ".zcode", "v2", "runtime", "provider")
+    if not os.path.isdir(root):
+        return None
+    best = None
+    best_mtime = -1.0
+    for platform_entry in os.scandir(root):
+        if not platform_entry.is_dir():
+            continue
+        for version_entry in os.scandir(platform_entry.path):
+            if not version_entry.is_dir():
+                continue
+            for endpoint_entry in os.scandir(version_entry.path):
+                if not endpoint_entry.is_dir():
+                    continue
+                candidate = os.path.join(endpoint_entry.path, "zcode-builtin.json")
+                if not os.path.isfile(candidate):
+                    continue
+                mtime = os.path.getmtime(candidate)
+                if mtime > best_mtime:
+                    best, best_mtime = candidate, mtime
+    return best
+
+
 class ZCodeTransport:
     """One ``zcode -p`` process, owned by one provider attempt.
 
@@ -665,6 +703,40 @@ class ZCodeTransport:
         self._prompt_file = path
         return path
 
+    def build_env(self) -> dict:
+        """Environment for the CLI child.
+
+        Two provider-config paths MUST be explicit. The CLI resolves the
+        built-in provider config from its own entrypoint path plus
+        ``ZCODE_DATA_BASE_DIR``; under the systemd service that resolution
+        lands on ``.../runtime/provider/zcode-builtin.json`` (absent) and
+        ``$HOME/config/provider/zcode-builtin.json`` (absent), so the run
+        fails with "无法定位 CLI ZCode Built-in Provider Config" before any
+        provider call. An interactive shell does not hit this because its env
+        differs. Passing the two absolute paths is exactly what
+        ``prepareCliProviderRuntimeEnv`` would have produced.
+
+        ``ZCODE_DATA_BASE_DIR`` is pinned to the same home so the credential
+        store resolves to the same ``.zcode/v2/credentials.json`` the operator
+        logged into.
+        """
+
+        env = dict(os.environ)
+        base = env.get("ZCODE_DATA_BASE_DIR") or os.path.expanduser("~")
+        env.setdefault("ZCODE_DATA_BASE_DIR", base)
+        if not env.get(_BUILTIN_CONFIG_ENV):
+            builtin = _resolve_active_builtin_config(base)
+            if builtin:
+                env[_BUILTIN_CONFIG_ENV] = builtin
+                env[_BUILTIN_BUNDLED_CONFIG_ENV] = builtin
+        elif not env.get(_BUILTIN_BUNDLED_CONFIG_ENV):
+            env[_BUILTIN_BUNDLED_CONFIG_ENV] = env[_BUILTIN_CONFIG_ENV]
+        if not env.get(_PERSONAL_CONFIG_ENV):
+            personal = os.path.join(base, ".zcode", "v2", "provider_config.json")
+            if os.path.isfile(personal):
+                env[_PERSONAL_CONFIG_ENV] = personal
+        return env
+
     async def spawn(self):
         if not self._prompt_file:
             self._write_prompt_file()
@@ -677,6 +749,7 @@ class ZCodeTransport:
             limit=_STREAM_LINE_LIMIT,
             start_new_session=True,
             cwd=self._workspace_cwd(),
+            env=self.build_env(),
         )
         return self._process
 
