@@ -289,31 +289,28 @@ def test_non_success_result_type_is_an_error():
     assert result.subtype == "error_max_budget"
 
 
-def test_zcode_query_raises_claudesdkerror_with_provider_text(monkeypatch):
+def test_zcode_query_raises_claudesdkerror_with_provider_text():
     """The retry loop must see ClaudeSDKError whose text keeps the 1308 body."""
 
     class _FakeTransport:
-        _stderr_note = staticmethod(lambda: "")
-        _session_id = "sess_x"
+        native_streaming = False
+
+        def stderr_note(self):
+            return ""
 
         async def spawn(self):
             return None
 
-        async def start_session(self):
-            return "sess_x"
-
-        async def send_prompt(self):
-            return None
-
-        async def next_event(self):
-            return (
-                "event",
-                {
-                    "type": "turn.failed",
-                    "error": {"message": "[1308][已达到 5 小时的使用上限。]",
-                              "code": "1308"},
+        async def communicate(self):
+            payload = {
+                "usage": {},
+                "error": {
+                    "code": "1308",
+                    "message": "[1308][已达到 5 小时的使用上限。您的限额将在 "
+                               "2026-11-03 21:00:33 重置。]",
                 },
-            )
+            }
+            return (json.dumps(payload).encode(), [])
 
         async def close(self):
             return True
@@ -327,6 +324,28 @@ def test_zcode_query_raises_claudesdkerror_with_provider_text(monkeypatch):
 
     text = asyncio.run(_run())
     assert "1308" in text
+
+
+def test_provider_error_classification_is_reachable_from_adapter_text():
+    """A 1302/1308 body surfaced by the adapter must classify as on the
+    claude/codex paths: 1302 -> service_unavailable (short backoff),
+    1308 -> quota_429 with provider_timestamp authority."""
+
+    from llm_availability import classify_llm_availability
+
+    e1302 = ClaudeSDKError(
+        "zcode run failed | stderr: code: '1302', message: "
+        "'[1302][您的账户已达到速率限制，请您控制请求频率]' responseStatus: 429"
+    )
+    issue = classify_llm_availability(exception=e1302)
+    assert issue is not None and issue.category == "service_unavailable"
+
+    e1308 = ClaudeSDKError(
+        "[1308][已达到 5 小时的使用上限。您的限额将在 2026-11-04 01:00:00 重置。]"
+    )
+    issue8 = classify_llm_availability(exception=e1308)
+    assert issue8 is not None and issue8.category == "quota_429"
+    assert issue8.quota_reset_authority == "provider_timestamp"
 
 
 # ---------------------------------------------------------------------------
@@ -376,64 +395,84 @@ def test_default_preferences_are_least_capability(monkeypatch):
     assert prefs["modelContextBudgetStrategy"] == "preflight-v1"
 
 
-def test_reverse_rpc_requests_are_answered():
-    """session/create hangs (then fails) unless both reverse RPCs are answered."""
+def test_prompt_is_materialized_as_a_private_file():
+    """The prompt must ride in a 0600 file for --attach, never in argv."""
 
-    sent = []
+    import stat as stat_mod
+    import tempfile as tempfile_mod
 
-    class _Transport(zc.ZCodeTransport):
-        def __init__(self):
-            pass
-
-        async def _send(self, obj):
-            sent.append(obj)
-
-    transport = _Transport()
-    asyncio.run(
-        transport._answer_reverse_request(
-            "srv-1", "session/requestRuntimePreferences", {"sessionId": "s"}
-        )
-    )
-    asyncio.run(
-        transport._answer_reverse_request(
-            "srv-2", "interaction/requestOfficialMcpAuthHeaders", {}
-        )
-    )
-    assert sent[0]["id"] == "srv-1" and "result" in sent[0]
-    assert "nativeSearchEnhancementsEnabled" in sent[0]["result"]
-    assert sent[1]["id"] == "srv-2" and "result" in sent[1]
-    # unknown reverse requests must be refused, never silently accepted
-    asyncio.run(transport._answer_reverse_request("srv-3", "x/unknown", {}))
-    assert sent[2]["error"]["code"] == -32601
+    transport = zc.ZCodeTransport("secret prompt body", None)
+    try:
+        path = transport._write_prompt_file()
+        assert os.path.isfile(path)
+        mode = stat_mod.S_IMODE(os.stat(path).st_mode)
+        assert mode == 0o600, oct(mode)
+        with open(path, encoding="utf-8") as handle:
+            assert handle.read() == "secret prompt body"
+        argv = transport.build_argv("/usr/bin/zcode")
+        assert path in argv
+        assert "secret prompt body" not in " ".join(argv)
+    finally:
+        transport._cleanup_prompt_file()
+    assert not os.path.exists(path)
+    # the per-attempt directory is removed with the file
+    assert not os.path.isdir(os.path.dirname(path))
 
 
-def test_model_selection_defaults_to_requested_account_and_model(monkeypatch):
-    for key in (zc.ZCODE_PROVIDER_ENV, zc.ZCODE_MODEL_ENV, zc.ZCODE_THOUGHT_ENV):
-        monkeypatch.delenv(key, raising=False)
-    transport = zc.ZCodeTransport.__new__(zc.ZCodeTransport)
-    selection = transport.model_selection()
-    assert selection == {
-        "providerId": "account:bigmodel-individual-coding-plan",
-        "modelId": "GLM-5.3-Flash",
-    }
-    monkeypatch.setenv(zc.ZCODE_THOUGHT_ENV, "max")
-    assert transport.model_selection()["options"] == {"reasoningLevel": "max"}
+def test_argv_never_carries_the_prompt():
+    """Regression guard: production prompts exceed the 128 KB argv cap.
 
-
-def test_prompt_goes_through_the_rpc_body_not_argv():
-    """Regression guard: a production prompt exceeds the 128 KB argv cap.
-
-    ``-p <prompt>`` dies with ``Argument list too long`` and ``-p -`` does not
-    read stdin, so the adapter MUST carry the prompt inside the session/send
-    JSON body.  This test fails if anyone "simplifies" it back to argv.
+    A 200 KB prompt dies at the kernel with `Argument list too long`, and
+    `-p -` does not read stdin, so the adapter MUST pass the prompt through
+    `--attach <file>` and keep argv short and fixed. This fails if anyone
+    "simplifies" it back to an inline argument.
     """
 
     import inspect
 
-    source = inspect.getsource(zc.ZCodeTransport.send_prompt)
-    assert '"content": self._prompt' in source
-    assert "session/send" in source
-    # argv is only ever the launcher + subcommand
+    big = "X" * 200000
+    transport = zc.ZCodeTransport(big, None)
+    try:
+        transport._write_prompt_file()
+        argv = transport.build_argv("/usr/bin/zcode")
+        joined = " ".join(argv)
+        assert "-p" in argv and "--attach" in argv
+        assert transport._prompt_file in argv
+        assert big not in joined
+        assert len(joined) < 4096, len(joined)
+        assert zc._PROMPT_INSTRUCTION in argv
+    finally:
+        transport._cleanup_prompt_file()
     spawn_source = inspect.getsource(zc.ZCodeTransport.spawn)
-    assert '"app-server"' in spawn_source and '"--stdio"' in spawn_source
-    assert "_prompt" not in spawn_source
+    assert "_prompt_file" in spawn_source
+    assert "build_argv" in spawn_source
+
+
+def test_json_extraction_ignores_leading_noise_and_trailing_dumps():
+    """The CLI prints warnings/diagnostics around the result object."""
+
+    payload = {"response": "OK", "usage": {"inputTokens": 10, "outputTokens": 2}}
+    text = (
+        "(node:1) ExperimentalWarning: SQLite is an experimental feature\n"
+        "Error: something noisy {not json}\n"
+        + json.dumps(payload)
+        + "\ntrailing diagnostic {'code': '1302'}\n"
+    )
+    found = zc._extract_json_object(text)
+    assert found is not None and found.get("response") == "OK"
+
+
+def test_usage_mapping_reads_cli_keys():
+    usage = zc._usage_from_cli(
+        {"usage": {"inputTokens": 1000, "outputTokens": 20,
+                   "cacheReadTokens": 800, "cacheWriteTokens": 50,
+                   "reasoningTokens": 7}}
+    )
+    assert usage["input_tokens"] == 1000
+    assert usage["cache_read_input_tokens"] == 800
+    assert usage["cache_creation_input_tokens"] == 50
+    assert usage["reasoningTokens"] == 7
+    assert usage["cache_read_input_tokens"] / usage["input_tokens"] == pytest.approx(0.8)
+
+
+# ---------------------------------------------------------------------------

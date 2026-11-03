@@ -83,6 +83,7 @@ import json
 import os
 import shutil
 import signal
+import tempfile
 
 try:
     from claude_agent_sdk import (
@@ -158,6 +159,16 @@ _RPC_TIMEOUT_SEC = 120.0
 #: ``zcodeSessionRuntimePreferencesResultSchema``; defaults are the
 #: conservative (least-capability) values so an unconfigured deployment
 #: cannot silently enable memory, native search, or auto-resolution.
+#: Fixed, short instruction for every dispatch. ALL variable content rides in
+#: the ``--attach`` file, so this string never grows with the role prompt
+#: (the 128 KB per-argument kernel cap makes that a hard requirement).
+_PROMPT_INSTRUCTION = (
+    "The file attached to this message contains your complete task "
+    "instructions. Treat it as your prompt: follow it exactly, including any "
+    "output format it requires. Do not summarize the file; do the work it "
+    "describes and answer with the requested output only."
+)
+
 _DEFAULT_PREFS = {
     "nativeSearchEnhancementsEnabled": False,
     "toolSearchMode": "off",
@@ -530,20 +541,50 @@ class ZCodeEventTranslator:
             )
         ]
 
-
 class ZCodeTransport:
-    """One app-server process + one session, owned by one provider attempt.
+    """One ``zcode -p`` process, owned by one provider attempt.
 
-    Duck-types the subprocess-CLI transport surface the provider-attempt
-    lifecycle relies on: ``_process`` (asyncio subprocess once spawned) and an
-    awaitable ``close()`` that terminates the process *group* and leaves
-    ``returncode`` set, so exit confirmation works unchanged.
+    Transport choice, and why it is the CLI and not the app-server:
 
-    Protocol handling is a single reader task: every server message is either a
-    notification (session events, forwarded to the caller's queue), a response
-    to one of our requests (resolved through ``_pending``), or a reverse
-    request (answered immediately; see ``_answer_reverse_request``).
+    - The app-server entry point builds its provider registry from
+      ``s2t(env)`` with **no** standalone context, so account providers
+      (``access.type == "zhipu-account"``) never appear in it. Its only
+      account-injection channel, ``provider/updateAccountConfig``, validates
+      ``access`` against the api-key shape and rejects ``accountType`` /
+      ``mode`` (measured: unrecognized_keys for both), so a zhipu-account
+      provider cannot be injected either. Consequence: every GLM id under
+      ``account:bigmodel-*`` is unreachable from the app-server.
+    - ``zcode -p`` goes through ``prepareCliProviderRuntimeEnv`` +
+      ``startProcessProviderRegistryRuntime(..., {standalone: ...})``, which
+      IS the path that reads the account credential store and marks the
+      provider ``entitled``. It resolves GLM correctly (measured:
+      response "account:bigmodel-individual-coding-plan/GLM-5.3").
+
+    The CLI has two constraints the adapter must absorb:
+
+    1. **argv size.** A single argv argument is capped at 128 KB by the
+       kernel, and production role prompts reach 276 KB. So the prompt is
+       never passed on the command line: the adapter writes it to a private
+       temp file and passes ``--attach <path>``, which the model receives as
+       file content. Measured lossless at 192 KB (a marker at the end of the
+       file came back verbatim) and at 3000 lines (line count answered
+       exactly).
+    2. **No streaming events.** ``-p --json`` emits ONE final object
+       (response + usage incl. cacheReadTokens/cacheWriteTokens + eventCount).
+       TTFT therefore cannot be measured on this transport and stall
+       detection degrades to the transport-level total timeout; the adapter
+       says so in ``transport_capabilities()`` instead of pretending.
+       ``llm_call_metrics`` still gets full input/output/cache counts, so the
+       cache-hit KPI is unaffected.
+
+    Duck-types the SDK subprocess transport surface the provider-attempt
+    lifecycle relies on: ``_process`` once spawned and an awaitable
+    ``close()`` that terminates the process *group* and proves exit via
+    ``returncode``.
     """
+
+    #: Documented capability differences, consumed by callers/logging.
+    native_streaming = False
 
     def __init__(self, full_prompt, options, allowed_write_dir=None):
         _require_sdk()
@@ -551,40 +592,43 @@ class ZCodeTransport:
         self._options = options
         self._allowed_write_dir = allowed_write_dir
         self._process = None
-        self._reader = None
-        self._pending = {}
-        self._queue = asyncio.Queue()
-        self._next_id = 0
-        self._session_id = None
-        self._reader_task = None
-        self._closed = False
+        self._prompt_file = None
         self._stderr_tail = []
+        self._result = None
+        self._closed = False
 
-    # -- process lifecycle ----------------------------------------------
+    # -- argv / process --------------------------------------------------
 
-    async def spawn(self):
-        binary = resolve_zcode_binary()
-        argv = [binary, "app-server", "--stdio"]
-        self._process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_STREAM_LINE_LIMIT,
-            start_new_session=True,
-            cwd=self._workspace_cwd(),
-        )
-        self._reader = _UnboundedLineReader(self._process.stdout)
-        self._reader_task = asyncio.create_task(self._read_loop())
-        return self._process
+    def build_argv(self, binary=None) -> list:
+        """``zcode -p <instruction> --attach <prompt-file> --json ...``.
+
+        The instruction stays short and fixed; all variable content travels
+        through the attachment so argv never approaches the 128 KB cap.
+        """
+
+        argv = [
+            binary or resolve_zcode_binary(),
+            "-p",
+            _PROMPT_INSTRUCTION,
+            "--attach",
+            self._prompt_file or "-",
+            "--json",
+            "--mode",
+            str(os.environ.get(ZCODE_MODE_ENV, "") or ZCODE_DEFAULT_MODE),
+            "--no-color",
+        ]
+        cwd = self._workspace_cwd()
+        if cwd:
+            argv += ["--cwd", cwd]
+        return argv
 
     def _workspace_cwd(self) -> str:
-        """Workspace root for the app-server process.
+        """Working directory for the CLI run.
 
-        ``session/create`` takes an explicit ``workspace``, so the process cwd
-        is only a default; a write-capable dispatch pins it to its primary
-        declared write root (the lease workspace) exactly like the codex
-        adapter does, so the repository tree never becomes the implicit root.
+        For a write-capable dispatch this is the primary declared write root
+        (the lease workspace), mirroring the codex adapter's cwd pin: the
+        repository tree never becomes the implicit workspace for untrusted
+        worker output. Read-only dispatches keep the project root.
         """
 
         scope = self._allowed_write_dir
@@ -603,194 +647,219 @@ class ZCodeTransport:
                 return parent
         return os.getcwd()
 
-    async def _read_loop(self):
+    def _write_prompt_file(self) -> str:
+        """Materialize the prompt as a private file for ``--attach``.
+
+        Created in a per-attempt directory under the system temp root with
+        mode 0600, and removed in ``close()``. The prompt is already
+        role-scoped content (it is what the claude path would pipe on stdin),
+        so persisting it for the duration of one attempt changes nothing about
+        what the model may see.
+        """
+
+        directory = tempfile.mkdtemp(prefix="pok-zcode-")
+        path = os.path.join(directory, "prompt.txt")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(self._prompt)
+        self._prompt_file = path
+        return path
+
+    async def spawn(self):
+        if not self._prompt_file:
+            self._write_prompt_file()
+        argv = self.build_argv()
+        self._process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=_STREAM_LINE_LIMIT,
+            start_new_session=True,
+            cwd=self._workspace_cwd(),
+        )
+        return self._process
+
+    # -- output ----------------------------------------------------------
+
+    async def communicate(self):
+        """Read the whole run; return (stdout bytes, stderr tail).
+
+        ``-p --json`` writes one JSON object at the end of the run, so a
+        full read is the correct shape (there is nothing to stream). stderr
+        is drained concurrently so a chatty provider cannot deadlock the pipe
+        and its tail is available for error classification.
+        """
+
+        process = self._process
+        if process is None:
+            raise ClaudeSDKError("zcode transport was not spawned")
         stderr_task = asyncio.create_task(self._drain_stderr())
+        stdout = b""
         try:
-            while True:
-                line = await self._reader.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", "replace").strip()
-                if not text:
-                    continue
-                try:
-                    message = json.loads(text)
-                except Exception:
-                    continue
-                if not isinstance(message, dict):
-                    continue
-                await self._dispatch(message)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # EOF mid-line or reader failure
-            await self._queue.put(("error", f"zcode reader failed: {exc}"))
+            if process.stdout is not None:
+                stdout = await process.stdout.read()
+            return_code = await process.wait()
         finally:
-            stderr_task.cancel()
             with contextlib.suppress(BaseException):
+                stderr_task.cancel()
                 await stderr_task
-            await self._queue.put(("eof", None))
+        self._returncode = return_code
+        return stdout, list(self._stderr_tail)
 
     async def _drain_stderr(self):
-        stream = self._process.stderr
+        stream = self._process.stderr if self._process is not None else None
         if stream is None:
             return
+        reader = _UnboundedLineReader(stream)
         while True:
-            line = await stream.readline()
+            line = await reader.readline()
             if not line:
                 return
             self._stderr_tail.append(line.decode("utf-8", "replace").rstrip())
             if len(self._stderr_tail) > 40:
                 self._stderr_tail.pop(0)
 
-    async def _dispatch(self, message):
-        method = message.get("method")
-        msg_id = message.get("id")
-        if method and msg_id is not None:
-            await self._answer_reverse_request(msg_id, str(method),
-                                               message.get("params") or {})
-            return
-        if msg_id is not None and ("result" in message or "error" in message):
-            future = self._pending.pop(str(msg_id), None)
-            if future is not None and not future.done():
-                future.set_result(message)
-            return
-        if method:
-            if method == "session/lifecycle/changed":
-                state = str((message.get("params") or {}).get("state") or "")
-                if state == "unloaded":
-                    err = (message.get("params") or {}).get("lastError")
-                    if isinstance(err, dict) and err.get("message"):
-                        await self._queue.put(("error", str(err.get("message"))))
-            if method.startswith("startup/") or method == "process/resourceSample":
-                return
-            if method.startswith("session/") or method.startswith("turn/"):
-                await self._queue.put(("event", message.get("params") or {}))
-            return
-
-    async def _answer_reverse_request(self, msg_id, method, params):
-        if method == "session/requestRuntimePreferences":
-            prefs = _prefs_from_env()
-            await self._send({"id": msg_id, "result": prefs})
-            return
-        if method == "interaction/requestOfficialMcpAuthHeaders":
-            # No official MCP server is attached to a dispatch; an empty header
-            # set is the honest answer.
-            await self._send({"id": msg_id, "result": {"headers": {}}})
-            return
-        await self._send(
-            {"id": msg_id, "error": {"code": -32601,
-                                    "message": f"client does not implement {method}"}}
-        )
-
-    async def _send(self, obj):
-        process = self._process
-        if process is None or process.stdin is None or self._closed:
-            return
-        process.stdin.write((json.dumps(obj, ensure_ascii=False) + "\n").encode())
-        with contextlib.suppress(Exception):
-            await process.stdin.drain()
-
-    async def request(self, method, params=None, timeout=_RPC_TIMEOUT_SEC):
-        self._next_id += 1
-        req_id = str(self._next_id)
-        future = asyncio.get_running_loop().create_future()
-        self._pending[req_id] = future
-        await self._send({"id": req_id, "method": method, "params": params or {}})
-        try:
-            message = await asyncio.wait_for(future, timeout)
-        except asyncio.TimeoutError:
-            self._pending.pop(req_id, None)
-            raise ClaudeSDKError(
-                f"zcode {method} timed out after {timeout:.0f}s"
-                + self._stderr_note()
-            )
-        if "error" in message:
-            err = message.get("error") or {}
-            raise ClaudeSDKError(
-                f"zcode {method} failed: {err.get('message') or err}"
-                + self._stderr_note()
-            )
-        return message.get("result") or {}
-
-    def _stderr_note(self) -> str:
+    def stderr_note(self) -> str:
         if not self._stderr_tail:
             return ""
-        return " | stderr: " + " / ".join(self._stderr_tail[-6:])
+        relevant = [
+            line
+            for line in self._stderr_tail
+            if any(
+                marker in line
+                for marker in ("1308", "1302", "429", "Error", "error", "限额", "上限")
+            )
+        ]
+        tail = relevant[-6:] if relevant else self._stderr_tail[-4:]
+        return " | stderr: " + " / ".join(tail)
 
-    # -- session driving -------------------------------------------------
-
-    def model_selection(self) -> dict:
-        provider = str(
-            os.environ.get(ZCODE_PROVIDER_ENV, "") or ZCODE_DEFAULT_PROVIDER
-        ).strip()
-        model = str(os.environ.get(ZCODE_MODEL_ENV, "") or ZCODE_DEFAULT_MODEL).strip()
-        selection = {"providerId": provider, "modelId": model}
-        level = str(os.environ.get(ZCODE_THOUGHT_ENV, "") or "").strip()
-        if level:
-            selection["options"] = {"reasoningLevel": level}
-        return selection
-
-    async def start_session(self):
-        workspace_path = os.path.abspath(self._workspace_cwd())
-        params = {
-            "workspace": {
-                "workspacePath": workspace_path,
-                "workspaceKey": workspace_path,
-            },
-            "mode": str(os.environ.get(ZCODE_MODE_ENV, "") or ZCODE_DEFAULT_MODE),
-            "model": self.model_selection(),
-        }
-        tools = getattr(self._options, "tools", None)
-        if isinstance(tools, list) and tools:
-            params["toolAllowlist"] = [str(t) for t in tools]
-        result = await self.request("session/create", params)
-        session_id = result.get("sessionId") if isinstance(result, dict) else None
-        if not session_id:
-            # The created-session notification carries the id when the reply is
-            # a bare ack.
-            session_id = self._session_id
-        if not session_id:
-            raise ClaudeSDKError("zcode session/create returned no sessionId")
-        self._session_id = str(session_id)
-        return self._session_id
-
-    async def send_prompt(self):
-        if not self._session_id:
-            await self.start_session()
-        await self.request(
-            "session/send",
-            {
-                "sessionId": self._session_id,
-                "content": self._prompt,
-                "modelSelection": self.model_selection(),
-            },
-        )
-
-    async def next_event(self):
-        kind, payload = await self._queue.get()
-        return kind, payload
+    # -- close -----------------------------------------------------------
 
     async def close(self):
-        """Terminate the owned process group and prove exit via returncode."""
+        """Terminate the owned process group, prove exit, drop the temp prompt."""
 
         self._closed = True
-        if self._reader_task is not None and not self._reader_task.done():
-            self._reader_task.cancel()
-            with contextlib.suppress(BaseException):
-                await self._reader_task
         process = self._process
-        if process is None or process.returncode is not None:
-            return True
-        _signal_process_group(process, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(process.wait(), timeout=_close_grace_sec())
-        except (asyncio.TimeoutError, TimeoutError):
-            _signal_process_group(process, signal.SIGKILL)
+        if process is not None and process.returncode is None:
+            _signal_process_group(process, signal.SIGTERM)
             try:
-                await asyncio.wait_for(process.wait(), timeout=5.0)
+                await asyncio.wait_for(process.wait(), timeout=_close_grace_sec())
             except (asyncio.TimeoutError, TimeoutError):
-                pass
+                _signal_process_group(process, signal.SIGKILL)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    pass
+        self._cleanup_prompt_file()
+        if process is None:
+            return True
         return process.returncode is not None
+
+    def _cleanup_prompt_file(self):
+        path = self._prompt_file
+        if not path:
+            return
+        self._prompt_file = None
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        with contextlib.suppress(OSError):
+            os.rmdir(os.path.dirname(path))
+
+
+def _extract_json_object(text: str):
+    """Pull the single ``-p --json`` result object out of stdout.
+
+    The CLI writes the result object last; anything before it is either the
+    node experimental-SQLite warning or a provider diagnostic dump. Scanning
+    brace-balanced candidates from the END keeps a provider error object (which
+    also appears on stdout in some failure modes) from being mistaken for the
+    result: the result always carries a ``usage`` or ``response`` key.
+    """
+
+    if not text:
+        return None
+    end = text.rfind("}")
+    while end >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(end, -1, -1):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "}":
+                depth += 1
+            elif char == "{":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[index : end + 1]
+                    try:
+                        parsed = json.loads(candidate)
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, dict) and (
+                        "usage" in parsed or "response" in parsed
+                    ):
+                        return parsed
+                    break
+        end = text.rfind("}", 0, end)
+    return None
+
+
+def _usage_from_cli(payload: dict) -> dict:
+    """Map the CLI usage block onto the SDK usage keys.
+
+    ``inputTokens`` is the FULL prompt and ``cacheReadTokens`` a subset of it,
+    which is exactly the caliber the cache-hit KPI uses (CR / input). Vendor
+    keys are preserved so a stored row is self-describing.
+    """
+
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    input_tokens = _int(usage.get("inputTokens"))
+    output_tokens = _int(usage.get("outputTokens"))
+    cache_read = _int(usage.get("cacheReadTokens"))
+    cache_write = _int(usage.get("cacheWriteTokens"))
+    mapped = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_write,
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "cacheReadTokens": cache_read,
+        "cacheWriteTokens": cache_write,
+        "reasoningTokens": _int(usage.get("reasoningTokens")),
+    }
+    return mapped
+
+
+def _result_message(payload: dict, model_label: str, session_id: str):
+    _require_sdk()
+    usage = _usage_from_cli(payload)
+    text = payload.get("response")
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    return ResultMessage(
+        subtype="success",
+        duration_ms=0,
+        duration_api_ms=0,
+        is_error=False,
+        num_turns=1,
+        session_id=str(payload.get("sessionId") or session_id or ""),
+        total_cost_usd=None,
+        usage=usage,
+        result=(text or None),
+        api_error_status=None,
+    )
 
 
 def new_zcode_transport(full_prompt, options, allowed_write_dir=None) -> ZCodeTransport:
@@ -800,54 +869,50 @@ def new_zcode_transport(full_prompt, options, allowed_write_dir=None) -> ZCodeTr
 
 
 async def zcode_query(prompt=None, *, options=None, transport=None):
-    """Async generator of SDK messages from one ZCode app-server session.
+    """Async generator of SDK messages from one ``zcode -p`` run.
 
-    Mirrors the ``claude_query`` / ``codex_query`` shape used at the retry-loop
-    dispatch point.  Provider failures raise ``ClaudeSDKError`` carrying the
-    raw provider body so the 1302/1308 classifier works unchanged.
+    Emits exactly one ``AssistantMessage`` carrying the whole answer and one
+    ``ResultMessage`` with the mapped usage, which is the same terminal shape
+    ``_process_stream`` accepts from the claude and codex paths. Provider
+    failures raise ``ClaudeSDKError`` whose text keeps the raw provider body
+    (including the GLM 1308/1302 envelope) so ``classify_llm_availability``
+    and the quota pause chain behave identically.
     """
 
     _require_sdk()
     if transport is None:
-        transport = new_zcode_transport(prompt or "", options)
+        transport = new_zcode_transport(prompt if prompt is not None else "", options)
     model_label = getattr(options, "model", None) or "zcode"
-    translator = ZCodeEventTranslator(model_label)
     try:
         await transport.spawn()
-        await transport.start_session()
-        translator.session_id = transport._session_id or ""
-        await transport.send_prompt()
-        while True:
-            kind, payload = await transport.next_event()
-            if kind == "eof":
-                break
-            if kind == "error":
-                raise ClaudeSDKError(
-                    f"zcode transport error: {payload}{transport._stderr_note()}"
-                )
-            if kind != "event":
-                continue
-            event_type = str((payload or {}).get("type") or "")
-            for message in translator.handle(payload):
-                yield message
-            if event_type in ("turn.completed", "turn.failed"):
-                break
-        if translator.fatal_error:
+        stdout, _ = await transport.communicate()
+        text = stdout.decode("utf-8", "replace") if stdout else ""
+        payload = _extract_json_object(text)
+        if payload is None:
             raise ClaudeSDKError(
-                f"zcode turn failed: {translator.fatal_error}"
-                f"{transport._stderr_note()}"
+                "zcode returned no parseable result object"
+                f"{transport.stderr_note()}"
             )
-        if not translator.saw_turn_completed:
-            if translator.text_so_far().strip():
-                for message in translator.result_messages():
-                    yield message
-            else:
-                raise ClaudeSDKError(
-                    "zcode session ended without a completed turn"
-                    f"{transport._stderr_note()}"
-                )
-        else:
-            for message in translator.result_messages():
-                yield message
+        # A provider error can still arrive as a well-formed object without a
+        # response. Treat it as a failure whenever the object carries an
+        # explicit error, or carries neither a response nor a NON-EMPTY usage
+        # block (an empty usage means the call never reached the model). The
+        # raw body is what the availability classifier needs.
+        error_block = payload.get("error")
+        has_response = "response" in payload
+        raw_usage = payload.get("usage")
+        has_usage = isinstance(raw_usage, dict) and bool(raw_usage)
+        if error_block is not None or not (has_response or has_usage):
+            raise ClaudeSDKError(
+                "zcode run produced no result: "
+                + json.dumps(payload, ensure_ascii=False)[:600]
+                + transport.stderr_note()
+            )
+        answer = payload.get("response")
+        if isinstance(answer, str) and answer.strip():
+            yield AssistantMessage(
+                content=[TextBlock(text=answer)], model=model_label
+            )
+        yield _result_message(payload, model_label, "")
     finally:
         await transport.close()
