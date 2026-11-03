@@ -126,6 +126,17 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     total_timeout = float(timeout_policy.get("total_timeout") or 0)
     first_activity_timeout = float(timeout_policy.get("first_activity_timeout") or 0)
     idle_timeout = float(timeout_policy.get("idle_timeout") or 0)
+    # Non-streaming transports (POK_LLM_TRANSPORT=zcode) deliver ONE message at
+    # the very end of the run, so no substantive activity exists until the whole
+    # turn completes. The first_activity gate is therefore structurally unable
+    # to observe progress and would kill every role that legitimately takes
+    # longer than its (per-role) first_activity budget — measured: a saturator
+    # packet died at 900.0s with "first_activity timeout" while the CLI was
+    # still working. For such transports the gate is folded into total_timeout,
+    # which is the only bound that can be judged without incremental events.
+    # Streaming transports (claude/codex) keep the exact historical policy.
+    if _zc.zcode_transport_enabled() and not _zc.ZCodeTransport.native_streaming:
+        first_activity_timeout = 0.0
     # B3: shorter stall ceiling once substantive output has started (tool/think
     # loop). 0 means "do not enforce a separate stall ceiling; use idle_timeout".
     stall_timeout = float(timeout_policy.get("stall_timeout") or 0)

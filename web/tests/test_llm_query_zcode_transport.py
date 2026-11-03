@@ -476,3 +476,33 @@ def test_usage_mapping_reads_cli_keys():
 
 
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 7. first-activity gate must not apply to a non-streaming transport
+# ---------------------------------------------------------------------------
+
+def test_non_streaming_transport_disables_first_activity_gate():
+    """Measured failure this prevents: a saturator packet died at 900.0s with
+    'first_activity timeout' while the zcode CLI was still working.
+
+    ``-p`` emits one message at the end, so no substantive activity can exist
+    before the turn completes; enforcing a first-activity budget there kills
+    legitimate long roles. The gate must fold into total_timeout instead.
+    Streaming transports keep the historical policy.
+    """
+
+    import inspect
+
+    import llm_query_retry as retry
+
+    source = inspect.getsource(retry._process_stream)
+    assert "zcode_transport_enabled()" in source
+    assert "native_streaming" in source
+    assert "first_activity_timeout = 0.0" in source
+    # the historical policy must still be the default for streaming paths
+    assert 'timeout_policy.get("first_activity_timeout")' in source
+
+
+def test_zcode_transport_declares_no_native_streaming():
+    assert zc.ZCodeTransport.native_streaming is False
