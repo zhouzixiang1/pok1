@@ -1772,6 +1772,21 @@ async def run_claude_query(
     if _sub_hooks:
         options_kwargs["hooks"] = _sub_hooks
     options = ClaudeAgentOptions(**options_kwargs)
+    # Scope carrier for the process-less HTTP transport (POK_LLM_UPSTREAM).
+    # That transport has no SDK hooks and no sandbox, so it executes tool calls
+    # itself and MUST know the exact authority it is allowed to exercise. The
+    # claude path enforces these through hooks and codex through bwrap; both
+    # read the same normalized scope, so attaching it here keeps one definition
+    # of "what this role may touch" across all three transports.
+    try:
+        options.read_scope = dict(read_scope)
+        options.write_scope = _normalize_allowed_write_scope(allowed_write_dir)
+        options.exact_bash_commands = tuple(exact_bash_commands or ())
+        options.role_name = role_name
+    except Exception:
+        # A transport that does not consume these fields must never be broken
+        # by their absence.
+        pass
 
     # P7-3 (2026-10-04): under the codex transport a write-capable role whose
     # declared write scope resolves to zero existing directory roots must fail

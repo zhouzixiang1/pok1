@@ -370,3 +370,242 @@ def test_primary_declares_degraded_tool_support(monkeypatch):
     assert cfg["tools_supported"] is False
     assert up.PrimaryHttpTransport.tools_supported is False
     assert up.PrimaryHttpTransport.native_streaming is False
+
+# ---------------------------------------------------------------------------
+# 7. scoped Read tool loop
+# ---------------------------------------------------------------------------
+
+class _ScopeOptions:
+    def __init__(self, tools=("Read",), dirs=("/tmp",)):
+        self.model = "q"
+        self.tools = list(tools)
+        self.read_scope = {"dirs": list(dirs), "files": []}
+        self.write_scope = {"dirs": [], "files": []}
+        self.exact_bash_commands = ()
+        self.role_name = "TEST"
+
+
+def test_declared_tools_normalizes_strings_and_dicts():
+    opts = _ScopeOptions(tools=["Read", {"name": "Bash"}])
+    assert up.declared_tools(opts) == ["Read", "Bash"]
+    assert up.declared_tools(None) == []
+    assert up.declared_tools(_ScopeOptions(tools=[])) == []
+
+
+def test_read_edit_bash_are_exposed_by_declaration():
+    assert [s["name"] for s in up.tool_schemas_for(_ScopeOptions(tools=["Read"]))] == ["Read"]
+    got = [s["name"] for s in up.tool_schemas_for(_ScopeOptions(tools=["Read", "Edit", "Bash"]))]
+    assert got == ["Read", "Edit", "Bash"]
+    # a role that declares nothing gets no tools
+    assert up.tool_schemas_for(_ScopeOptions(tools=[])) == []
+
+
+def test_read_inside_scope_succeeds(tmp_path):
+    target = tmp_path / "sample.py"
+    target.write_text("line one\nline two\n", encoding="utf-8")
+    out = up.execute_read({"file_path": str(target)}, _ScopeOptions(dirs=(str(tmp_path),)))
+    assert "line one" in out and "line two" in out
+    # numbered for the model
+    assert out.lstrip().startswith("1")
+
+
+def test_read_outside_scope_is_denied(tmp_path):
+    other = tmp_path / "secret.txt"
+    other.write_text("nope", encoding="utf-8")
+    scoped = _ScopeOptions(dirs=(str(tmp_path / "allowed"),))
+    with pytest.raises(up.ToolScopeError):
+        up.execute_read({"file_path": str(other)}, scoped)
+
+
+def test_read_with_no_scope_is_denied(tmp_path):
+    target = tmp_path / "x.txt"
+    target.write_text("data", encoding="utf-8")
+    with pytest.raises(up.ToolScopeError):
+        up.execute_read({"file_path": str(target)}, _ScopeOptions(dirs=()))
+
+
+def test_relative_path_and_missing_file_path_are_rejected():
+    with pytest.raises(up.ToolScopeError):
+        up.execute_read({"file_path": "web/core/x.py"}, _ScopeOptions(dirs=("/home",)))
+    with pytest.raises(up.ToolScopeError):
+        up.execute_read({}, _ScopeOptions(dirs=("/home",)))
+
+
+def test_missing_file_returns_an_error_string_not_a_raise(tmp_path):
+    """A missing file is model-recoverable: return text so it can adapt."""
+
+    missing = tmp_path / "absent.py"
+    out = up.execute_read({"file_path": str(missing)}, _ScopeOptions(dirs=(str(tmp_path),)))
+    assert "<error>" in out and "not found" in out
+
+
+def test_symlink_is_rejected(tmp_path):
+    real = tmp_path / "real.txt"
+    real.write_text("data", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(up.ToolScopeError):
+        up.execute_read({"file_path": str(link)}, _ScopeOptions(dirs=(str(tmp_path),)))
+
+
+def test_unsupported_tools_are_refused(monkeypatch):
+    """Read/Edit/Bash are implemented with scope enforcement. Capabilities this
+    transport genuinely lacks (Write/WebSearch/Task) must be refused rather than
+    silently dropped, or a role would run with less authority than it declared."""
+
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    for tools in (["WebSearch"], ["Write"], ["Read", "Task"]):
+        transport = up.new_primary_transport("p", _ScopeOptions(tools=tools))
+        with pytest.raises(up.PrimaryUpstreamError) as excinfo:
+            asyncio.run(transport.run())
+        assert excinfo.value.fatal is True
+        assert excinfo.value.upstream_code == "unsupported_tools"
+    # and the implemented trio is NOT refused
+    for tools in (["Read"], ["Edit"], ["Bash"], ["Read", "Edit", "Bash"]):
+        transport = up.new_primary_transport("p", _ScopeOptions(tools=tools))
+        assert [s["name"] for s in up.tool_schemas_for(transport._options)] == tools
+
+
+def test_build_request_carries_tools_on_both_wires(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    cfg = up.primary_config()
+    url, payload, _ = up._build_request(cfg, "p", None, [up._READ_TOOL])
+    assert payload["messages"][0]["content"] == "p"
+    assert payload["tools"][0]["name"] == "Read"
+    monkeypatch.setenv(up.WIRE_ENV, "openai")
+    cfg2 = up.primary_config()
+    _, payload2, _ = up._build_request(cfg2, "p", None, [up._READ_TOOL])
+    assert payload2["tools"][0]["type"] == "function"
+    assert payload2["tools"][0]["function"]["name"] == "Read"
+
+
+def test_parse_response_extracts_tool_calls_on_both_wires(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    cfg = up.primary_config()
+    anth = up._parse_response(cfg, {
+        "content": [{"type": "tool_use", "id": "c1", "name": "Read",
+                     "input": {"file_path": "/a"}}],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 0},
+    })
+    assert anth["tool_calls"] == [{"id": "c1", "name": "Read", "input": {"file_path": "/a"}}]
+    monkeypatch.setenv(up.WIRE_ENV, "openai")
+    cfg2 = up.primary_config()
+    oai = up._parse_response(cfg2, {
+        "choices": [{"message": {"content": "", "tool_calls": [
+            {"id": "c2", "type": "function",
+             "function": {"name": "Read", "arguments": '{"file_path": "/b"}'}}]},
+            "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+    })
+    assert oai["tool_calls"] == [{"id": "c2", "name": "Read", "input": {"file_path": "/b"}}]
+
+
+def test_read_budget_is_bounded(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    monkeypatch.setenv("POK_LLM_PRIMARY_MAX_READ_CALLS", "3")
+    assert up._max_read_calls() == 3
+    monkeypatch.setenv("POK_LLM_PRIMARY_MAX_READ_CALLS", "0")
+    assert up._max_read_calls() == 0
+    monkeypatch.delenv("POK_LLM_PRIMARY_MAX_READ_CALLS")
+    monkeypatch.setenv("POK_LLM_SATURATOR_MAX_READ_CALLS", "18")
+    assert up._max_read_calls() == 18, "must inherit the saturator's own hard stop"
+
+
+# ---------------------------------------------------------------------------
+# 8. Edit / Bash scope enforcement
+# ---------------------------------------------------------------------------
+
+class _WriteOptions:
+    def __init__(self, dirs, tools=("Read", "Edit", "Bash")):
+        self.model = "q"
+        self.tools = list(tools)
+        self.read_scope = {"dirs": list(dirs), "files": []}
+        self.write_scope = {"dirs": list(dirs), "files": []}
+        self.exact_bash_commands = ()
+        self.role_name = "WORKER"
+
+
+def test_edit_inside_scope_applies(tmp_path):
+    target = tmp_path / "policy.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    out = up.execute_edit(
+        {"file_path": str(target), "old_string": "VALUE = 1", "new_string": "VALUE = 2"},
+        _WriteOptions((str(tmp_path),)),
+    )
+    assert "<ok>" in out
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_edit_outside_scope_is_denied(tmp_path):
+    allowed = tmp_path / "lease"
+    allowed.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("X = 1\n", encoding="utf-8")
+    with pytest.raises(up.ToolScopeError):
+        up.execute_edit(
+            {"file_path": str(outside), "old_string": "X = 1", "new_string": "X = 2"},
+            _WriteOptions((str(allowed),)),
+        )
+    assert outside.read_text(encoding="utf-8") == "X = 1\n", "must be untouched"
+
+
+def test_edit_requires_a_unique_old_string(tmp_path):
+    target = tmp_path / "dup.py"
+    target.write_text("A\nA\n", encoding="utf-8")
+    out = up.execute_edit(
+        {"file_path": str(target), "old_string": "A", "new_string": "B"},
+        _WriteOptions((str(tmp_path),)),
+    )
+    assert "<error>" in out and "appears 2 times" in out
+    assert target.read_text(encoding="utf-8") == "A\nA\n"
+
+
+def test_edit_missing_old_string_is_reported_not_raised(tmp_path):
+    target = tmp_path / "m.py"
+    target.write_text("hello\n", encoding="utf-8")
+    out = up.execute_edit(
+        {"file_path": str(target), "old_string": "absent", "new_string": "x"},
+        _WriteOptions((str(tmp_path),)),
+    )
+    assert "<error>" in out and "not found" in out
+
+
+def test_bash_runs_inside_scope(tmp_path):
+    out = up.execute_bash({"command": "echo scoped-ok"}, _WriteOptions((str(tmp_path),)))
+    assert "scoped-ok" in out and "<exit_code>0</exit_code>" in out
+
+
+def test_bash_write_outside_scope_is_denied(tmp_path):
+    allowed = tmp_path / "lease"
+    allowed.mkdir()
+    with pytest.raises(up.ToolScopeError):
+        up.execute_bash(
+            {"command": "echo pwned > /tmp/outside-the-lease.txt"},
+            _WriteOptions((str(allowed),)),
+        )
+
+
+def test_bash_with_no_write_scope_allows_reads_but_denies_writes(tmp_path):
+    """A read-only command cannot mutate the tree, so it passes; the same call
+    with a redirect is refused. The gate is about writes, not about Bash."""
+
+    assert "hi" in up.execute_bash({"command": "echo hi"}, _WriteOptions(()))
+    with pytest.raises(up.ToolScopeError):
+        up.execute_bash({"command": "echo hi > /tmp/anywhere.txt"}, _WriteOptions(()))
+
+
+def test_execute_tool_rejects_unknown_names(tmp_path):
+    with pytest.raises(up.ToolScopeError):
+        up.execute_tool("Task", {}, _WriteOptions((str(tmp_path),)))
