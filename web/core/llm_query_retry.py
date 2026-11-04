@@ -143,6 +143,24 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     # Streaming transports (claude/codex) keep the exact historical policy.
     if _zc.zcode_transport_enabled() and not _zc.ZCodeTransport.native_streaming:
         first_activity_timeout = 0.0
+    # Same fold for the direct-HTTP primary upstream (POK_LLM_UPSTREAM=primary):
+    # it yields its FIRST substantive message only when the whole tool loop
+    # finishes (measured 2026-11-04: 6 saturator packets died at exactly
+    # "first_activity timeout after 900.0s" while surviving calls legitimately
+    # ran 347-884s — num_turns is always 1, so the gate can never observe
+    # progress and only truncates correct long calls). Without a per-round
+    # activity event, first_activity must fold into total_timeout here too.
+    # This re-checks the SAME env predicate that selected the transport at the
+    # dispatch branch, so no delegate signature changes are needed and
+    # llm_query.py (a CRITICAL_EXACT contract path) stays byte-identical.
+    # After a hard-failure fallback the attempt runs on the process transport,
+    # which yields incrementally and is bounded by the ordinary idle/stall gates
+    # — leaving first_activity folded there costs only a duplicate early cap,
+    # while total_timeout (7200s) and the transport's own per-round HTTP
+    # timeout (POK_LLM_PRIMARY_TIMEOUT_SEC, default 600s) remain the real
+    # guards against a wedged stream.
+    if _up.primary_enabled():
+        first_activity_timeout = 0.0
     # B3: shorter stall ceiling once substantive output has started (tool/think
     # loop). 0 means "do not enforce a separate stall ceiling; use idle_timeout".
     stall_timeout = float(timeout_policy.get("stall_timeout") or 0)
@@ -1247,7 +1265,11 @@ async def _run_stream_with_signature_retry_attempts(
                     model=(
                         _cx.codex_metrics_model()
                         if _codex_transport
-                        else getattr(options, "model", None)
+                        else (
+                            _up.primary_metrics_model()
+                            if _primary_transport
+                            else getattr(options, "model", None)
+                        )
                     ),
                     total_elapsed_sec=time.time() - _attempt_start,
                     first_token_latency_sec=stream_metrics.get("first_token_latency_sec"),
@@ -1500,7 +1522,11 @@ async def _run_stream_with_signature_retry_attempts(
                     model=(
                         _cx.codex_metrics_model()
                         if _codex_transport
-                        else getattr(options, "model", None)
+                        else (
+                            _up.primary_metrics_model()
+                            if _primary_transport
+                            else getattr(options, "model", None)
+                        )
                     ),
                 )
             except Exception:

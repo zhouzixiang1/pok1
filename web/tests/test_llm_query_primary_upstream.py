@@ -609,3 +609,52 @@ def test_bash_with_no_write_scope_allows_reads_but_denies_writes(tmp_path):
 def test_execute_tool_rejects_unknown_names(tmp_path):
     with pytest.raises(up.ToolScopeError):
         up.execute_tool("Task", {}, _WriteOptions((str(tmp_path),)))
+
+
+# ---------------------------------------------------------------------------
+# 9. non-streaming fold + metrics attribution on the primary path
+# ---------------------------------------------------------------------------
+
+def test_primary_transport_folds_first_activity_gate(monkeypatch):
+    """Measured failure this prevents (2026-11-04): after the full migration to
+    the direct-HTTP primary, 6 saturator packets died at exactly
+    'first_activity timeout after 900.0s' while surviving calls legitimately
+    ran 347-884s. The transport yields its first substantive message only when
+    the whole tool loop completes (num_turns is always 1), so a first-activity
+    budget cannot observe progress there either.
+
+    The fold lives in llm_query_retry._process_stream and is keyed to the SAME
+    env predicate that selects the transport (primary_enabled), so llm_query.py
+    — a CRITICAL_EXACT contract path — needs no signature change.
+    """
+
+    import llm_query_retry as retry
+
+    source = inspect.getsource(retry._process_stream)
+    assert "primary_enabled()" in source
+    assert "first_activity_timeout = 0.0" in source
+    # streaming policy must still read the per-role budget (the fold zeroes it
+    # only under the non-streaming predicates)
+    assert 'timeout_policy.get("first_activity_timeout")' in source
+
+
+def test_primary_metrics_model_reads_env(monkeypatch):
+    """Without this the metrics rows keep the static ANTHROPIC_MODEL label
+    (glm-5.3-flash) even though every call went to Qwen — measured: 37 primary
+    rows mislabeled, poisoning any per-model cache-hit analysis.
+    """
+
+    monkeypatch.setenv(up.MODEL_ENV, "Qwen3.8-Flash")
+    assert up.primary_metrics_model() == "Qwen3.8-Flash"
+    monkeypatch.delenv(up.MODEL_ENV)
+    assert up.primary_metrics_model() == "primary"
+
+
+def test_retry_records_primary_model_label():
+    """The success-path metrics write must branch to primary_metrics_model()
+    when the primary transport is in effect (mirror of codex_metrics_model)."""
+
+    import llm_query_retry as retry
+
+    source = inspect.getsource(retry._run_stream_with_signature_retry_attempts)
+    assert "primary_metrics_model()" in source
