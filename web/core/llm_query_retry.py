@@ -65,6 +65,12 @@ import llm_query_codex as _cx
 # instant rollback.
 import llm_query_zcode as _zc
 
+# Direct-HTTP primary upstream (POK_LLM_UPSTREAM=primary). Sits IN FRONT of the
+# process transports: tried first, falls back only on a hard failure, and never
+# falls back on a rate limit (a 1302/1308 must not silently spend the other
+# account's quota — see llm_query_primary's module docstring).
+import llm_query_primary as _up
+
 # NOTE: ``llm_query`` imports this module at its own top level.  To avoid a
 # circular import we do NOT ``import llm_query`` at module scope.  Each
 # function that needs to read a monkeypatchable parent symbol (claude_query,
@@ -1117,6 +1123,7 @@ async def _run_stream_with_signature_retry_attempts(
     total_cost = 0.0
     total_usage = None
     billing_call_id = uuid.uuid4().hex
+    primary_fallback_used = False
     _lq._assert_no_unresolved_provider_attempts()
     for sdk_attempt in range(_SIGNATURE_MAX_ATTEMPTS):
         _lq._assert_no_unresolved_provider_attempts()
@@ -1133,7 +1140,16 @@ async def _run_stream_with_signature_retry_attempts(
         # branch enforces the same scope through its options.hooks guards).
         _codex_transport = _cx.codex_transport_enabled()
         _zcode_transport = _zc.zcode_transport_enabled()
-        if _codex_transport:
+        # Primary upstream: when configured, every attempt starts here and only
+        # a HARD failure (transport/auth/5xx) escalates to the process
+        # transport below. A rate limit stays on the primary and surfaces
+        # through the normal availability chain.
+        _primary_transport = _up.primary_enabled()
+        if _primary_transport:
+            owned_transport = _up.new_primary_transport(
+                full_prompt, options, allowed_write_dir
+            )
+        elif _codex_transport:
             owned_transport = _cx.new_codex_exec_transport(
                 full_prompt, options, allowed_write_dir
             )
@@ -1146,7 +1162,13 @@ async def _run_stream_with_signature_retry_attempts(
         provider_attempt = _lq._new_provider_attempt(owned_transport)
         provider_token = _lq._LLM_PROVIDER_ATTEMPT.set(provider_attempt)
         try:
-            if _codex_transport:
+            if _primary_transport:
+                query_gen = _up.primary_query(
+                    prompt=full_prompt,
+                    options=options,
+                    transport=owned_transport,
+                )
+            elif _codex_transport:
                 query_gen = _cx.codex_query(
                     prompt=full_prompt,
                     options=options,
@@ -1335,6 +1357,32 @@ async def _run_stream_with_signature_retry_attempts(
         except ClaudeSDKError as e:
             last_sdk_err = e
             err_str = str(e).lower()
+            # Primary-upstream fallback. A rate limit (1302/1308/429) does NOT
+            # fall back: it must stay on the primary so the burn is attributed
+            # to the right account, and it re-raises unchanged for the
+            # availability chain. Only a hard failure flips the attempt to the
+            # process transport, once per attempt-loop entry.
+            if isinstance(e, _up.PrimaryUpstreamError) and e.fatal and not e.retryable:
+                # Hard primary failure: flip this call onto the process
+                # transport and retry the same attempt immediately. The flag is
+                # per-call (a dict keyed by this loop's call id) so other
+                # concurrent roles keep using the primary.
+                if not primary_fallback_used:
+                    primary_fallback_used = True
+                    _primary_transport = False
+                    _lq._emit_llm_event(
+                        "pipeline.llm_primary_upstream_fallback", "warn",
+                        f"{role_name}: primary upstream failed, retrying this "
+                        f"call on the process transport",
+                        role=role_name,
+                        upstream_code=getattr(e, "upstream_code", None),
+                        error=str(e)[:400],
+                        **_lq._role_log_metadata(log_file_path),
+                    )
+                    _attempt_pending_error = e
+                    sdk_attempt -= 1  # do not spend a signature attempt on this
+                    continue
+                raise
             if ("signature" in err_str or "missing required field" in err_str) and \
                     sdk_attempt < _SIGNATURE_MAX_ATTEMPTS - 1:
                 # Exponential-ish backoff: 5, 10, 20, 30s — short enough to not stall
