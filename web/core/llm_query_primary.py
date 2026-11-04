@@ -102,6 +102,18 @@ def primary_enabled() -> bool:
     return upstream_mode() == "primary"
 
 
+def primary_metrics_model() -> str:
+    """Model label recorded in llm_call_metrics under the primary upstream.
+
+    Mirrors ``codex_metrics_model()``: without it the metrics rows keep the
+    static ANTHROPIC_MODEL label (glm-5.3-flash) even though every call went to
+    the third-party model, which poisons any per-model analysis (measured
+    2026-11-04: 37 primary rows mislabeled as GLM).
+    """
+
+    return str(os.environ.get(MODEL_ENV, "") or "").strip() or "primary"
+
+
 def primary_config() -> dict:
     import llm_query_codex as _cx
 
