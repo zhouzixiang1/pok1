@@ -506,3 +506,46 @@ def test_non_streaming_transport_disables_first_activity_gate():
 
 def test_zcode_transport_declares_no_native_streaming():
     assert zc.ZCodeTransport.native_streaming is False
+
+
+# ---------------------------------------------------------------------------
+# 8. session-store isolation (concurrent dispatches must not deadlock)
+# ---------------------------------------------------------------------------
+
+def test_each_transport_gets_its_own_storage_root():
+    """Measured failure this prevents: "Error: database is locked" in production.
+
+    Every dispatch is a separate CLI process and the default session DB is one
+    shared SQLite file; concurrent dispatches collide before the provider call.
+    ZCODE_STORAGE_DIR relocates the whole store per attempt.
+    """
+
+    first = zc.ZCodeTransport("p", None)
+    second = zc.ZCodeTransport("p", None)
+    try:
+        env_a = first.build_env()
+        env_b = second.build_env()
+        root_a = env_a.get("ZCODE_STORAGE_DIR")
+        root_b = env_b.get("ZCODE_STORAGE_DIR")
+        assert root_a and root_b
+        assert root_a != root_b, "concurrent dispatches must not share a session DB"
+        assert os.path.isdir(root_a) and os.path.isdir(root_b)
+        # the credential store must NOT live under the relocated root
+        assert os.path.join(root_a, ".zcode", "v2", "credentials.json") != env_a.get(
+            zc._PERSONAL_CONFIG_ENV
+        )
+    finally:
+        first._cleanup_storage_root()
+        second._cleanup_storage_root()
+    assert not os.path.exists(root_a)
+    assert not os.path.exists(root_b)
+
+
+def test_storage_root_respects_an_operator_override(monkeypatch, tmp_path):
+    override = str(tmp_path / "store")
+    monkeypatch.setenv("ZCODE_STORAGE_DIR", override)
+    transport = zc.ZCodeTransport("p", None)
+    env = transport.build_env()
+    assert env["ZCODE_STORAGE_DIR"] == override
+    # an operator-provided root is never deleted by the transport
+    transport._cleanup_storage_root()

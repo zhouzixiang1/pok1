@@ -634,6 +634,7 @@ class ZCodeTransport:
         self._stderr_tail = []
         self._result = None
         self._closed = False
+        self._storage_root = None
 
     # -- argv / process --------------------------------------------------
 
@@ -735,6 +736,23 @@ class ZCodeTransport:
             personal = os.path.join(base, ".zcode", "v2", "provider_config.json")
             if os.path.isfile(personal):
                 env[_PERSONAL_CONFIG_ENV] = personal
+        # Session-store isolation. Every dispatch is a separate CLI process and
+        # the default session DB is one shared SQLite file
+        # (~/.zcode/cli/db/db.sqlite); with several concurrent dispatches the
+        # CLI fails with "Error: database is locked" before the provider call
+        # (measured in production right after the cutover, and it also killed a
+        # parallel agent batch). ZCODE_STORAGE_DIR relocates the whole store, so
+        # each attempt gets its own directory and the lock contention is gone.
+        # The credential store is NOT under this root (it is resolved from
+        # ZCODE_DATA_BASE_DIR / $HOME), so login state is unaffected.
+        storage_root = env.get("ZCODE_STORAGE_DIR")
+        if not storage_root:
+            storage_root = os.path.join(
+                tempfile.gettempdir(), "pok-zcode-store-%d-%d" % (os.getpid(), id(self))
+            )
+            os.makedirs(storage_root, exist_ok=True)
+            env["ZCODE_STORAGE_DIR"] = storage_root
+            self._storage_root = storage_root
         return env
 
     async def spawn(self):
@@ -825,9 +843,20 @@ class ZCodeTransport:
                 except (asyncio.TimeoutError, TimeoutError):
                     pass
         self._cleanup_prompt_file()
+        self._cleanup_storage_root()
         if process is None:
             return True
         return process.returncode is not None
+
+    def _cleanup_storage_root(self):
+        """Remove the per-attempt session store (CLI state only, no credentials)."""
+
+        root = self._storage_root
+        if not root:
+            return
+        self._storage_root = None
+        with contextlib.suppress(OSError):
+            shutil.rmtree(root, ignore_errors=True)
 
     def _cleanup_prompt_file(self):
         path = self._prompt_file
