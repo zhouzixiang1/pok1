@@ -552,6 +552,48 @@ def execute_read(inputs: dict, options) -> str:
     return numbered
 
 
+#: Toggle for injecting the repository instruction file (AGENTS.md) as the
+#: system prompt on the primary path. ON by default — it RESTORES parity with
+#: the historical transports (claude CLI setting_sources=["project"], codex
+#: ancestor-walk from the pinned cwd — both documented in AGENTS.md); the
+#: process-less HTTP transport initially sent neither, so Qwen roles ran without
+#: the architecture contract. Kill switch = set to 0 in env.runtime.local.
+SYSTEM_PROMPT_ENV = "POK_LLM_PRIMARY_SYSTEM_PROMPT"
+#: Hard cap on the instruction file bytes injected per request.
+_SYSTEM_PROMPT_MAX_BYTES = 200_000
+#: Sentinel: None = not yet resolved for this process.
+_SYSTEM_PROMPT_CACHE = None
+
+
+def _system_prompt_text() -> str:
+    """Repository instruction file (AGENTS.md) for the system block.
+
+    Resolved from the SERVICE cwd (WorkingDirectory is the runtime checkout,
+    exactly where codex discovers it by ancestor walk), cached for the process
+    lifetime: the file only changes across deploys, and the cached prefix is
+    what the upstream's prompt cache is being asked to hit. Empty string when
+    disabled or unreadable (fail-open to the previous no-system behavior).
+    """
+
+    global _SYSTEM_PROMPT_CACHE
+    if _SYSTEM_PROMPT_CACHE is not None:
+        return _SYSTEM_PROMPT_CACHE
+    text = ""
+    raw = str(os.environ.get(SYSTEM_PROMPT_ENV, "") or "").strip().lower()
+    if raw not in ("0", "off", "false", "no"):
+        path = os.path.join(os.getcwd(), "AGENTS.md")
+        try:
+            with open(path, "rb") as handle:
+                blob = handle.read(_SYSTEM_PROMPT_MAX_BYTES + 1)
+            if len(blob) > _SYSTEM_PROMPT_MAX_BYTES:
+                blob = blob[:_SYSTEM_PROMPT_MAX_BYTES]
+            text = blob.decode("utf-8", "replace")
+        except OSError:
+            text = ""
+    _SYSTEM_PROMPT_CACHE = text
+    return text
+
+
 def _build_request(cfg: dict, prompt: str, messages=None, tools=None):
     """Build the wire request.
 
@@ -559,13 +601,23 @@ def _build_request(cfg: dict, prompt: str, messages=None, tools=None):
     loop passes the accumulated conversation instead. ``tools`` adds the
     function schemas — measured working on both wires (the upstream answers with
     a proper ``tool_use`` block and ``stop_reason: tool_use``).
+
+    The instruction-file system block (``_system_prompt_text``) is attached on
+    BOTH wires: anthropic via the ``system`` field with a ``cache_control``
+    breakpoint (the stable ~28k-token prefix every role shares), openai via a
+    leading ``role=system`` message. Either way it is BYTES-IDENTICAL across
+    dispatches for the process lifetime, which is what makes it a cache prefix.
     """
 
     base = cfg["base_url"]
     convo = messages if messages is not None else [{"role": "user", "content": prompt}]
+    system_text = _system_prompt_text()
     if cfg["wire"] == "openai":
         url = base + "/chat/completions"
-        payload = {"model": cfg["model"], "max_tokens": 32000, "messages": convo}
+        wire_messages = convo
+        if system_text:
+            wire_messages = [{"role": "system", "content": system_text}] + list(convo)
+        payload = {"model": cfg["model"], "max_tokens": 32000, "messages": wire_messages}
         if tools:
             payload["tools"] = [
                 {
@@ -585,6 +637,11 @@ def _build_request(cfg: dict, prompt: str, messages=None, tools=None):
     else:
         url = base + "/messages"
         payload = {"model": cfg["model"], "max_tokens": 32000, "messages": convo}
+        if system_text:
+            payload["system"] = [
+                {"type": "text", "text": system_text,
+                 "cache_control": {"type": "ephemeral"}}
+            ]
         if tools:
             payload["tools"] = tools
         headers = {

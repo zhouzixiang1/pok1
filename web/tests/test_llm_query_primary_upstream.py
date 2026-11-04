@@ -783,3 +783,64 @@ def test_semaphore_wait_sec_recorded_on_success_path():
     src = inspect.getsource(retry._run_stream_with_signature_retry_attempts)
     assert "semaphore_wait_sec=_attempt_sem_wait_sec" in src
     assert "_attempt_sem_wait_sec" in src
+
+
+# ---------------------------------------------------------------------------
+# 11. system prompt parity (block-49): the instruction file the CLI transports
+# auto-inject (claude setting_sources=["project"], codex ancestor-walk) was
+# missing from the primary path entirely.
+# ---------------------------------------------------------------------------
+
+def test_system_prompt_attached_on_anthropic_wire(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("ARCH CONTRACT TEXT", encoding="utf-8")
+    monkeypatch.setattr(up, "_SYSTEM_PROMPT_CACHE", None)
+    monkeypatch.delenv(up.SYSTEM_PROMPT_ENV, raising=False)
+    cfg = {"base_url": "https://x/v1", "model": "m", "api_key": "k", "wire": "anthropic"}
+    url, payload, _ = up._build_request(cfg, "task prompt")
+    assert url.endswith("/messages")
+    assert payload["system"] == [
+        {"type": "text", "text": "ARCH CONTRACT TEXT",
+         "cache_control": {"type": "ephemeral"}}
+    ]
+    # the task stays in the conversation, untouched
+    assert payload["messages"] == [{"role": "user", "content": "task prompt"}]
+
+
+def test_system_prompt_attached_on_openai_wire(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("OPENAI CONTRACT", encoding="utf-8")
+    monkeypatch.setattr(up, "_SYSTEM_PROMPT_CACHE", None)
+    monkeypatch.delenv(up.SYSTEM_PROMPT_ENV, raising=False)
+    cfg = {"base_url": "https://x/v1", "model": "m", "api_key": "k", "wire": "openai"}
+    _, payload, _ = up._build_request(cfg, "task")
+    assert payload["messages"][0] == {"role": "system", "content": "OPENAI CONTRACT"}
+
+
+def test_system_prompt_kill_switch_and_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(up, "_SYSTEM_PROMPT_CACHE", None)
+    monkeypatch.chdir(tmp_path)  # no AGENTS.md here
+    cfg = {"base_url": "https://x/v1", "model": "m", "api_key": "k", "wire": "anthropic"}
+    _, payload, _ = up._build_request(cfg, "task")
+    assert "system" not in payload  # fail-open to the previous shape
+    # explicit off
+    (tmp_path / "AGENTS.md").write_text("X", encoding="utf-8")
+    monkeypatch.setattr(up, "_SYSTEM_PROMPT_CACHE", None)
+    monkeypatch.setenv(up.SYSTEM_PROMPT_ENV, "0")
+    _, payload, _ = up._build_request(cfg, "task")
+    assert "system" not in payload
+
+
+def test_system_prompt_cached_and_stable(tmp_path, monkeypatch):
+    """Cache-prefix value depends on byte-identical repeats: one file read per
+    process, and the SAME object goes into every request."""
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("STABLE PREFIX", encoding="utf-8")
+    monkeypatch.setattr(up, "_SYSTEM_PROMPT_CACHE", None)
+    monkeypatch.delenv(up.SYSTEM_PROMPT_ENV, raising=False)
+    first = up._system_prompt_text()
+    # file changes on disk are NOT re-read within the process (only deploys do,
+    # and a deploy restarts the service — exactly one cache epoch per checkout)
+    (tmp_path / "AGENTS.md").write_text("CHANGED", encoding="utf-8")
+    assert up._system_prompt_text() == first == "STABLE PREFIX"
