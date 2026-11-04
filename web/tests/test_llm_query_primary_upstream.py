@@ -658,3 +658,128 @@ def test_retry_records_primary_model_label():
 
     source = inspect.getsource(retry._run_stream_with_signature_retry_attempts)
     assert "primary_metrics_model()" in source
+
+
+# ---------------------------------------------------------------------------
+# 10. executor wall, caliber aggregation, fallback persistence (block-48 batch)
+# ---------------------------------------------------------------------------
+
+def test_http_executor_is_pools_own_and_sized(monkeypatch):
+    """Measured failure: run_in_executor(None, …) used asyncio's DEFAULT pool
+    = min(32, cpu+4) = 8 threads on this 4-core box, while AIMD handed out 32
+    permits — 24 'streams' were queued inside the pool yet still held a permit
+    and burned timers (ss :443=8 vs live active_streams=32). The fix is the
+    transport's own lazily-built, explicitly-sized pool.
+    """
+
+    import llm_query_primary as mod
+
+    # reset the module cache so env changes take effect
+    monkeypatch.setattr(mod, "_HTTP_EXECUTOR", None)
+    monkeypatch.setattr(mod, "_HTTP_EXECUTOR_SIZE", 0)
+    monkeypatch.setenv(mod.HTTP_EXECUTOR_ENV, "12")
+    pool = mod._get_http_executor()
+    assert pool is not None
+    assert pool._max_workers == 12
+    # stable across calls (no thread churn per dispatch)
+    assert mod._get_http_executor() is pool
+    pool.shutdown(wait=False)
+
+
+def test_http_executor_falls_back_to_aimd_ceiling(monkeypatch):
+    import llm_query_primary as mod
+
+    monkeypatch.setattr(mod, "_HTTP_EXECUTOR", None)
+    monkeypatch.setattr(mod, "_HTTP_EXECUTOR_SIZE", 0)
+    monkeypatch.delenv(mod.HTTP_EXECUTOR_ENV, raising=False)
+    size = mod._http_executor_size()
+    # 8 floor, 64 ceiling; without the env key it tracks AIMD_MAX (default 32)
+    assert 8 <= size <= 64
+    assert size >= 16
+
+
+def test_executor_size_clamped(monkeypatch):
+    import llm_query_primary as mod
+
+    monkeypatch.setenv(mod.HTTP_EXECUTOR_ENV, "5000")
+    assert mod._http_executor_size() == 64
+    monkeypatch.setenv(mod.HTTP_EXECUTOR_ENV, "-3")
+    assert mod._http_executor_size() >= 8
+
+
+def test_multi_round_usage_keeps_caliber_marks():
+    """Measured failure: the tool-loop accumulator rebuilt its dict from four
+    base keys, so provider_input_tokens/cache_caliber were lost on every
+    multi-round call (0 of 198 primary rows carried a caliber mark). _apply_caliber
+    now runs ONCE on the accumulated raw totals and the marks survive.
+    """
+
+    raw = {
+        "input_tokens": 100 + 6,        # provider caliber: uncached only
+        "output_tokens": 40,
+        "cache_read_input_tokens": 2599 + 2600,
+        "cache_creation_input_tokens": 0,
+    }
+    out = up._apply_caliber(dict(raw))
+    assert out["provider_input_tokens"] == 106
+    assert out["cache_caliber"] == "provider_uncached_plus_cached"
+    # input remapped to the pipeline's full-prompt convention
+    assert out["input_tokens"] == 106 + 5199
+    assert out["cache_read_input_tokens"] == 5199
+
+
+def test_single_round_hit_math_unchanged_by_helper():
+    """_apply_caliber must be a no-op when cache_read is zero (first-ever call),
+    so a cold call still reports its raw input, not a fabricated 0.
+    """
+
+    out = up._apply_caliber({"input_tokens": 4400, "cache_read_input_tokens": 0})
+    assert out == {"input_tokens": 4400, "cache_read_input_tokens": 0}
+
+
+def test_fallback_flip_persists_across_loop_iterations():
+    """The critique proved the auto-fallback was DEAD CODE: the loop-top
+    `_primary_transport = _up.primary_enabled()` re-evaluation overwrote the
+    except-block's `_primary_transport = False`, so a hard primary failure
+    re-dispatched to the SAME failing primary instead of escalating to the
+    process transport. The guard is now `... and not primary_fallback_used`.
+    """
+
+    import inspect
+
+    import llm_query_retry as retry
+
+    src = inspect.getsource(retry._run_stream_with_signature_retry_attempts)
+    assert "primary_enabled() and not primary_fallback_used" in src
+    assert "primary_fallback_used = False" in src
+
+
+def test_timeout_kills_now_get_a_metrics_row():
+    """93 first_activity blade kills this boot wrote ZERO metrics rows (no
+    ResultMessage → billing_results empty → early return), so every rollback
+    predicate that depends on timeout counts was blind to them. Failed-attempt
+    metrics must now special-case LLMRoleTimeout with a wall-clock-only row.
+    """
+
+    import inspect
+
+    import llm_query_retry as retry
+
+    src = inspect.getsource(retry._record_failed_attempt_metrics)
+    assert "LLMRoleTimeout" in src
+    assert "timeout_kind=getattr(error" in src
+
+
+def test_semaphore_wait_sec_recorded_on_success_path():
+    """The step-1 rollback predicate (queue-gap detection) needs the real
+    semaphore wait, which was never passed on the success path (field null on
+    every row).
+    """
+
+    import inspect
+
+    import llm_query_retry as retry
+
+    src = inspect.getsource(retry._run_stream_with_signature_retry_attempts)
+    assert "semaphore_wait_sec=_attempt_sem_wait_sec" in src
+    assert "_attempt_sem_wait_sec" in src

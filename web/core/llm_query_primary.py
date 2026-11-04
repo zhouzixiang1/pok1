@@ -33,8 +33,10 @@ import contextlib
 import json
 import os
 import subprocess
+import threading
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from claude_agent_sdk import (
@@ -214,6 +216,79 @@ _BASH_TOOL = {
         "required": ["command"],
     },
 }
+
+#: Thread-pool ceiling for the primary HTTP path.
+HTTP_EXECUTOR_ENV = "POK_LLM_PRIMARY_HTTP_THREADS"
+#: The module-level pool (lazily built; None until the first dispatch).
+_HTTP_EXECUTOR = None
+_HTTP_EXECUTOR_SIZE = 0
+_HTTP_EXECUTOR_LOCK = threading.Lock()
+
+
+def _http_executor_size() -> int:
+    """Worker count for the primary path's own thread pool.
+
+    WHY THIS EXISTS (measured 2026-11-04): ``run_in_executor(None, …)`` uses
+    asyncio's DEFAULT pool, which is ``min(32, cpu_count+4)`` = **8** on this
+    4-core VM. Live proof: AIMD had climbed to its 32 ceiling and
+    /api/llm/metrics/live reported active_streams=32/utilization=100%, while
+    ``ss -tnp state established | grep :443`` counted only 8 sockets and
+    py-spy showed exactly 8 ``ThreadPoolExecutor-0_*`` threads all parked in
+    ``_post_json``. So 24 of those "streams" were NOT talking to the upstream —
+    they were queued inside the pool while still holding a semaphore permit,
+    a resident prompt, and a running first_activity/total timer. Raising the
+    concurrency numbers without fixing this buys zero throughput and inflates
+    per-call latency; the pool is the real ceiling, so it is sized here and
+    explicitly.
+
+    Defaults to the AIMD ceiling so the pool cannot be the limiter while the
+    semaphore is still handing out permits; clamped to keep a runaway env value
+    from allocating thousands of threads on a 3.7G box (each parked request
+    holds its serialized payload — measured ~7.6MB/permit of RSS slope).
+    """
+
+    try:
+        value = int(os.environ.get(HTTP_EXECUTOR_ENV, "") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        try:
+            from llm_concurrency import AIMD_MAX_LIMIT
+
+            value = int(AIMD_MAX_LIMIT)
+        except Exception:
+            value = 16
+    return max(8, min(value, 64))
+
+
+def _get_http_executor():
+    """The module-level pool, rebuilt when the configured size moves.
+
+    Deliberately NOT the asyncio default pool, and deliberately lazily created:
+    importing this module must not spawn threads before the service starts.
+    """
+
+    global _HTTP_EXECUTOR, _HTTP_EXECUTOR_SIZE
+    size = _http_executor_size()
+    if _HTTP_EXECUTOR is not None and _HTTP_EXECUTOR_SIZE == size:
+        return _HTTP_EXECUTOR
+    with _HTTP_EXECUTOR_LOCK:
+        if _HTTP_EXECUTOR is not None and _HTTP_EXECUTOR_SIZE == size:
+            return _HTTP_EXECUTOR
+        old = _HTTP_EXECUTOR
+        # 3.12.3 has no ThreadPoolExecutor resize API (verified:
+        # hasattr(_resize) is False), so a size change rebuilds the pool.
+        _HTTP_EXECUTOR = ThreadPoolExecutor(
+            max_workers=size, thread_name_prefix="pok-primary-http"
+        )
+        _HTTP_EXECUTOR_SIZE = size
+        if old is not None:
+            # stop accepting new work; already-queued requests still run to
+            # completion (shutdown(wait=False) does not kill running items),
+            # so an in-flight upstream call is never truncated by a resize.
+            old.shutdown(wait=False)
+        return _HTTP_EXECUTOR
+
 
 #: Wall clock for one Bash call.
 _BASH_TIMEOUT_SEC = 120
@@ -520,6 +595,28 @@ def _build_request(cfg: dict, prompt: str, messages=None, tools=None):
     return url, payload, headers
 
 
+def _apply_caliber(usage: dict) -> dict:
+    """Remap provider-caliber usage into the pipeline convention, once.
+
+    The upstream reports ``input_tokens`` as uncached-new tokens only (see the
+    measurement in ``_parse_response``); GLM/claude/codex report the whole
+    prompt. Conversion: full_prompt = input + cache_read, and the raw split is
+    kept (``provider_input_tokens``/``full_prompt_input_tokens``) plus a
+    ``cache_caliber`` mark so no cross-upstream analysis mixes denominators.
+    Applied to each round's dict AND to the tool-loop aggregate; callers that
+    accumulate across rounds feed the raw-caliber totals in here exactly once.
+    """
+
+    raw_input = usage.get("input_tokens") or 0
+    raw_cache_read = usage.get("cache_read_input_tokens") or 0
+    if raw_cache_read > 0:
+        usage["provider_input_tokens"] = raw_input
+        usage["full_prompt_input_tokens"] = raw_input + raw_cache_read
+        usage["cache_caliber"] = "provider_uncached_plus_cached"
+        usage["input_tokens"] = raw_input + raw_cache_read
+    return usage
+
+
 def _parse_response(cfg: dict, body: dict) -> dict:
     """Normalize either wire shape into (text, thinking, usage)."""
 
@@ -573,20 +670,7 @@ def _parse_response(cfg: dict, body: dict) -> dict:
     # input_tokens, so taking this upstream's number at face value would make
     # every call look like a 100% cache hit (6/6) and silently destroy the
     # cache-hit KPI this pipeline is tracking.
-    #
-    # Conversion: full_prompt = input_tokens + cache_read
-    #             (cache_read is the already-cached prefix)
-    # and the stored record keeps the provider's raw split so an auditor can
-    # re-derive either number. ``upstream`` + ``cache_caliber`` mark the row so
-    # no analysis silently mixes the two report conventions.
-    raw_input = usage.get("input_tokens") or 0
-    raw_cache_read = usage.get("cache_read_input_tokens") or 0
-    if raw_cache_read > 0:
-        usage["provider_input_tokens"] = raw_input
-        usage["full_prompt_input_tokens"] = raw_input + raw_cache_read
-        usage["cache_caliber"] = "provider_uncached_plus_cached"
-        # Remap to the pipeline's convention: input_tokens = whole prompt.
-        usage["input_tokens"] = raw_input + raw_cache_read
+    usage = _apply_caliber(usage)
     # Tool calls, normalized across both wires so the loop is wire-agnostic.
     tool_calls = []
     raw_blocks = []
@@ -688,7 +772,7 @@ class PrimaryHttpTransport:
         url, payload, headers = _build_request(cfg, self._prompt, messages, tools)
         try:
             status, body, text = await asyncio.get_running_loop().run_in_executor(
-                None, _post_json, url, payload, headers, cfg["timeout"]
+                _get_http_executor(), _post_json, url, payload, headers, cfg["timeout"]
             )
         except asyncio.CancelledError:
             raise
@@ -757,8 +841,14 @@ class PrimaryHttpTransport:
         tools = tool_schemas_for(self._options)
         budget = _max_read_calls() if tools else 0
         messages = [{"role": "user", "content": self._prompt}]
+        # Accumulate the provider's RAW caliber (input = uncached new tokens)
+        # across rounds; the full-prompt caliber conversion then runs ONCE at
+        # the end (measured 2026-11-04: the old loop rebuilt the dict from the
+        # four base keys, so all 198 primary rows lost provider_input_tokens +
+        # cache_caliber and any cross-upstream hit comparison silently mixed
+        # two denominators).
         usage_total = {
-            "input_tokens": 0,
+            "input_tokens": 0,          # provider caliber: uncached new tokens
             "output_tokens": 0,
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
@@ -777,7 +867,7 @@ class PrimaryHttpTransport:
                 usage_total[key] += int(value)
             block_calls = parsed.get("tool_calls") or []
             if not block_calls:
-                parsed["usage"] = usage_total
+                parsed["usage"] = _apply_caliber(usage_total)
                 parsed["tool_rounds"] = round_index
                 self.result = parsed
                 return self.result
@@ -818,7 +908,7 @@ class PrimaryHttpTransport:
         self.result = {
             "text": "",
             "thinking": "",
-            "usage": usage_total,
+            "usage": _apply_caliber(usage_total),
             "model": cfg["model"],
             "stop_reason": "read_budget_exhausted",
             "upstream": "primary",

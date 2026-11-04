@@ -965,6 +965,7 @@ def _record_failed_attempt_metrics(
     metrics_recorded,
     error,
     model,
+    semaphore_wait_sec=None,
 ) -> None:
     """(2026-10-10 pacer calibration c) Metrics row for a FAILED attempt.
 
@@ -995,8 +996,6 @@ def _record_failed_attempt_metrics(
         # a failure row here would double-represent a live attempt.
         return
     results = [item for item in (billing_results or []) if item is not None]
-    if not results:
-        return
     usage = None
     cost = 0.0
     for result in results:
@@ -1018,7 +1017,16 @@ def _record_failed_attempt_metrics(
         )
     )
     if not has_usage:
-        return
+        # 2026-11-04 (queue step 5b): a stream KILLED BY A TIMEOUT GATE
+        # (first_activity/idle/stall/total) never yields a ResultMessage, so
+        # until now the kill itself was invisible in metrics — 93 blade kills
+        # this boot left zero rows and the concurrency ladder's rollback
+        # predicates had no signal. Timeout class carries no usage, so write a
+        # wall-clock-only row (tokens stay None; the pacer adds nothing for a
+        # null-usage row). Every OTHER no-usage failure keeps writing nothing:
+        # pre-dispatch errors have no wall-clock story worth a row.
+        if not isinstance(error, _lq.LLMRoleTimeout):
+            return
     try:
         from llm_call_metrics import record_llm_call_metrics
 
@@ -1037,6 +1045,8 @@ def _record_failed_attempt_metrics(
             success=False,
             error_type=(type(error).__name__ if error is not None else None),
             error_message=(str(error)[:500] if error is not None else None),
+            timeout_kind=getattr(error, "timeout_kind", None),
+            semaphore_wait_sec=semaphore_wait_sec,
         )
     except Exception:
         pass
@@ -1162,7 +1172,13 @@ async def _run_stream_with_signature_retry_attempts(
         # a HARD failure (transport/auth/5xx) escalates to the process
         # transport below. A rate limit stays on the primary and surfaces
         # through the normal availability chain.
-        _primary_transport = _up.primary_enabled()
+        # The per-call flip (fallback below) must outrank the env predicate:
+        # without the ``not primary_fallback_used`` guard, the loop-top
+        # re-evaluation silently overwrote ``_primary_transport = False`` and
+        # the escalated attempt went right back to the failing primary
+        # (critique-verified 2026-11-04 with a dispatch-sequence probe:
+        # [primary_dispatch, primary_dispatch], codex branch never reached).
+        _primary_transport = _up.primary_enabled() and not primary_fallback_used
         if _primary_transport:
             owned_transport = _up.new_primary_transport(
                 full_prompt, options, allowed_write_dir
@@ -1223,9 +1239,19 @@ async def _run_stream_with_signature_retry_attempts(
         # ``success=False`` metrics row and the pacer would under-count the
         # window burn — the raise path recorded it, the retry path did not.
         _attempt_pending_error = None
+        _attempt_sem_wait_sec = None
         try:
             if semaphore is not None:
+                # Queue-wait measurement for llm_call_metrics: _attempt_start is
+                # set BEFORE the acquire, so time-to-acquire is the semaphore
+                # wait. Previously the success path never passed
+                # semaphore_wait_sec, so the field was null on every row and
+                # "slow upstream" could not be told apart from "queued locally"
+                # (the exact signal step-1's executor fix needs for its
+                # rollback predicate).
+                _sem_acquire_start = time.time()
                 async with semaphore:
+                    _attempt_sem_wait_sec = round(time.time() - _sem_acquire_start, 3)
                     texts, cost_usd, usage, stream_metrics = await _lq._process_stream(
                         query_gen, log_file_path, ui, role_name
                     )
@@ -1263,11 +1289,11 @@ async def _run_stream_with_signature_retry_attempts(
                     max_attempts=_SIGNATURE_MAX_ATTEMPTS,
                     role=role_name,
                     model=(
-                        _cx.codex_metrics_model()
-                        if _codex_transport
+                        _up.primary_metrics_model()
+                        if _primary_transport
                         else (
-                            _up.primary_metrics_model()
-                            if _primary_transport
+                            _cx.codex_metrics_model()
+                            if _codex_transport
                             else getattr(options, "model", None)
                         )
                     ),
@@ -1304,6 +1330,7 @@ async def _run_stream_with_signature_retry_attempts(
                     assistant_message_count=stream_metrics.get("assistant_message_count"),
                     log_file=_lq._role_log_basename(log_file_path),
                     global_concurrency=_capacity_now,
+                    semaphore_wait_sec=_attempt_sem_wait_sec,
                 )
                 _attempt_metrics_recorded = True
             except Exception:
@@ -1520,14 +1547,15 @@ async def _run_stream_with_signature_retry_attempts(
                     metrics_recorded=_attempt_metrics_recorded,
                     error=sys.exc_info()[1] or _attempt_pending_error,
                     model=(
-                        _cx.codex_metrics_model()
-                        if _codex_transport
+                        _up.primary_metrics_model()
+                        if _primary_transport
                         else (
-                            _up.primary_metrics_model()
-                            if _primary_transport
+                            _cx.codex_metrics_model()
+                            if _codex_transport
                             else getattr(options, "model", None)
                         )
                     ),
+                    semaphore_wait_sec=_attempt_sem_wait_sec,
                 )
             except Exception:
                 pass
