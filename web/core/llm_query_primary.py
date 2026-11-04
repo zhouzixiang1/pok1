@@ -226,22 +226,29 @@ def _parse_response(cfg: dict, body: dict) -> dict:
                 raw.get("cache_creation_input_tokens")
             ),
         }
-    # Caliber guard. Measured on tydfxt.top: a tiny prompt reported
-    # input_tokens=18 with cache_read_input_tokens=2587 — the proxy reports a
-    # cache figure that is NOT bounded by this request's prompt, so raw
-    # CR/input is meaningless (143.7) and would poison any cross-upstream
-    # comparison. ``llm_call_metrics`` already clamps with
-    # cache_eligible = max(input, cr+cw) so the stored rate stays <= 1, but the
-    # RATIO ITSELF is not comparable to GLM's. We therefore (a) keep the raw
-    # numbers for the record, (b) mark the row so no analysis mixes the two
-    # calibers, and (c) never let cr exceed input in the mapped SDK usage
-    # (which is what downstream ratio code reads).
+    # CALIBER CONVERSION (measured, 2026-11-04). This upstream reports
+    # ``input_tokens`` as UNCACHED NEW TOKENS ONLY, not the whole prompt.
+    # Evidence: an identical prompt repeated three times reports
+    # in=18 then in=6 then in=6 while cache_read stays ~2599 — the ~2590-token
+    # system/message prefix lives in the cache and is excluded from
+    # input_tokens. GLM (and the claude/codex paths) report the FULL prompt in
+    # input_tokens, so taking this upstream's number at face value would make
+    # every call look like a 100% cache hit (6/6) and silently destroy the
+    # cache-hit KPI this pipeline is tracking.
+    #
+    # Conversion: full_prompt = input_tokens + cache_read
+    #             (cache_read is the already-cached prefix)
+    # and the stored record keeps the provider's raw split so an auditor can
+    # re-derive either number. ``upstream`` + ``cache_caliber`` mark the row so
+    # no analysis silently mixes the two report conventions.
+    raw_input = usage.get("input_tokens") or 0
     raw_cache_read = usage.get("cache_read_input_tokens") or 0
-    input_tokens = usage.get("input_tokens") or 0
-    if input_tokens and raw_cache_read > input_tokens:
-        usage["provider_cache_read_input_tokens"] = raw_cache_read
-        usage["cache_caliber"] = "provider_unbounded_prompt_scoped"
-        usage["cache_read_input_tokens"] = input_tokens
+    if raw_cache_read > 0:
+        usage["provider_input_tokens"] = raw_input
+        usage["full_prompt_input_tokens"] = raw_input + raw_cache_read
+        usage["cache_caliber"] = "provider_uncached_plus_cached"
+        # Remap to the pipeline's convention: input_tokens = whole prompt.
+        usage["input_tokens"] = raw_input + raw_cache_read
     return {
         "text": "".join(text_parts),
         "thinking": "".join(thinking_parts),

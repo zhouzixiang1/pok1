@@ -122,6 +122,48 @@ def test_openai_wire_request(monkeypatch):
 # 3./4. response parsing and usage caliber
 # ---------------------------------------------------------------------------
 
+def test_uncached_only_counts_are_converted_to_full_prompt(monkeypatch):
+    """Measured upstream quirk: input_tokens counts only NEW (uncached) tokens.
+
+    Evidence: repeating one prompt reports in=18 then in=6 then in=6 while
+    cache_read holds the ~2590-token prefix. GLM reports the WHOLE prompt, so
+    the adapter must convert (full = input + cache_read) or every call looks
+    like a ~100% cache hit and the KPI this pipeline tracks is destroyed.
+    """
+
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    cfg = up.primary_config()
+    body = {
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 6, "output_tokens": 20,
+                  "cache_read_input_tokens": 2599,
+                  "cache_creation_input_tokens": 0},
+    }
+    usage = up._parse_response(cfg, body)["usage"]
+    assert usage["provider_input_tokens"] == 6
+    assert usage["input_tokens"] == 2605, "input_tokens must become the FULL prompt"
+    assert usage["cache_read_input_tokens"] == 2599
+    assert usage["cache_caliber"] == "provider_uncached_plus_cached"
+    # the ratio is now the pipeline's convention: 2599 / 2605
+    assert usage["cache_read_input_tokens"] / usage["input_tokens"] == pytest.approx(0.9977, abs=1e-3)
+
+
+def test_zero_cache_read_leaves_input_untouched(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    cfg = up.primary_config()
+    usage = up._parse_response(
+        cfg, {"content": [{"type": "text", "text": "ok"}],
+              "usage": {"input_tokens": 500, "output_tokens": 5,
+                        "cache_read_input_tokens": 0}}
+    )["usage"]
+    assert usage["input_tokens"] == 500
+    assert "cache_caliber" not in usage
+
+
 def test_anthropic_response_parsing_and_usage(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
@@ -144,11 +186,16 @@ def test_anthropic_response_parsing_and_usage(monkeypatch):
     parsed = up._parse_response(cfg, body)
     assert parsed["text"] == "ANSWER"
     assert parsed["thinking"] == "let me think"
-    assert parsed["usage"]["input_tokens"] == 1000
+    # provider reported 1000 uncached tokens; the adapter converts to the
+    # pipeline convention where input_tokens is the WHOLE prompt.
+    assert parsed["usage"]["provider_input_tokens"] == 1000
+    assert parsed["usage"]["input_tokens"] == 1800
     assert parsed["usage"]["cache_read_input_tokens"] == 800
     assert parsed["usage"]["cache_creation_input_tokens"] == 25
-    # the KPI definition must not drift: CR over FULL prompt input
-    assert parsed["usage"]["cache_read_input_tokens"] / parsed["usage"]["input_tokens"] == pytest.approx(0.8)
+    # converted to the pipeline convention: input becomes the FULL prompt
+    assert parsed["usage"]["provider_input_tokens"] == 1000
+    assert parsed["usage"]["input_tokens"] == 1800
+    assert parsed["usage"]["cache_read_input_tokens"] / parsed["usage"]["input_tokens"] == pytest.approx(0.4444, abs=1e-4)
 
 
 def test_openai_response_parsing_and_usage(monkeypatch):
@@ -172,7 +219,8 @@ def test_openai_response_parsing_and_usage(monkeypatch):
     parsed = up._parse_response(cfg, body)
     assert parsed["text"] == "ANSWER"
     assert parsed["thinking"] == "hmm"
-    assert parsed["usage"]["input_tokens"] == 500
+    assert parsed["usage"]["provider_input_tokens"] == 500
+    assert parsed["usage"]["input_tokens"] == 900
     assert parsed["usage"]["cache_read_input_tokens"] == 400
     assert parsed["usage"]["cache_creation_input_tokens"] == 0
 
