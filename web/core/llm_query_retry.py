@@ -1466,7 +1466,17 @@ async def _run_stream_with_signature_retry_attempts(
             try:
                 _es = str(e).lower()
                 if ("503" in _es or "overloaded" in _es or "熔断" in _es
-                        or "所有供应商" in _es or "rate limit" in _es or "429" in _es):
+                        or "所有供应商" in _es or "rate limit" in _es or "429" in _es
+                        # block-49: the primary upstream's transient family —
+                        # nginx gateway blips (502/504) and its own queue
+                        # verdict (10605/CALL_COUNT_LIMIT/"上游模型排队中") —
+                        # is frequency-class pressure: AIMD must back off for
+                        # it (measured 2026-11-05: before this they escalated
+                        # to the fallback transport instead of lowering
+                        # concurrency).
+                        or "502" in _es or "504" in _es
+                        or "10605" in _es or "call_count_limit" in _es
+                        or "排队" in _es):
                     from api_concurrency import record_llm_outcome
                     record_llm_outcome(success=False, rate_limited=True)
                     # AIMD 动态并发（2026-10-07）：频率类失败计数驱动乘法降档。

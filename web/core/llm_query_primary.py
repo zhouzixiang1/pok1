@@ -68,7 +68,22 @@ TIMEOUT_ENV = "POK_LLM_PRIMARY_TIMEOUT_SEC"
 
 _DEFAULT_TIMEOUT = 600.0
 #: Provider error codes that mean "slow down", never "this upstream is broken".
-_RATE_LIMIT_CODES = ("1308", "1302", "rate limit", "too many requests")
+#: The 10605 family (measured 2026-11-05 against tydfxt.top: {"code":"10605",
+#: "subCode":"CALL_COUNT_LIMIT"}, body 上游模型排队中, isQueued=true,
+#: serviceAvailable=true, retryAfterSeconds=30) is the upstream's OWN words
+#: that this is "not your key/account/network" — a transient queue. Treating
+#: it as a hard failure was the leak mechanism: the attempt escalated to the
+#: process transport and a GLM call ran ("GLM 一点不保留" violated, measured
+#: rows). 502/503/504 are nginx-side transient gateway states (measured:
+#: 502 Bad Gateway from nginx/1.24.0 at the same hour), also retry-in-place,
+#: never an escape from the upstream.
+_RATE_LIMIT_CODES = (
+    "1308", "1302", "rate limit", "too many requests",
+    "10605", "call_count_limit", "isqueued",
+)
+#: HTTP statuses that mean "the gateway is temporarily unhappy", retried on
+#: the SAME upstream instead of escalating to the fallback transport.
+_TRANSIENT_GATEWAY_STATUSES = (502, 503, 504)
 
 
 def _require_sdk():
@@ -834,17 +849,28 @@ class PrimaryHttpTransport:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # network/DNS/TLS
+            # A per-round READ TIMEOUT is transient provider slowness, not a
+            # broken upstream (measured: 600s read timeout while primary-era
+            # calls legitimately run p50~490s / max 1200s+). It must NOT
+            # escalate to the fallback transport — the operator directive is
+            # zero GLM (one such escalation ran a 1.36M-token GLM saturator
+            # call on 2026-11-05). DNS/TLS/config faults stay fatal.
             raise PrimaryUpstreamError(
                 f"primary upstream transport error: {type(exc).__name__}: {exc}",
-                fatal=True,
+                fatal=not isinstance(exc, TimeoutError),
+                retryable=isinstance(exc, TimeoutError),
                 code="transport",
             ) from exc
         if status is None or status >= 400 or body is None:
             rate_limited = _looks_like_rate_limit(status, text)
+            # 502/503/504 come from the upstream's own nginx (measured 502 Bad
+            # Gateway HTML) — gateway blips, retry in place, never an escape
+            # from the upstream (fallback would hand the call to GLM).
+            transient = rate_limited or status in _TRANSIENT_GATEWAY_STATUSES
             raise PrimaryUpstreamError(
                 f"primary upstream HTTP {status}: {(text or '')[:600]}",
-                retryable=rate_limited,
-                fatal=not rate_limited,
+                retryable=transient,
+                fatal=not transient,
                 code=str(status),
             )
         if isinstance(body, dict) and body.get("error"):

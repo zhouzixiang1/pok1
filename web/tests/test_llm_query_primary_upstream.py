@@ -31,6 +31,7 @@ import asyncio
 import inspect
 import json
 import os
+import socket
 import sys
 
 import pytest
@@ -310,20 +311,94 @@ def test_rate_limited_error_object_is_not_fatal(monkeypatch):
     assert excinfo.value.fatal is False
 
 
-def test_hard_failure_error_object_is_fatal(monkeypatch):
+def test_true_hard_failure_error_object_is_fatal(monkeypatch):
+    """The escape hatch survives ONLY for a genuinely broken upstream: an auth
+    rejection (401) is fatal and non-retryable, so one attempt may hand over
+    to the process transport. Transient gateway/queue states must NOT reach
+    it — see the leak matrix below."""
+
     _clear(monkeypatch)
     monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
     monkeypatch.setenv(up.API_KEY_ENV, "k")
     transport = up.new_primary_transport("p", None)
 
     def _fake_post(url, payload, headers, timeout):
-        return 503, None, "upstream unavailable"
+        return 401, None, "invalid api key"
 
     monkeypatch.setattr(up, "_post_json", _fake_post)
     with pytest.raises(up.PrimaryUpstreamError) as excinfo:
         asyncio.run(transport.run())
     assert excinfo.value.fatal is True
     assert excinfo.value.retryable is False
+
+
+def test_transient_states_retry_in_place_never_fall_back(monkeypatch):
+    """GLM-leak closure (measured 2026-11-05): a 502 Bad Gateway page and a
+    10605/CALL_COUNT_LIMIT queue verdict (the upstream's own 'not your
+    key/account/network') were classified fatal, so the attempt escalated to
+    the process transport and ran a 1.36M-token GLM call — violating the
+    operator directive of zero GLM. Both now retry on the SAME upstream;
+    the fallback stays reserved for auth/config/unsupported-transport faults.
+    """
+
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    transport = up.new_primary_transport("p", None)
+
+    queue_body = (
+        '上游模型排队中（10605 / CALL_COUNT_LIMIT）：请稍后重试。isQueued=true '
+        '{"code":"10605","subCode":"CALL_COUNT_LIMIT"}'
+    )
+    cases = [
+        # (status, body_text, expect_retryable)
+        (502, "<html><title>502 Bad Gateway</title> nginx/1.24.0", True),
+        (503, "upstream unavailable", True),
+        (504, "Gateway Timeout", True),
+        (403, queue_body, True),
+        (429, "too many requests", True),
+        (401, "invalid api key", False),
+        (404, "model not found", False),
+    ]
+    for status, body, expect_retryable in cases:
+        def _fake_post(url, payload, headers, timeout, _s=status, _b=body):
+            return _s, None, _b
+
+        monkeypatch.setattr(up, "_post_json", _fake_post)
+        with pytest.raises(up.PrimaryUpstreamError) as excinfo:
+            asyncio.run(transport.run())
+        err = excinfo.value
+        assert err.retryable is expect_retryable, (status, body[:40])
+        assert err.fatal is (not expect_retryable), (status, body[:40])
+
+
+def test_read_timeout_is_transient_transport_state(monkeypatch):
+    """A per-round socket read timeout is provider slowness (primary-era calls
+    legitimately run p50~490s/max 1200s+; the measured 600s default fired
+    during a queue wave), not a broken upstream. It retries in place; DNS/TLS
+    faults stay fatal so the escape hatch still exists for real outages."""
+
+    _clear(monkeypatch)
+    monkeypatch.setenv(up.BASE_URL_ENV, "https://x/v1")
+    monkeypatch.setenv(up.API_KEY_ENV, "k")
+    transport = up.new_primary_transport("p", None)
+
+    def _slow_post(url, payload, headers, timeout):
+        raise socket.timeout("The read operation timed out")
+
+    monkeypatch.setattr(up, "_post_json", _slow_post)
+    with pytest.raises(up.PrimaryUpstreamError) as excinfo:
+        asyncio.run(transport.run())
+    assert excinfo.value.retryable is True
+    assert excinfo.value.fatal is False
+
+    def _dns_post(url, payload, headers, timeout):
+        raise OSError("Name or service not known")
+
+    monkeypatch.setattr(up, "_post_json", _dns_post)
+    with pytest.raises(up.PrimaryUpstreamError) as excinfo:
+        asyncio.run(transport.run())
+    assert excinfo.value.fatal is True
 
 
 # ---------------------------------------------------------------------------
