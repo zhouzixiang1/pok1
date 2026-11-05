@@ -866,3 +866,56 @@ def test_effect_lease_reclaimed_event_is_replayable(tmp_path):
     # Must NOT raise; the event is a pass-through (no projection side effect).
     state = workflow.state()
     assert state is not None
+
+
+def test_second_availability_deferral_cycle_resumes_cleanly(tmp_path):
+    """Regression (v673 wedge, 2026-11-05): one real 429 burst deferred a
+    worker effect TWICE (lease_epoch 1 -> 2 between the cycles). The resume
+    causation id was keyed on the availability digest only, while the stored
+    EffectResumed payload carries the lease epoch — the second resume re-
+    derived the same causation against a different payload and the kernel's
+    idempotency guard raised "causation id reused", failing closed forever
+    (WORKER_AVAILABILITY_RESUME_FAILED, operator_action_required, the whole
+    generation looped). Resume causation is now epoch-keyed, mirroring
+    availability_deferred() and the kernel's own worker-infra-failed:{e}:{ep}
+    convention, so each deferral instance resumes exactly once."""
+
+    workflow = _workflow(tmp_path)
+    candidate = tmp_path / "candidate-double-defer"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("value = 1\n")
+    snapshot = workflow.artifacts.capture(candidate)
+    workflow.prepare(_envelope(snapshot), max_attempts=3)
+
+    availability = {
+        "schema_version": 1,
+        "active": True,
+        # IDENTICAL digest across both deferrals — this is what made the old
+        # digest-only causation collide (the real burst reused one pause
+        # record for both cycles).
+        "category": "service_unavailable",
+        "summary": "provider rejected the request (429)",
+        "evidence_digest": "4" * 64,
+    }
+
+    first_lease = workflow.request_or_claim(owner="worker-a", lease_seconds=60)
+    workflow.availability_deferred(first_lease, availability)
+    resumed = workflow.resume_availability_deferred()
+    assert resumed["status"] == "requested"
+
+    second_lease = workflow.request_or_claim(owner="worker-b", lease_seconds=60)
+    assert second_lease.lease_epoch == first_lease.lease_epoch + 1
+    workflow.availability_deferred(second_lease, availability)
+    assert workflow.state()["status"] == "availability_deferred"
+
+    # Pre-fix this raised WorkflowConflict("causation id reused...").
+    resumed_again = workflow.resume_availability_deferred()
+    assert resumed_again["status"] == "requested"
+    assert resumed_again["availability"] in (None, {})
+
+    # And a third cycle with a DIFFERENT pause record also resumes cleanly.
+    third_lease = workflow.request_or_claim(owner="worker-c", lease_seconds=60)
+    workflow.availability_deferred(
+        third_lease, {**availability, "evidence_digest": "9" * 64}
+    )
+    assert workflow.resume_availability_deferred()["status"] == "requested"

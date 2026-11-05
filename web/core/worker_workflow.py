@@ -1477,10 +1477,26 @@ class WorkerWorkflow:
         availability_digest = str(
             (state.get("availability") or {}).get("evidence_digest") or ""
         )
+        # The causation id must identify the DEFERRAL INSTANCE, not just the
+        # effect: resume_effect writes lease_epoch into its payload, and an
+        # effect can be deferred/resumed/deferred again (each cycle bumps the
+        # lease epoch). A digest-only id therefore replays on the second cycle
+        # as "causation id reused with different event" — the kernel's own
+        # idempotency guard turns a legitimate second resume into a permanent
+        # fail-closed wedge (measured v673, 2026-11-05: one real 429 burst with
+        # an identical evidence digest deferred cycle-3 twice, lease_epoch 1→2,
+        # and the cleared pause could never resume the effect; the generation
+        # looped WORKER_AVAILABILITY_RESUME_FAILED with
+        # operator_action_required=true). Mirror the availability_deferred()
+        # convention (and the kernel's worker-infra-failed:{effect}:{epoch}
+        # form) by keying on the CURRENT lease epoch read from the effect row.
+        lease_epoch = int(
+            (self.store.effect(effect_id) or {}).get("lease_epoch") or 0
+        )
         self.store.resume_effect(
             effect_id,
             causation_id=(
-                f"worker-availability-resumed:{effect_id}:"
+                f"worker-availability-resumed:{effect_id}:{lease_epoch}:"
                 f"{availability_digest or 'unclassified'}"
             ),
         )
