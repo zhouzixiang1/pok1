@@ -4897,3 +4897,130 @@ def test_recent_directions_avoid_set_rendering(monkeypatch):
         lambda *_args, **_kwargs: {},
     )
     assert agent_master._recent_directions_avoid_set(149) == ""
+
+
+def _validated_snapshot_proposal(tmp_path, agent_master):
+    """Existing-fixture helper: a fully validated proposal with 2 real bindings."""
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    proposal = agent_master._validated_master_proposal(
+        _proposal("mechanism", snapshot=True),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=True,
+        require_snapshot_evidence=True,
+        evidence_mode="frozen_strength_snapshot",
+    )
+    assert proposal is not None
+    return proposal
+
+
+def test_worker_budget_trim_never_rewrites_sealed_projection(tmp_path):
+    """BLOCK-49 regression (v666/v668/v671/v672 died this way).
+
+    The trim used to rewrite resolved_projection/projection_sha256/
+    projection_truncated IN THE SEALED proposal when the worker budget
+    overflowed, while the audit re-derives the canonical [:1600] prefix
+    (evidence_snapshot.py) — every trimmed generation then died
+    sealed_evidence_projection_mismatch with the model's numbers proven
+    byte-correct. After the fix the trim may still cap model-authored prose,
+    but snapshot_evidence bytes must survive EXACTLY.
+
+    Note the design shift: a projection-driven overflow is no longer even a
+    bindability failure (the RENDER compaction absorbs it), so this test
+    forces the overflow through model-authored prose, which is the only
+    remaining in-place trim path.
+    """
+
+    import copy
+
+    import agent_master
+    import agent_master_proposal_packet as packet
+
+    proposal = _validated_snapshot_proposal(tmp_path, agent_master)
+    mutated = copy.deepcopy(proposal)
+    # an oversized projection must survive the trim untouched inside the
+    # sealed dictionary (the old code rewrote it there)
+    big = json.dumps({"rows": ["z" * 5000]}, separators=(",", ":"))
+    mutated["snapshot_evidence"][0]["resolved_projection"] = big
+    # and force the trim path itself via prose overflow
+    mutated["counterfactual"] = "y" * 6000
+    mutated["expected_diff"] = "z" * 3000
+    sealed_before = copy.deepcopy(mutated["snapshot_evidence"])
+
+    assert packet._proposal_worker_bindability_error(mutated) is not None
+    trimmed = packet._trim_proposal_prose_to_worker_budget(mutated)
+    assert trimmed["snapshot_evidence"] == sealed_before
+    # prose was capped (the trim still exists for model-authored fields)
+    assert len(trimmed["counterfactual"]) < 6000
+    # and the identity is now stable under trim: the old code re-cast
+    # proposal_id after mutating the sealed bytes
+    if trimmed is not mutated:
+        assert trimmed["proposal_id"] == mutated["proposal_id"]
+
+
+def test_worker_block_compacts_render_copy_only_when_budget_breached(tmp_path):
+    """The compaction must live in the RENDERED block, never in the proposal,
+    and fire only when the full-size block would breach the provider budget
+    (the v328-v333 13k cap keeps its exact trigger)."""
+
+    import copy
+
+    import agent_master
+    import agent_master_proposal_packet as packet
+
+    def _rendered_evidence(block: str) -> list:
+        """Parse back the snapshot_evidence the Worker actually sees.
+
+        The block embeds it as ``snapshot_evidence=<json.dumps(...)>`` on one
+        line, so raw projection text is double-quoted and substring checks on
+        it are escaping-brittle; parsing the line is exact.
+        """
+
+        prefix = "snapshot_evidence="
+        for line in block.splitlines():
+            if line.startswith(prefix):
+                return json.loads(line[len(prefix):])
+        raise AssertionError("snapshot_evidence line missing from block")
+
+    proposal = _validated_snapshot_proposal(tmp_path, agent_master)
+    # full-size render fits → canonical projections in the block
+    block = packet._worker_block_for_proposal(proposal)
+    assert "projection_render_compacted" not in block
+    rendered = _rendered_evidence(block)
+    assert [b["resolved_projection"] for b in rendered] == [
+        b["resolved_projection"] for b in proposal["snapshot_evidence"]
+    ]
+
+    # oversized projections (ALL bindings) → the RENDER compacts, the SEALED
+    # bytes do not. One oversized binding alone still fits the room cap, and
+    # the renderer must then keep the canonical view (the fits_full branch).
+    mutated = copy.deepcopy(proposal)
+    big = json.dumps({"rows": ["z" * 5000]}, separators=(",", ":"))
+    for binding in mutated["snapshot_evidence"]:
+        binding["resolved_projection"] = big
+    sealed_copy = copy.deepcopy(mutated["snapshot_evidence"])
+
+    full2 = packet._selected_proposal_worker_block(mutated, compact_evidence=False)
+    assert not packet._worker_budget_fits(len(full2))  # breach is real
+    block2 = packet._worker_block_for_proposal(mutated)
+    assert "projection_render_compacted" in block2
+    rendered2 = _rendered_evidence(block2)
+    assert rendered2[0]["resolved_projection"] == big[:400]
+    assert rendered2[0].get("projection_render_compacted") is True
+    # the Worker still sees the pointer/scalar fields
+    assert rendered2[0]["reference"] == mutated["snapshot_evidence"][0]["reference"]
+    assert rendered2[0]["node_sha256"] == mutated["snapshot_evidence"][0]["node_sha256"]
+    assert big not in block2  # full 5k blob never reaches the Worker
+    assert mutated["snapshot_evidence"] == sealed_copy  # sealed untouched
+    assert mutated["snapshot_evidence"][0]["resolved_projection"] == big
+
+    # budget measurement uses the SAME block the append uses: binding_chars
+    # in the compilation contract equals the rendered block's length
+    compilation = packet._selected_proposal_compilation_contract(mutated)
+    assert compilation["reserved_selected_contract_chars"] == len(block2)

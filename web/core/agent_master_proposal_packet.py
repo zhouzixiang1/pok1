@@ -1039,7 +1039,61 @@ def _selected_proposal_binding(proposal: dict, packet: dict) -> dict:
     }
 
 
-def _selected_proposal_worker_block(proposal: dict) -> str:
+def _compact_snapshot_evidence_for_render(evidence: list) -> list:
+    """Render-copy projection compaction for the worker prompt (BLOCK-49 fix).
+
+    WHY (measured v666/v668/v671/v672, workflow dwfrun-0828fda5 + independent
+    critique, all lines reproduced): the OLD design trimmed
+    ``resolved_projection`` to 400 chars INSIDE the sealed proposal and
+    recomputed projection_sha256 + proposal_id, while the audit re-derives the
+    canonical ``[:1600]`` prefix (evidence_snapshot.py:1721) — a static
+    producer/validator contradiction open since 7683710b (2026-10-04, the
+    1600/400 pair). Every generation whose worker budget tripped the trim died
+    ``sealed_evidence_projection_mismatch`` with the model's numbers proven
+    byte-correct (node_sha256/games matched the frozen snapshot 8/8).
+
+    FIX (plan A): the sealed proposal bytes stay canonical (audit-satisfiable,
+    identity stable) and compaction happens ONLY on the rendered copy that
+    flows into the worker prompt — and only when the full-size render would
+    breach the provider budget, so the v328-v333 13k worker cap keeps its
+    teeth at the same trigger point. The worker still sees reference /
+    node_sha256 / games / scalars in the compacted view; only the long
+    projection TEXT is shortened, which the Worker never edits against.
+    """
+
+    compacted = []
+    for binding in evidence or []:
+        if not isinstance(binding, dict):
+            compacted.append(binding)
+            continue
+        projection = str(binding.get("resolved_projection") or "")
+        if len(projection) > _SNAPSHOT_PROJECTION_BINDING_CHARS:
+            view = dict(binding)
+            view["resolved_projection"] = (
+                projection[:_SNAPSHOT_PROJECTION_BINDING_CHARS]
+            )
+            view["projection_render_compacted"] = True
+            compacted.append(view)
+        else:
+            compacted.append(binding)
+    return compacted
+
+
+def _worker_budget_fits(binding_chars: int) -> bool:
+    """True when a rendered block of this size leaves the provider its room."""
+
+    from plan_compiler import SYSTEM_OWNED_CONTRACT_MAX_CHARS
+
+    max_provider = (
+        WORKER_PROMPT_MAX_CHARS
+        - int(binding_chars)
+        - 2
+        - int(SYSTEM_OWNED_CONTRACT_MAX_CHARS)
+    )
+    return max_provider >= WORKER_PROMPT_MIN_CHARS
+
+
+def _selected_proposal_worker_block(proposal: dict, *, compact_evidence: bool = False) -> str:
     from plan_compiler import SELECTED_PROPOSAL_BEGIN, SELECTED_PROPOSAL_END
 
     contract = _selected_proposal_contract(proposal)
@@ -1055,6 +1109,11 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
         "telemetry-only code. Preserve counterfactual and measurement as the "
         "generation hypothesis, and expose the named falsifier through the task "
         "RuntimeContract/checks_required so the system typed probe can execute it."
+    )
+    rendered_evidence = (
+        _compact_snapshot_evidence_for_render(contract["snapshot_evidence"])
+        if compact_evidence
+        else contract["snapshot_evidence"]
     )
     return "\n".join((
         SELECTED_PROPOSAL_BEGIN,
@@ -1089,7 +1148,7 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
             contract["evidence_refs"], ensure_ascii=False, separators=(",", ":")
         ),
         "snapshot_evidence=" + json.dumps(
-            contract["snapshot_evidence"],
+            rendered_evidence,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -1101,13 +1160,36 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
     ))
 
 
+def _worker_block_for_proposal(proposal: dict) -> str:
+    """The selected-proposal block exactly as it will render into the Worker.
+
+    Canonical full projections whenever the provider still keeps its minimum
+    prompt budget; render-copy compaction (sealed bytes NEVER change) only
+    when the v328-v333 13k worker cap would otherwise be breached — the same
+    trigger the old in-place trim had, minus the identity/audit contradiction
+    it created (see _compact_snapshot_evidence_for_render). Budget measurement
+    (compilation contract) and prompt append (_bind_selected_proposal_workers)
+    both go through here, so they can never disagree.
+    """
+
+    full = _selected_proposal_worker_block(proposal, compact_evidence=False)
+    if _worker_budget_fits(len(full)):
+        return full
+    compacted = _selected_proposal_worker_block(proposal, compact_evidence=True)
+    # Only trade the compacted render when it actually buys room; otherwise
+    # keep the canonical view and let the bindability error guide the repair.
+    if len(compacted) < len(full) and _worker_budget_fits(len(compacted)):
+        return compacted
+    return full
+
+
 def _selected_proposal_compilation_contract(proposal: dict) -> dict:
     """Return the exact provider budget and typed-primary binding for a proposal."""
 
     from plan_compiler import SYSTEM_OWNED_CONTRACT_MAX_CHARS
 
     contract = _selected_proposal_contract(proposal)
-    binding_chars = len(_selected_proposal_worker_block(proposal))
+    binding_chars = len(_worker_block_for_proposal(proposal))
     separator_chars = 2
     return {
         "proposal_id": contract["proposal_id"],
@@ -1154,27 +1236,22 @@ def _trim_proposal_prose_to_worker_budget(proposal: dict) -> dict:
     11k+ binding. Truncating system-owned binding fields (never
     ``change_symbol``, snapshot pointers, or the measurement contract)
     lets an otherwise valid proposal compile.
+
+    BLOCK-49: the snapshot_evidence branch was REMOVED. It used to rewrite
+    ``resolved_projection``/``projection_sha256``/``projection_truncated``
+    IN THE SEALED proposal ([:400] against the audit's canonical [:1600]
+    re-derivation at evidence_snapshot.py:1721), which made every trimmed
+    generation die ``sealed_evidence_projection_mismatch`` — v666/v668/v671/
+    v672, with the model's numbers proven byte-correct. Projection
+    compaction now happens exclusively on the RENDER copy
+    (``_worker_block_for_proposal``), sealed bytes stay canonical, and only
+    model-authored prose still gets in-place caps here.
     """
     if not isinstance(proposal, dict):
         return proposal
     if _proposal_worker_bindability_error(proposal) is None:
         return proposal
     candidate = json.loads(json.dumps(proposal))
-    evidence = candidate.get("snapshot_evidence")
-    if isinstance(evidence, list):
-        for binding in evidence:
-            if not isinstance(binding, dict):
-                continue
-            projection = str(binding.get("resolved_projection") or "")
-            if len(projection) > _SNAPSHOT_PROJECTION_BINDING_CHARS:
-                compact = projection[:_SNAPSHOT_PROJECTION_BINDING_CHARS]
-                binding["resolved_projection"] = compact
-                binding["projection_sha256"] = hashlib.sha256(
-                    compact.encode("utf-8")
-                ).hexdigest()
-                binding["projection_truncated"] = True
-        if _proposal_worker_bindability_error(candidate) is None:
-            return candidate
     for cap in (1200, 800, 500, 320, 200, 120, 80, 40):
         keep = max(20, cap)
         for key in _PROSE_BINDING_KEYS:
@@ -1277,7 +1354,7 @@ def _master_final_emission_guard(packet: dict) -> str:
 def _bind_selected_proposal_workers(data: dict, proposal: dict) -> dict:
     """Compile the selected mechanism into every writable target task."""
     result = json.loads(json.dumps(data, ensure_ascii=False))
-    block = _selected_proposal_worker_block(proposal)
+    block = _worker_block_for_proposal(proposal)
     target_files = set(proposal["target_files"])
     for task in result.get("tasks") or []:
         if not isinstance(task, dict):
